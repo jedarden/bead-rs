@@ -515,3 +515,43 @@ rewrite or delete earlier entries.
 - **Next recommended feature**: F010 (Machine-readable capability handshake) - now unblocked
 - F009 pass state changed to true with evidence.
 
+
+
+## 2026-08-08 — F010 implementation completed
+
+- Created comprehensive capabilities service in src/service/capabilities.rs:
+  * Capabilities struct with contract, implementation, version, store_layout
+  * Priorities struct with min/max/default/p4_claimable_by_fifo
+  * SchemaEntry struct with schema_ref, document_kind, validate, consume, emit
+  * generate_capabilities() supporting native-v1 and needle-v1 profiles
+  * Profile validation rejecting unsupported profiles with clear error messages
+- Added CapabilitiesOptions to CLI with --profile flag (default: native-v1)
+- Moved Capabilities from UnimplementedCommand to main Command enum
+- Implemented cmd_capabilities() in main.rs with pretty JSON output
+- Created 6 comprehensive integration tests in tests/cli_capabilities.rs:
+  * test_capabilities_no_workspace: verifies capabilities work without workspace
+  * test_capabilities_native_profile: validates native-v1 contract structure
+  * test_capabilities_needle_profile: validates needle-v1 contract structure  
+  * test_capabilities_invalid_profile: tests profile validation and error handling
+  * test_capabilities_default_profile: verifies default profile behavior
+  * test_capabilities_schema_entries: validates schema catalog structure
+- Schema catalog properly distinguishes:
+  * event schema: validate only, no consume/emit
+  * issue schema: validate + consume (sync.import-only) + emit (sync.flush-only)
+  * migration-receipt schema: validate + emit (migrate)
+- Commands inventory enumerates 16 public root commands: capabilities, claim, close, create, dep, doctor, init, label, list, migrate, release, reopen, schema, show, sync, update
+- Atomic claim explicitly documented via atomic_claim field
+- P4 claimable under fifo-v1 explicitly documented via priorities.p4_claimable_by_fifo field
+- All 182 tests pass (46 unit + 136 integration including 6 new capabilities tests)
+- cargo fmt --check: passed
+- cargo clippy --all-targets -- -D warnings: passed
+- F010 acceptance criteria met:
+  * Capabilities identify contract (native-v1/needle-v1) and store-layout versions (1)
+  * Atomic claim, lifecycle, checkpoint, and command support are explicit
+  * Priority capabilities describe P4 as claimable under fifo-v1 without post-0.1 opt-in semantics
+  * Commands inventory exactly matches every application-defined visible public root command
+  * Schema catalog entries distinguish validation support from concrete lossless consume/emit operation paths
+  * Unsupported profiles fail closed
+- **Next recommended feature**: F011 (Complete NEEDLE v1 subprocess compatibility suite) - now unblocked
+- F010 pass state changed to true with evidence.
+

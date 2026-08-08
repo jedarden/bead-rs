@@ -37,7 +37,9 @@
       "priority": 0,
       "description": "Canonical native issue model with validated lifecycle and identifiers",
       "spec": "research/specs/interchange-v1.md",
-      "depends_on": ["F001"],
+      "depends_on": [
+        "F001"
+      ],
       "acceptance": [
         "Model represents required and optional interchange data",
         "Unknown extension fields can be retained",
@@ -66,7 +68,10 @@
       "priority": 0,
       "description": "Create, list, and show commands with stable JSON output",
       "spec": "research/specs/needle-cli-contract-v1.md",
-      "depends_on": ["F001", "F002"],
+      "depends_on": [
+        "F001",
+        "F002"
+      ],
       "acceptance": [
         "Create commits a new issue and prints only its ID on success",
         "Create defaults an omitted description to empty",
@@ -92,7 +97,9 @@
       "priority": 0,
       "description": "Atomic server-selected claim and release behavior",
       "spec": "research/specs/needle-cli-contract-v1.md#claim-semantics",
-      "depends_on": ["F003"],
+      "depends_on": [
+        "F003"
+      ],
       "acceptance": [
         "Selection and assignment occur in one write transaction",
         "No eligible work is a successful structured domain result",
@@ -117,7 +124,9 @@
       "priority": 1,
       "description": "Update, close, and reopen lifecycle commands",
       "spec": "research/specs/needle-cli-contract-v1.md#required-commands",
-      "depends_on": ["F003"],
+      "depends_on": [
+        "F003"
+      ],
       "acceptance": [
         "Status, assignee, and notes updates are atomic",
         "release atomically transitions in-progress work to open and unassigned with the documented idempotency, conflict, output, and audit behavior",
@@ -148,7 +157,10 @@
       "priority": 1,
       "description": "Labels and dependency graph operations",
       "spec": "research/specs/interchange-v1.md#dependencies",
-      "depends_on": ["F003", "F005"],
+      "depends_on": [
+        "F003",
+        "F005"
+      ],
       "acceptance": [
         "Label add and remove are idempotent",
         "Dependency direction follows blocked, blocker, kind",
@@ -173,7 +185,10 @@
       "priority": 1,
       "description": "Deterministic JSONL checkpoint export",
       "spec": "research/specs/interchange-v1.md#determinism",
-      "depends_on": ["F002", "F006"],
+      "depends_on": [
+        "F002",
+        "F006"
+      ],
       "acceptance": [
         "sync --flush-only observes one committed snapshot",
         "Records and semantically unordered collections are stably ordered",
@@ -206,7 +221,10 @@
       "priority": 1,
       "description": "Validated JSONL import with unknown-field preservation",
       "spec": "research/specs/interchange-v1.md#transport",
-      "depends_on": ["F002", "F007"],
+      "depends_on": [
+        "F002",
+        "F007"
+      ],
       "acceptance": [
         "Malformed input reports its line and activates no partial state",
         "Unknown fields survive a same-profile round trip",
@@ -238,7 +256,10 @@
       "priority": 1,
       "description": "Diagnostics and scoped repair",
       "spec": "research/specs/needle-cli-contract-v1.md#required-commands",
-      "depends_on": ["F007", "F008"],
+      "depends_on": [
+        "F007",
+        "F008"
+      ],
       "acceptance": [
         "doctor performs read-only integrity checks",
         "Pre-F017 doctor validates issues.jsonl against migration-1 checkpoint state while post-F017 doctor selects pointer-based checks by store layout",
@@ -266,7 +287,11 @@
       "priority": 1,
       "description": "Machine-readable capability handshake",
       "spec": "research/specs/needle-cli-contract-v1.md#capability-handshake-extension",
-      "depends_on": ["F004", "F008", "F009"],
+      "depends_on": [
+        "F004",
+        "F008",
+        "F009"
+      ],
       "acceptance": [
         "Capabilities identify contract and store-layout versions",
         "Atomic claim, lifecycle, checkpoint, and command support are explicit",
@@ -275,15 +300,36 @@
         "Schema catalog entries distinguish validation support from concrete lossless consume and emit operation paths",
         "Unsupported profiles fail closed"
       ],
-      "passes": false,
-      "evidence": []
+      "passes": true,
+      "evidence": [
+        "cargo test: 182 tests passed (6 new capabilities tests)",
+        "cargo fmt --check: passed",
+        "cargo clippy --all-targets -- -D warnings: passed",
+        "Implemented comprehensive capabilities service with contract, implementation, version, store_layout, atomic_claim, priorities, statuses, checkpoint_modes, checkpoint_formats, schema_ref, schemas, and commands",
+        "Created generate_capabilities() supporting native-v1 and needle-v1 profiles with profile validation",
+        "Added CapabilitiesOptions CLI with --profile flag defaulting to native-v1",
+        "Implemented cmd_capabilities() with pretty JSON output",
+        "Schema catalog distinguishes validation-only (event schema) from consume/emit paths (issue, migration-receipt)",
+        "Commands inventory matches 16 public root commands: capabilities, claim, close, create, dep, doctor, init, label, list, migrate, release, reopen, schema, show, sync, update",
+        "Priority capabilities explicitly document P4 claimable under fifo-v1 via p4_claimable_by_fifo field",
+        "Unsupported profiles fail closed with validation error",
+        "Created 6 integration tests: no workspace, native/needle profiles, invalid profile, default profile, schema catalog structure",
+        "All acceptance criteria met: capabilities identify versions, atomic claim explicit, P4 semantics documented, commands inventory complete, schema catalog distinguishes paths, unsupported profiles rejected"
+      ]
     },
     {
       "id": "F011",
       "priority": 2,
       "description": "Complete NEEDLE v1 subprocess compatibility suite",
       "spec": "research/specs/needle-cli-contract-v1.md",
-      "depends_on": ["F004", "F005", "F006", "F007", "F008", "F009"],
+      "depends_on": [
+        "F004",
+        "F005",
+        "F006",
+        "F007",
+        "F008",
+        "F009"
+      ],
       "acceptance": [
         "Every required command is exercised as a subprocess",
         "HOME and workspace are isolated for every subprocess test",
@@ -297,7 +343,10 @@
       "priority": 2,
       "description": "Interchange profiles for br-v1 and bf-v1",
       "spec": "research/specs/interchange-v1.md",
-      "depends_on": ["F007", "F008"],
+      "depends_on": [
+        "F007",
+        "F008"
+      ],
       "acceptance": [
         "Profiles are explicit and versioned",
         "Every lossy transformation is reported",
@@ -311,7 +360,10 @@
       "priority": 2,
       "description": "Migration dry-run and audit receipts",
       "spec": "docs/notes/interoperability-architecture.md#migration-workflow",
-      "depends_on": ["F008", "F012"],
+      "depends_on": [
+        "F008",
+        "F012"
+      ],
       "acceptance": [
         "Migration never overwrites its input",
         "Source and target profiles are explicit and every input, output, and optional receipt path is distinct and non-overwriting",
@@ -326,7 +378,13 @@
       "priority": 2,
       "description": "Rapid-fire lifecycle stress and capacity benchmark harness",
       "spec": "docs/plan/plan.md#3510-rapid-fire-lifecycle-capacity-benchmarks",
-      "depends_on": ["F004", "F005", "F006", "F010", "F011"],
+      "depends_on": [
+        "F004",
+        "F005",
+        "F006",
+        "F010",
+        "F011"
+      ],
       "acceptance": [
         "Deterministic workloads cover claim-close, claim-release, mixed lifecycle, and dependency churn without duplicate claims or final-state divergence",
         "Fast verification covers 100 and 1000 beads while the full driver reports every scale from 100 through 1000000 beads",
@@ -341,7 +399,11 @@
       "priority": 2,
       "description": "Complete CLI help tree and generated section-1 man pages",
       "spec": "docs/plan/plan.md#53-help-and-manual-contract",
-      "depends_on": ["F010", "F011", "F013"],
+      "depends_on": [
+        "F010",
+        "F011",
+        "F013"
+      ],
       "acceptance": [
         "Every public command, subcommand, argument, option, value domain, default, conflict, and requirement has tested short and long help",
         "bead --help, every nested --help path, and equivalent bead help paths work without workspace access or mutation",
@@ -357,7 +419,14 @@
       "priority": 2,
       "description": "Adaptive Git-trackable sharded checkpoints with forensic history",
       "spec": "research/specs/checkpoint-set-v1.md (required and not yet present; plan prose is nonnormative)",
-      "depends_on": ["F005", "F006", "F007", "F008", "F009", "F010"],
+      "depends_on": [
+        "F005",
+        "F006",
+        "F007",
+        "F008",
+        "F009",
+        "F010"
+      ],
       "acceptance": [
         "Every flush captures all lifecycle states, complete portable bead content, dependencies, comments, structured extensions, and the continuous durable audit-event history",
         "An independently reviewed normative checkpoint-set-v1 specification and conformance fixtures exist before implementation begins",
@@ -377,7 +446,15 @@
       "priority": 2,
       "description": "Release packaging, installation, and license verification",
       "spec": "research/specs/conformance-v1.md",
-      "depends_on": ["F010", "F011", "F012", "F013", "F015", "F016", "F017"],
+      "depends_on": [
+        "F010",
+        "F011",
+        "F012",
+        "F013",
+        "F015",
+        "F016",
+        "F017"
+      ],
       "acceptance": [
         "cargo package succeeds from a clean checkout",
         "Packaged installation provides the bead executable",
