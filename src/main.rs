@@ -185,11 +185,19 @@ fn cmd_list(opts: cli::ListOptions) -> Result<()> {
     // Output results
     if opts.json {
         // Emit one compact object per line
-        for issue in issues {
-            let output = serde_json::to_string(&to_needle_json(&issue)).map_err(|e| {
-                Error::Internal(anyhow::anyhow!("Failed to serialize issue: {}", e))
-            })?;
-            println!("{}", output);
+        if issues.is_empty() {
+            println!("[]");
+        } else {
+            for issue in issues {
+                // Load dependencies and labels for each issue
+                let dependencies = load_dependencies(&conn, &issue.id)?;
+                let labels = load_labels(&conn, &issue.id)?;
+                let output = serde_json::to_string(&to_needle_json(&issue, &dependencies, &labels))
+                    .map_err(|e| {
+                        Error::Internal(anyhow::anyhow!("Failed to serialize issue: {}", e))
+                    })?;
+                println!("{}", output);
+            }
         }
     } else {
         // Human-readable output
@@ -233,11 +241,19 @@ fn cmd_show(opts: cli::ShowOptions) -> Result<()> {
     let issue = service::get_issue_by_id(&conn, &opts.id)?
         .ok_or_else(|| Error::not_found(format!("Issue not found: {}", opts.id)))?;
 
+    // Load dependencies for this issue
+    let dependencies = load_dependencies(&conn, &opts.id)?;
+
+    // Load labels for this issue
+    let labels = load_labels(&conn, &opts.id)?;
+
     // Output results
     if opts.json {
         // Emit as one-element array for NEEDLE v1 compatibility
-        let output = serde_json::to_string(&vec![to_needle_json(&issue)])
-            .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to serialize issue: {}", e)))?;
+        let output = serde_json::to_string(&vec![to_needle_json(&issue, &dependencies, &labels)])
+            .map_err(|e| {
+            Error::Internal(anyhow::anyhow!("Failed to serialize issue: {}", e))
+        })?;
         println!("{}", output);
     } else {
         // Human-readable output
@@ -466,6 +482,7 @@ fn cmd_dep_remove(opts: cli::DepRemoveOptions) -> Result<()> {
 fn cmd_sync(cmd: cli::SyncCommand) -> Result<()> {
     match cmd {
         cli::SyncCommand::FlushOnly(opts) => cmd_sync_flush_only(opts),
+        cli::SyncCommand::ImportOnly(opts) => cmd_sync_import_only(opts),
     }
 }
 
@@ -521,8 +538,63 @@ fn cmd_sync_flush_only(opts: cli::SyncFlushOptions) -> Result<()> {
     Ok(())
 }
 
+fn cmd_sync_import_only(opts: cli::SyncImportOptions) -> Result<()> {
+    // Discover workspace
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    // Resolve input path relative to workspace root if not absolute
+    let input_path = if std::path::Path::new(&opts.input).is_absolute() {
+        std::path::PathBuf::from(&opts.input)
+    } else {
+        config.root.join(&opts.input)
+    };
+
+    // Validate input file exists
+    if !input_path.exists() {
+        return Err(Error::not_found(format!(
+            "Input file not found: {}",
+            input_path.display()
+        )));
+    }
+
+    // Open database connection
+    let db_path = config.database_path();
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    // Create store wrapper
+    let mut store = store::SqliteStore::from_conn(conn);
+
+    // Import checkpoint
+    let result = service::import_checkpoint(&mut store, &input_path, &opts.profile, opts.dry_run)?;
+
+    // Print result
+    if opts.dry_run {
+        eprintln!("Dry-run import analysis:");
+    } else {
+        eprintln!("Imported checkpoint:");
+    }
+    eprintln!("  Profile: {}", result.profile);
+    eprintln!("  Input hash: {}", result.input_hash);
+    eprintln!("  Inserted: {}", result.inserted);
+    eprintln!("  Updated: {}", result.updated);
+    eprintln!("  Retained: {}", result.retained);
+    eprintln!("  Conflicted: {}", result.conflicted);
+    eprintln!("  Activation sequence: {}", result.activation_sequence);
+    eprintln!("  Covered sequence: {}", result.covered_sequence);
+    eprintln!("  Dry run: {}", result.dry_run);
+    eprintln!("  Prospective: {}", result.prospective);
+
+    Ok(())
+}
+
 /// Convert an Issue to NEEDLE-compatible JSON format
-fn to_needle_json(issue: &model::Issue) -> serde_json::Value {
+fn to_needle_json(
+    issue: &model::Issue,
+    dependencies: &[serde_json::Value],
+    labels: &[String],
+) -> serde_json::Value {
     let status_str = match issue.base_status {
         model::BaseStatus::Open => "open",
         model::BaseStatus::InProgress => "in_progress",
@@ -530,6 +602,7 @@ fn to_needle_json(issue: &model::Issue) -> serde_json::Value {
         model::BaseStatus::Closed => "closed",
     };
 
+    // Include all issue fields for complete representation
     serde_json::json!({
         "id": issue.id,
         "title": issue.title,
@@ -537,9 +610,45 @@ fn to_needle_json(issue: &model::Issue) -> serde_json::Value {
         "priority": issue.priority,
         "status": status_str,
         "assignee": issue.assignee,
-        "dependencies": [],
+        "dependencies": dependencies,
         "created_at": issue.created_at,
         "updated_at": issue.updated_at,
-        "labels": []
+        "labels": labels
     })
+}
+
+/// Load dependencies for an issue from the database
+fn load_dependencies(
+    conn: &rusqlite::Connection,
+    issue_id: &str,
+) -> Result<Vec<serde_json::Value>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT blocker_issue_id, kind FROM dependencies WHERE blocked_issue_id = ?",
+    )?;
+
+    let deps = stmt
+        .query_map([issue_id], |row| {
+            let blocker: String = row.get(0)?;
+            let kind: String = row.get(1)?;
+            Ok(serde_json::json!({
+                "blocker": blocker,
+                "kind": kind
+            }))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to load dependencies: {}", e)))?;
+
+    Ok(deps)
+}
+
+/// Load labels for an issue from the database
+fn load_labels(conn: &rusqlite::Connection, issue_id: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare_cached("SELECT label FROM labels WHERE issue_id = ?")?;
+
+    let labels = stmt
+        .query_map([issue_id], |row| row.get::<_, String>(0))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to load labels: {}", e)))?;
+
+    Ok(labels)
 }

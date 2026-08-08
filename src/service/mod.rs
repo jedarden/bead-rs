@@ -9,7 +9,7 @@ pub mod dependencies;
 pub mod issues;
 pub mod lifecycle;
 
-pub use checkpoint::flush_checkpoint;
+pub use checkpoint::{flush_checkpoint, import_checkpoint};
 pub use claim::claim_issue;
 pub use dependencies::{add_dependency, add_label, remove_dependency, remove_label};
 pub use issues::create_issue;

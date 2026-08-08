@@ -235,6 +235,10 @@ pub enum SyncCommand {
     /// Flush checkpoint to JSONL file
     #[command(name = "flush-only")]
     FlushOnly(SyncFlushOptions),
+
+    /// Import checkpoint from JSONL file
+    #[command(name = "import-only")]
+    ImportOnly(SyncImportOptions),
 }
 
 /// Options for flushing checkpoint
@@ -247,6 +251,22 @@ pub struct SyncFlushOptions {
     /// Output path (default: .beads/issues.jsonl)
     #[arg(long)]
     pub output: Option<String>,
+}
+
+/// Options for importing checkpoint
+#[derive(Parser, Debug)]
+pub struct SyncImportOptions {
+    /// Input file path
+    #[arg(long)]
+    pub input: String,
+
+    /// Profile for import (default: native-v1)
+    #[arg(long, default_value = "native-v1")]
+    pub profile: String,
+
+    /// Perform dry-run without activating state
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 /// Label management commands

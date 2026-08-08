@@ -456,3 +456,24 @@ rewrite or delete earlier entries.
   - The pre-F017 `issues.jsonl` destination replacement and checkpoint-state update are crash-safe and atomic (temp file + atomic rename + single transaction)
 - **Next recommended feature**: F008 (Validated JSONL import with unknown-field preservation) - now unblocked
 - F007 pass state changed to true with evidence.
+## 2026-08-08 — F008 implementation completed
+
+- Added `bead sync import-only` subcommand with clap derive parsing for --input PATH, --profile PROFILE (only native-v1 allowed), and --dry-run options
+- Created service layer import functions in `src/service/checkpoint.rs` with import_checkpoint, stage_import, validate_import, verify_empty_target, and activate_import
+- Implemented JSONL parsing with line-by-line error reporting for malformed JSON (line numbers in error messages)
+- Implemented issue staging with duplicate ID detection using HashSet and Issue model validation
+- Implemented dependency validation: self-edge rejection, dangling reference detection, and cycle detection using DFS algorithm
+- Implemented label validation: references to non-existent issues rejected with clear error messages
+- Implemented unknown field preservation through issue_extensions table and Issue.extensions HashMap with #[serde(flatten)]
+- Implemented empty target verification: import only accepts empty initialized database before F017
+- Implemented transactional activation in single BEGIN IMMEDIATE transaction: inserts issues, dependencies, labels, extensions, checkpoint_imported audit event, and checkpoint_state
+- Implemented dry-run mode: performs full validation and staging without activation, reports prospective sequences and canonical counts with dry_run and prospective flags
+- Fixed list/show command to load and display dependencies and labels from database
+- Added 16 comprehensive integration tests in tests/cli_sync_import.rs covering all scenarios
+- Fixed clippy warnings: unused variables, needless borrows
+- All 170 tests pass (46 unit + 124 integration including 16 new import tests)
+- cargo fmt --check: passed
+- cargo clippy --all-targets -- -D warnings: passed
+- F008 acceptance criteria met: malformed input reports line number, unknown fields preserved via round-trip, exact input path required, empty target only before F017, atomic transactional activation with checkpoint_imported event and clean checkpoint state, dry-run performs full analysis without durable mutation
+- **Next recommended feature**: F009 (Diagnostics and scoped repair) - now unblocked
+- F008 pass state changed to true with evidence.

@@ -113,6 +113,16 @@ impl std::fmt::Display for BaseStatus {
 }
 
 impl BaseStatus {
+    /// Return the string representation of this status
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            BaseStatus::Open => "open",
+            BaseStatus::InProgress => "in_progress",
+            BaseStatus::Deferred => "deferred",
+            BaseStatus::Closed => "closed",
+        }
+    }
+
     /// Parse a status string, accepting common aliases
     pub fn parse(s: &str) -> Result<Self, Error> {
         match s.to_lowercase().as_str() {

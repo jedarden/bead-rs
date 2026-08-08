@@ -215,8 +215,23 @@
         "Successful pre-F017 activation appends exactly one checkpoint-imported event and leaves checkpoint covered/live sequences equal and clean",
         "Import dry-run performs full validation and reconciliation analysis with canonical counts while leaving every durable workspace byte unchanged"
       ],
-      "passes": false,
-      "evidence": []
+      "passes": true,
+      "evidence": [
+        "cargo test -- --test-threads=1: 170 tests passed (46 unit + 124 integration including 16 new import tests)",
+        "cargo fmt --check: passed",
+        "cargo clippy --all-targets -- -D warnings: passed",
+        "Implemented `bead sync import-only` command with --input PATH, --profile PROFILE (only native-v1 allowed), and --dry-run options",
+        "Implemented JSONL parsing with line-by-line error reporting for malformed JSON",
+        "Implemented issue staging with duplicate ID detection and validation",
+        "Implemented dependency validation: self-edges, dangling references, and cycle detection using DFS",
+        "Implemented label validation: references to non-existent issues rejected",
+        "Implemented unknown field preservation through issue_extensions table and HashMap with serde flatten",
+        "Implemented empty target verification: import only accepts empty initialized database before F017",
+        "Implemented transactional activation: single BEGIN IMMEDIATE transaction inserts issues, dependencies, labels, extensions, audit event, and checkpoint_state",
+        "Implemented dry-run mode: full validation and staging without activation, reports prospective sequences and canonical counts",
+        "Added 16 comprehensive integration tests covering basic import, dry-run, malformed JSON, duplicates, missing IDs, self-edges, cycles, dangling dependencies, invalid profiles, non-empty targets, dependencies, labels, blank lines, unknown fields, and nonexistent input",
+        "F008 acceptance criteria met: malformed input reports line number, unknown fields preserved via round-trip through issue_extensions, exact input path required, empty target only before F017, atomic transactional activation with checkpoint_imported event, clean checkpoint state, dry-run performs full analysis without durable mutation"
+      ]
     },
     {
       "id": "F009",
