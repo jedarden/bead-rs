@@ -105,6 +105,9 @@ impl WorkspaceConfig {
 pub trait Store {
     /// Initialize the workspace with a new database
     fn init_workspace(&self, prefix: &str) -> crate::Result<WorkspaceConfig>;
+
+    /// Get the current workspace configuration
+    fn get_workspace_config(&self) -> crate::Result<WorkspaceConfig>;
 }
 
 #[cfg(test)]

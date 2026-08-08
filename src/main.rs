@@ -43,6 +43,7 @@ fn execute_command(cli: Cli) -> Result<()> {
         Command::Label(opts) => cmd_label(opts),
         Command::Dep(opts) => cmd_dep(opts),
         Command::Sync(opts) => cmd_sync(opts),
+        Command::Doctor(opts) => cmd_doctor(opts),
         Command::Unimplemented(_) => Err(Error::cli_usage(
             "This command is not yet implemented. See `bead --help` for available commands.",
         )),
@@ -585,6 +586,52 @@ fn cmd_sync_import_only(opts: cli::SyncImportOptions) -> Result<()> {
     eprintln!("  Covered sequence: {}", result.covered_sequence);
     eprintln!("  Dry run: {}", result.dry_run);
     eprintln!("  Prospective: {}", result.prospective);
+
+    Ok(())
+}
+
+fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
+    // Discover workspace
+    let _config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    if opts.repair {
+        // Run repairs
+        eprintln!("Attempting repairs...");
+        let mut store_wrapper = store::SqliteStore::new();
+
+        let repairs = service::run_repairs(&mut store_wrapper)?;
+
+        if repairs.is_empty() {
+            eprintln!("No repairs needed.");
+        } else {
+            for repair in repairs {
+                let prefix = match repair.status {
+                    service::DiagnosticStatus::Ok => "FIXED",
+                    service::DiagnosticStatus::Warning => "WARN",
+                    service::DiagnosticStatus::Error => "ERROR",
+                };
+                eprintln!("{} {}: {}", prefix, repair.name, repair.message);
+            }
+        }
+    } else {
+        // Run diagnostics
+        let diagnostics = service::run_diagnostics(&store::SqliteStore::new())?;
+
+        for check in diagnostics.checks {
+            let prefix = match check.status {
+                service::DiagnosticStatus::Ok => "OK",
+                service::DiagnosticStatus::Warning => "WARN",
+                service::DiagnosticStatus::Error => "ERROR",
+            };
+            eprintln!("{} {}: {}", prefix, check.name, check.message);
+        }
+
+        // Exit with error code if there are errors
+        if diagnostics.has_errors {
+            return Err(Error::integrity("Diagnostics found errors"));
+        }
+    }
 
     Ok(())
 }

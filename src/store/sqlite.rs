@@ -307,6 +307,39 @@ impl Store for SqliteStore {
             prefix: prefix.to_string(),
         })
     }
+
+    fn get_workspace_config(&self) -> Result<WorkspaceConfig> {
+        // Get current directory as workspace root
+        let root = std::env::current_dir().map_err(|e| Error::Io {
+            path: ".".into(),
+            msg: e,
+        })?;
+
+        // Check if workspace exists
+        let config_path = root.join(".beads/config.json");
+        if !config_path.exists() {
+            return Err(Error::workspace("No workspace found in current directory"));
+        }
+
+        // Load existing workspace configuration from database
+        let db_path = root.join(".beads/beads.db");
+        let conn = Self::open_connection(&db_path)
+            .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+        let uuid: String = conn
+            .query_row("SELECT uuid FROM workspace WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .map_err(|e| Error::workspace(format!("Failed to load workspace UUID: {}", e)))?;
+
+        let prefix: String = conn
+            .query_row("SELECT prefix FROM workspace WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .map_err(|e| Error::workspace(format!("Failed to load workspace prefix: {}", e)))?;
+
+        Ok(WorkspaceConfig { root, uuid, prefix })
+    }
 }
 
 impl Default for SqliteStore {

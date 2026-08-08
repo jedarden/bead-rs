@@ -84,6 +84,9 @@ pub enum Command {
     #[command(subcommand)]
     Sync(SyncCommand),
 
+    /// Diagnose workspace integrity and optionally perform repairs
+    Doctor(DoctorOptions),
+
     /// Not yet implemented
     #[command(subcommand)]
     #[allow(clippy::enum_variant_names)]
@@ -329,6 +332,14 @@ pub struct DepRemoveOptions {
     /// Dependency kind (optional, removes all kinds if not specified)
     #[arg(long)]
     pub kind: Option<String>,
+}
+
+/// Options for doctor command
+#[derive(Parser, Debug)]
+pub struct DoctorOptions {
+    /// Attempt automatic repairs
+    #[arg(long)]
+    pub repair: bool,
 }
 
 /// Placeholder for unimplemented commands
