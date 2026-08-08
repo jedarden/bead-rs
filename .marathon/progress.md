@@ -205,3 +205,19 @@ rewrite or delete earlier entries.
   content-addressed; `issues.jsonl` is a compatibility view, never the root
   overwritten beneath an unchanged generation pointer.
 - No feature pass state changed.
+
+## 2026-08-08 — Gap-review round 3
+
+- Made every authoritative monolith and sharded manifest immutable and
+  content-addressed; current/previous pointers now retain distinct recoverable
+  generations across crashes.
+- Kept `.beads/issues.jsonl` strictly issue-per-line interchange and assigned
+  the complete small forensic corpus its own `checkpoint/forensic.jsonl` view.
+- Defined exact sharded record envelopes, composite origin/event ordering,
+  native-versus-external sync profile rules, and explicit provenance actors.
+- Added immutable public schema identities and capability catalog semantics for
+  core documents while reserving checkpoint/provenance schemas for F017.
+- Marked F017 specification-blocked under the clean-room authority rules and
+  moved all of its storage additions out of migration 1 into a post-spec core
+  migration.
+- No feature pass state changed.
