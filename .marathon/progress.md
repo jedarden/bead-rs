@@ -68,3 +68,18 @@ rewrite or delete earlier entries.
 - Added `research/specs/extended-bead-payload-v1.md` for the portable payload
   and diagnostic contracts.
 - No F001-F014 pass state changed.
+
+## 2026-08-08 — Intelligent claim contract specified
+
+- Expanded plan section 3.5 from simple FIFO ordering into a full versioned
+  scheduling contract while retaining `fifo-v1` for release 0.1.
+- Specified completion-unlock impact, ready-age promotion,
+  least-recently-served rotation, failure classification, unproven-work
+  preference, retry cadence, quarantine, and attempt-epoch reset.
+- Added bounded initial-context and lazy retrieval behavior for NEEDLE-style
+  claim-then-prompt dispatch.
+- Defined atomicity, explanation, derived-cache correctness, schema additions,
+  policies, and conformance scenarios under roadmap feature R019.
+- Defined native P0-P5 priority ordering from urgent through aspirational,
+  including aspirational-worker opt-in and explicit lossy profile mapping.
+- No F001-F014 pass state changed.

@@ -83,7 +83,7 @@ another tool's suffix algorithm.
 | `title` | required, 1 to 4,096 UTF-8 bytes |
 | `description` | defaults empty, at most 4 MiB |
 | `notes` | defaults empty, at most 4 MiB |
-| `priority` | signed integer; native CLI accepts 0 through 4 |
+| `priority` | native P0-P5 urgency class; lower is more urgent, default P2 |
 | `issue_type` | nonempty string, default `task` |
 | `base_status` | `open`, `in_progress`, `deferred`, or `closed` |
 | `manual_blocked` | explicit operator block, separate from graph blockers |
@@ -110,6 +110,23 @@ Recovery-backup views always include complete comments and structured data.
 Ordinary list/show views omit comment bodies by default and accept
 `--comments unresolved|all`; this makes conversational context optional without
 making the backup incomplete.
+
+Native priority taxonomy is:
+
+| Value | Name | Scheduling intent |
+| --- | --- | --- |
+| P0 / `0` | urgent | immediate incident, safety, or release-blocking work |
+| P1 / `1` | critical | essential work that should precede ordinary delivery |
+| P2 / `2` | high | important planned work and the native default |
+| P3 / `3` | normal | ordinary work with no elevated urgency |
+| P4 / `4` | low/backlog | useful work that may wait behind active plans |
+| P5 / `5` | aspirational | speculative or someday work, claimable only when policy permits |
+
+Native create/update rejects values outside 0-5. JSON stores the integer and
+human output may show the `P` name. Profiles state their supported range. A
+profile limited to P0-P4 may map P5 to P4 only with an explicit lossy
+transformation report and must preserve the original value in profile metadata
+when round-trip preservation is promised.
 
 ### 3.3 Lifecycle and effective status
 
@@ -160,14 +177,235 @@ version 0.1 has no readiness cache.
 
 ### 3.5 Claim selection
 
-Eligible issues sort by lower priority, then earlier `created_at`, then lexical
-ID. Claim starts `BEGIN IMMEDIATE`, selects one ready issue, changes it to
-`in_progress`, assigns the requested actor, writes telemetry and an audit
-event, and commits before emitting success. With no eligible issue, return exit
-0 and `{}` in JSON mode without mutation.
+Claim is a server-selected scheduling operation, not a client-side list followed
+by update. Selection, final eligibility validation, assignment, scheduler-state
+advance, attempt recording, and lease creation (when requested) commit in one
+`BEGIN IMMEDIATE` transaction. Twenty competing processes must never receive
+the same successful issue ID.
 
-Model, harness, and harness-version flags are telemetry only. Twenty competing
-processes must never receive the same successful issue ID.
+Version 0.1 implements `fifo-v1`: eligible issues sort by declared priority
+ascending, `created_at` ascending, then ID ascending. With no eligible issue,
+claim returns exit 0 and `{}` in JSON mode without mutation. The richer policies
+below are adopted post-0.1 behavior and must not silently change `fifo-v1`.
+
+#### 3.5.1 Scheduling pipeline
+
+Every policy uses these stages in order:
+
+1. **Eligibility:** require ready base lifecycle, no assignment, no active
+   blocker, no manual block, satisfied worker constraints, expired retry delay,
+   and a prompt projection the requesting worker can consume.
+2. **Policy ranking:** calculate a deterministic lexicographic tuple using only
+   committed state, the transaction's captured selection instant, and the
+   versioned workspace policy.
+3. **Final validation:** re-read the winner and relevant dependency/lease rows
+   under the write transaction. Cached metrics may rank candidates but never
+   establish eligibility.
+4. **Commit:** assign the actor, move to `in_progress`, increment the workspace
+   claim sequence, record the attempt/policy/factor breakdown, create any lease,
+   and append the audit event.
+5. **Respond:** emit the small compatibility result or an explicitly requested
+   prompt projection only after commit.
+
+Model, harness, and harness-version remain telemetry hints unless a future
+capability-matching specification explicitly promotes them to scheduling
+inputs. Policy name and version are workspace configuration and appear in
+capabilities and every successful claim event.
+
+#### 3.5.2 Ready age
+
+The primary fairness clock is `ready_since`, not `created_at`. Set it when a
+bead enters ready state and clear it when the bead becomes unready. If a newly
+closed blocker makes a long-lived bead ready, its waiting age starts then; it
+does not inherit years of artificial preference from its creation timestamp.
+`created_at` remains the stable late tie-breaker.
+
+Age promotion uses integer buckets:
+
+```text
+age_promotions = min(max_promotions, floor(ready_age / aging_interval))
+effective_priority = max(0, declared_priority - age_promotions)
+```
+
+Defaults for an eventual `aging-v1`/`balanced-v1` policy are a 24-hour interval
+and at most two promotions. The exact values are versioned configuration. A
+captured selection instant makes the calculation internally consistent and the
+claim event records the resulting bucket. Aging never bypasses eligibility.
+P5 remains eligible native work, but a workspace may require an explicit
+`include_aspirational` policy flag before automatic workers claim it. Aging may
+promote old P5 work within the configured cap; it never rewrites the declared
+priority.
+
+#### 3.5.3 Completion-unlock impact
+
+Impact measures what successful completion would unlock, not raw dependent
+count and not what becomes unblocked merely by claiming. Candidate `A`
+immediately unlocks dependent `B` only when:
+
+- `A` is an active unfinished blocker of `B`;
+- every other active required blocker of `B` is finished; and
+- `B` would otherwise be ready after `A` closes: open, unassigned, not manually
+  blocked, and permitted by its active conditional dependencies.
+
+Diamonds are deduplicated by dependent ID. Calculate:
+
+- `immediate_unlock_count`;
+- the best and ordered priority distribution of immediately unlocked beads;
+- `downstream_reach`, the count of unique transitive descendants benefiting
+  from completion;
+- `critical_path_reduction`, a bounded integer measure of blocking-chain depth.
+
+Use integer tuple components rather than an opaque floating-point score. Raw
+fan-out must not beat a bead that is the final blocker for fewer but critical
+tasks. `impact-v1` ranks inside effective-priority bands by unlocked priority,
+immediate count, critical-path reduction, unique downstream reach, then normal
+fairness tie-breakers.
+
+#### 3.5.4 Rotation and least-recently-served fairness
+
+Maintain a monotonically increasing workspace `claim_sequence`. Each bead
+records its last successful claim sequence and attempt count. Within comparable
+effective priority and attempt tier, rank:
+
+1. never-claimed beads;
+2. least recently claimed beads;
+3. older ready-age bucket;
+4. older creation instant;
+5. lexical ID.
+
+When a claim is released, its last-claim sequence remains, so comparable work
+gets a turn before it is served again. Rotation uses logical sequence rather
+than wall-clock time and never overrides lifecycle, dependencies, leases,
+capabilities, resource constraints, or retry/quarantine state.
+
+#### 3.5.5 Failure-aware attempt tiers
+
+Distinguish outcomes before changing scheduling state:
+
+| Outcome | Bead penalty |
+| --- | --- |
+| bead-scoped failure: invalid assumptions, repeatable build/test failure, inability to satisfy the bead | increment consecutive bead failures |
+| infrastructure failure: worker crash, provider outage, rate limit, network loss | no bead penalty |
+| claim race | no bead penalty |
+| context projection overflow | record separately; no bead-quality penalty |
+| stale/expired lease | normally worker/infrastructure failure |
+| explicit human release | no penalty unless explicitly classified |
+
+Attempt tiers within the current ready epoch are:
+
+```text
+0  unproven: no bead-scoped failure
+1  retryable: one bead-scoped failure
+2  struggling: multiple failures below quarantine threshold
+3  quarantined: ineligible for automatic claim
+```
+
+Within the same effective-priority band, unproven open work always ranks ahead
+of failed work. A failed priority-0 bead may still rank ahead of an unproven
+priority-2 bead; a strict workspace policy may instead compare attempt tier
+before effective priority. The selected ordering mode is explicit and
+versioned.
+
+Default retry behavior is:
+
+- first bead-scoped failure: defer until comparable unproven work has had an
+  opportunity;
+- second: set `retry_after_claim_sequence` so a configured number of other
+  claims must occur first;
+- third consecutive bead-scoped failure: quarantine by default;
+- no automatic claim of quarantined work.
+
+To prevent failed work from starving under a continuously replenished queue,
+`balanced-v1` reserves a bounded retry lane, initially one eligible retry for
+every ten successful normal claims. The retry cadence is persisted in scheduler
+state and advanced atomically. A retry slot does not admit quarantined work and
+does not override declared/effective priority policy.
+
+Failure counters belong to a readiness/revision epoch. A material mutation to
+description, acceptance criteria, structured task data, or dependencies starts
+a new attempt epoch and may reset consecutive bead failures while retaining
+lifetime attempt history. Cosmetic changes do not reset it.
+
+#### 3.5.6 Versioned policies
+
+- `fifo-v1`: declared priority, creation time, ID; initial compatibility mode.
+- `aging-v1`: bounded ready-age promotion, then FIFO tie-breakers.
+- `impact-v1`: effective priority, completion-unlock impact, ready age,
+  rotation, creation time, ID.
+- `rotation-v1`: effective priority, attempt tier, never/least recently served,
+  ready age, creation time, ID.
+- `balanced-v1`: effective priority, attempt tier, ready-age bucket,
+  completion-unlock tuple, least-recently-served sequence, creation time, ID,
+  plus the bounded retry lane.
+
+The eventual recommended intelligent default is `balanced-v1`; `fifo-v1`
+remains available for reproducibility and compatibility. A released policy
+version is immutable. Changing constants or tuple order creates a new version.
+
+#### 3.5.7 NEEDLE and bounded initial context
+
+Current NEEDLE usage claims atomically, then fetches the claimed bead and places
+its description verbatim into the model prompt alongside workspace
+instructions, context files, and skills. bead-rs therefore separates stored
+content from the bounded initial claim projection:
+
+- JSONL backup remains complete and never truncates bead content;
+- the `needle-v1` selection view contains only fields required to rank/filter;
+- the default claimed-bead view excludes comments, audit history, telemetry,
+  and structured data not explicitly selected;
+- a compact task brief contains the executable task, acceptance criteria, and
+  references to supplementary context;
+- large content is listed in a context manifest and retrieved through bounded,
+  cursor-based `context list|get|search` operations;
+- `--max-initial-bytes` and an optional named token estimator constrain the
+  initial projection; no command silently truncates required instructions or
+  emits partial JSON.
+
+A worker advertising `bead.context.lazy-v1` may claim beads whose full content
+is large when their brief fits. A legacy worker without lazy retrieval receives
+only a bead whose complete legacy description fits the configured hard
+compatibility ceiling. Context overflow is an explicit eligibility/explanation
+reason, not a bead-scoped execution failure.
+
+The native extension may return the selected prompt projection inline with the
+claim result, eliminating a second subprocess. The v1 result containing only
+`bead_id` remains valid. NEEDLE still owns the final model-specific prompt
+budget because it adds context after bead retrieval.
+
+#### 3.5.8 Explainability and observability
+
+Every claim stores the policy version, captured selection instant, effective
+priority, ready-age bucket, attempt tier, failure counts, retry-lane decision,
+unlock metrics, last claim sequence, context-fit result, and final stable
+tie-breakers. `explain-ready` can show why the winner ranked ahead and why
+others were ineligible or deferred, using semantic reason codes rather than SQL
+or private query plans.
+
+Diagnostics report starvation, repeatedly bypassed work, retry-lane health,
+quarantine counts, stale scheduling metrics, excessive claim contention, and
+context-fit failures. Telemetry must not include bead bodies or secret
+structured data.
+
+#### 3.5.9 Performance and correctness
+
+Small stores may calculate graph metrics with bounded SQLite recursive queries.
+Large stores may use a derived `scheduling_metrics` cache keyed by graph and
+issue revisions. Dependency, lifecycle, condition, or relevant structured-data
+mutations invalidate affected metrics in the same transaction.
+
+A stale or missing cache may reduce ranking quality but can never make an
+ineligible bead claimable. The winner's readiness, active conditions, worker
+constraints, retry state, and prompt fit are revalidated from authoritative
+rows under the claim transaction.
+
+Required tests include chains, fan-out, diamonds, multiple remaining blockers,
+conditional edges, priority conflicts, age-bucket boundaries, released-bead
+rotation, continuously arriving work, every failure class, retry cadence,
+quarantine, revision-epoch reset, context overflow, cache invalidation, and at
+least twenty concurrent claimers. Repeating a claim against identical state,
+captured time, request capabilities, and policy must select the same bead.
+Priority tests cover every P0-P5 boundary, aspirational opt-in, bounded
+promotion, and lossy legacy-profile mapping.
 
 ## 4. Workspace and independent SQLite design
 
@@ -209,13 +447,16 @@ database definition.
 | --- | --- |
 | `schema_migrations` | integer version PK, applied time, migration checksum |
 | `workspace` | singleton store UUID, prefix, layout version, creation time |
-| `issues` | canonical scalars, ID PK, lifecycle checks, timestamps |
+| `issues` | canonical scalars, ID PK, lifecycle checks, timestamps, ready-since, revision/attempt epoch, last claim sequence, lifetime/consecutive attempt counters, retry/quarantine state |
 | `issue_extensions` | issue ID + key PK, canonical JSON, origin profile |
 | `labels` | issue ID + label PK, issue FK cascade |
 | `dependencies` | blocked + blocker + kind PK, optional canonical condition JSON, two issue FKs cascade, no self-edge |
 | `comments` | random ID, issue ID, author, immutable body, reply-to ID, resolution state, creation time |
 | `issue_data` | issue ID + namespace PK, schema reference, canonical JSON value, issue FK cascade |
 | `claim_telemetry` | issue ID, claim time, assignee, optional model/harness/version |
+| `claim_attempts` | immutable attempt ID, issue/epoch, workspace claim sequence, actor, policy/factor snapshot, outcome class, lease/context metadata |
+| `scheduler_state` | singleton policy/version, claim sequence, retry cadence position, graph revision, configuration |
+| `scheduling_metrics` | optional derived issue/graph revision, unlock/critical-path metrics; never authoritative for eligibility |
 | `events` | integer sequence, issue ID, kind, actor, time, canonical JSON detail |
 | `checkpoint_state` | singleton last hash, event sequence, export time |
 
@@ -227,7 +468,9 @@ Add only indexes justified by v0.1 queries:
 - comments/events by issue plus time/sequence.
 
 Do not add caches, tombstones, recovery subsystems, or compatibility-shaped
-columns without a measured requirement and new migration.
+columns without a measured requirement and new migration. The post-0.1
+`scheduling_metrics` cache is permitted only under the correctness rules in
+section 3.5.9.
 
 ### 4.4 Migrations
 
@@ -567,6 +810,7 @@ may take multiple iterations and remains false until complete.
   "version": "0.1.0",
   "store_layout": 1,
   "atomic_claim": true,
+  "priorities": {"min": 0, "max": 5, "default": 2, "p5_requires_opt_in": true},
   "statuses": ["blocked", "closed", "deferred", "in_progress", "open"],
   "checkpoint_modes": ["flush-only", "import-only"],
   "schemas": ["urn:bead-rs:schema:issue:native-v1"],
@@ -718,6 +962,16 @@ each governed by its own immutable schema reference. Unknown schemas remain
 preservable for interchange but fail closed for native mutation. This is the
 general mechanism for adding structured information to a bead JSON object
 without turning arbitrary fields or the SQLite layout into an API.
+
+### R019 — Intelligent, aging, rotating, failure-aware claim scheduling
+
+Implement the versioned scheduling contract in section 3.5: graph-unlock
+impact, bounded ready-age promotion, least-recently-served rotation, unproven
+work preference, classified failure tiers, retry cadence, quarantine, context
+fit, atomic selection, and semantic explanations. Ship `fifo-v1` unchanged,
+then independently specify and conform `aging-v1`, `impact-v1`, `rotation-v1`,
+and `balanced-v1` before enabling them. `balanced-v1` becomes a default only
+through an explicit release/configuration decision, never silently.
 
 ## 13. Release gates
 

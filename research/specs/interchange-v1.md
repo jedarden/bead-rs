@@ -25,6 +25,10 @@ immutable public schema governing that bead representation. Its semantics are
 defined by `schema-identification-v1.md`. External profiles must explicitly
 map, preserve, or report omission of this identifier.
 
+Native priority values are P0 urgent through P5 aspirational, represented as
+integers 0 through 5. External profiles declare their accepted range and report
+any narrowing transformation; they never silently clamp P5.
+
 ## Optional issue fields
 
 `description`, `assignee`, `labels`, `dependencies`, `comments`, `data`,
