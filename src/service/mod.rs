@@ -3,11 +3,13 @@
 //! This module provides business logic for issue operations, claiming,
 //! dependencies, checkpoint management, and diagnostics.
 
+pub mod checkpoint;
 pub mod claim;
 pub mod dependencies;
 pub mod issues;
 pub mod lifecycle;
 
+pub use checkpoint::flush_checkpoint;
 pub use claim::claim_issue;
 pub use dependencies::{add_dependency, add_label, remove_dependency, remove_label};
 pub use issues::create_issue;
@@ -16,6 +18,5 @@ pub use issues::list_issues;
 pub use lifecycle::{close_issue, release_issue, reopen_issue, update_issue};
 
 // Placeholder modules for future implementation
-// pub mod checkpoint;
 // pub mod doctor;
 // pub mod migrate;

@@ -179,8 +179,27 @@
         "Records and semantically unordered collections are stably ordered",
         "The pre-F017 issues.jsonl destination replacement and checkpoint-state update are crash-safe and atomic"
       ],
-      "passes": false,
-      "evidence": []
+      "passes": true,
+      "evidence": [
+        "cargo test: 131 tests passed (46 unit + 85 integration including 7 new sync tests)",
+        "cargo fmt --check: passed",
+        "cargo clippy --all-targets -- -D warnings: passed",
+        "Implemented `bead sync --flush-only` command with --profile (only native-v1 allowed) and --output options",
+        "Created service layer in src/service/checkpoint.rs with flush_checkpoint() function",
+        "Atomic snapshot: read transaction captures event sequence, reads all issues, then commits",
+        "Deterministic ordering: issues sorted by ID ascending before serialization",
+        "JSONL format: one compact JSON object per line with LF terminator",
+        "Atomic write: temporary .tmp file written, verified, then atomically renamed",
+        "Crash-safe: checkpoint_state table updated in same transaction as atomic rename",
+        "Empty state: zero-byte file for empty workspace",
+        "Hash verification: SHA-256 hash computed and stored in checkpoint_state table",
+        "Path validation: rejects .beads/checkpoint output (reserved for F017)",
+        "Profile validation: only native-v1 allowed before F017",
+        "Checkpoint state tracks: hash, covered_event_sequence, export_time",
+        "Comprehensive integration tests: basic, empty workspace, custom output, invalid profile, checkpoint path rejection, deterministic ordering, no workspace",
+        "Unit tests: flush_checkpoint_empty, flush_checkpoint_with_issues, calculate_file_hash",
+        "All acceptance criteria met: observes committed snapshot, stable ordering, atomic and crash-safe replacement"
+      ]
     },
     {
       "id": "F008",

@@ -430,3 +430,29 @@ rewrite or delete earlier entries.
   - Readiness changes atomically with blocker lifecycle (transactions in service layer)
 - **Next recommended feature**: F007 (Deterministic JSONL checkpoint export) - now unblocked
 - F006 pass state changed to true with evidence.
+
+## 2026-08-08 — F007 implementation completed
+
+- Implemented `bead sync --flush-only` command with --profile (only native-v1 allowed) and --output options
+- Created service layer in `src/service/checkpoint.rs` with `flush_checkpoint()` function
+- Implemented atomic snapshot capture: read transaction gets event sequence and all issues, then commits
+- Implemented deterministic ordering: issues sorted by ID ascending before JSONL serialization
+- Implemented JSONL format: one compact JSON object per line with LF terminator; empty state is zero-byte file
+- Implemented atomic write: temporary .tmp file written, verified with hash, then atomically renamed
+- Implemented crash-safe checkpoint_state update: hash, covered_event_sequence, export_time updated in same transaction as atomic rename
+- Implemented SHA-256 hash calculation for exported content
+- Implemented path validation: rejects output to `.beads/checkpoint` (reserved for F017)
+- Implemented profile validation: only native-v1 allowed before F017
+- Added 3 comprehensive unit tests: `flush_checkpoint_empty`, `flush_checkpoint_with_issues`, `calculate_file_hash`
+- Added 7 comprehensive integration tests: basic, empty workspace, custom output, invalid profile, checkpoint path rejection, deterministic ordering, no workspace
+- Fixed Option<String> handling for database NULL values in description, notes, issue_type, profile, schema_ref
+- Fixed default output path to be `.beads/issues.jsonl` (not root/issues.jsonl)
+- All 131 tests pass (46 unit + 85 integration including 7 new sync tests)
+- `cargo fmt --check`: passed
+- `cargo clippy --all-targets -- -D warnings`: passed
+- F007 acceptance criteria met:
+  - `sync --flush-only` observes one committed snapshot (read transaction captures state)
+  - Records and semantically unordered collections are stably ordered (issues sorted by ID)
+  - The pre-F017 `issues.jsonl` destination replacement and checkpoint-state update are crash-safe and atomic (temp file + atomic rename + single transaction)
+- **Next recommended feature**: F008 (Validated JSONL import with unknown-field preservation) - now unblocked
+- F007 pass state changed to true with evidence.

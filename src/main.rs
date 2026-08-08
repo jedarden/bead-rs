@@ -42,6 +42,7 @@ fn execute_command(cli: Cli) -> Result<()> {
         Command::Reopen(opts) => cmd_reopen(opts),
         Command::Label(opts) => cmd_label(opts),
         Command::Dep(opts) => cmd_dep(opts),
+        Command::Sync(opts) => cmd_sync(opts),
         Command::Unimplemented(_) => Err(Error::cli_usage(
             "This command is not yet implemented. See `bead --help` for available commands.",
         )),
@@ -458,6 +459,64 @@ fn cmd_dep_remove(opts: cli::DepRemoveOptions) -> Result<()> {
 
     // Print success message
     println!("Removed dependency: {} <- {}", opts.blocked, opts.blocker);
+
+    Ok(())
+}
+
+fn cmd_sync(cmd: cli::SyncCommand) -> Result<()> {
+    match cmd {
+        cli::SyncCommand::FlushOnly(opts) => cmd_sync_flush_only(opts),
+    }
+}
+
+fn cmd_sync_flush_only(opts: cli::SyncFlushOptions) -> Result<()> {
+    // Validate profile (only native-v1 allowed before F017)
+    if opts.profile != "native-v1" {
+        return Err(Error::validation(format!(
+            "Profile '{}' is not supported. Only 'native-v1' is available before F017.",
+            opts.profile
+        )));
+    }
+
+    // Discover workspace
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    // Determine output path
+    let output_path = if let Some(ref output) = opts.output {
+        // Explicit output path provided
+        config.root.join(output)
+    } else {
+        // Default to .beads/issues.jsonl
+        config.root.join(".beads").join("issues.jsonl")
+    };
+
+    // Validate output path doesn't point into .beads/checkpoint (reserved for F017)
+    let checkpoint_dir = config.root.join(".beads").join("checkpoint");
+    if output_path.starts_with(&checkpoint_dir) {
+        return Err(Error::validation(
+            "Output path cannot be in .beads/checkpoint (reserved for F017 forensic checkpoints)",
+        ));
+    }
+
+    // Open database connection
+    let db_path = config.database_path();
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    // Create store wrapper
+    let mut store = store::SqliteStore::from_conn(conn);
+
+    // Flush checkpoint
+    let result = service::flush_checkpoint(&mut store, &output_path)?;
+
+    // Print success message
+    eprintln!("Flushed checkpoint:");
+    eprintln!("  Path: {}", output_path.display());
+    eprintln!("  Issues: {}", result.issue_count);
+    eprintln!("  Hash: {}", result.hash);
+    eprintln!("  Covered sequence: {}", result.covered_sequence);
+    eprintln!("  Export time: {}", result.export_time);
 
     Ok(())
 }

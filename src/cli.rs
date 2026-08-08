@@ -80,6 +80,10 @@ pub enum Command {
     #[command(subcommand)]
     Dep(DepCommand),
 
+    /// Synchronize checkpoint operations
+    #[command(subcommand)]
+    Sync(SyncCommand),
+
     /// Not yet implemented
     #[command(subcommand)]
     #[allow(clippy::enum_variant_names)]
@@ -225,6 +229,26 @@ pub struct ReopenOptions {
     pub id: String,
 }
 
+/// Sync commands
+#[derive(Subcommand, Debug)]
+pub enum SyncCommand {
+    /// Flush checkpoint to JSONL file
+    #[command(name = "flush-only")]
+    FlushOnly(SyncFlushOptions),
+}
+
+/// Options for flushing checkpoint
+#[derive(Parser, Debug)]
+pub struct SyncFlushOptions {
+    /// Profile for export (default: native-v1)
+    #[arg(long, default_value = "native-v1")]
+    pub profile: String,
+
+    /// Output path (default: .beads/issues.jsonl)
+    #[arg(long)]
+    pub output: Option<String>,
+}
+
 /// Label management commands
 #[derive(Subcommand, Debug)]
 pub enum LabelCommand {
@@ -290,7 +314,6 @@ pub struct DepRemoveOptions {
 /// Placeholder for unimplemented commands
 #[derive(Subcommand, Debug)]
 pub enum UnimplementedCommand {
-    Sync,
     Doctor,
     Capabilities,
     Schema,
