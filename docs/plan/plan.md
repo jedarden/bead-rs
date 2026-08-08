@@ -180,20 +180,35 @@ Profiles map `done` and `completed` explicitly to `closed`. Unknown imported
 status values are retained in extensions and rejected for activation unless
 the selected profile defines a mapping; they are never treated as open.
 
-`close` requires a nonblank reason, sets `closed`, clears manual blocking, and
-sets `closed_at`; assignment is retained. `reopen` sets `open`, clears closure
-metadata and manual blocking, and retains assignment. `release ID` accepts an
-`in_progress` bead, sets its base state to `open`, and clears its assignment.
-Migration 1 has no last-claim sequence or attempt history to preserve; R019
-defines preservation of those fields after its migration. Releasing an already
-open, unassigned bead succeeds idempotently without advancing `updated_at` or
-appending an event. Releasing an open but assigned bead, or a `deferred` or
-`closed` bead, is an invalid-transition conflict (exit 4) and makes no change;
-callers must use the explicit lifecycle operation appropriate to that state.
-A semantic release appends one durable `released` audit event containing the
-bead ID, prior assignee, actor when known, and resulting base state, then prints
-the released ID plus LF. Validation, state change, and event append occur in
-one write transaction.
+The dedicated lifecycle commands have this complete base-state contract. A
+conflict changes no fields or timestamps, appends no event, prints no success
+payload, and exits 4. Every success prints the ID plus LF and exits 0.
+
+| Command | `open` | `in_progress` | `deferred` | `closed` |
+| --- | --- | --- | --- | --- |
+| `close --reason R` | semantic close | semantic close | semantic close | idempotent only when stored reason equals normalized `R`; otherwise conflict |
+| `reopen` | idempotent | conflict | conflict | semantic reopen |
+| `release` | idempotent only when unassigned; assigned is conflict | semantic release | conflict | conflict |
+
+`close` always validates a nonblank normalized reason, including on a closed
+bead. A semantic close sets `closed`, clears manual blocking, sets `closed_at`
+and `updated_at` to the transaction instant, retains assignment, stores the
+reason, and appends exactly one durable `closed` event with the prior base
+state, reason, actor when known, and resulting base state. Its idempotent case
+does not change either timestamp or advance the event sequence. `reopen`'s
+semantic case sets `open`, clears `closed_at`, `close_reason`, and manual
+blocking, retains assignment, sets `updated_at` to the transaction instant,
+and appends exactly one durable `reopened` event with the prior and resulting
+base states and actor when known. Its idempotent case changes no timestamp and
+appends no event.
+
+A semantic `release` sets an `in_progress` bead to `open`, clears its
+assignment, sets `updated_at` to the transaction instant, and appends exactly
+one durable `released` event containing the bead ID, prior assignee, actor when
+known, and resulting base state. Migration 1 has no last-claim sequence or
+attempt history to preserve; R019 defines preservation of those fields after
+its migration. Validation, state change, and event append for each semantic
+lifecycle operation occur in one write transaction.
 
 `update ID --clear-assignee` is the explicit operation for an assigned bead
 whose base state is already `open`; it conflicts with `--assignee`. On an open,
@@ -910,8 +925,26 @@ report. Import uses a self-described installed issue profile or requires an
 explicit matching `--profile`; ambiguity and mismatch fail closed. Flush writes
 an operation-owned temporary sibling, verifies its hash/count, atomically
 renames it, syncs the parent where supported, and only then updates
-`checkpoint_state`. Import success reports profile, input hash, issue count,
-and covered sequence; dry-run reports the same analysis with `dry_run: true`.
+`checkpoint_state`. The pre-F017 activation transaction inserts all staged
+issue state, then appends exactly one workspace-level `checkpoint_imported`
+audit event (null issue ID) whose detail contains the profile, input SHA-256,
+issue count, and `issues-jsonl-v1`; its event sequence is the activation
+sequence. The target must be semantically empty before activation: no issues
+and no prior semantic event other than initialization bookkeeping. On commit,
+`checkpoint_state` records the input hash, the activation sequence as its
+covered event sequence, and the transaction time. Thus immediate status has
+`covered_sequence == live_sequence == activation_sequence` and is clean; any
+later semantic event makes it dirty. The event attests activation of an
+issue-only baseline, not source history, which this format cannot carry.
+Import success reports profile, input hash, issue count, activation sequence,
+covered sequence, live sequence, and `dirty: false`.
+
+Dry-run performs the same empty-target check and validation, observes the
+current live sequence, and reports the sequence activation would allocate as
+`activation_sequence`, `covered_sequence`, and `live_sequence`, plus
+`dirty: false`, `dry_run: true`, and `prospective: true`. Those sequence values
+are advisory under concurrency; no event, checkpoint metadata, issue row, or
+file is written.
 
 The proposed forensic JSONL encoding is UTF-8 with one compact object and LF
 per record. Its proposed monolithic representation uses exactly three
@@ -1399,7 +1432,7 @@ environment values.
 
 ## 7. Diagnostics and recovery
 
-`doctor` is read-only and checks:
+Before F017, `doctor` is read-only and checks:
 
 - workspace/config parsing and permissions;
 - database open, SQLite `quick_check`, foreign keys, schema version, and
@@ -1407,26 +1440,43 @@ environment values.
 - lifecycle and timestamp invariants;
 - dangling or cyclic blocking edges;
 - extension JSON validity;
-- checkpoint parseability and recorded-hash freshness;
+- `.beads/issues.jsonl` parseability, canonical issue ordering/content, and
+  agreement between its SHA-256 and the migration-1 `checkpoint_state` hash;
+- `checkpoint_state.covered_event_sequence <=` the current live event
+  sequence, reporting clean only when the hash agrees and the sequences are
+  equal; a missing file/row, hash mismatch, or sequence lag is dirty, while a
+  covered sequence ahead of live state is an integrity failure;
 - orphaned temporary files owned by `bead-rs`.
 
 Warnings begin exactly `WARN `; healthy lines may use `OK `. Failed integrity
 checks exit nonzero.
 
-`doctor --repair` diagnoses first and may repair only stale checkpoint
-metadata, proven-stale operation-owned temporary files, missing safe indexes,
-or a missing checkpoint by normal atomic flush after database integrity passes.
-Every repaired line begins `FIXED `.
+Before F017, `doctor --repair` diagnoses first and may remove a proven-stale
+operation-owned temporary, create a missing safe index, or repair checkpoint
+state only by running the normal atomic issue-only flush from a verified live
+database. That flush republishes `.beads/issues.jsonl` and records its hash,
+current live event sequence, and export time together; repair never blesses an
+existing file by merely copying its hash or sequence into `checkpoint_state`,
+and never edits JSONL in place. A missing file/row, stale hash, or sequence lag
+therefore converges through one flush to a clean pair. A covered sequence ahead
+of live state, malformed checkpoint, or failed database integrity check is not
+automatically reconcilable and fails closed. Every repaired line begins
+`FIXED `.
 
-Checkpoint diagnosis always starts at `current.json`, verifies its immutable
+After the independently reviewed F017 specification and migration activate,
+the pre-F017 file/row branch is replaced by checkpoint-set diagnosis. It always
+starts at `current.json`, verifies its immutable
 root and (when present) `previous.json`, and reports compatibility-view drift as
-a separate nonauthority problem. Repair may regenerate
+a separate nonauthority problem. Post-F017 repair may regenerate
 `.beads/checkpoint/forensic.jsonl` from the verified pointer-selected monolith
 or remove an
 operation-owned interrupted view temporary; it never advances/rolls back the
 pointer based on view contents, timestamps, or filenames. If the pointer/root
 is invalid, repair fails closed and recommends explicit restore from a named,
 verified immutable generation rather than promoting the compatibility view.
+The installed store migration/layout selects the branch, never whichever files
+happen to exist. F017's normative specification must define any one-time
+reconciliation of migration-1 `checkpoint_state` into its new pointer state.
 
 Version 0.1 never reconstructs issue rows, drops unknown tables, deletes the
 database, rewrites a corrupt checkpoint, or alters lifecycle/dependency data
@@ -1621,10 +1671,11 @@ least the following **provisional pre-F017** example:
   "checkpoint_modes": ["flush-only", "import-only"],
   "checkpoint_formats": ["issues-jsonl-v1"],
   "schema_ref": "urn:bead-rs:schema:capabilities:native-v1",
-  "schemas": {
-    "read": ["urn:bead-rs:schema:event:native-v1", "urn:bead-rs:schema:issue:native-v1", "urn:bead-rs:schema:migration-receipt:native-v1"],
-    "write": ["urn:bead-rs:schema:event:native-v1", "urn:bead-rs:schema:issue:native-v1", "urn:bead-rs:schema:migration-receipt:native-v1"]
-  },
+  "schemas": [
+    {"schema_ref":"urn:bead-rs:schema:event:native-v1","document_kind":"audit_event","validate":true,"consume":[],"emit":[]},
+    {"schema_ref":"urn:bead-rs:schema:issue:native-v1","document_kind":"issue","validate":true,"consume":["sync.import-only"],"emit":["sync.flush-only"]},
+    {"schema_ref":"urn:bead-rs:schema:migration-receipt:native-v1","document_kind":"migration_receipt","validate":true,"consume":[],"emit":["migrate"]}
+  ],
   "commands": ["capabilities", "claim", "close", "create", "dep", "doctor", "init", "label", "list", "migrate", "release", "reopen", "schema", "show", "sync", "update"]
 }
 ```
@@ -1633,20 +1684,28 @@ This example is not the final 0.1 capability document. The normative
 `checkpoint-set-v1` specification must assign the forensic pointer, manifest,
 shard, and provenance-receipt schema identities and the exact checkpoint format
 names. F017 must then extend `checkpoint_modes`, `checkpoint_formats`, and the
-read/write schema catalog to advertise every format and immutable public schema
-that the final implementation actually consumes or emits, following the exact
+schema catalog to advertise every format and immutable public schema that the
+final implementation actually validates, consumes, or emits, following the exact
 normative names and support semantics. F010 tests this provisional document;
 the final F017/release tests replace the expected catalog with the normative
 one and fail if the shipped checkpoint grammar or schema resolver is omitted.
 
-Schema catalog arrays are lexical, duplicate-free exact-identity sets.
-`read` means the profile can validate and consume the document without
-guessing; `write` means it can emit a conforming document without unreported
-loss. Read-only or lossy support appears in separate additive catalog entries
-with an explicit reason and is never placed in `write`. The capabilities
+Schema catalog entries sort lexically by exact identity and are duplicate-free.
+`validate` means `schema show` supplies the schema and the implementation can
+validate an instance; it does not claim that a public command consumes that
+document. `consume` and `emit` are lexical, duplicate-free lists of concrete
+public operation paths that respectively accept or produce that document;
+empty lists are meaningful. Before F017, audit events are internal durable rows:
+their public schema is resolvable and usable for validation, but no sync command
+consumes or emits event documents. Migration receipts are emitted by `migrate`
+but are not accepted as migration input. Issue documents are consumed and
+emitted only by the issue-only sync operations shown. Lossy support uses an
+additive entry naming the operation, direction, and explicit loss reason and
+does not appear in the lossless `consume` or `emit` list. The capabilities
 document's own schema is identified by its `schema_ref` rather than recursively
 listing itself. `schema list --format json` returns the same catalog entries,
-including identity, document kind, read/write support, and profile provenance;
+including identity, document kind, validation and operational support, and
+profile provenance;
 `schema show` resolves every listed identity byte-for-byte to its immutable
 schema document. Migration and provenance receipt outputs retain their
 `schema_ref`, so their producer/profile provenance is discoverable without

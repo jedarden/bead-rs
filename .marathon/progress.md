@@ -235,3 +235,16 @@ rewrite or delete earlier entries.
 - Marked the capabilities example provisional and required F017 to advertise
   all final normative forensic formats, modes, and schemas.
 - No feature pass state changed.
+
+## 2026-08-08 — Gap-review round 5
+
+- Split doctor and repair into an issue-only migration-1 branch and a
+  store-layout-selected post-F017 pointer branch.
+- Defined the pre-F017 import activation audit event and exact prospective and
+  committed covered/live sequence plus clean/dirty status behavior.
+- Added a complete close/reopen/release operation-by-base-state matrix with
+  idempotency, conflicts, timestamps, events, output, and exit behavior.
+- Replaced ambiguous schema read/write claims with validation support and
+  concrete lossless consume/emit operation paths.
+- Reached the gap-review workflow's five-round stopping limit.
+- No feature pass state changed.

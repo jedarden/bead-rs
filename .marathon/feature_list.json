@@ -74,6 +74,7 @@
         "Status, assignee, and notes updates are atomic",
         "release atomically transitions in-progress work to open and unassigned with the documented idempotency, conflict, output, and audit behavior",
         "clear-assignee handles only open assigned work and generic update cannot bypass reopen for a closed bead",
+        "Close, reopen, and release satisfy the complete operation-by-base-state idempotency/conflict matrix without duplicate timestamps or events",
         "Close retains a required reason",
         "Reopen restores the documented open lifecycle state"
       ],
@@ -119,6 +120,7 @@
         "Unknown fields survive a same-profile round trip",
         "Import accepts exactly one explicit input path and never discovers or ranks sibling roots heuristically",
         "Pre-F017 sync import accepts only an empty initialized target and transactionally activates one fully validated issue-only checkpoint",
+        "Successful pre-F017 activation appends exactly one checkpoint-imported event and leaves checkpoint covered/live sequences equal and clean",
         "Import dry-run performs full validation and reconciliation analysis with canonical counts while leaving every durable workspace byte unchanged"
       ],
       "passes": false,
@@ -132,7 +134,8 @@
       "depends_on": ["F007", "F008"],
       "acceptance": [
         "doctor performs read-only integrity checks",
-        "doctor --repair changes only diagnosed conditions",
+        "Pre-F017 doctor validates issues.jsonl against migration-1 checkpoint state while post-F017 doctor selects pointer-based checks by store layout",
+        "doctor --repair changes only diagnosed conditions through the applicable normal flush or compatibility-view reconstruction path",
         "Warnings and repairs use the required stable prefixes"
       ],
       "passes": false,
@@ -149,6 +152,7 @@
         "Atomic claim, lifecycle, checkpoint, and command support are explicit",
         "Priority capabilities describe P4 as claimable under fifo-v1 without post-0.1 opt-in semantics",
         "The commands inventory exactly matches every application-defined visible public root command",
+        "Schema catalog entries distinguish validation support from concrete lossless consume and emit operation paths",
         "Unsupported profiles fail closed"
       ],
       "passes": false,
