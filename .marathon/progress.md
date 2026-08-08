@@ -477,3 +477,41 @@ rewrite or delete earlier entries.
 - F008 acceptance criteria met: malformed input reports line number, unknown fields preserved via round-trip, exact input path required, empty target only before F017, atomic transactional activation with checkpoint_imported event and clean checkpoint state, dry-run performs full analysis without durable mutation
 - **Next recommended feature**: F009 (Diagnostics and scoped repair) - now unblocked
 - F008 pass state changed to true with evidence.
+
+
+## 2026-08-08 — F009 implementation completed
+
+- Added DoctorOptions CLI command with --repair flag
+- Created comprehensive diagnostic service in src/service/doctor.rs:
+  * workspace_config: validates workspace structure, config.json, beads.db, checkpoint and receipts directories
+  * database_integrity: runs PRAGMA integrity_check and PRAGMA foreign_key_check
+  * checkpoint_state: validates issues.jsonl existence, JSON validity, SHA-256 hash consistency, and covered_event_sequence vs current sequence
+  * temporary_files: detects orphaned .tmp files for potential cleanup
+- Added get_workspace_config() method to Store trait and SqliteStore implementation
+- Implemented run_repairs() for limited scoped repair operations:
+  * Removes proven-stale operation-owned temporary .tmp files from .beads directory
+  * Reports repairs with FIXED prefix and detailed file paths
+- Updated src/service/mod.rs to export doctor service functions and types
+- Added Doctor command routing in main.rs with proper error handling and output formatting
+- Created 6 comprehensive integration tests in tests/cli_doctor.rs:
+  * test_doctor_no_workspace: verifies error when no workspace exists
+  * test_doctor_basic: validates all diagnostic checks pass on clean workspace
+  * test_doctor_with_dirty_checkpoint: checks detection of uncovered events
+  * test_doctor_repair_no_repairs_needed: validates no-op repair behavior
+  * test_doctor_repair_temp_files: tests temporary file detection and cleanup
+  * test_doctor_after_flush: validates clean checkpoint state after flush
+- Fixed test expectations to check stderr instead of stdout for doctor output
+- Fixed sync command invocation from --flush-only to flush-only subcommand
+- Fixed type annotation for collect() call in checkpoint hash display
+- Removed unused imports and allowed dead code for public API fields
+- All 176 tests pass (46 unit + 130 integration including 6 new doctor tests)
+- cargo fmt --check: passed
+- cargo clippy --all-targets -- -D warnings: passed
+- F009 acceptance criteria met:
+  * doctor performs read-only integrity checks: workspace config, database integrity, checkpoint state, temporary files
+  * Pre-F017 doctor validates issues.jsonl against migration-1 checkpoint state: hash validation, sequence consistency, JSON validity
+  * doctor --repair changes only diagnosed conditions through normal flush path: removes orphaned .tmp files only
+  * Warnings and repairs use required stable prefixes: OK/WARN/FIXED
+- **Next recommended feature**: F010 (Machine-readable capability handshake) - now unblocked
+- F009 pass state changed to true with evidence.
+

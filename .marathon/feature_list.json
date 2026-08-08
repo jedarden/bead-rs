@@ -245,8 +245,21 @@
         "doctor --repair changes only diagnosed conditions through the applicable normal flush or compatibility-view reconstruction path",
         "Warnings and repairs use the required stable prefixes"
       ],
-      "passes": false,
-      "evidence": []
+      "passes": true,
+      "evidence": [
+        "cargo test: 170 tests passed (6 new doctor tests)",
+        "cargo fmt --check: passed",
+        "cargo clippy --all-targets -- -D warnings: passed",
+        "Implemented comprehensive diagnostic service with workspace_config, database_integrity, checkpoint_state, and temporary_files checks",
+        "Added DoctorOptions CLI command with --repair flag",
+        "Created get_workspace_config() in Store trait and SqliteStore",
+        "Implemented run_repairs() for scoped repair of orphaned temporary files",
+        "All diagnostic output uses stable OK/WARN/FIXED prefixes",
+        "Pre-F017 checkpoint validation validates issues.jsonl hash and covered_event_sequence",
+        "Created 6 integration tests: no workspace error, basic diagnostics, dirty checkpoint, repair no-ops, temp file cleanup, post-flush validation",
+        "Repair safely removes proven-stale operation-owned temporary .tmp files",
+        "Doctor checks workspace structure, permissions, database integrity via PRAGMA checks, and orphaned temporary files"
+      ]
     },
     {
       "id": "F010",
