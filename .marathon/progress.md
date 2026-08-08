@@ -23,3 +23,14 @@ rewrite or delete earlier entries.
 - Wired the plan into the mandatory start-of-iteration reading order.
 - No feature pass state changed; implementation and verification remain for
   later Marathon iterations.
+
+## 2026-08-07 — Post-0.1 feature ideation recorded
+
+- Ran the workspace `plan-idea-gen` funnel against `docs/plan/plan.md`: 100
+  generated ideas, 26 triage survivors, 15 pairwise advancers, and 10 final
+  candidates after adversarial and completeness passes.
+- Added every idea and rejection reason to `docs/notes/ideas-ledger.md`, with
+  implementation dossiers for the finalists.
+- The candidates were not added to the 0.1 roadmap or feature ledger; adoption
+  awaits an explicit product decision.
+- No feature pass state changed.

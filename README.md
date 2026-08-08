@@ -25,6 +25,8 @@ See [the research index](research/README.md) and
 [interoperability notes](docs/notes/interoperability-architecture.md). The
 [0.1 implementation plan](docs/plan/plan.md) defines the independent native
 schema, lifecycle, dependency, checkpoint, CLI, and verification design.
+Post-0.1 candidates and rejected alternatives are retained in the
+[ideas ledger](docs/notes/ideas-ledger.md).
 
 ## Marathon Coding
 
