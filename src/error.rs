@@ -44,6 +44,10 @@ pub enum Error {
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
+    /// Model validation errors
+    #[error("Model validation error: {0}")]
+    Model(#[from] crate::model::Error),
+
     /// I/O errors
     #[error("I/O error: {path}: {msg}")]
     Io {
@@ -57,7 +61,7 @@ impl Error {
     /// Map the error to its appropriate exit code
     pub fn exit_code(&self) -> i32 {
         match self {
-            Error::CliUsage(_) => 2,
+            Error::CliUsage(_) | Error::Model(_) => 2,
             Error::Workspace(_) => 3,
             Error::Conflict(_) => 4,
             Error::Integrity(_) => 5,
@@ -74,6 +78,16 @@ impl Error {
     /// Create a workspace error
     pub fn workspace(msg: impl Into<String>) -> Self {
         Error::Workspace(msg.into())
+    }
+
+    /// Create a not-found error (uses workspace error type)
+    pub fn not_found(msg: impl Into<String>) -> Self {
+        Error::Workspace(msg.into())
+    }
+
+    /// Create a validation error
+    pub fn validation(msg: impl Into<String>) -> Self {
+        Error::CliUsage(msg.into())
     }
 
     /// Create a conflict error

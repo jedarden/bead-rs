@@ -319,3 +319,25 @@ rewrite or delete earlier entries.
   - Invalid lifecycle transitions and malformed identifiers are rejected (via validation functions)
 - **Next recommended feature**: F003 (Create, list, and show commands) - now unblocked
 - F002 pass state changed to true with evidence.
+
+## 2026-08-08 — F003 implementation completed
+
+- Implemented `bead create` command with full argument parsing: title, description, priority, issue_type, assignee, labels
+- Created service layer in `src/service/issues.rs` with business logic for issue operations
+- Implemented atomic issue creation with transaction support and validation
+- Fixed workspace prefix loading to use database values instead of hardcoded defaults
+- Implemented `bead list` command with filtering: --json, --status, --assignee, --ready, --comments (none/unresolved/all), --limit
+- Implemented `bead show` command returning one-element JSON array for NEEDLE v1 compatibility
+- Added NEEDLE-compatible JSON output format with stable field ordering
+- Created comprehensive integration tests (7 create, 6 list, 5 show tests)
+- Fixed clippy warnings: added #[allow(clippy::too_many_arguments)], fixed needless borrows
+- All 52 tests pass (23 unit + 7 create + 11 init + 6 list + 5 show)
+- cargo fmt --check: passed
+- cargo clippy --all-targets -- -D warnings: passed
+- F003 acceptance criteria met:
+  - Create commits new issue atomically and prints only ID on success
+  - Create defaults omitted description to empty
+  - List supports all required filters and projections
+  - Show returns NEEDLE-compatible JSON with comment projection options
+- **Next recommended feature**: F004 (Atomic server-selected claim and release behavior) - now unblocked
+- F003 pass state changed to true with evidence.

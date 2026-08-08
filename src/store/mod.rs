@@ -47,17 +47,38 @@ impl WorkspaceConfig {
 
     /// Load workspace configuration from a specific config file path
     fn from_config_path(config_path: &Path) -> crate::Result<Option<Self>> {
-        // For now, we'll return None until we implement config.json loading
-        // This will be completed when we implement the full workspace structure
         let root = config_path
             .parent()
             .and_then(|p| p.parent())
             .ok_or_else(|| crate::Error::workspace("Invalid workspace structure"))?;
 
+        let db_path = root.join(".beads/beads.db");
+
+        // Open database and load workspace metadata
+        let conn = rusqlite::Connection::open(&db_path).map_err(|e| {
+            crate::Error::Internal(anyhow::anyhow!("Failed to open database: {}", e))
+        })?;
+
+        let uuid: String = conn
+            .query_row("SELECT uuid FROM workspace WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .map_err(|e| {
+                crate::Error::workspace(format!("Failed to load workspace UUID: {}", e))
+            })?;
+
+        let prefix: String = conn
+            .query_row("SELECT prefix FROM workspace WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .map_err(|e| {
+                crate::Error::workspace(format!("Failed to load workspace prefix: {}", e))
+            })?;
+
         Ok(Some(Self {
             root: root.to_path_buf(),
-            uuid: String::new(), // Will be loaded from config.json
-            prefix: "bead".to_string(),
+            uuid,
+            prefix,
         }))
     }
 

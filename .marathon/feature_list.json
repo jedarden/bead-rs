@@ -73,8 +73,19 @@
         "List supports JSON, status, assignee, exact ready-frontier filtering, comment projection, and explicit limit",
         "Show returns the requested issue in NEEDLE-compatible JSON with none, unresolved, or all comment projection"
       ],
-      "passes": false,
-      "evidence": []
+      "passes": true,
+      "evidence": [
+        "cargo test -- --test-threads=1: 52 tests passed (23 unit + 7 create + 11 init + 6 list + 5 show)",
+        "cargo fmt --check: passed",
+        "cargo clippy --all-targets -- -D warnings: passed",
+        "Implemented `bead create` command: creates issue with title, description (optional), priority, labels, assignee; validates all inputs; prints only ID on success",
+        "Implemented `bead list` command: supports --json, --status, --assignee, --ready, --comments (none/unresolved/all), --limit filters; outputs compact JSON per line or human-readable format",
+        "Implemented `bead show` command: returns single issue as one-element JSON array for NEEDLE v1 compatibility; supports --json and --comments options",
+        "Created service layer in src/service/issues.rs with create_issue, list_issues, get_issue_by_id functions",
+        "Added comprehensive integration tests covering all command variants and error cases",
+        "Fixed workspace prefix loading to use database values instead of hardcoded defaults",
+        "All acceptance criteria met: create prints ID only, description defaults to empty, list supports all required filters and projections, show returns NEEDLE-compatible JSON"
+      ]
     },
     {
       "id": "F004",

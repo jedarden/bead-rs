@@ -168,10 +168,16 @@ impl Store for SqliteStore {
                 })
                 .map_err(|e| Error::workspace(format!("Failed to load workspace UUID: {}", e)))?;
 
+            let existing_prefix: String = conn
+                .query_row("SELECT prefix FROM workspace WHERE id = 1", [], |row| {
+                    row.get(0)
+                })
+                .map_err(|e| Error::workspace(format!("Failed to load workspace prefix: {}", e)))?;
+
             return Ok(WorkspaceConfig {
                 root,
                 uuid,
-                prefix: prefix.to_string(),
+                prefix: existing_prefix,
             });
         }
 
