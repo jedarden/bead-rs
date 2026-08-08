@@ -273,3 +273,254 @@ coordination.
   manifests, mutation idempotency keys, and worker capability declarations.
 - **Rejected:** native SQLite backup and restore. JSONL is the portable backup
   and recovery contract; SQLite primarily supplies ACID live operation.
+
+## 2026-08-07 — plan-idea-gen run 2: backup and schema depth
+
+Target: `docs/plan/plan.md`. Generated: 100 new ideas. Deduplicated mechanisms:
+90. Triage survivors: 25. Pairwise advancers: 15. Kill-pass survivors: 9.
+Completeness entrants: 3, with 1 survivor. Finalists: 10. All candidates were
+checked against the prior 100 ideas and adopted/deferred decisions.
+
+| # | Idea and mechanism | Cluster | Verdict |
+| ---: | --- | --- | --- |
+| 1 | Backup completeness proof — rebuild and semantically compare every durable fact | Backup | **FINALIST**, merged into semantic recovery proof |
+| 2 | Freshness budget — bound tolerated unflushed sequence/age | Backup policy | **FINALIST**, merged into backup freshness contract |
+| 3 | Closure cooling period — reversible pre-close interval | Lifecycle | KILL: adds state for a policy-specific concern |
+| 4 | Claim abstention evidence — record voluntary worker skips | Claim | KILL: capability/decision features cover the useful semantics |
+| 5 | Import without trust — validation-only mode incapable of activation | Import | KILL: substantially overlaps existing dry-run |
+| 6 | No-title identity — display an external reference as primary identity | Identity | KILL: weakens the required human summary invariant |
+| 7 | Dependency expiry — stop blocking after an instant | Dependency | KILL: time-based correctness is hazardous and surprising |
+| 8 | Assignee allowlist — restrict assignment locally | Policy | KILL: identity semantics are not established |
+| 9 | Immutable issue mode — force supersession rather than reopen | History | KILL: irreversible policy without demonstrated need |
+| 10 | Backup-first mutation — require verified backup before risky writes | Backup policy | MERGED into freshness contract as explicit enforcement mode |
+| 11 | Reopen reason — retain rationale for undoing closure | Lifecycle | KILL: useful field polish, not top-ten mechanism |
+| 12 | Negative labels — schema-enforced forbidden labels | Typed data | KILL: schema constraints can express it without a feature |
+| 13 | Delete nothing — archive through supersession records | Archive | KILL: deletion is not yet a planned operation |
+| 14 | Schema negotiation — select exact mutually supported representation | Schema | **FINALIST**, merged into negotiation catalog |
+| 15 | Schema transformation graph — explicit one-way conversion paths | Schema | KILL: fixture and trust multiplication is premature |
+| 16 | Content-addressed backup manifest — hash JSONL/config/schema/sequence | Backup | **FINALIST**, merged into atomic generations |
+| 17 | Normalized external refs — namespace/key rows with uniqueness | Integration | **FINALIST**, merged into external references |
+| 18 | Threaded comments — portable reply-to discussion graph | Collaboration | **FINALIST**, merged into comments feature |
+| 19 | Ledger reconciliation — reconcile event totals to exported state | Backup | MERGED into semantic recovery proof |
+| 20 | Compiler-style import diagnostics — sorted line/pointer/schema/semantic errors | Import | **FINALIST:** actionable complete repair report |
+| 21 | Output content negotiation — ordered acceptable schema list | Schema | MERGED into schema negotiation catalog |
+| 22 | Backup attestation — tool/schema/hash verification statement | Evidence | KILL: unsigned statement adds little beyond manifest |
+| 23 | Savepoint validation — report independent batch errors then roll back | Automation | KILL: no adopted bulk operation yet |
+| 24 | Disposable recovery drill — reconstruct, doctor, compare, destroy | Recovery | **FINALIST** through completeness round |
+| 25 | Event-sourcing snapshots — compact events with sequence continuity | Events | KILL: unnecessary architecture expansion |
+| 26 | Friendly schema aliases — resolve names to immutable URNs | Schema | KILL: exact URNs are clearer for interoperability |
+| 27 | Encrypted JSONL backups | Platform | KILL: key management belongs outside core |
+| 28 | Compressed JSONL backups | Platform | KILL: external compression composes adequately |
+| 29 | Remote schema registry | Platform | KILL: network and trust boundary out of scope |
+| 30 | Cross-workspace reference registry | Platform | KILL: federation semantics out of scope |
+| 31 | OS keychain integration | Platform | KILL: no adopted secret-bearing feature |
+| 32 | Filesystem-watcher auto-import | Platform | KILL: silent mutation and daemon behavior |
+| 33 | NFS multiwriter locking | Platform | KILL: unsupported distributed SQLite usage |
+| 34 | WASM backup reader | Platform | KILL: packaging target before demand evidence |
+| 35 | Hosted schema catalog | Platform | KILL: website/service is outside the CLI |
+| 36 | Binary attachments | Platform | KILL: breaks compact portable JSONL boundary |
+| 37 | Schema-defined custom lifecycles | Typed data | KILL: data-driven code semantics become a plugin system |
+| 38 | Executable subcommand extensions | Platform | KILL: provenance and security expansion |
+| 39 | Automatic tracker bridge | Platform | KILL: network sync and conflict handling out of scope |
+| 40 | `sync --status` — backup/live sequence, age, hash, verification | Backup policy | MERGED into backup freshness contract |
+| 41 | Backup manifest sidecar | Backup | MERGED into atomic generations |
+| 42 | Standalone schema validation | Schema | KILL: thin mode already implied by import/schema support |
+| 43 | Schema identification command | Schema | KILL: already substantially planned through `schema_ref` |
+| 44 | Comment add/list commands | Collaboration | MERGED into portable threaded comments |
+| 45 | External-reference commands | Integration | MERGED into namespaced external references |
+| 46 | Archive filter | Archive | KILL: archive state not justified yet |
+| 47 | Duplicate detector | Integration | MERGED exact-ref collision detection; title heuristics killed |
+| 48 | JSON Pointer extension update | Typed data | KILL: mutation surface is too low-level |
+| 49 | Profile field-presence report | Schema | KILL: import diagnostics can report it |
+| 50 | Bundled schema examples | Schema | KILL: fixture/documentation requirement, not feature |
+| 51 | Comment-only export | Collaboration | KILL: full backup should remain complete and canonical |
+| 52 | Backup dry-run sizing | Backup policy | KILL: low value beside actual atomic flush |
+| 53 | Mutation receipt — revision/sequence/backup staleness | Events | MERGED partly into cursor change feed; standalone receipt killed |
+| 54 | Schema-bound issue types | Typed data | **FINALIST**, merged with annotations |
+| 55 | Typed annotations — namespaced JSON validated by schema URNs | Typed data | **FINALIST**, merged with issue-type binding |
+| 56 | Supersession links | History | KILL: introduces lineage model before demand |
+| 57 | Atomic issue split | History | KILL: depends on rejected supersession/bulk semantics |
+| 58 | Atomic issue merge | History | KILL: same lineage and conflict burden |
+| 59 | Comment thread resolution | Collaboration | MERGED into portable threaded comments |
+| 60 | Actor/session history query | Events | KILL: first-run audit timeline objection still stands |
+| 61 | Dependency-closed subset export | Interchange | KILL: partial backups invite hidden omissions |
+| 62 | Deterministic ID namespace remap | Import | KILL: rewriting stable IDs is high risk |
+| 63 | Cross-schema semantic diff | Schema | KILL: transformation graph premature |
+| 64 | Profile round-trip certificate | Evidence | KILL: conformance evidence belongs in tests/receipts |
+| 65 | Backup rotation command | Backup policy | KILL: filesystem retention composes externally |
+| 66 | Per-field import provenance | History | KILL: large storage/write amplification |
+| 67 | Atomic JSONL/manifest pair replacement | Backup | MERGED into atomic generations |
+| 68 | Interrupted-backup scavenger | Recovery | KILL: doctor baseline can absorb it |
+| 69 | Previous verified generation pointer | Backup | MERGED into atomic generations |
+| 70 | Missing/corrupt SQLite recovery preflight | Recovery | MERGED into disposable recovery rehearsal |
+| 71 | Restore provenance marker | Recovery | MERGED into disposable recovery rehearsal |
+| 72 | Restore equivalence gate | Backup | MERGED into semantic recovery proof |
+| 73 | Unknown-extension canonicalization test | Backup | KILL: required conformance case, not feature |
+| 74 | Schema-bundle self-check | Schema | KILL: release gate, not user-facing feature |
+| 75 | SQLite/JSONL divergence alarm | Backup policy | MERGED into freshness contract |
+| 76 | Backup corruption localization | Recovery | MERGED into complete import diagnostics |
+| 77 | Disk-full fault lane | Verification | KILL: test requirement, not product feature |
+| 78 | Unicode comparison policy | Identity | KILL: specification decision, not feature |
+| 79 | Recovery guide command | Recovery | KILL: documentation output behind actual rehearsal |
+| 80 | Plain-language backup confidence | Backup policy | MERGED into freshness contract |
+| 81 | Plain-language schema explanation | Schema | KILL: documentation can ship with schemas |
+| 82 | Issue provenance view | History | KILL: source fields already expose core fact |
+| 83 | Comment handoff view | Collaboration | KILL: query/view layer can compose comments later |
+| 84 | Corrective schema guidance | Schema | KILL: compiler diagnostics carry stable evidence first |
+| 85 | Interactive restore wizard | Recovery | KILL: noninteractive rehearsal is safer and testable |
+| 86 | Archive explanation | Archive | KILL: depends on rejected archive state |
+| 87 | Human external-reference display | Integration | KILL: output polish within external refs, not separate feature |
+| 88 | Schema support matrix | Schema | MERGED into schema negotiation catalog |
+| 89 | JSONL history directory | Backup policy | KILL: atomic two-generation recovery is enough initially |
+| 90 | External encryption command envelope | Platform | KILL: shell composition already supports it |
+| 91 | Machine-readable schema compatibility catalog | Schema | MERGED into schema negotiation catalog |
+| 92 | Custom-field indexes | Typed data | KILL: premature optimization and schema coupling |
+| 93 | Comment mentions | Collaboration | KILL: notifications/identity semantics absent |
+| 94 | Cursor change feed with gap detection | Events | **FINALIST:** deterministic incremental local-consumer protocol |
+| 95 | Snapshot pagination token | Query | KILL: safe query scope should stabilize first |
+| 96 | Approved import source registry | Import | KILL: workspace policy before source demand evidence |
+| 97 | Telemetry retention policy | Archive | KILL: premature before storage growth evidence |
+| 98 | Schema deprecation lifecycle | Schema | KILL: strongest runner-up; only one schema currently exists |
+| 99 | Conformance badge document | Evidence | KILL: unsigned self-attestation has weak assurance |
+| 100 | Recovery benchmark | Verification | KILL: performance gate rather than product feature |
+
+### Completeness entrants
+
+| Idea | Verdict |
+| --- | --- |
+| Disposable recovery rehearsal with semantic re-export comparison | **FINALIST:** exercises the actual JSONL disaster-recovery path safely |
+| Recovery runbook generator | KILL: documentation rather than a mechanism |
+| Scheduled recovery reminder | KILL: requires an external scheduler/notification system |
+
+### Finalist dossiers
+
+#### 1. Semantic backup completeness proof
+
+Reconstruct a disposable store from one JSONL generation, re-export it, and
+compare every durable user-visible fact—including unknown extensions,
+dependencies, comments, schema references, and revisions—against the captured
+source snapshot. It won backup integrity because calling JSONL a backup is only
+defensible if recovery is proven lossless.
+
+- Complexity: **L**
+- First step: define the complete recoverable-state inventory and semantic
+  equality rules independently of SQLite row layout.
+- Strongest objection: full reconstruction is expensive; keep it explicit and
+  stream/hash where semantic equivalence permits.
+
+#### 2. Atomic versioned backup generations
+
+Write JSONL and a content-addressed manifest into a new generation, verify both,
+then atomically switch a tiny current-generation pointer while retaining the
+previous verified generation. It beat a plain sidecar because two independently
+replaced files can be silently mismatched after a crash.
+
+- Complexity: **M**
+- First step: specify generation directory naming, manifest fields, pointer
+  replacement, cleanup, and recovery after every interrupted boundary.
+- Strongest objection: it changes the simple `.beads/issues.jsonl` layout;
+  preserve that path as the current-generation compatibility view.
+
+#### 3. Backup freshness contract
+
+Expose live event sequence, backed-up sequence, age, hash, and verification
+state, with an optional workspace freshness budget and explicit precondition for
+high-risk mutations. It won backup operations because users must know exactly
+what data a last-flush backup does not contain.
+
+- Complexity: **M**
+- First step: define freshness states and `sync --status --json`, keeping policy
+  informational unless explicitly enabled.
+- Strongest objection: enforced freshness can obstruct normal work; default to
+  visibility and make enforcement scoped.
+
+#### 4. Schema negotiation catalog
+
+Let producers and consumers exchange exact readable/writable schema URN sets and
+select their intersection, including explicit read-only or lossy status. It won
+schema interoperability because `schema_ref` identifies a format but does not
+by itself establish mutual support.
+
+- Complexity: **M**
+- First step: define deterministic negotiation input/output and add the catalog
+  to capabilities without network discovery.
+- Strongest objection: negotiation can become protocol bureaucracy; use exact
+  identifiers and no compatibility inference.
+
+#### 5. Portable threaded comments
+
+Complete the existing comment model with add/list/reply/resolve commands,
+stable IDs, authorship, and deterministic JSONL round trips. It won
+collaboration because comments preserve agent handoffs and review context that
+otherwise disappears from a task's formal fields.
+
+- Complexity: **M**
+- First step: specify comment schema, immutable bodies, reply-to constraints,
+  resolution state, ordering, and backup behavior.
+- Strongest objection: comment history increases backup size; pagination and
+  complete export semantics must remain deterministic.
+
+#### 6. Namespaced external references
+
+Attach normalized `(namespace, key, value)` references such as tracker IDs or
+commit identifiers, optionally unique within a namespace, without replacing
+native bead IDs. It won integration identity by enabling deduplication and
+cross-tool recognition without unstable title matching.
+
+- Complexity: **S**
+- First step: define namespace/key validation, uniqueness modes, CLI operations,
+  and profile mapping.
+- Strongest objection: arbitrary integrations create metadata sprawl; keep the
+  model generic and prohibit network resolution.
+
+#### 7. Schema-bound typed annotations
+
+Allow an issue type to permit namespaced JSON annotations whose values identify
+and validate against immutable public schema URNs. It won typed extensibility
+because tools can exchange structured domain data without plugins, raw SQL, or
+custom executable lifecycle logic.
+
+- Complexity: **L**
+- First step: specify annotation envelope, schema lookup, validation timing,
+  unknown-schema preservation, and profile loss reporting.
+- Strongest objection: this can become a plugin system in disguise; schemas may
+  validate data only and cannot execute code or define transitions.
+
+#### 8. Cursor-based local change feed
+
+Emit deterministic public mutation records after an event cursor, with snapshot
+identity and explicit gap detection. Unlike the previously rejected audit
+timeline, this is a versioned consumer protocol for incremental local indexing
+and adapters rather than merely a human history view.
+
+- Complexity: **L**
+- First step: define event schema, cursor lifetime, compaction/gap behavior, and
+  how a consumer resynchronizes from JSONL.
+- Strongest objection: it creates another compatibility surface; limit it to
+  committed local events and require full-backup resync after gaps.
+
+#### 9. Complete import diagnostic report
+
+Validation collects a bounded, deterministically sorted set of errors carrying
+line, JSON Pointer, schema keyword, and semantic reason, while guaranteeing no
+activation. It won import usability because one-error-per-run repair loops are
+painful for large interoperable backups.
+
+- Complexity: **M**
+- First step: define diagnostic schema, stable codes, ordering, maximum count,
+  and truncation marker.
+- Strongest objection: aggregating errors can consume memory or cascade; cap
+  results and distinguish root errors from suppressed dependents.
+
+#### 10. Disposable recovery rehearsal
+
+Build a temporary workspace from the current JSONL backup, run integrity and
+schema checks, re-export for semantic comparison, record a nonsecret report,
+and delete only the temporary workspace. It filled the operational gap because
+a backup is trustworthy only when its real recovery path is exercised.
+
+- Complexity: **M**
+- First step: specify temporary-path safety, recovery phases, cleanup guarantees,
+  and report fields.
+- Strongest objection: it overlaps semantic backup proof; the proof is the
+  primitive, while rehearsal orchestrates the end-to-end operator workflow.

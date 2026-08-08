@@ -46,3 +46,14 @@ rewrite or delete earlier entries.
 - Rejected native SQLite backup/restore; JSONL is the portable recovery backup,
   while SQLite supplies ACID live operation.
 - No F001-F014 pass state changed.
+
+## 2026-08-07 — Second feature ideation run recorded
+
+- Re-ran the workspace `plan-idea-gen` funnel after the first product
+  disposition, excluding all previously considered mechanisms.
+- Generated 100 new ideas, retained 25 through triage, advanced 15 through
+  pairwise comparison, and selected 10 after adversarial and completeness
+  passes.
+- Appended every candidate, verdict, and finalist dossier to the ideas ledger.
+- No second-run finalist was promoted into the plan; selection remains a
+  separate product decision, and no F001-F014 pass state changed.
