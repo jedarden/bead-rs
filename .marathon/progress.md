@@ -126,3 +126,19 @@ rewrite or delete earlier entries.
   portable execution outcomes to notes.
 - Left verifiable acceptance evidence pending further product consideration.
 - No F001-F014 pass state changed.
+
+## 2026-08-08 — Claim performance and capacity plan specified
+
+- Made ranking hybrid and incremental: writes maintain or invalidate only
+  affected inputs, while claims shortlist, finalize request/time-dependent
+  ranking, and revalidate authoritative eligibility atomically.
+- Added a deterministic rapid-fire lifecycle harness covering claim/close,
+  claim/release, mixed lifecycle, and dependency-churn workloads.
+- Defined worker saturation sweeps at 100, 1k, 10k, 100k, and 1m beads,
+  schema-stable benchmark reports, a machine-relative capacity profile, fast CI
+  smoke coverage, and explicit resource-limited outcomes.
+- Added F015 so implementation and verification of the harness is required
+  before packaging and release completion.
+- Clarified that ranking operates only on the ready frontier and that benchmark
+  results distinguish total graph size from frontier width and graph shape.
+- No feature pass state changed.

@@ -28,7 +28,7 @@ conflict by correcting the plan, never by silently changing the requirement.
 
 ## 2. Release definition
 
-Version 0.1 is complete when F001-F014 in `.marathon/feature_list.json` pass
+Version 0.1 is complete when F001-F015 in `.marathon/feature_list.json` pass
 and every release gate in `.marathon/instruction.md` succeeds.
 
 In scope:
@@ -387,10 +387,42 @@ structured data.
 
 #### 3.5.9 Performance and correctness
 
+Ranking uses a hybrid write-maintained/read-finalized design. Do not recalculate
+the complete queue after every mutation or scan and fully score every bead for
+every claim.
+
+The rankable population is the **ready frontier**, not every bead in the
+dependency graph. A frontier bead is open, unassigned, not manually blocked,
+and has no active unfinished blocker. Closed, deferred, assigned, manually
+blocked, and graph-blocked interior beads never enter candidate ranking.
+“Frontier” is used instead of “leaf” because leaf/root terminology reverses
+with graph drawing convention. Closing or reopening a blocker and adding or
+removing an edge incrementally removes or exposes only affected beads at this
+frontier.
+
+Relevant issue, dependency, lifecycle, condition, failure, or structured-data
+mutations update inexpensive authoritative inputs such as ready state,
+`ready_since`, active-blocker count, attempt tier, retry sequence, and graph
+revision in the same transaction. Expensive graph metrics are either updated
+for the bounded affected subgraph or marked dirty there. Unrelated beads are
+not reranked or invalidated.
+
+At claim time, an indexed authoritative query reads only the ready frontier and
+produces a bounded conservative candidate set. The bound and query shape are
+policy-versioned: the shortlist must not exclude a frontier bead that could win
+that policy. The policy then calculates
+time- and request-dependent inputs—age promotion, retry-lane position,
+least-recently-served order, worker compatibility, and prompt fit—only for that
+set. It scores the complete workspace only when the policy cannot prove a safe
+shortlist, and that fallback is observable in diagnostics and benchmarks.
+
 Small stores may calculate graph metrics with bounded SQLite recursive queries.
 Large stores may use a derived `scheduling_metrics` cache keyed by graph and
 issue revisions. Dependency, lifecycle, condition, or relevant structured-data
-mutations invalidate affected metrics in the same transaction.
+mutations update or invalidate affected metrics in the same transaction. Dirty
+metrics may be recomputed lazily before ranking, but recomputation must be
+bounded; a documented simpler policy fallback is preferable to holding the
+claim transaction for an unbounded graph rebuild.
 
 A stale or missing cache may reduce ranking quality but can never make an
 ineligible bead claimable. The winner's readiness, active conditions, worker
@@ -405,6 +437,81 @@ least twenty concurrent claimers. Repeating a claim against identical state,
 captured time, request capabilities, and policy must select the same bead.
 Priority tests cover every P0-P4 boundary, aspirational opt-in, bounded
 promotion, and profile-range validation.
+
+#### 3.5.10 Rapid-fire lifecycle capacity benchmarks
+
+Ship a deterministic, noninteractive stress harness that exercises the real
+store and service/CLI paths with isolated temporary workspaces. Dataset setup is
+timed and reported separately from the steady-state workload. The harness must
+accept at least:
+
+```text
+--beads 100|1000|10000|100000|1000000
+--workers 1|2|4|8|16|32|64
+--policy fifo-v1|POLICY
+--seed INTEGER
+--duration DURATION
+--workload claim-close|claim-release|mixed|dependency-churn
+--output-json PATH
+```
+
+The canonical scale matrix is 100, 1,000, 10,000, 100,000, and 1,000,000
+beads. At each scale run worker counts 1, 2, 4, 8, 16, 32, and 64 until the
+configured capacity profile fails for two consecutive levels; larger counts
+may be requested. A run that cannot be completed because of memory, disk, or
+time limits records a structured `resource_limited` result rather than silently
+omitting the scale.
+
+Total bead count and ready-frontier width are independent benchmark dimensions.
+At every scale, deterministic dataset families include:
+
+- **independent:** every open bead is on the frontier, the worst case for the
+  number of rankable candidates;
+- **chains:** long dependency chains expose approximately one bead per chain;
+- **wide DAGs:** many initial frontier beads converge into blocked interior
+  layers and expose new waves as blockers close;
+- **diamonds:** shared downstream beads test deduplicated unlock metrics; and
+- **mixed lifecycle:** realistic proportions of ready, assigned, deferred,
+  closed, manually blocked, and graph-blocked beads.
+
+Each report records total beads, edge count, graph depth, ready-frontier width
+and density, and the number of beads entering or leaving the frontier per
+mutation. Capacity conclusions must identify the dataset family; a million-bead
+store with a frontier of ten is not equivalent to a million independent ready
+beads.
+
+Required workloads are:
+
+- **claim-close:** atomically claim ready work and immediately close it;
+- **claim-release:** repeatedly claim and release, stressing rotation and
+  reassignment without exhausting the queue;
+- **mixed:** deterministic weighted create, claim, show, update, dependency,
+  close, reopen, and release operations;
+- **dependency-churn:** close/reopen blockers and add/remove valid edges while
+  other workers claim, exercising incremental metric invalidation.
+
+Reports include schema version, commit, build profile, Rust/SQLite versions,
+OS, CPU count/model where available, memory, filesystem, journal/synchronous
+mode, seed, dataset shape, policy/configuration, worker model (processes or
+threads), warmup, duration, and every command line. For each operation report
+attempted/succeeded/conflicted/busy counts, throughput, p50/p95/p99/max latency,
+transaction duration, shortlist size, full-scan fallbacks, cache hit/dirty/
+recompute counts, database/WAL sizes, and peak memory/CPU where measurable.
+
+Correctness is unconditional: duplicate successful claims, lost committed
+mutations, invalid readiness, or an unreconciled final-state count fails the
+run at every scale. Capacity is machine-relative. The default `interactive-v1`
+profile defines a worker count as supported when, after warmup, correctness
+holds, at least 99.9% of operations avoid terminal busy/I/O failure, claim p95
+is at most 250 ms, and all-mutation p99 is at most 1 second. Reports show the
+highest supported worker count and the complete saturation curve for every
+scale; users may supply and name other threshold profiles.
+
+Benchmarks are not ordinary unit tests. CI runs a fast 100/1,000-bead smoke
+matrix; scheduled or explicitly provisioned performance runs execute all five
+scales. Results are descriptive across machines and must not be compared unless
+their environment and capacity profile are compatible. Preserve JSON reports
+as build artifacts, not source-controlled performance claims.
 
 ## 4. Workspace and independent SQLite design
 
@@ -706,6 +813,9 @@ tests/
   cli/                isolated subprocess tests
   conformance/        normative lanes
   concurrency/        multiprocess tests
+  stress/             deterministic rapid-fire lifecycle correctness harness
+benches/
+  lifecycle.rs        scale/concurrency benchmark driver and JSON reports
 research/fixtures/    independent fixtures and manifests
 ```
 
@@ -743,6 +853,8 @@ Required layers:
 5. Independently generated property tests for Unicode round trips and acyclic
    graphs, if property testing is added.
 6. Package tests installing the `.crate` into a temporary Cargo root.
+7. Rapid-fire lifecycle stress and benchmark harnesses covering the matrix and
+   report contract in section 3.5.10.
 
 Critical scenarios beyond the conformance specification:
 
@@ -764,6 +876,16 @@ Critical scenarios beyond the conformance specification:
 Concurrency tests assert semantic results, not timing alone. Use barriers or
 child-process coordination, bounded deadlines, and final inspection through
 the public library API.
+
+The fast verification lane runs deterministic benchmark smoke cases at 100 and
+1,000 beads with 1, 4, and 20 workers for `claim-close`, `claim-release`, and a
+short mixed workload. The full performance lane runs 100 through 1,000,000
+beads and the worker saturation sweep. Harness self-tests verify deterministic
+dataset generation, percentile calculation, schema-stable JSON, resource-limit
+reporting, duplicate-claim detection, and final-state reconciliation. Benchmark
+setup may use an independently implemented fixture generator through the public
+store/service boundary; it must not copy another implementation's database or
+measure fixture creation as claim latency.
 
 ## 10. Marathon execution order
 
@@ -791,7 +913,9 @@ The feature ledger remains release authority. Execute it in these increments:
 11. **F011:** full NEEDLE subprocess matrix in isolated workspaces.
 12. **F012:** external profile matrices, independent fixtures, loss reports.
 13. **F013:** dry-run, path safety, atomic migration output, receipts.
-14. **F014:** package/install smoke test, licensing, provenance verification.
+14. **F015:** deterministic lifecycle stress harness, fast matrix, full-scale
+    benchmark driver, capacity calculation, and schema-stable reports.
+15. **F014:** package/install smoke test, licensing, provenance verification.
 
 One Marathon iteration implements one coherent increment, runs targeted and
 repository gates, changes a feature's `passes` and evidence only after all its
@@ -1022,10 +1146,13 @@ operation.
 
 Before `.marathon/COMPLETE`:
 
-- F001-F014 have concrete passing evidence;
+- F001-F015 have concrete passing evidence;
 - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and
   `cargo test` pass on the release commit;
 - native, interchange, NEEDLE, concurrency, and migration lanes pass;
+- the rapid-fire benchmark smoke matrix passes and a full 100-to-1,000,000-bead
+  run either completes or records explicit resource-limited results for every
+  uncompleted scale;
 - `cargo package` succeeds from a clean checkout;
 - the packaged crate installs into a temporary root and its `bead` completes
   init, create, list, claim, update, dependency, flush/import, doctor,

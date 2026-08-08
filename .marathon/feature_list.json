@@ -190,11 +190,26 @@
       "evidence": []
     },
     {
+      "id": "F015",
+      "priority": 2,
+      "description": "Rapid-fire lifecycle stress and capacity benchmark harness",
+      "spec": "docs/plan/plan.md#3510-rapid-fire-lifecycle-capacity-benchmarks",
+      "depends_on": ["F004", "F005", "F006", "F010", "F011"],
+      "acceptance": [
+        "Deterministic workloads cover claim-close, claim-release, mixed lifecycle, and dependency churn without duplicate claims or final-state divergence",
+        "Fast verification covers 100 and 1000 beads while the full driver reports every scale from 100 through 1000000 beads",
+        "Worker saturation sweeps cover independent, chain, wide-DAG, diamond, and mixed-lifecycle datasets and produce schema-stable JSON with frontier width, latency, throughput, contention, cache, resource, environment, and highest-supported-worker results",
+        "Uncompleted large-scale runs report an explicit resource-limited result instead of silently skipping a scale"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
       "id": "F014",
       "priority": 2,
       "description": "Release packaging, installation, and license verification",
       "spec": "research/specs/conformance-v1.md",
-      "depends_on": ["F010", "F011", "F012", "F013"],
+      "depends_on": ["F010", "F011", "F012", "F013", "F015"],
       "acceptance": [
         "cargo package succeeds from a clean checkout",
         "Packaged installation provides the bead executable",
