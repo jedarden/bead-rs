@@ -19,14 +19,16 @@ impl SqliteStore {
 
     /// Open a database connection at the specified path
     fn open_connection(path: &Path) -> SqliteResult<Connection> {
-        let mut conn = Connection::open(path)?;
+        let conn = Connection::open(path)?;
 
         // Configure connection
         conn.execute("PRAGMA foreign_keys = ON", [])?;
-        conn.execute("PRAGMA busy_timeout = 5000", [])?; // 5 second timeout
+        // busy_timeout returns the new value, so we need to consume the result
+        let _timeout: i64 = conn.query_row("PRAGMA busy_timeout = 5000", [], |row| row.get(0))?;
 
         // journal_mode returns a result string, so use query_row
-        let journal_mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
+        let journal_mode: String =
+            conn.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
         if journal_mode != "wal" && journal_mode != "wal (deleted)" {
             return Err(rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_MISUSE),
@@ -90,12 +92,24 @@ impl SqliteStore {
         }
 
         // Must match [a-z][a-z0-9-]*
-        if !prefix.chars().next().map(|c| c.is_ascii_lowercase()).unwrap_or(false) {
-            return Err(Error::cli_usage("Prefix must start with a lowercase letter"));
+        if !prefix
+            .chars()
+            .next()
+            .map(|c| c.is_ascii_lowercase())
+            .unwrap_or(false)
+        {
+            return Err(Error::cli_usage(
+                "Prefix must start with a lowercase letter",
+            ));
         }
 
-        if !prefix.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
-            return Err(Error::cli_usage("Prefix must contain only lowercase letters, digits, and hyphens"));
+        if !prefix
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
+            return Err(Error::cli_usage(
+                "Prefix must contain only lowercase letters, digits, and hyphens",
+            ));
         }
 
         Ok(())
@@ -135,19 +149,28 @@ impl Store for SqliteStore {
         Self::validate_prefix(prefix)?;
 
         // Get current directory as workspace root
-        let root = std::env::current_dir()
-            .map_err(|e| Error::Io {
-                path: ".".into(),
-                msg: e,
-            })?;
+        let root = std::env::current_dir().map_err(|e| Error::Io {
+            path: ".".into(),
+            msg: e,
+        })?;
 
         // Check if workspace already exists
         let config_path = root.join(".beads/config.json");
         if config_path.exists() {
-            // Load existing workspace configuration
+            // Load existing workspace configuration from database
+            let db_path = root.join(".beads/beads.db");
+            let conn = Self::open_connection(&db_path)
+                .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+            let uuid: String = conn
+                .query_row("SELECT uuid FROM workspace WHERE id = 1", [], |row| {
+                    row.get(0)
+                })
+                .map_err(|e| Error::workspace(format!("Failed to load workspace UUID: {}", e)))?;
+
             return Ok(WorkspaceConfig {
                 root,
-                uuid: String::new(), // Will be loaded from config.json
+                uuid,
                 prefix: prefix.to_string(),
             });
         }
@@ -161,22 +184,22 @@ impl Store for SqliteStore {
 
         // Initialize database
         let db_path = root.join(".beads/beads.db");
-        let mut conn = Self::open_connection(&db_path).map_err(|e| {
-            Error::Internal(anyhow::anyhow!("Failed to create database: {}", e))
-        })?;
+        let conn = Self::open_connection(&db_path)
+            .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to create database: {}", e)))?;
 
         // Apply migrations
         if let Err(e) = migrations::apply_migrations(&conn) {
-            return Err(Error::Internal(anyhow::anyhow!("Failed to apply migrations: {}", e)));
+            return Err(Error::Internal(anyhow::anyhow!(
+                "Failed to apply migrations: {}",
+                e
+            )));
         }
 
         // Initialize workspace row if it doesn't exist
         let workspace_exists: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM workspace WHERE id = 1",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM workspace WHERE id = 1", [], |row| {
+                row.get(0)
+            })
             .unwrap_or(0);
 
         if workspace_exists == 0 {
@@ -209,11 +232,10 @@ impl Store for SqliteStore {
         }
 
         // Get workspace UUID
-        let uuid: String = conn.query_row(
-            "SELECT uuid FROM workspace WHERE id = 1",
-            [],
-            |row| row.get(0),
-        )?;
+        let uuid: String =
+            conn.query_row("SELECT uuid FROM workspace WHERE id = 1", [], |row| {
+                row.get(0)
+            })?;
 
         // Update workspace with generated UUID and prefix
         conn.execute(
@@ -232,11 +254,10 @@ impl Store for SqliteStore {
                 .unwrap_or_else(|_| "unknown".to_string())
         });
 
-        std::fs::write(&config_path, config_content.to_string())
-            .map_err(|e| Error::Io {
-                path: config_path.clone(),
-                msg: e,
-            })?;
+        std::fs::write(&config_path, config_content.to_string()).map_err(|e| Error::Io {
+            path: config_path.clone(),
+            msg: e,
+        })?;
 
         Ok(WorkspaceConfig {
             root,

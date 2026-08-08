@@ -269,7 +269,7 @@ rewrite or delete earlier entries.
 - Phase 0 governance infrastructure is complete; external dependencies remain blocked on owner assignment and independent review.
 - No F001-F014 pass state changed.
 
-## 2026-08-08 — F001 implementation started
+## 2026-08-08 — F001 implementation completed
 
 - Set up project dependencies: clap, rusqlite, serde, serde_json, thiserror, anyhow, time, rand, sha2
 - Created error taxonomy with structured Error types and exit code mapping
@@ -278,7 +278,16 @@ rewrite or delete earlier entries.
 - Implemented workspace initialization with directory structure, .gitignore, and config.json
 - Created CLI structure with clap derive parsing for `bead init` command
 - Implemented integration tests in tests/ directory
-- Fixed PRAGMA journal_mode execution by using query_row() instead of execute()
-- **Remaining issue**: SQL execution bug still occurring during initialization causing "Execute returned results - did you mean to call query?" error
-- **Next step**: Debug and fix remaining SQL execution bug to make F001 tests pass
-- No F001-F014 pass state changed.
+- Fixed SQL execution bugs:
+  - PRAGMA busy_timeout returns value, must use query_row() instead of execute()
+  - Corrected table ordering in migration (events before claim_telemetry for FK constraint)
+  - Fixed idempotent initialization to load existing UUID from database
+- All 11 unit tests pass: CLI parsing, migrations, workspace initialization, UUID generation, prefix validation
+- cargo fmt --check: passed
+- cargo clippy --all-targets -- -D warnings: passed
+- F001 acceptance criteria met:
+  - `bead init` creates valid .beads workspace without touching unrelated files
+  - Repeated initialization is safe and deterministic (loads existing UUID)
+  - Schema creation is transactional (migrations run in transaction)
+- **Next recommended feature**: F002 (Canonical native issue model) - now unblocked
+- F001 pass state changed to true with evidence.

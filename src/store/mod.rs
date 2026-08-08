@@ -24,8 +24,10 @@ pub struct WorkspaceConfig {
 impl WorkspaceConfig {
     /// Discover the workspace by walking up from the current directory
     pub fn discover() -> crate::Result<Option<Self>> {
-        let cwd = std::env::current_dir()
-            .map_err(|e| crate::Error::Io { path: ".".into(), msg: e })?;
+        let cwd = std::env::current_dir().map_err(|e| crate::Error::Io {
+            path: ".".into(),
+            msg: e,
+        })?;
 
         let mut current = cwd.as_path();
         loop {
@@ -60,6 +62,7 @@ impl WorkspaceConfig {
     }
 
     /// Get the path to the SQLite database
+    #[allow(dead_code)]
     pub fn database_path(&self) -> PathBuf {
         self.root.join(".beads/beads.db")
     }

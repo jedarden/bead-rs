@@ -19,14 +19,17 @@ pub enum Error {
 
     /// Conflict, invalid transition, or dependency cycle (exit 4)
     #[error("Conflict: {0}")]
+    #[allow(dead_code)]
     Conflict(String),
 
     /// Integrity, import, or migration failure (exit 5)
     #[error("Integrity error: {0}")]
+    #[allow(dead_code)]
     Integrity(String),
 
     /// Transient database busy or I/O failure (exit 6)
     #[error("Database busy or I/O error: {0}")]
+    #[allow(dead_code)]
     DatabaseBusy(String),
 
     /// Uncategorized internal failure (exit 1)
@@ -74,16 +77,19 @@ impl Error {
     }
 
     /// Create a conflict error
+    #[allow(dead_code)]
     pub fn conflict(msg: impl Into<String>) -> Self {
         Error::Conflict(msg.into())
     }
 
     /// Create an integrity error
+    #[allow(dead_code)]
     pub fn integrity(msg: impl Into<String>) -> Self {
         Error::Integrity(msg.into())
     }
 
     /// Create a database busy error
+    #[allow(dead_code)]
     pub fn database_busy(msg: impl Into<String>) -> Self {
         Error::DatabaseBusy(msg.into())
     }

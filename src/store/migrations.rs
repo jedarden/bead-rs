@@ -11,7 +11,7 @@ pub const CURRENT_VERSION: i64 = 1;
 
 /// Apply all pending migrations to the database
 pub fn apply_migrations(conn: &Connection) -> SqliteResult<()> {
-    // Enable foreign keys
+    // Enable foreign keys (this PRAGMA doesn't return rows)
     conn.execute("PRAGMA foreign_keys = ON", [])?;
 
     // Create schema_migrations table if it doesn't exist
@@ -25,11 +25,13 @@ pub fn apply_migrations(conn: &Connection) -> SqliteResult<()> {
     )?;
 
     // Get current version
-    let current_version: i64 = conn.query_row(
-        "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
-        [],
-        |row| row.get(0),
-    ).unwrap_or(0);
+    let current_version: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
 
     // Apply each migration in order
     for version in (current_version + 1)..=CURRENT_VERSION {
@@ -107,6 +109,26 @@ CREATE TABLE IF NOT EXISTS issues (
     schema_ref TEXT DEFAULT 'urn:bead-rs:schema:issue:native-v1'
 );
 
+-- Audit events (must be created before claim_telemetry for FK constraint)
+CREATE TABLE IF NOT EXISTS events (
+    sequence INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    issue_id TEXT,
+    kind TEXT NOT NULL,
+    actor TEXT,
+    time TEXT NOT NULL,
+    detail TEXT NOT NULL,
+    FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE
+);
+
+-- Claim telemetry (references events table)
+CREATE TABLE IF NOT EXISTS claim_telemetry (
+    event_sequence INTEGER NOT NULL PRIMARY KEY,
+    model TEXT,
+    harness TEXT,
+    harness_version TEXT,
+    FOREIGN KEY (event_sequence) REFERENCES events(sequence) ON DELETE CASCADE
+);
+
 -- Issue extensions for profile-specific fields
 CREATE TABLE IF NOT EXISTS issue_extensions (
     issue_id TEXT NOT NULL,
@@ -158,26 +180,6 @@ CREATE TABLE IF NOT EXISTS issue_data (
     FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE
 );
 
--- Claim telemetry
-CREATE TABLE IF NOT EXISTS claim_telemetry (
-    event_sequence INTEGER NOT NULL PRIMARY KEY,
-    model TEXT,
-    harness TEXT,
-    harness_version TEXT,
-    FOREIGN KEY (event_sequence) REFERENCES events(sequence) ON DELETE CASCADE
-);
-
--- Audit events
-CREATE TABLE IF NOT EXISTS events (
-    sequence INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-    issue_id TEXT,
-    kind TEXT NOT NULL,
-    actor TEXT,
-    time TEXT NOT NULL,
-    detail TEXT NOT NULL,
-    FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE
-);
-
 -- Checkpoint state for issue-only JSONL
 CREATE TABLE IF NOT EXISTS checkpoint_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -201,7 +203,9 @@ CREATE INDEX IF NOT EXISTS comments_issue ON comments (issue_id, created_at);
 CREATE INDEX IF NOT EXISTS events_issue ON events (issue_id, time);
 "#;
 
-    Migration { sql: sql.to_string() }
+    Migration {
+        sql: sql.to_string(),
+    }
 }
 
 /// Calculate SHA-256 checksum of a migration
@@ -225,7 +229,7 @@ mod tests {
 
     #[test]
     fn test_apply_migrations_empty_db() {
-        let mut conn = Connection::open_in_memory().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
         conn.execute("PRAGMA foreign_keys = ON", []).unwrap();
         apply_migrations(&conn).unwrap();
 
@@ -266,7 +270,7 @@ mod tests {
 
     #[test]
     fn test_apply_migrations_idempotent() {
-        let mut conn = Connection::open_in_memory().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
         apply_migrations(&conn).unwrap();
         apply_migrations(&conn).unwrap(); // Should not fail
 

@@ -8,10 +8,7 @@ fn test_init_creates_workspace() {
     let root = temp.path();
 
     let mut cmd = Command::cargo_bin("bead").unwrap();
-    cmd.current_dir(root)
-        .arg("init")
-        .assert()
-        .success();
+    cmd.current_dir(root).arg("init").assert().success();
 
     // Check that workspace was created
     let beads_dir = root.join(".beads");
@@ -62,17 +59,11 @@ fn test_init_idempotent() {
 
     // First init
     let mut cmd = Command::cargo_bin("bead").unwrap();
-    cmd.current_dir(root)
-        .arg("init")
-        .assert()
-        .success();
+    cmd.current_dir(root).arg("init").assert().success();
 
     // Second init should succeed (idempotent)
     let mut cmd = Command::cargo_bin("bead").unwrap();
-    cmd.current_dir(root)
-        .arg("init")
-        .assert()
-        .success();
+    cmd.current_dir(root).arg("init").assert().success();
 }
 
 #[test]
@@ -81,10 +72,7 @@ fn test_init_creates_checkpoint_and_receipts_directories() {
     let root = temp.path();
 
     let mut cmd = Command::cargo_bin("bead").unwrap();
-    cmd.current_dir(root)
-        .arg("init")
-        .assert()
-        .success();
+    cmd.current_dir(root).arg("init").assert().success();
 
     // Check checkpoint directory
     let checkpoint_dir = root.join(".beads/checkpoint");
@@ -101,10 +89,7 @@ fn test_init_creates_gitignore() {
     let root = temp.path();
 
     let mut cmd = Command::cargo_bin("bead").unwrap();
-    cmd.current_dir(root)
-        .arg("init")
-        .assert()
-        .success();
+    cmd.current_dir(root).arg("init").assert().success();
 
     // Check .gitignore was created
     let gitignore_path = root.join(".beads/.gitignore");

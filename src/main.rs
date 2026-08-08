@@ -4,10 +4,10 @@ mod cli;
 mod error;
 mod store;
 
-use clap::Parser;
 use crate::cli::{Cli, Command};
 use crate::error::{Error, Result};
 use crate::store::Store;
+use clap::Parser;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -47,7 +47,10 @@ fn cmd_init(opts: cli::InitOptions) -> Result<()> {
 
     // Check if workspace already exists
     if let Some(existing_config) = store::WorkspaceConfig::discover()? {
-        eprintln!("Workspace already exists at: {}", existing_config.root.display());
+        eprintln!(
+            "Workspace already exists at: {}",
+            existing_config.root.display()
+        );
         eprintln!("Prefix: {}", existing_config.prefix);
         eprintln!("UUID: {}", existing_config.uuid);
         return Ok(());
@@ -63,4 +66,3 @@ fn cmd_init(opts: cli::InitOptions) -> Result<()> {
 
     Ok(())
 }
-

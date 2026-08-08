@@ -20,8 +20,17 @@
         "Repeated initialization is safe and deterministic",
         "Schema creation is transactional"
       ],
-      "passes": false,
-      "evidence": []
+      "passes": true,
+      "evidence": [
+        "cargo test --bin bead: 11 tests passed",
+        "cargo fmt --check: passed",
+        "cargo clippy --all-targets -- -D warnings: passed",
+        "Workspace initialization creates .beads directory structure",
+        "Idempotent initialization loads existing UUID from database",
+        "Migration 1 creates 11 tables: workspace, issues, events, claim_telemetry, issue_extensions, labels, dependencies, comments, issue_data, checkpoint_state, schema_migrations",
+        "Foreign key constraints enforced with proper table ordering",
+        "WAL mode and busy-timeout configured correctly"
+      ]
     },
     {
       "id": "F002",
