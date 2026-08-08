@@ -71,6 +71,7 @@
       "depends_on": ["F003"],
       "acceptance": [
         "Status, assignee, and notes updates are atomic",
+        "release atomically transitions in-progress work to open and unassigned with the documented idempotency, conflict, output, and audit behavior",
         "Close retains a required reason",
         "Reopen restores the documented open lifecycle state"
       ],
@@ -114,7 +115,8 @@
       "acceptance": [
         "Malformed input reports its line and activates no partial state",
         "Unknown fields survive a same-profile round trip",
-        "sync --import-only reconciles a valid checkpoint transactionally"
+        "sync --import-only requires explicit restore-into-empty or merge semantics and reconciles a valid checkpoint transactionally",
+        "Import dry-run performs full validation and reconciliation analysis with canonical counts while leaving every durable workspace byte unchanged"
       ],
       "passes": false,
       "evidence": []
@@ -142,6 +144,7 @@
       "acceptance": [
         "Capabilities identify contract and store-layout versions",
         "Atomic claim, lifecycle, checkpoint, and command support are explicit",
+        "The commands inventory exactly matches every application-defined visible public root command",
         "Unsupported profiles fail closed"
       ],
       "passes": false,
@@ -228,9 +231,9 @@
       "depends_on": ["F005", "F006", "F007", "F008", "F009", "F010"],
       "acceptance": [
         "Every flush captures all lifecycle states, complete portable bead content, dependencies, comments, structured extensions, and the continuous durable audit-event history",
-        "Native checkpoints deterministically switch from one issues.jsonl file to a manifest-backed content-addressed prefix-sharded issue and sequence-sharded event corpus at versioned size or record thresholds",
-        "Shard splits rewrite only the overflowing prefix, sealed event shards remain immutable, and interrupted publication preserves the previous verified checkpoint root",
-        "Monolithic and sharded imports validate all hashes, partitions, counts, uniqueness, event continuity, and graph semantics before activation and restore to semantically equivalent public state",
+        "Native checkpoints use an authoritative atomic current-generation pointer and deterministically switch from one issues.jsonl file to a manifest-backed content-addressed prefix-sharded issue and sequence-sharded event corpus at versioned size or record thresholds",
+        "Shard splits rewrite only the overflowing prefix, sealed event shards remain immutable, and pointer/tombstone mode transitions preserve an authoritative verified root across interruption",
+        "Explicit empty-store restore and provenance-preserving merge validate UUIDs, event identities and continuity, hashes, partitions, counts, uniqueness, replayed state, and graph semantics before activation",
         "Checkpoint artifacts are not ignored, sync reports changed Git-trackable paths, and documentation requires an external flush-before-commit workflow without bead-rs invoking Git"
       ],
       "passes": false,

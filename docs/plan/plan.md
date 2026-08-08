@@ -1,6 +1,7 @@
 # bead-rs 0.1 implementation plan
 
-Status: implementation-ready clean-room plan.
+Status: core implementation-ready; the 0.1 release remains externally blocked
+on the independently approved `br-v1` and `bf-v1` fixtures required by F012.
 
 This is the execution blueprint for the first usable `bead-rs` release. The
 installed executable is `bead`. SQLite is its authoritative live store,
@@ -30,6 +31,13 @@ conflict by correcting the plan, never by silently changing the requirement.
 
 Version 0.1 is complete when F001-F017 in `.marathon/feature_list.json` pass
 and every release gate in `.marathon/instruction.md` succeeds.
+
+“Core implementation-ready” means F001-F011, F013, and F015-F017 have enough
+clean-room specification to proceed. It is not a release-readiness claim.
+F012 cannot start its external-profile conformance implementation until the
+inputs in section 15 exist, and F014/package release cannot pass while F012 is
+blocked. No profile, fixture, evidence, or gate may be waived to turn that
+external dependency into a nominal 0.1 release.
 
 In scope:
 
@@ -157,8 +165,17 @@ the selected profile defines a mapping; they are never treated as open.
 
 `close` requires a nonblank reason, sets `closed`, clears manual blocking, and
 sets `closed_at`; assignment is retained. `reopen` sets `open`, clears closure
-metadata and manual blocking, and retains assignment. Release sets `open` and
-clears assignment.
+metadata and manual blocking, and retains assignment. `release ID` accepts an
+`in_progress` bead, sets its base state to `open`, clears its assignment, and
+leaves its last-claim sequence and attempt history intact. Releasing an already
+open, unassigned bead succeeds idempotently without advancing `updated_at` or
+appending an event. Releasing an open but assigned bead, or a `deferred` or
+`closed` bead, is an invalid-transition conflict (exit 4) and makes no change;
+callers must use the explicit lifecycle operation appropriate to that state.
+A semantic release appends one durable `released` audit event containing the
+bead ID, prior assignee, actor when known, and resulting base state, then prints
+the released ID plus LF. Validation, state change, and event append occur in
+one write transaction.
 
 ### 3.4 Dependencies and readiness
 
@@ -178,15 +195,22 @@ version 0.1 has no readiness cache.
 ### 3.5 Claim selection
 
 Claim is a server-selected scheduling operation, not a client-side list followed
-by update. Selection, final eligibility validation, assignment, scheduler-state
-advance, attempt recording, and lease creation (when requested) commit in one
-`BEGIN IMMEDIATE` transaction. Twenty competing processes must never receive
+by update. In 0.1, selection, final eligibility validation, assignment, the
+minimal claim audit record, and the `fifo-v1` tie-break state commit in one
+`BEGIN IMMEDIATE` transaction. Version 0.1 has no lease request, expiry,
+renewal, or fencing-token fields. Twenty competing processes must never receive
 the same successful issue ID.
 
-Version 0.1 implements `fifo-v1`: eligible issues sort by declared priority
+Version 0.1 implements only `fifo-v1`: eligible issues sort by declared priority
 ascending, `created_at` ascending, then ID ascending. With no eligible issue,
 claim returns exit 0 and `{}` in JSON mode without mutation. The richer policies
 below are adopted post-0.1 behavior and must not silently change `fifo-v1`.
+
+Sections 3.5.1-3.5.9 specify the R019 extension unless a paragraph explicitly
+labels a `fifo-v1` invariant. Their intelligent-policy fields, counters,
+explanations, caches, retry state, and outcome classifications are not 0.1
+schema requirements. References there to leases describe composition with the
+separate R002 extension; R019 alone neither implements nor requires leases.
 
 #### 3.5.1 Scheduling pipeline
 
@@ -198,12 +222,14 @@ Every policy uses these stages in order:
 2. **Policy ranking:** calculate a deterministic lexicographic tuple using only
    committed state, the transaction's captured selection instant, and the
    versioned workspace policy.
-3. **Final validation:** re-read the winner and relevant dependency/lease rows
+3. **Final validation:** re-read the winner and relevant dependency rows, plus
+   lease rows only when the separately implemented R002 capability is active,
    under the write transaction. Cached metrics may rank candidates but never
    establish eligibility.
 4. **Commit:** assign the actor, move to `in_progress`, increment the workspace
-   claim sequence, record the attempt/policy/factor breakdown, create any lease,
-   and append the audit event.
+   claim sequence, record the attempt/policy/factor breakdown, create a lease
+   only when the separately implemented R002 capability is requested, and
+   append the audit event.
 5. **Respond:** emit the small compatibility result or an explicitly requested
    prompt projection only after commit.
 
@@ -545,6 +571,7 @@ as build artifacts, not source-controlled performance claims.
   beads.db          authoritative native SQLite database
   issues.jsonl      small-workspace portable checkpoint
   checkpoint/
+    current.json    authoritative checkpoint-mode/generation pointer
     manifest.json   current sharded-checkpoint manifest when sharding is active
     previous.json   immediately previous verified manifest for crash recovery
     objects/        content-addressed issue and event JSONL shards
@@ -588,18 +615,18 @@ database definition.
 | --- | --- |
 | `schema_migrations` | integer version PK, applied time, migration checksum |
 | `workspace` | singleton store UUID, prefix, layout version, creation time |
-| `issues` | canonical scalars, ID PK, lifecycle checks, timestamps, ready-since, revision/attempt epoch, last claim sequence, lifetime/consecutive attempt counters, retry/quarantine state |
+| `issues` | canonical scalars, ID PK, lifecycle checks, timestamps; no lease, intelligent-policy, retry, quarantine, or revision-guard columns in migration 1 |
 | `issue_extensions` | issue ID + key PK, canonical JSON, origin profile |
 | `labels` | issue ID + label PK, issue FK cascade |
 | `dependencies` | blocked + blocker + kind PK, optional canonical condition JSON, two issue FKs cascade, no self-edge |
 | `comments` | random ID, issue ID, author, immutable body, reply-to ID, resolution state, creation time |
 | `issue_data` | issue ID + namespace PK, schema reference, canonical JSON value, issue FK cascade |
 | `claim_telemetry` | issue ID, claim time, assignee, optional model/harness/version |
-| `claim_attempts` | immutable attempt ID, issue/epoch, workspace claim sequence, actor, policy/factor snapshot, outcome class, lease/context metadata |
-| `scheduler_state` | singleton policy/version, claim sequence, retry cadence position, graph revision, configuration |
+| `claim_attempts` | minimal immutable successful-claim audit identity, issue, actor, time, and `fifo-v1` tie-break snapshot; richer outcomes/lease/context fields require R002 or R019 migrations |
+| `scheduler_state` | only state proven necessary for deterministic `fifo-v1`; intelligent-policy sequence, retry cadence, graph revision, and configuration require R019 |
 | `scheduling_metrics` | optional derived issue/graph revision, unlock/critical-path metrics; never authoritative for eligibility |
-| `events` | integer sequence, issue ID, kind, actor, time, canonical JSON detail |
-| `checkpoint_state` | singleton last hash, event sequence, export time |
+| `events` | local ingestion sequence plus immutable origin store UUID, origin sequence, event hash, optional issue ID, kind, actor, time, canonical JSON detail, and import provenance |
+| `checkpoint_state` | singleton current generation/mode/root hash, snapshot and event sequences, export time, tombstone/changed-path state |
 
 Add only indexes justified by v0.1 queries:
 
@@ -629,11 +656,12 @@ Human output may evolve; named-profile machine output is stable.
 | Command | Version 0.1 behavior |
 | --- | --- |
 | `bead init [--prefix P]` | initialize or verify workspace |
-| `bead create --title T --description D [--label L]...` | create and print only ID plus LF |
+| `bead create --title T [--description D] [--label L]...` | create with an empty description when omitted; print only ID plus LF |
 | `bead list --json [--status S] [--assignee A] --limit N` | records in claim order; limit 0-999999 |
 | `bead show ID --json` | one-element JSON array for NEEDLE v1 |
 | `bead claim --assignee A [telemetry] --json` | atomic claim; one JSON object |
 | `bead update ID [--status S] [--assignee A] [--notes N]` | atomically apply supplied changes |
+| `bead release ID` | atomically return claimed work to open and unassigned; print ID plus LF |
 | `bead reopen ID` | restore open lifecycle |
 | `bead close ID --reason TEXT` | finish with retained reason |
 | `bead label add ID --label L` | idempotent presence |
@@ -641,7 +669,7 @@ Human output may evolve; named-profile machine output is stable.
 | `bead dep add BLOCKED BLOCKER --type KIND` | add canonical edge |
 | `bead dep remove BLOCKED BLOCKER [--type KIND]` | remove matching edge(s) |
 | `bead sync --flush-only [--profile P]` | atomic checkpoint export |
-| `bead sync --import-only [--profile P]` | transactional reconciliation |
+| `bead sync --import-only (--restore-into-empty\|--merge) [--profile P] [--dry-run]` | validated restore or transactional reconciliation/analysis |
 | `bead sync --status --format json` | freshness, root hash, mode, and Git-trackable changed paths |
 | `bead doctor [--repair]` | diagnose; optionally perform safe repairs |
 | `bead capabilities --format json --profile P` | versioned capabilities and supported schema references |
@@ -762,6 +790,13 @@ artifacts. Snapshot tests normalize only the version/date fields explicitly
 declared variable. A packaging test verifies every expected page is present in
 the `.crate` and cross-links resolve to an existing page.
 
+The public lifecycle inventory includes `release` as its own root command.
+Consequently root help, both help spellings, generated `bead-release(1)`, the
+end-to-end example, package-content checks, and the capability command list all
+name `release ID` explicitly. This native addition does not alter NEEDLE v1's
+required invocation matrix; NEEDLE consumers that do not call release remain
+compatible, while capability-aware consumers can discover it additively.
+
 ## 6. JSONL backup and compatibility profiles
 
 ### 6.1 Canonical JSONL
@@ -800,9 +835,17 @@ thresholds are versioned configuration and recorded in the manifest. Operators
 may force monolithic or sharded output, but forcing a monolith never bypasses
 record/byte safety limits.
 
-The sharded format uses `.beads/checkpoint/manifest.json` as its sole root of
-trust. It records format/schema version, store UUID, snapshot and maximum event
-sequence, creation time, profile, complete record/event counts, partition
+All native checkpoints use `.beads/checkpoint/current.json` as the sole
+authoritative discovery pointer. It canonically records a generation ID,
+`monolithic` or `sharded` mode, store UUID, snapshot sequence, active-root path
+and SHA-256, and a deterministic set of paths added, replaced, and deleted by
+that generation. In monolithic mode the active root is `.beads/issues.jsonl`;
+in sharded mode it is `.beads/checkpoint/manifest.json`. Files not selected by
+`current.json` are inactive even if they remain after a crash. Import never
+chooses between roots by existence or modification time.
+
+The sharded manifest records format/schema version, store UUID, snapshot and
+maximum event sequence, creation time, profile, complete record/event counts, partition
 algorithm and thresholds, and every referenced object path, byte length,
 SHA-256, record range, and semantic role. The manifest itself has a canonical
 SHA-256 reported by `sync --status`. Import rejects missing, extra-referenced,
@@ -832,11 +875,20 @@ issue shard.
 
 Object filenames contain their content SHA-256 and live under
 `.beads/checkpoint/objects/`; identical content is reused. Before publishing a
-new root, preserve the old root atomically as `previous.json`. Publish
-`manifest.json` only after every referenced object is durable and verified. The
-working tree may remove objects unreferenced by both manifests after the switch;
-Git history retains committed prior objects. Interrupted flushes preserve at
-least one valid manifest and its referenced objects.
+new root, preserve the old sharded manifest as `previous.json`. Publish each
+data root only after all of its content is durable and verified, then atomically
+replace `current.json` as the commit point. A mode transition publishes a new
+generation whose changed-path set includes the new root and objects, the
+pointer replacement, and tombstones (deletion entries) for the formerly active
+root and any objects referenced by neither the new generation nor the retained
+previous manifest. Only after the pointer is durable may those tombstoned paths
+be removed. Thus a crash before the pointer leaves the old mode authoritative;
+a crash afterward leaves the new mode authoritative and cleanup safely
+repeatable. `sync --status` reports unresolved tombstones as not ready to
+commit, and its changed paths include deletions as well as additions and
+modifications. One external Git commit must contain that entire set. Git
+history retains previously committed roots and objects; `bead-rs` itself never
+runs Git.
 
 The monolithic and sharded representations are semantically equivalent. A
 fresh store restored from either must produce the same canonical public state
@@ -864,9 +916,11 @@ native SQLite backup format.
    temporary; reuse already verified objects without rewriting them.
 5. Flush and `sync_all` every new file, verify lengths/hashes/counts, then sync
    its parent directory where supported.
-6. Publish the monolith or canonical manifest last through atomic replacement,
-   then sync the parent directory. Never expose a manifest referencing an
-   incomplete object set.
+6. Publish the monolith or canonical manifest, verify it, then atomically
+   replace `current.json` as the generation commit point and sync the parent
+   directory. Apply only the pointer-declared tombstones afterward. Never
+   expose an authoritative pointer referencing an incomplete root or object
+   set.
 7. Record root hash, snapshot sequence, event range, mode, partition plan, and
    time in a short write transaction.
 8. Emit machine-readable freshness and changed-path information so an external
@@ -888,19 +942,49 @@ remote history without making the bead CLI a Git client.
 
 ### 6.3 Import reconciliation
 
-`sync --import-only` discovers and fully validates either the sharded manifest
-or `.beads/issues.jsonl` before activation; simultaneous roots with unequal
-semantics are an explicit conflict. Default safety limits are 1 million issue
-records, 16 MiB per line, 4 GiB total, and `serde_json`'s bounded nesting
-behavior. Event limits are independently configured and never inferred from
-the issue-record limit.
+`sync --import-only` requires exactly one explicit semantic mode:
+`--restore-into-empty` or `--merge`. It follows `checkpoint/current.json` and
+fully validates the selected root before activation. A legacy monolith without
+a pointer may be accepted only through an explicit caller-selected input path;
+simultaneous files are never heuristically ranked. Default safety limits are 1
+million issue records, 16 MiB per line, 4 GiB total, and `serde_json`'s bounded
+nesting behavior. Event limits are independently configured and never inferred
+from the issue-record limit.
 
 Sharded import streams objects in manifest order, verifies each content hash
 and partition membership, and rejects duplicate issue IDs or event sequences
 across shards. Validation of the entire manifest, graph, event continuity, and
 semantic state completes before the activation transaction.
 
-In one write transaction:
+Every native event has immutable identity
+`(origin_store_uuid, origin_event_sequence, event_sha256)`. The hash covers the
+canonical public event excluding local import-envelope fields. Native events
+use the local store UUID as their origin. The manifest declares the maximum
+sequence retained for every represented origin, and a checkpoint contains
+exactly one event for every sequence from 1 through each declared maximum; a
+repeated `(origin_store_uuid, origin_event_sequence)` with a different hash is
+divergence, not a timestamp conflict. Imported events retain origin
+identity and order. When merged into another store they also receive a local
+monotonic ingestion sequence and provenance containing source root hash,
+source store UUID, import receipt ID, importing actor, and import time. That
+envelope is itself audited without rewriting the imported actor or time.
+
+`--restore-into-empty` requires a newly initialized store with no semantic
+mutations. In one transaction it adopts the checkpoint store UUID, restores
+issues and the exact contiguous native event sequence, verifies that replayed
+event outcomes equal the checkpoint snapshot, records recovery provenance in a
+separate local restore receipt, and activates the result. The receipt does not
+alter the restored historical sequence. Any nonempty target, UUID ambiguity,
+sequence gap, replay mismatch, or root-hash mismatch fails without mutation.
+
+`--merge` preserves the target store UUID and never presents foreign history
+as locally originated. For a same-UUID checkpoint, target and input event
+streams must share an identical hash prefix; input may extend the target, but a
+gap, rewrite, or different event at the same origin sequence rejects the whole
+import. An older identical prefix is an auditable no-op. For a different UUID,
+origin identities must be new or byte-identical to events already ingested
+from that origin; any identity/hash mismatch is divergence. After those
+history checks, one write transaction:
 
 - insert IDs absent from native state;
 - replace only when imported `updated_at` is later;
@@ -909,10 +993,32 @@ In one write transaction:
   back the entire import;
 - never delete native issues because they are absent from the checkpoint;
 - validate endpoints and cycles against the final staged graph;
-- preserve unknown values under their source profile.
+- preserve unknown values under their source profile;
+- append accepted origin events in origin order with their provenance
+  envelopes, followed by one local import-summary audit event containing only
+  counts, source identity/root hash, receipt ID, and reconciliation result.
 
-After commit, report inserted, updated, retained, and conflicted counts.
-Dry-run performs the same staging and conflict analysis without activation.
+Snapshot timestamps never authorize discarding, synthesizing, or reordering
+events. If snapshot reconciliation would produce state inconsistent with the
+accepted event stream, import reports semantic divergence and rolls back.
+After commit, report inserted, updated, retained, conflicted, duplicate-event,
+and imported-event counts plus source/target UUIDs and the receipt ID.
+With `--dry-run`, perform the same input discovery, limits, parsing, hash and
+schema validation, staging, event replay/provenance checks, graph checks, and
+reconciliation/conflict analysis without entering an activation transaction.
+It must not change SQLite rows,
+events, sequences, checkpoint metadata or files, receipts, or any other durable
+workspace state; operation-owned scratch material is removed before return.
+Dry-run emits one canonical JSON summary on stdout, with `dry_run: true` and
+the inserted, updated, retained, and conflicted counts that would result; a
+real import reports the same fields with `dry_run: false` in its selected
+renderer. A clean analysis exits 0. A reconciliation conflict exits 4, and
+malformed/integrity-invalid input exits 5; when analysis reaches the
+reconciliation-report stage, its JSON summary remains valid even on exit 4,
+and diagnostics remain on stderr. Tests
+compare dry-run counts with an immediate real import against unchanged state
+and assert byte-for-byte workspace immutability after both successful and
+failed dry-runs.
 
 ### 6.4 Profile rules
 
@@ -1142,18 +1248,31 @@ may take multiple iterations and remains false until complete.
   "checkpoint_modes": ["flush-only", "import-only"],
   "checkpoint_formats": ["monolithic-jsonl-v1", "sharded-jsonl-v1"],
   "schemas": ["urn:bead-rs:schema:issue:native-v1"],
-  "commands": ["claim", "close", "create", "dep", "doctor", "label", "list", "reopen", "schema", "show", "sync", "update"]
+  "commands": ["capabilities", "claim", "close", "create", "dep", "doctor", "init", "label", "list", "migrate", "release", "reopen", "schema", "show", "sync", "update"]
 }
 ```
 
-Arrays are lexically stable. Additive fields are allowed. An unsupported
-profile exits nonzero instead of returning mislabeled native capabilities.
+Arrays are lexically stable. `commands` is the lexical, duplicate-free set of
+every application-defined visible public root subcommand in the same
+`clap::Command` tree used for help, including discovery and administrative
+commands but excluding clap's generated `help` pseudo-command; `--help` and
+`--version` are flags, not root commands. Nested paths are described by
+additive structured fields when needed rather than replacing their root entry.
+Tests compare that array directly with the visible application root command
+tree, so a command cannot ship undiscoverably. Additive fields are
+allowed. An unsupported profile exits nonzero instead of returning mislabeled
+native capabilities. For `needle-v1`, this complete native inventory is an
+additive handshake: the commands required by the normative NEEDLE v1 contract
+remain present with their specified syntax and envelopes, and extra native
+commands do not imply that NEEDLE must invoke them.
 
 ## 12. Adopted post-0.1 roadmap
 
-These features are accepted for development after the F001-F017 release core.
-They require their own normative specifications, conformance scenarios, and
-future Marathon ledger entries before implementation begins.
+Items marked **extension** are accepted only after the F001-F017 release core
+and require their own normative specifications, conformance scenarios,
+migrations where applicable, and future Marathon ledger entries. Items marked
+**core incorporated** name requirements already owned by F001-F017; they are
+traceability notes, not permission to defer or reimplement the core subset.
 
 ### R001 — Explain claim and readiness decisions
 
@@ -1184,37 +1303,37 @@ local views. It must never expose raw SQL or the private schema. A deliberately
 limited first grammar replaces fragile shell filtering while keeping query
 cost and compatibility bounded.
 
-### R005 — Machine-readable schemas and per-bead schema references
+### R005 — Machine-readable schemas and per-bead schema references (core incorporated)
 
-Ship immutable JSON Schema documents for public issue records, capabilities,
-migration receipts, decision traces, and future bulk/error formats. Every
-native bead carries `schema_ref`, allowing consumers to identify exactly which
-public schema governs it. `bead schema` resolves supported identifiers, while
-capabilities and migration receipts enumerate them. This gives interoperating
-tools an explicit validation contract without making SQLite an API.
+F010 and the 0.1 domain/command contract already require immutable schemas for
+native issue records, capabilities, and migration receipts, per-bead
+`schema_ref`, schema resolution, and capability/receipt enumeration. R005 is
+superseded for that subset. Its extension is limited to schemas for R001
+decision traces and future bulk/error documents.
 
-### R006 — Semantic backup completeness proof
+### R006 — Semantic backup completeness proof (core incorporated)
 
-Reconstruct a disposable store from JSONL, re-export it, and compare every
-durable user-visible fact against the source snapshot. Equality covers unknown
-extensions, dependencies, complete comments, structured data, schema
-references, revisions, and lifecycle state. This is the evidence that JSONL is
-a lossless recovery backup rather than merely a convenient export.
+F017 already requires restore/re-export semantic equivalence for every 0.1
+durable fact, including lifecycle, dependencies, comments, structured data,
+schema references, unknown extensions, and forensic events. R006 is superseded
+for that subset. Its extension covers fields introduced after 0.1, such as
+R003 revisions, without deferring the F017 proof.
 
-### R007 — Atomic versioned backup generations
+### R007 — Atomic versioned backup generations (core incorporated)
 
-Write JSONL and its content-addressed manifest into a new generation, verify
-them, then atomically switch the current-generation pointer while retaining the
-previous verified generation. Preserve `.beads/issues.jsonl` as the current
-compatibility view. This prevents crashes from silently pairing JSONL with the
-wrong manifest.
+F017 and sections 6.1.1-6.2 already require verified generations, an atomic
+mode/generation pointer, a retained previous sharded manifest, and the
+monolithic compatibility representation. R007 is superseded for 0.1. Its
+extension is retention beyond one recovery generation and explicit
+compaction/retention receipts.
 
-### R008 — Backup freshness contract
+### R008 — Backup freshness contract (core incorporated)
 
-Expose live sequence, backed-up sequence, backup age, hash, and verification
-state through `sync --status`. Support an optional maximum age/event-gap policy
-and explicit backup preconditions for selected risky mutations. Visibility is
-the default; enforcement must be intentionally configured.
+The 0.1 `sync --status` already exposes live and backed-up sequences, age, root
+hash, mode, verification/readiness, tombstones, and Git-trackable changed
+paths. R008 is superseded for visibility. Its extension is intentionally
+configured maximum-age/event-gap enforcement and explicit backup preconditions
+for selected risky mutations.
 
 ### R009 — Schema negotiation catalog
 
@@ -1223,13 +1342,22 @@ and consumers negotiate only an exact mutual identifier and report read-only or
 lossy support explicitly. Do not infer compatibility from similar names or
 schema structure.
 
-### R010 — Portable threaded comments
+### R010 — Comment mutation and richer threaded-comment workflow (core incorporated, extension scoped)
 
-Add immutable comment bodies, authors, stable IDs, reply relationships, and
-resolution state. JSONL backup always includes the complete ordered comment
-history. Normal `list` and `show` default to `--comments none`, may expose only
-counts, and accept `--comments unresolved` or `--comments all`; therefore a
-retriever controls whether conversation context enters its prompt.
+Version 0.1 already preserves imported immutable comment bodies, authors,
+stable IDs, reply relationships, and resolution state as normalized child
+records; includes their complete ordered history in JSONL backup and restore;
+and projects them read-only through `list` and `show`. Those commands default
+to `--comments none` (metadata/counts may remain visible) and accept
+`--comments unresolved` or `--comments all`, so a retriever controls whether
+conversation bodies enter its prompt. Import, export, and projection must not
+drop or rewrite comments merely because 0.1 has no comment mutation command.
+
+This roadmap item adds the first public comment mutation operations (including
+create, reply, and resolution changes), their authorization/validation rules,
+audit events, help/man pages, and stable machine results. Until that separate
+specification and ledger work lands, comments are portable and readable but
+cannot be created, edited, resolved, or deleted through the native 0.1 CLI.
 
 ### R011 — Namespaced external references
 
@@ -1238,12 +1366,13 @@ commit identifiers without replacing native bead IDs or resolving anything
 over the network. Optional namespace-scoped uniqueness supports reliable
 deduplication and cross-tool recognition without title heuristics.
 
-### R012 — Schema-bound typed annotations and structured data
+### R012 — Schema-bound typed annotations and structured data (core incorporated)
 
-Add a `data` object containing namespaced envelopes with their own immutable
-`schema_ref` and JSON value. Issue types may constrain allowed namespaces and
-schemas. Values round-trip through backup and profiles, but schemas validate
-data only—they cannot execute code, define lifecycle, or expose SQLite.
+The 0.1 model and backup already require namespaced `data` envelopes with an
+immutable `schema_ref`, JSON values, round-trip preservation, and nonexecuting
+validation. R012 is superseded for that subset. Its extension is limited to
+issue-type constraints over allowed namespaces and schemas; public CRUD remains
+separately scoped by R018.
 
 ### R013 — Cursor-based local change feed
 
@@ -1291,15 +1420,19 @@ preservable for interchange but fail closed for native mutation. This is the
 general mechanism for adding structured information to a bead JSON object
 without turning arbitrary fields or the SQLite layout into an API.
 
-### R019 — Intelligent, aging, rotating, failure-aware claim scheduling
+### R019 — Intelligent, aging, rotating, failure-aware claim scheduling (extension)
 
-Implement the versioned scheduling contract in section 3.5: graph-unlock
+Core incorporates only atomic eligibility and immutable `fifo-v1`
+priority/creation/ID ordering with its minimal claim audit. R019 implements the
+post-0.1 portions of section 3.5: graph-unlock
 impact, bounded ready-age promotion, least-recently-served rotation, unproven
 work preference, classified failure tiers, retry cadence, quarantine, context
 fit, atomic selection, and semantic explanations. Ship `fifo-v1` unchanged,
 then independently specify and conform `aging-v1`, `impact-v1`, `rotation-v1`,
 and `balanced-v1` before enabling them. `balanced-v1` becomes a default only
-through an explicit release/configuration decision, never silently.
+through an explicit release/configuration decision, never silently. R019 adds
+no lease or fencing fields; those belong exclusively to R002 and compose only
+when both capabilities are installed.
 
 ### R020 — Cross-profile semantic comparison
 
@@ -1352,6 +1485,9 @@ operation.
 Before `.marathon/COMPLETE`:
 
 - F001-F017 have concrete passing evidence;
+- F012 includes independently approved `br-v1` and `bf-v1` fixture manifests,
+  full matrices, and loss reports; absence of either external input blocks the
+  release rather than narrowing its profile claims;
 - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and
   `cargo test` pass on the release commit;
 - native, interchange, NEEDLE, concurrency, and migration lanes pass;

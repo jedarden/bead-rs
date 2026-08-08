@@ -175,3 +175,17 @@ rewrite or delete earlier entries.
   workflow and mirrored to GitHub; bead-rs itself never commits or pushes.
 - Added F017 and made packaging depend on its verified implementation.
 - No feature pass state changed.
+
+## 2026-08-08 — Gap-review round 1
+
+- Clarified that the native core is implementation-ready while the 0.1 release
+  remains blocked on independently approved F012 external-profile fixtures.
+- Separated minimal 0.1 FIFO claiming from post-0.1 intelligent scheduling and
+  lease/fencing fields, and marked incorporated roadmap subsets explicitly.
+- Defined native `release`, optional create descriptions, core read-only comment
+  projections, import dry-run, and a complete capabilities command inventory.
+- Added an authoritative checkpoint generation/mode pointer with atomic mode
+  transitions, tombstones, and complete Git changed-path semantics.
+- Split forensic import into exact empty-store restore and provenance-preserving
+  merge with UUID, event identity, continuity, replay, and divergence rules.
+- No feature pass state changed.
