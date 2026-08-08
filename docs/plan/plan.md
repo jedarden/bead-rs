@@ -1,19 +1,23 @@
 # bead-rs 0.1 implementation plan
 
-Plan revision: 2
+Plan revision: 3
 
 As of: 2026-08-08
 
 Status owner: bead-rs release owner
 
 Decision authority: accepted ADRs explain choices; normative files under
-`research/specs/` define behavior; this plan defines delivery; the active
-execution ledger defines work state.
+`research/specs/` define behavior; this plan defines delivery; after the final
+G4 handoff, native beads and generated release evidence define work state.
 
-Status: partially implementation-ready. F017 is specification-blocked pending
-an independently reviewed normative `research/specs/checkpoint-set-v1.md`, and
-the 0.1 release is also externally blocked on the independently approved
-`br-v1` and `bf-v1` fixtures required by F012.
+Status: bootstrap MVP and Gates G1-G4 complete. The final handoff is recorded
+at commit `ccb2c4e4304f7d69ecf0d9fedbe45d6c03e4c3f3`; native beads are now the
+sole mutable work-state authority and the Marathon ledger is frozen audit
+input. Version 0.1 remains incomplete: F012, F013, F015, F016, F017, and F014
+still require passing evidence. F017 is specification-blocked pending an
+independently reviewed normative `research/specs/checkpoint-set-v1.md`, and
+F012 is externally blocked on independently approved `br-v1` and `bf-v1`
+fixtures.
 
 This is the execution blueprint for the first usable `bead-rs` release. The
 installed executable is `bead`. SQLite is its authoritative live store,
@@ -48,6 +52,11 @@ active traceability system and every final release gate succeeds. Before G4,
 native-bead mapping and evidence are authoritative; the frozen Marathon ledger
 is an audit input, not a second mutable status store.
 
+G4 completed on 2026-08-08. The bootstrap artifact passed the governed
+self-hosting handoff with 181 tests, including ready-frontier regression
+coverage. This establishes an MVP artifact suitable for NEEDLE execution, but
+does not satisfy G5 or authorize a `0.1.0` compatibility/release claim.
+
 Delivery has three distinct milestones that must not be conflated:
 
 1. **Bootstrap MVP:** F001-F011 provide a native store, issue CRUD and graph
@@ -76,10 +85,10 @@ users are local coding-agent operators and NEEDLE workers that need a
 deterministic, recoverable, auditable work queue. Materializing plan prose as
 beads is representation evidence only, never implementation evidence.
 
-“Partially implementation-ready” means F001-F011, F015, and F016 have enough
-clean-room specification to proceed. F013's design is ready but its execution
-depends on the blocked F012 profiles. This is not a release-readiness claim.
-F017 is a design proposal only: implementation must not begin until the
+The remaining implementation-ready work includes F015 and the portions of
+F016 that do not require F013. F013's design is ready but its execution depends
+on the blocked F012 profiles. This is not a release-readiness claim. F017 is a
+design proposal only: implementation must not begin until the
 new normative `research/specs/checkpoint-set-v1.md` exists and has been
 independently reviewed. Plan prose cannot substitute for that specification.
 F012 cannot start its external-profile conformance implementation until the
@@ -1658,6 +1667,12 @@ artifact and public CLI in disposable paths. It must prove:
 
 ## 10. Marathon execution order
 
+Phases 0-4 and Gates G0-G4 are complete and retained below as the immutable
+bootstrap and handoff history. Active execution begins at Phase 5 under NEEDLE
+and native bead authority. Do not relaunch Marathon or mutate its frozen
+feature ledger to track post-handoff completion; generate release evidence
+from the native bead mapping and final artifact instead.
+
 Marathon is the bootstrap mechanism, not the permanent coordinator. The
 feature ledger remains execution authority through Gate G3. Gate G4 transfers
 that authority once, explicitly, to the native bead workspace. The source plan,
@@ -1667,7 +1682,7 @@ competing ledgers. Subsequent feature evidence lives on the mapped native beads
 and in a generated release-evidence report; it is never hand-maintained in both
 stores.
 
-Before implementation resumes, synchronize `.marathon/feature_list.json`,
+Before the bootstrap implementation began, synchronize `.marathon/feature_list.json`,
 `.marathon/instruction.md`, the Marathon runner/watcher, and documentation with
 these gates. A prose-only phase change is invalid. `.marathon/COMPLETE` retains
 its existing meaning of a fully verified version 0.1; use a distinct committed
@@ -2322,21 +2337,24 @@ Native SQLite backup/restore is rejected. Deterministic JSONL flush/import is
 the backup and recovery contract; SQLite exists primarily to provide ACID live
 operation.
 
-## 15. Inputs still required for external profiles
+## 15. Inputs still required for version 0.1
 
-The core can proceed now. F012 still needs complete independently approved
-field/nullability/status/dependency fixtures for `br-v1` and `bf-v1`. F014
-also needs a consumer-side NEEDLE run if its deployment harness imposes a
-requirement absent from the v1 contract.
+The bootstrap core is complete. F012 still needs complete independently
+approved field/nullability/status/dependency fixtures for `br-v1` and `bf-v1`.
+F017 still needs an independently authored and reviewed normative
+`checkpoint-set-v1.md` plus conformance fixtures. F014 also needs a
+consumer-side NEEDLE run if its deployment harness imposes a requirement
+absent from the v1 contract.
 
-Before G0 passes, the release owner must name separate accountable authors and
-independent approvers for the `br-v1` fixtures, `bf-v1` fixtures, and
-`checkpoint-set-v1.md`. “Independent approval” means the reviewer did not
-author the artifact, verifies its clean-room provenance and requirement
-coverage, and records the reviewed hash and decision. The owner rechecks each
-blocked input at the entry to Phase 5 and whenever its source specification
-changes; there is no time-based waiver. The NEEDLE adapter owner is separately
-accountable for the consumer-side suite and native backend used at G2/G4/G5.
+Before activating F012 or F017 from deferred state, the release owner must
+confirm separate accountable authors and independent approvers for the
+`br-v1` fixtures, `bf-v1` fixtures, and `checkpoint-set-v1.md`. “Independent
+approval” means the reviewer did not author the artifact, verifies its
+clean-room provenance and requirement coverage, and records the reviewed hash
+and decision. The owner rechecks each blocked input at Phase 5 entry and
+whenever its source specification changes; there is no time-based waiver. The
+NEEDLE adapter owner is separately accountable for the consumer-side suite and
+native backend used at G5.
 
 Do not guess missing details. Record new sanitized observable facts in a
 versioned `research/specs/` file, review them independently, then extend only
