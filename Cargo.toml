@@ -1,0 +1,19 @@
+[package]
+name = "bead-rs"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+authors = ["Jed Arden <github@jedarden.com>"]
+description = "Clean-room task coordination for agent fleets"
+license = "Apache-2.0"
+repository = "https://github.com/jedarden/bead-rs"
+readme = "README.md"
+keywords = ["agents", "cli", "issues", "sqlite", "task-tracking"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "bead"
+path = "src/main.rs"
+
+[dependencies]
+
