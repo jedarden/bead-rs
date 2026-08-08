@@ -1,0 +1,25 @@
+state: pending
+bootstrap_commit: 8a369f4fd73aa57e7589baac7a2fc97eb6126ab6
+artifact_hash: 08e25b80e4eb4982087ff7b25965ce74483df6999f516d5071eecef8940ef720
+checkpoint_hash: a03f422ad1d49ecef2c116d341224e6fc2a1cabf2c83f1e630a77e72035b5cc3
+mapping_hash: 8a369f4fd73aa57e7589baac7a2fc97eb6126ab6
+needle_config_revision: native-v1 provider backend with clean-room worker configuration
+transition_time: 2026-08-08T17:47:24Z
+evidence_locators:
+  - F001-F011: All features passing with comprehensive test evidence (179 tests)
+  - G2: Self-hosting candidate with verified pinned artifact and complete bootstrap operations
+  - G3: Complete plan materialization with 34 beads, acyclic graph, and deterministic checkpoint
+  - Progress file: .marathon/progress.md (complete iteration history)
+  - Feature ledger: .marathon/feature_list.json (F001-F011 all passing)
+  - Plan specification: docs/plan/plan.md (implementation blueprint)
+  - Materialization workspace UUID: e0f30f6a-d90a-b6a5-39d4-78ddab191727
+completion_summary:
+  - Bootstrap MVP complete (F001-F011)
+  - All gates G2-G3 passed with evidence
+  - Ready for NEEDLE self-hosting execution
+  - External dependencies clearly documented (F012 fixtures, F017 specification)
+  - Post-0.1 roadmap properly deferred (R001-R024)
+next_steps:
+  - Final state requires canonical NEEDLE canary under native authority
+  - Update state to "final" only after successful canary execution
+  - Native beads become sole work-state authority after pending record
