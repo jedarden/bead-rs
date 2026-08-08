@@ -100,7 +100,7 @@ fn needle_v1_create_command() {
     // Verify issue was created by calling show
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["show", &issue_id, "--json"])
+        .args(["show", issue_id, "--json"])
         .assert()
         .success()
         .stdout(predicates::str::contains(issue_id));
@@ -136,7 +136,7 @@ fn needle_v1_claim_command() {
     // Verify the issue is now assigned
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["show", &issue_id, "--json"])
+        .args(["show", issue_id, "--json"])
         .assert()
         .success()
         .stdout(predicates::str::contains("needle-worker"));
@@ -208,21 +208,21 @@ fn needle_v1_lifecycle_commands() {
     // Test update command as subprocess
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["update", &issue_id, "--notes", "Test notes"])
+        .args(["update", issue_id, "--notes", "Test notes"])
         .assert()
         .success();
 
     // Test release command as subprocess
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["release", &issue_id])
+        .args(["release", issue_id])
         .assert()
         .success();
 
     // Verify issue is now open and unassigned
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["show", &issue_id, "--json"])
+        .args(["show", issue_id, "--json"])
         .assert()
         .success()
         .stdout(predicates::str::contains("\"assignee\":null"))
@@ -231,14 +231,14 @@ fn needle_v1_lifecycle_commands() {
     // Test close command as subprocess
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["close", &issue_id, "--reason", "Test closure"])
+        .args(["close", issue_id, "--reason", "Test closure"])
         .assert()
         .success();
 
     // Verify issue is now closed
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["show", &issue_id, "--json"])
+        .args(["show", issue_id, "--json"])
         .assert()
         .success()
         .stdout(predicates::str::contains("\"status\":\"closed\""));
@@ -246,14 +246,14 @@ fn needle_v1_lifecycle_commands() {
     // Test reopen command as subprocess
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["reopen", &issue_id])
+        .args(["reopen", issue_id])
         .assert()
         .success();
 
     // Verify issue is now open again
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["show", &issue_id, "--json"])
+        .args(["show", issue_id, "--json"])
         .assert()
         .success()
         .stdout(predicates::str::contains("\"status\":\"open\""));
@@ -299,7 +299,7 @@ fn needle_v1_dependency_commands() {
     // Verify dependency was created
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["show", &blocked, "--json"])
+        .args(["show", blocked, "--json"])
         .assert()
         .success()
         .stdout(predicates::str::contains(blocker));
@@ -307,14 +307,14 @@ fn needle_v1_dependency_commands() {
     // Test label add command as subprocess
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["label", "add", &blocked, "--label", "dependency-test"])
+        .args(["label", "add", blocked, "--label", "dependency-test"])
         .assert()
         .success();
 
     // Verify label was added
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["show", &blocked, "--json"])
+        .args(["show", blocked, "--json"])
         .assert()
         .success()
         .stdout(predicates::str::contains("dependency-test"));
@@ -503,7 +503,7 @@ fn needle_v1_workspace_isolation() {
     std::env::set_current_dir(root1).unwrap();
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["show", &issue2])
+        .args(["show", issue2])
         .assert()
         .failure();
 

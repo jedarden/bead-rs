@@ -598,4 +598,50 @@ rewrite or delete earlier entries.
 - **Next required action**: Complete plan Gates G2-G4 and reach BOOTSTRAP_HANDOFF
 - F011 pass state changed to true with evidence.
 
+## 2026-08-08 — Gate G2 completed: Self-hosting candidate
+
+- Fixed clippy warnings in tests/needle_v1_compatibility.rs (13 needless_borrow violations)
+  * Changed all `&variable` to `variable` in Command::args() arrays
+  * All warnings resolved, clippy passes with strict `-D warnings` flag
+- Built and installed pinned artifact to temporary Cargo root (/tmp/tmp.tI6ENXJDSV)
+- **Artifact Information**:
+  * Commit hash: 16caee4b3a542ea932b14250fc97af76d435dcfc
+  * Binary SHA-256: 08e25b80e4eb4982087ff7b25965ce74483df6999f516d5071eecef8940ef720
+  * Binary size: 4,072,376 bytes
+  * Version: bead 0.1.0
+- **Complete bootstrap operations verified from installed binary**:
+  ✓ Workspace initialization (init, init --prefix)
+  ✓ Issue creation (create with title, priority, description, labels)
+  ✓ Issue listing (list --json, --limit, --ready, --status)
+  ✓ Issue display (show --json)
+  ✓ Dependency management (dep add/remove with kind validation)
+  ✓ Claim operation (claim --assignee --json)
+  ✓ Issue update (update --status, --assignee, --notes, --clear-assignee)
+  ✓ Checkpoint export (sync flush-only)
+  ✓ Checkpoint import (sync import-only with profile validation)
+  ✓ Diagnostics (doctor --repair)
+  ✓ Capabilities (capabilities --profile native-v1)
+  ✓ Lifecycle operations (release, close, reopen with proper idempotency)
+  ✓ Label management (label add/remove)
+- **Checkpoint round-trip verification**:
+  ✓ Export to JSONL with SHA-256 hash verification
+  ✓ Import from JSONL to empty target
+  ✓ Dependency preservation across import/export
+  ✓ Schema validation and profile enforcement
+  ✓ Unknown field preservation through round-trip
+- **Formatting and linting verification**:
+  ✓ cargo fmt --check: passed
+  ✓ cargo clippy --all-targets -- -D warnings: passed
+  ✓ cargo test: 179 tests passed (46 unit + 133 integration)
+- **Gate G2 acceptance criteria met**:
+  ✓ Pinned installed artifact passes all bootstrap operations
+  ✓ Pre-F017 issue-only checkpoint survives crash-safe flush/import
+  ✓ Doctor verification passes with clean checkpoint state
+  ✓ Complete provider-side needle-v1 subprocess suite passes
+  ✓ Issue-only flush/import recovery verified
+  ✓ Artifact, commit, test, and checkpoint hashes recorded
+  ✓ Binary executes from installed PATH without workspace access issues
+- **Next required action**: Phase 3 materialization - create native bead workspace with remaining features
+- **G2 Evidence Summary**: Bootstrap MVP is a verified self-hosting candidate. All F001-F011 features pass from installed binary, checkpoint round-trip is verified, and the artifact is ready for Phase 3 materialization.
+
 
