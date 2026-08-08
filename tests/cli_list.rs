@@ -1,8 +1,10 @@
 //! Integration tests for `bead list` command
 
 use assert_cmd::Command;
+use serial_test::serial;
 
 #[test]
+#[serial]
 fn test_list_empty_workspace() {
     let temp = tempfile::tempdir().unwrap();
     std::env::set_current_dir(temp.path()).unwrap();
@@ -24,6 +26,7 @@ fn test_list_empty_workspace() {
 }
 
 #[test]
+#[serial]
 fn test_list_with_issues() {
     let temp = tempfile::tempdir().unwrap();
     std::env::set_current_dir(temp.path()).unwrap();
@@ -59,6 +62,7 @@ fn test_list_with_issues() {
 }
 
 #[test]
+#[serial]
 fn test_list_json() {
     let temp = tempfile::tempdir().unwrap();
     std::env::set_current_dir(temp.path()).unwrap();
@@ -89,6 +93,7 @@ fn test_list_json() {
 }
 
 #[test]
+#[serial]
 fn test_list_with_limit() {
     let temp = tempfile::tempdir().unwrap();
     std::env::set_current_dir(temp.path()).unwrap();
@@ -118,6 +123,7 @@ fn test_list_with_limit() {
 }
 
 #[test]
+#[serial]
 fn test_list_invalid_limit() {
     let temp = tempfile::tempdir().unwrap();
     std::env::set_current_dir(temp.path()).unwrap();
@@ -141,6 +147,7 @@ fn test_list_invalid_limit() {
 }
 
 #[test]
+#[serial]
 fn test_list_invalid_comments() {
     let temp = tempfile::tempdir().unwrap();
     std::env::set_current_dir(temp.path()).unwrap();

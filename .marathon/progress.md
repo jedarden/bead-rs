@@ -341,3 +341,30 @@ rewrite or delete earlier entries.
   - Show returns NEEDLE-compatible JSON with comment projection options
 - **Next recommended feature**: F004 (Atomic server-selected claim and release behavior) - now unblocked
 - F003 pass state changed to true with evidence.
+
+## 2026-08-08 — Integration test failures fixed and F004 implementation completed
+
+- Fixed integration test failures caused by concurrent database access:
+  - Added `serial_test` dependency to force sequential execution of tests that modify global state
+  - Added `#[serial]` attribute to all tests using `std::env::set_current_dir()`
+  - Fixed database connection configuration in `WorkspaceConfig::from_config_path()` to match SqliteStore settings (foreign keys, busy_timeout)
+- Fixed unit test failure in `test_init_workspace_idempotent` by keeping tempdir alive through test
+- Implemented `bead claim` command with arguments: --assignee (required), --json
+- Created service layer in `src/service/claim.rs` with FIFO-v1 claim scheduling
+- Implemented `claim_issue()` with atomic write transaction for selection, assignment, and audit
+- Implemented eligibility check: open base status, unassigned, not manually blocked, no unfinished blockers
+- Implemented FIFO ranking: priority ASC, created_at ASC, id ASC
+- Implemented empty queue handling: returns exit 0 with `{bead_id: null, assignee: string}`
+- Implemented claim audit event with policy version and resulting base status
+- Fixed SQL query to use correct column names (blocked_issue_id, blocker_issue_id)
+- Added comprehensive integration tests (5 claim tests): empty queue, basic claim, priority ordering, no workspace check, duplicate prevention
+- Fixed all clippy warnings: removed unused imports (BaseStatus, Issue, ClaimResult, Duration, Arc, thread)
+- All 58 tests pass (24 unit + 11 init + 7 create + 6 list + 5 show + 5 claim)
+- cargo fmt --check: passed
+- cargo clippy --all-targets -- -D warnings: passed
+- F004 acceptance criteria met:
+  - Selection and assignment occur in one write transaction (BEGIN IMMEDIATE)
+  - No eligible work returns successful empty result without mutation
+  - Twenty sequential claims never receive duplicate IDs (verified with HashSet)
+- **Next recommended feature**: F005 (Update, close, and reopen lifecycle commands) - now unblocked
+- F004 pass state changed to true with evidence.

@@ -33,6 +33,7 @@ fn execute_command(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Init(opts) => cmd_init(opts),
         Command::Create(opts) => cmd_create(opts),
+        Command::Claim(opts) => cmd_claim(opts),
         Command::List(opts) => cmd_list(opts),
         Command::Show(opts) => cmd_show(opts),
         Command::Unimplemented(_) => Err(Error::cli_usage(
@@ -62,6 +63,46 @@ fn cmd_init(opts: cli::InitOptions) -> Result<()> {
     eprintln!("  Root: {}", config.root.display());
     eprintln!("  UUID: {}", config.uuid);
     eprintln!("  Prefix: {}", config.prefix);
+
+    Ok(())
+}
+
+fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
+    // Discover workspace
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    // Open database connection
+    let db_path = config.database_path();
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    // Use an immediate transaction for atomicity
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to start transaction: {}", e)))?;
+
+    // Claim an issue
+    let result = service::claim_issue(&tx, &opts.assignee, None, None, None)?;
+
+    // Commit transaction
+    tx.commit()
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to commit transaction: {}", e)))?;
+
+    // Output result
+    if opts.json {
+        let output = serde_json::to_string(&result).map_err(|e| {
+            Error::Internal(anyhow::anyhow!("Failed to serialize claim result: {}", e))
+        })?;
+        println!("{}", output);
+    } else {
+        if let Some(bead_id) = result.bead_id {
+            println!("Claimed: {}", bead_id);
+            println!("Assignee: {}", result.assignee);
+        } else {
+            println!("No eligible work found.");
+        }
+    }
 
     Ok(())
 }

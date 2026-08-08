@@ -1,8 +1,10 @@
 //! Integration tests for `bead show` command
 
 use assert_cmd::Command;
+use serial_test::serial;
 
 #[test]
+#[serial]
 fn test_show_existing_issue() {
     let temp = tempfile::tempdir().unwrap();
     std::env::set_current_dir(temp.path()).unwrap();
@@ -38,6 +40,7 @@ fn test_show_existing_issue() {
 }
 
 #[test]
+#[serial]
 fn test_show_json() {
     let temp = tempfile::tempdir().unwrap();
     std::env::set_current_dir(temp.path()).unwrap();
@@ -73,6 +76,7 @@ fn test_show_json() {
 }
 
 #[test]
+#[serial]
 fn test_show_nonexistent_issue() {
     let temp = tempfile::tempdir().unwrap();
     std::env::set_current_dir(temp.path()).unwrap();
@@ -94,6 +98,7 @@ fn test_show_nonexistent_issue() {
 }
 
 #[test]
+#[serial]
 fn test_show_with_description() {
     let temp = tempfile::tempdir().unwrap();
     std::env::set_current_dir(temp.path()).unwrap();
@@ -132,6 +137,7 @@ fn test_show_with_description() {
 }
 
 #[test]
+#[serial]
 fn test_show_invalid_comments() {
     let temp = tempfile::tempdir().unwrap();
     std::env::set_current_dir(temp.path()).unwrap();

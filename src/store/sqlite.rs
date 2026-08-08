@@ -282,6 +282,7 @@ impl Default for SqliteStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_validate_prefix_valid() {
@@ -346,6 +347,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_init_workspace_idempotent() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
@@ -363,5 +365,8 @@ mod tests {
 
         assert_eq!(uuid1, result2.uuid);
         assert_eq!(result1.prefix, result2.prefix);
+
+        // Keep temp alive until end of test
+        let _ = temp;
     }
 }

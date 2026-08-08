@@ -61,6 +61,9 @@ pub enum Command {
     #[command(subcommand)]
     #[allow(clippy::enum_variant_names)]
     Unimplemented(UnimplementedCommand),
+
+    /// Claim an issue from the ready frontier
+    Claim(ClaimOptions),
 }
 
 /// Options for workspace initialization
@@ -142,10 +145,21 @@ pub struct ShowOptions {
     pub comments: String,
 }
 
+/// Options for claiming an issue
+#[derive(Parser, Debug)]
+pub struct ClaimOptions {
+    /// Assignee name (required)
+    #[arg(long)]
+    pub assignee: String,
+
+    /// Output in JSON format
+    #[arg(long)]
+    pub json: bool,
+}
+
 /// Placeholder for unimplemented commands
 #[derive(Subcommand, Debug)]
 pub enum UnimplementedCommand {
-    Claim,
     Update,
     Release,
     Close,

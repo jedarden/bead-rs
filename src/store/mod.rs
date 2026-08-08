@@ -59,6 +59,18 @@ impl WorkspaceConfig {
             crate::Error::Internal(anyhow::anyhow!("Failed to open database: {}", e))
         })?;
 
+        // Configure connection to match SqliteStore configuration
+        conn.execute("PRAGMA foreign_keys = ON", []).map_err(|e| {
+            crate::Error::Internal(anyhow::anyhow!("Failed to enable foreign keys: {}", e))
+        })?;
+
+        // busy_timeout returns the new value, so we need to consume the result
+        let _timeout: i64 = conn
+            .query_row("PRAGMA busy_timeout = 5000", [], |row| row.get(0))
+            .map_err(|e| {
+                crate::Error::Internal(anyhow::anyhow!("Failed to set busy timeout: {}", e))
+            })?;
+
         let uuid: String = conn
             .query_row("SELECT uuid FROM workspace WHERE id = 1", [], |row| {
                 row.get(0)

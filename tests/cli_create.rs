@@ -1,8 +1,10 @@
 //! Integration tests for `bead create` command
 
 use assert_cmd::Command;
+use serial_test::serial;
 
 #[test]
+#[serial]
 fn test_create_basic() {
     let temp = tempfile::tempdir().unwrap();
     std::env::set_current_dir(temp.path()).unwrap();
@@ -30,6 +32,7 @@ fn test_create_basic() {
 }
 
 #[test]
+#[serial]
 fn test_create_with_description() {
     let temp = tempfile::tempdir().unwrap();
     std::env::set_current_dir(temp.path()).unwrap();
@@ -56,6 +59,7 @@ fn test_create_with_description() {
 }
 
 #[test]
+#[serial]
 fn test_create_with_priority() {
     let temp = tempfile::tempdir().unwrap();
     std::env::set_current_dir(temp.path()).unwrap();
@@ -76,6 +80,7 @@ fn test_create_with_priority() {
 }
 
 #[test]
+#[serial]
 fn test_create_with_labels() {
     let temp = tempfile::tempdir().unwrap();
     std::env::set_current_dir(temp.path()).unwrap();
@@ -104,6 +109,7 @@ fn test_create_with_labels() {
 }
 
 #[test]
+#[serial]
 fn test_create_without_workspace() {
     let temp = tempfile::tempdir().unwrap();
     std::env::set_current_dir(temp.path()).unwrap();
@@ -118,6 +124,7 @@ fn test_create_without_workspace() {
 }
 
 #[test]
+#[serial]
 fn test_create_invalid_priority() {
     let temp = tempfile::tempdir().unwrap();
     std::env::set_current_dir(temp.path()).unwrap();
@@ -141,6 +148,7 @@ fn test_create_invalid_priority() {
 }
 
 #[test]
+#[serial]
 fn test_create_empty_title() {
     let temp = tempfile::tempdir().unwrap();
     std::env::set_current_dir(temp.path()).unwrap();
