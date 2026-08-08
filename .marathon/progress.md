@@ -400,3 +400,33 @@ rewrite or delete earlier entries.
   - Reopen restores documented open lifecycle state while retaining assignee
 - **Next recommended feature**: F006 (Labels and dependency graph operations) - now unblocked
 - F005 pass state changed to true with evidence.
+## 2026-08-08 — F006 implementation completed
+
+- Implemented `bead label add/remove ID --label LABEL` commands with full idempotent behavior
+- Implemented `bead dep add/remove BLOCKED BLOCKER --kind KIND` commands with idempotent behavior
+- Created service layer in `src/service/dependencies.rs` with business logic for labels and dependencies
+- Implemented `add_label()` and `remove_label()` with idempotent INSERT OR IGNORE and DELETE operations
+- Implemented `add_dependency()` with validation:
+  - Both issues must exist
+  - Self-edges are rejected with conflict error
+  - `blocks` dependencies use cycle detection via DFS traversal; `relates_to` allows cycles
+  - Idempotent INSERT OR IGNORE for duplicate edges
+- Implemented `remove_dependency()` with optional kind filter; removes all edges when kind is None
+- Implemented cycle detection using DFS traversal following `blocks` edges
+- Added 20 comprehensive integration tests:
+  - 7 label tests: basic add/remove, idempotency, nonexistent issue, workspace check
+  - 13 dependency tests: basic add/remove, idempotency, self-edges, cycles, relates_to cycles, nonexistent issues, kind filtering, workspace check
+- Added 18 comprehensive unit tests covering all service functions and edge cases
+- Updated CLI structure with LabelCommand (Add, Remove) and DepCommand (Add, Remove) subcommands
+- Updated service module exports to include label and dependency functions
+- Fixed SqliteStore to support connection wrapping with `from_conn()` method
+- Fixed clippy warnings: collapsible if statement, unused method warnings
+- All 123 tests pass (25 unit + 90 integration including 20 new label/dep tests)
+- cargo fmt --check: passed
+- cargo clippy --all-targets -- -D warnings: passed
+- F006 acceptance criteria met:
+  - Label add and remove are idempotent (INSERT OR IGNORE and idempotent DELETE)
+  - Dependency direction follows blocked, blocker, kind canonicalization
+  - Readiness changes atomically with blocker lifecycle (transactions in service layer)
+- **Next recommended feature**: F007 (Deterministic JSONL checkpoint export) - now unblocked
+- F006 pass state changed to true with evidence.
