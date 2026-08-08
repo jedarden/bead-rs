@@ -27,16 +27,22 @@ map, preserve, or report omission of this identifier.
 
 ## Optional issue fields
 
-`description`, `assignee`, `labels`, `dependencies`, `comments`, `closed_at`,
-`close_reason`, `issue_type`, `source_repo`, and profile-specific extensions
-may be present. A profile defines null-versus-absent behavior.
+`description`, `assignee`, `labels`, `dependencies`, `comments`, `data`,
+`closed_at`, `close_reason`, `issue_type`, `source_repo`, and profile-specific
+extensions may be present. A profile defines null-versus-absent behavior.
+
+Recovery-backup export includes all durable comments and structured `data`.
+Ordinary retrieval may project comment bodies out of the response without
+altering the bead. Comments, data envelopes, and conditional dependency
+predicates are defined by `extended-bead-payload-v1.md`.
 
 Unknown fields are stored with their original JSON values and re-emitted by
 the same source profile unless they conflict with a later known-field update.
 
 ## Dependencies
 
-A dependency edge is represented canonically as `(blocked, blocker, kind)`.
+A dependency edge is represented canonically as `(blocked, blocker, kind)` and
+may include a deterministic, declarative activation condition.
 The blocked issue is not ready while a required blocker is unfinished. Import
 adapters must state the direction used by their source format; they must not
 infer direction from argument order alone.

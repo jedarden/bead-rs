@@ -36,6 +36,8 @@ functional specifications and independently created conformance fixtures.
 | 2026-08-07 | Record sanitized `bf 0.4.0` process-boundary observations | Isolated black-box specification activity; implementation details deliberately excluded |
 | 2026-08-07 | Use JSONL as the portable backup and recovery boundary | Keep SQLite focused on private ACID live state and avoid a second native backup format |
 | 2026-08-07 | Identify each bead's public schema with `schema_ref` | Improve explicit cross-tool validation without exposing the SQLite schema |
+| 2026-08-07 | Keep comments complete in backup but optional in retrieval | Preserve recoverability while allowing agents to control conversation context |
+| 2026-08-07 | Use declarative conditional dependencies and schema-bound data | Extend coordination without scripts, SQL exposure, or executable plugins |
 
 Any future exposure or provenance exception must be appended here; do not
 rewrite prior entries.

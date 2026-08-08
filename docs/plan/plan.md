@@ -95,6 +95,7 @@ another tool's suffix algorithm.
 | `source_repo` | optional source-workspace descriptor |
 | `profile` | origin profile for extension round trips |
 | `schema_ref` | absolute URI naming the immutable public schema governing this bead representation |
+| `data` | namespaced, schema-bound JSON values for portable structured extensions |
 | `extensions` | unknown top-level JSON values keyed by original name |
 
 Native v1 records use
@@ -105,6 +106,10 @@ explicit profile adapter declares compatibility.
 
 Labels, dependency edges, comments, claim telemetry, and audit events are
 normalized child records. Reads assemble them into an interchange view.
+Recovery-backup views always include complete comments and structured data.
+Ordinary list/show views omit comment bodies by default and accept
+`--comments unresolved|all`; this makes conversational context optional without
+making the backup incomplete.
 
 ### 3.3 Lifecycle and effective status
 
@@ -207,8 +212,9 @@ database definition.
 | `issues` | canonical scalars, ID PK, lifecycle checks, timestamps |
 | `issue_extensions` | issue ID + key PK, canonical JSON, origin profile |
 | `labels` | issue ID + label PK, issue FK cascade |
-| `dependencies` | blocked + blocker + kind PK, two issue FKs cascade, no self-edge |
-| `comments` | random ID, issue ID, author, body, creation time |
+| `dependencies` | blocked + blocker + kind PK, optional canonical condition JSON, two issue FKs cascade, no self-edge |
+| `comments` | random ID, issue ID, author, immutable body, reply-to ID, resolution state, creation time |
+| `issue_data` | issue ID + namespace PK, schema reference, canonical JSON value, issue FK cascade |
 | `claim_telemetry` | issue ID, claim time, assignee, optional model/harness/version |
 | `events` | integer sequence, issue ID, kind, actor, time, canonical JSON detail |
 | `checkpoint_state` | singleton last hash, event sequence, export time |
@@ -614,6 +620,104 @@ native bead carries `schema_ref`, allowing consumers to identify exactly which
 public schema governs it. `bead schema` resolves supported identifiers, while
 capabilities and migration receipts enumerate them. This gives interoperating
 tools an explicit validation contract without making SQLite an API.
+
+### R006 — Semantic backup completeness proof
+
+Reconstruct a disposable store from JSONL, re-export it, and compare every
+durable user-visible fact against the source snapshot. Equality covers unknown
+extensions, dependencies, complete comments, structured data, schema
+references, revisions, and lifecycle state. This is the evidence that JSONL is
+a lossless recovery backup rather than merely a convenient export.
+
+### R007 — Atomic versioned backup generations
+
+Write JSONL and its content-addressed manifest into a new generation, verify
+them, then atomically switch the current-generation pointer while retaining the
+previous verified generation. Preserve `.beads/issues.jsonl` as the current
+compatibility view. This prevents crashes from silently pairing JSONL with the
+wrong manifest.
+
+### R008 — Backup freshness contract
+
+Expose live sequence, backed-up sequence, backup age, hash, and verification
+state through `sync --status`. Support an optional maximum age/event-gap policy
+and explicit backup preconditions for selected risky mutations. Visibility is
+the default; enforcement must be intentionally configured.
+
+### R009 — Schema negotiation catalog
+
+Capabilities declare exact readable and writable schema URN sets. Producers
+and consumers negotiate only an exact mutual identifier and report read-only or
+lossy support explicitly. Do not infer compatibility from similar names or
+schema structure.
+
+### R010 — Portable threaded comments
+
+Add immutable comment bodies, authors, stable IDs, reply relationships, and
+resolution state. JSONL backup always includes the complete ordered comment
+history. Normal `list` and `show` default to `--comments none`, may expose only
+counts, and accept `--comments unresolved` or `--comments all`; therefore a
+retriever controls whether conversation context enters its prompt.
+
+### R011 — Namespaced external references
+
+Attach generic `(namespace, key, value)` references such as tracker IDs and
+commit identifiers without replacing native bead IDs or resolving anything
+over the network. Optional namespace-scoped uniqueness supports reliable
+deduplication and cross-tool recognition without title heuristics.
+
+### R012 — Schema-bound typed annotations and structured data
+
+Add a `data` object containing namespaced envelopes with their own immutable
+`schema_ref` and JSON value. Issue types may constrain allowed namespaces and
+schemas. Values round-trip through backup and profiles, but schemas validate
+data only—they cannot execute code, define lifecycle, or expose SQLite.
+
+### R013 — Cursor-based local change feed
+
+Emit deterministic public mutation records after a cursor, including snapshot
+identity and explicit gap detection. Consumers must resynchronize from JSONL
+after a gap. This supports incremental local indexes and adapters without a
+daemon, network service, or dependency on private event tables.
+
+### R014 — Complete import diagnostic report
+
+Collect a bounded, deterministically ordered set of validation failures with
+line number, JSON Pointer, schema keyword, semantic code, and a truncation
+marker. No state activates. This replaces repeated one-error-per-import repair
+cycles without allowing unbounded memory consumption or cascading noise.
+
+### R015 — Disposable recovery rehearsal
+
+Build a temporary workspace from the current JSONL generation, run integrity
+and schema diagnostics, re-export for semantic comparison, record a nonsecret
+report, and remove only the operation-owned temporary workspace. This exercises
+the real disaster-recovery path without overwriting live state.
+
+### R016 — Scoped doctor and diagnostic mode
+
+Extend `doctor` with `store`, `backup`, `schema`, `dependencies`, `comments`,
+and `all` scopes plus stable JSON diagnostics. It checks backup generations and
+freshness, schema/data validity, conditional predicates and latent cycles,
+comment threads, change-feed gaps, and recovery provenance. Repairs stay
+narrowly allowlisted and never rewrite user semantic data.
+
+### R017 — Conditional dependencies
+
+Allow an edge to carry a bounded declarative predicate over stored fields,
+labels, issue type, priority, assignee presence, and schema-bound data on the
+blocked or blocker bead. Conditions use typed `all`/`any`/`not` composition and
+comparison/set operators—never scripts, SQL, wall-clock, environment, network,
+comments, or recursively derived readiness. Treat every conditional blocking
+edge as potentially active during cycle detection.
+
+### R018 — Structured bead data
+
+Expose atomic `data set|get|list|remove` operations for namespaced JSON values,
+each governed by its own immutable schema reference. Unknown schemas remain
+preservable for interchange but fail closed for native mutation. This is the
+general mechanism for adding structured information to a bead JSON object
+without turning arbitrary fields or the SQLite layout into an API.
 
 ## 13. Release gates
 

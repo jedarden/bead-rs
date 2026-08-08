@@ -524,3 +524,16 @@ a backup is trustworthy only when its real recovery path is exercised.
   and report fields.
 - Strongest objection: it overlaps semantic backup proof; the proof is the
   primitive, while rehearsal orchestrates the end-to-end operator workflow.
+
+### Product decision — 2026-08-07, run 2
+
+- **Adopted:** all ten run-2 finalists: semantic backup proof, atomic backup
+  generations, freshness contract, schema negotiation, portable threaded
+  comments, external references, schema-bound typed annotations, local change
+  feed, complete import diagnostics, and disposable recovery rehearsal.
+- **Comment projection:** comments are durable bead content and always present
+  in the JSONL recovery backup. Ordinary retrieval omits comment bodies by
+  default and can request unresolved or complete conversation context.
+- **Additional adopted requirements:** scoped doctor/diagnostic modes,
+  declarative conditional dependencies, and general namespaced structured JSON
+  data governed by public schema references.

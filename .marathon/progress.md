@@ -57,3 +57,14 @@ rewrite or delete earlier entries.
 - Appended every candidate, verdict, and finalist dossier to the ideas ledger.
 - No second-run finalist was promoted into the plan; selection remains a
   separate product decision, and no F001-F014 pass state changed.
+
+## 2026-08-07 — Second-run candidates adopted
+
+- Promoted all ten second-run finalists into the post-0.1 roadmap.
+- Defined comments as complete durable backup content while making comment
+  bodies optional in normal retrieval through explicit projection flags.
+- Added scoped doctor diagnostics, bounded declarative conditional
+  dependencies, and namespaced schema-bound structured bead data.
+- Added `research/specs/extended-bead-payload-v1.md` for the portable payload
+  and diagnostic contracts.
+- No F001-F014 pass state changed.
