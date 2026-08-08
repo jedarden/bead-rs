@@ -102,7 +102,7 @@ impl WorkspaceConfig {
 }
 
 /// Store trait for database operations
-pub trait Store: Send + Sync {
+pub trait Store {
     /// Initialize the workspace with a new database
     fn init_workspace(&self, prefix: &str) -> crate::Result<WorkspaceConfig>;
 }

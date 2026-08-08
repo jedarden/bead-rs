@@ -7,14 +7,50 @@ use std::path::Path;
 
 /// SQLite store implementation
 pub struct SqliteStore {
-    // For now, this is a placeholder. The full implementation will include
-    // connection management, transaction handling, etc.
+    conn: Option<Connection>,
 }
 
 impl SqliteStore {
     /// Create a new SQLite store
     pub fn new() -> Self {
-        Self {}
+        Self { conn: None }
+    }
+
+    /// Create a new SQLite store with a database path
+    #[allow(dead_code)]
+    pub fn with_path(path: &Path) -> Result<Self> {
+        let conn = Self::open_connection(path)?;
+        Ok(Self { conn: Some(conn) })
+    }
+
+    /// Create a SQLite store from an existing connection
+    pub fn from_conn(conn: Connection) -> Self {
+        Self { conn: Some(conn) }
+    }
+
+    /// Get the connection
+    pub fn conn(&mut self) -> &Connection {
+        self.conn.as_ref().expect("Connection not initialized")
+    }
+
+    /// Get a mutable reference to the connection
+    #[allow(dead_code)]
+    pub fn conn_mut(&mut self) -> &mut Connection {
+        self.conn.as_mut().expect("Connection not initialized")
+    }
+
+    /// Create a new store at the specified path
+    #[allow(dead_code)]
+    pub fn new_at(path: &Path) -> Result<Self> {
+        Self::with_path(path)
+    }
+
+    /// Apply migrations to the database
+    #[allow(dead_code)]
+    pub fn apply_migrations(&mut self) -> Result<()> {
+        let conn = self.conn.as_ref().expect("Connection not initialized");
+        migrations::apply_migrations(conn)?;
+        Ok(())
     }
 
     /// Open a database connection at the specified path

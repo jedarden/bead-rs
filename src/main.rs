@@ -40,6 +40,8 @@ fn execute_command(cli: Cli) -> Result<()> {
         Command::Release(opts) => cmd_release(opts),
         Command::Close(opts) => cmd_close(opts),
         Command::Reopen(opts) => cmd_reopen(opts),
+        Command::Label(opts) => cmd_label(opts),
+        Command::Dep(opts) => cmd_dep(opts),
         Command::Unimplemented(_) => Err(Error::cli_usage(
             "This command is not yet implemented. See `bead --help` for available commands.",
         )),
@@ -340,6 +342,122 @@ fn cmd_reopen(opts: cli::ReopenOptions) -> Result<()> {
 
     // Print only the ID on success
     println!("{}", id);
+
+    Ok(())
+}
+
+fn cmd_label(cmd: cli::LabelCommand) -> Result<()> {
+    match cmd {
+        cli::LabelCommand::Add(opts) => cmd_label_add(opts),
+        cli::LabelCommand::Remove(opts) => cmd_label_remove(opts),
+    }
+}
+
+fn cmd_label_add(opts: cli::LabelAddOptions) -> Result<()> {
+    // Discover workspace
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    // Open database connection
+    let db_path = config.database_path();
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    // Create store wrapper
+    let mut store = store::SqliteStore::from_conn(conn);
+
+    // Add the label
+    service::add_label(&mut store, &opts.id, &opts.label)?;
+
+    // Print success message
+    println!("Added label '{}' to {}", opts.label, opts.id);
+
+    Ok(())
+}
+
+fn cmd_label_remove(opts: cli::LabelRemoveOptions) -> Result<()> {
+    // Discover workspace
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    // Open database connection
+    let db_path = config.database_path();
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    // Create store wrapper
+    let mut store = store::SqliteStore::from_conn(conn);
+
+    // Remove the label
+    service::remove_label(&mut store, &opts.id, &opts.label)?;
+
+    // Print success message
+    println!("Removed label '{}' from {}", opts.label, opts.id);
+
+    Ok(())
+}
+
+fn cmd_dep(cmd: cli::DepCommand) -> Result<()> {
+    match cmd {
+        cli::DepCommand::Add(opts) => cmd_dep_add(opts),
+        cli::DepCommand::Remove(opts) => cmd_dep_remove(opts),
+    }
+}
+
+fn cmd_dep_add(opts: cli::DepAddOptions) -> Result<()> {
+    // Discover workspace
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    // Open database connection
+    let db_path = config.database_path();
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    // Create store wrapper
+    let mut store = store::SqliteStore::from_conn(conn);
+
+    // Add the dependency
+    service::add_dependency(&mut store, &opts.blocked, &opts.blocker, &opts.kind)?;
+
+    // Print success message
+    println!(
+        "Added dependency: {} {} {}",
+        opts.blocked,
+        if opts.kind == "blocks" {
+            "blocked by"
+        } else {
+            "related to"
+        },
+        opts.blocker
+    );
+
+    Ok(())
+}
+
+fn cmd_dep_remove(opts: cli::DepRemoveOptions) -> Result<()> {
+    // Discover workspace
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    // Open database connection
+    let db_path = config.database_path();
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    // Create store wrapper
+    let mut store = store::SqliteStore::from_conn(conn);
+
+    // Remove the dependency
+    service::remove_dependency(
+        &mut store,
+        &opts.blocked,
+        &opts.blocker,
+        opts.kind.as_deref(),
+    )?;
+
+    // Print success message
+    println!("Removed dependency: {} <- {}", opts.blocked, opts.blocker);
 
     Ok(())
 }

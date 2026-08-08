@@ -72,6 +72,14 @@ pub enum Command {
     /// Claim an issue from the ready frontier
     Claim(ClaimOptions),
 
+    /// Manage labels
+    #[command(subcommand)]
+    Label(LabelCommand),
+
+    /// Manage dependencies
+    #[command(subcommand)]
+    Dep(DepCommand),
+
     /// Not yet implemented
     #[command(subcommand)]
     #[allow(clippy::enum_variant_names)]
@@ -217,11 +225,71 @@ pub struct ReopenOptions {
     pub id: String,
 }
 
+/// Label management commands
+#[derive(Subcommand, Debug)]
+pub enum LabelCommand {
+    /// Add a label to an issue
+    Add(LabelAddOptions),
+    /// Remove a label from an issue
+    Remove(LabelRemoveOptions),
+}
+
+/// Options for adding a label
+#[derive(Parser, Debug)]
+pub struct LabelAddOptions {
+    /// Issue ID
+    pub id: String,
+    /// Label to add
+    #[arg(long)]
+    pub label: String,
+}
+
+/// Options for removing a label
+#[derive(Parser, Debug)]
+pub struct LabelRemoveOptions {
+    /// Issue ID
+    pub id: String,
+    /// Label to remove
+    #[arg(long)]
+    pub label: String,
+}
+
+/// Dependency management commands
+#[derive(Subcommand, Debug)]
+pub enum DepCommand {
+    /// Add a dependency edge
+    Add(DepAddOptions),
+    /// Remove a dependency edge
+    Remove(DepRemoveOptions),
+}
+
+/// Options for adding a dependency
+#[derive(Parser, Debug)]
+pub struct DepAddOptions {
+    /// Blocked issue ID
+    pub blocked: String,
+    /// Blocker issue ID
+    pub blocker: String,
+    /// Dependency kind (default: blocks)
+    #[arg(long, default_value = "blocks")]
+    pub kind: String,
+}
+
+/// Options for removing a dependency
+#[derive(Parser, Debug)]
+pub struct DepRemoveOptions {
+    /// Blocked issue ID
+    pub blocked: String,
+    /// Blocker issue ID
+    pub blocker: String,
+    /// Dependency kind (optional, removes all kinds if not specified)
+    #[arg(long)]
+    pub kind: Option<String>,
+}
+
 /// Placeholder for unimplemented commands
 #[derive(Subcommand, Debug)]
 pub enum UnimplementedCommand {
-    Label,
-    Dep,
     Sync,
     Doctor,
     Capabilities,
