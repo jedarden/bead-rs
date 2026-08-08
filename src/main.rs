@@ -44,6 +44,7 @@ fn execute_command(cli: Cli) -> Result<()> {
         Command::Dep(opts) => cmd_dep(opts),
         Command::Sync(opts) => cmd_sync(opts),
         Command::Doctor(opts) => cmd_doctor(opts),
+        Command::Capabilities(opts) => cmd_capabilities(opts),
         Command::Unimplemented(_) => Err(Error::cli_usage(
             "This command is not yet implemented. See `bead --help` for available commands.",
         )),
@@ -698,4 +699,17 @@ fn load_labels(conn: &rusqlite::Connection, issue_id: &str) -> Result<Vec<String
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to load labels: {}", e)))?;
 
     Ok(labels)
+}
+
+fn cmd_capabilities(opts: cli::CapabilitiesOptions) -> Result<()> {
+    // Generate capabilities
+    let capabilities = service::generate_capabilities(&opts.profile)?;
+
+    // Output as JSON
+    let output = serde_json::to_string_pretty(&capabilities)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to serialize capabilities: {}", e)))?;
+
+    println!("{}", output);
+
+    Ok(())
 }

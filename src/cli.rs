@@ -87,6 +87,9 @@ pub enum Command {
     /// Diagnose workspace integrity and optionally perform repairs
     Doctor(DoctorOptions),
 
+    /// Show capabilities and supported features
+    Capabilities(CapabilitiesOptions),
+
     /// Not yet implemented
     #[command(subcommand)]
     #[allow(clippy::enum_variant_names)]
@@ -342,11 +345,17 @@ pub struct DoctorOptions {
     pub repair: bool,
 }
 
+/// Options for capabilities command
+#[derive(Parser, Debug)]
+pub struct CapabilitiesOptions {
+    /// Profile for capabilities output
+    #[arg(long, default_value = "native-v1")]
+    pub profile: String,
+}
+
 /// Placeholder for unimplemented commands
 #[derive(Subcommand, Debug)]
 pub enum UnimplementedCommand {
-    Doctor,
-    Capabilities,
     Schema,
     Migrate,
 }
