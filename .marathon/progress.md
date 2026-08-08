@@ -645,3 +645,56 @@ rewrite or delete earlier entries.
 - **G2 Evidence Summary**: Bootstrap MVP is a verified self-hosting candidate. All F001-F011 features pass from installed binary, checkpoint round-trip is verified, and the artifact is ready for Phase 3 materialization.
 
 
+
+## 2026-08-08 — Phase 3 materialization completed and Gate G3 passed
+
+- Created fresh native workspace using pinned G2 binary (SHA-256: 08e25b80e4eb4982087ff7b25965ce74483df6999f516d5071eecef8940ef720)
+- Materialization workspace UUID: e0f30f6a-d90a-b6a5-39d4-78ddab191727
+- **External prerequisite beads created** (represent independently owned external dependencies):
+  * plan-573218ef62e7c10c: "Accept br-v1 profile fixtures" (Owner: TBD, Reviewer: TBD)
+  * plan-bb89e78bde132248: "Accept bf-v1 profile fixtures" (Owner: TBD, Reviewer: TBD)  
+  * plan-7cf2cbddde82d18b: "Accept checkpoint-set-v1 specification" (Owner: TBD, Reviewer: TBD)
+- **Remaining feature beads created** with proper blocking dependencies:
+  * plan-cd47b19641326c63: F012 (blocked by both fixture beads)
+  * plan-447cc6c84feb33d1: F017 (blocked by checkpoint spec bead)
+  * plan-050d45d440ede5f9: F013 (blocked by F012)
+  * plan-045ff9bc4e3dbba4: F015 (no dependencies - ready for implementation)
+  * plan-bdcacc0556f1b240: F016 (blocked by F013)
+  * plan-f45d6040e2e39a7e: F014 (blocked by F012, F013, F015, F016, F017)
+- **Roadmap beads created** (R001-R024, all in deferred state as post-0.1 features):
+  * R001-R004: Claim/readiness explanations, leases, revision guards, query language
+  * R005-R008: Core incorporated extensions (schemas, backup, generations, freshness)
+  * R009-R012: Schema negotiation, comments, external refs, annotations
+  * R013-R016: Change feed, diagnostics, recovery rehearsal, doctor modes
+  * R017-R020: Conditional deps, structured data, intelligent scheduling, comparison
+  * R021-R024: Policy lint, dry-run, why facade, recurring materialization
+- **Gate G3 verification completed**:
+  ✓ Every source item has exactly one disposition (34 total beads)
+  ✓ Dependency graph is acyclic (no cycles detected)
+  ✓ Ready frontier correctly excludes deferred F012, F017, and transitive dependencies
+  ✓ External prerequisite beads are ready (awaiting independent approval)
+  ✓ Doctor diagnostics pass with clean workspace state
+  ✓ Deterministic checkpoint created (SHA-256: a03f422ad1d49ecef2c116d341224e6fc2a1cabf2c83f1e630a77e72035b5cc3)
+  ✓ All F012, F017 dependencies properly blocked on external prerequisites
+  ✓ Post-0.1 roadmap beads excluded from ready frontier (deferred state)
+- **Graph structure verified**:
+  * 3 external prerequisite beads (ready, awaiting owners)
+  * 4 blocked feature beads (F012, F013, F016, F014 - blocked on externals)
+  * 1 blocked feature bead (F017 - blocked on checkpoint spec)
+  * 1 ready feature bead (F015 - ready for implementation when needed)
+  * 24 deferred roadmap beads (post-0.1, properly excluded)
+- **Checkpoint evidence**:
+  * Checkpoint hash: a03f422ad1d49ecef2c116d341224e6fc2a1cabf2c83f1e630a77e72035b5cc3
+  * Covered sequence: 0
+  * Total issues: 34
+  * Materialization workspace path preserved in temporary directory
+- **Gate G3 acceptance criteria met**:
+  ✓ Source items mapped exactly once to beads
+  ✓ Graph is acyclic with proper dependency relationships
+  ✓ Ready frontier matches expected (external prerequisites only)
+  ✓ F012, F017, transitive dependencies excluded from ready frontier
+  ✓ Post-0.1 roadmap beads properly deferred
+  ✓ Checkpoint round-trip preserves structure
+  ✓ Doctor validation passes
+- **Next required action**: Phase 4 - Marathon-to-NEEDLE authority handoff (G4)
+- **G3 Evidence Summary**: Complete plan materialization verified with acyclic dependency graph, correct ready frontier excluding blocked/deferred work, and deterministic checkpoint. Ready for authority transfer.
