@@ -28,7 +28,7 @@ conflict by correcting the plan, never by silently changing the requirement.
 
 ## 2. Release definition
 
-Version 0.1 is complete when F001-F015 in `.marathon/feature_list.json` pass
+Version 0.1 is complete when F001-F016 in `.marathon/feature_list.json` pass
 and every release gate in `.marathon/instruction.md` succeeds.
 
 In scope:
@@ -447,7 +447,7 @@ accept at least:
 
 ```text
 --beads 100|1000|10000|100000|1000000
---workers 1|2|4|8|16|32|64
+--workers 1..200
 --policy fifo-v1|POLICY
 --seed INTEGER
 --duration DURATION
@@ -456,11 +456,14 @@ accept at least:
 ```
 
 The canonical scale matrix is 100, 1,000, 10,000, 100,000, and 1,000,000
-beads. At each scale run worker counts 1, 2, 4, 8, 16, 32, and 64 until the
-configured capacity profile fails for two consecutive levels; larger counts
-may be requested. A run that cannot be completed because of memory, disk, or
-time limits records a structured `resource_limited` result rather than silently
-omitting the scale.
+beads. At each scale run 1, 2, 4, 8, 16, 24, 32, 48, 64, 96, 128, 160, and 200
+concurrent agents. These approximately logarithmic steps retain useful points
+around common fleet sizes while covering the full requested range. Continue
+through 200 even after the default capacity profile fails so the report shows
+the complete degradation curve; a caller may request any integer from 1 to 200
+for targeted reproduction. A run that cannot be completed because of memory,
+disk, or time limits records a structured `resource_limited` result rather than
+silently omitting the scale.
 
 Total bead count and ready-frontier width are independent benchmark dimensions.
 At every scale, deterministic dataset families include:
@@ -498,13 +501,32 @@ attempted/succeeded/conflicted/busy counts, throughput, p50/p95/p99/max latency,
 transaction duration, shortlist size, full-scan fallbacks, cache hit/dirty/
 recompute counts, database/WAL sizes, and peak memory/CPU where measurable.
 
+The harness deliberately discovers saturation, but normal bead operations must
+not use SQLite as a compute engine for unbounded ranking or graph work. Every
+ordinary operation uses indexed, bounded queries; avoids per-row transaction
+loops and accidental N+1 reads; prepares/reuses statements where practical;
+keeps `BEGIN IMMEDIATE` sections limited to final validation and mutation; and
+does not perform a full graph traversal, cache rebuild, JSON serialization, or
+prompt construction while holding the writer lock. WAL readers remain
+concurrent with a claimant except at SQLite's unavoidable commit boundaries.
+
+Performance tests capture transaction hold time, busy-handler invocations and
+wait duration, rows visited/returned where observable, statements per
+operation, WAL growth/checkpoint time, database growth, and bytes written per
+semantic mutation. Representative query-plan tests at every scale reject
+unexplained full scans of the million-row issue table for single-bead CRUD or
+frontier claims. A policy fallback that scans the complete ready frontier is
+reported explicitly and cannot be the normal path for large stores. Tests use
+bounded retry with jitter outside the transaction; they never hide saturation
+through unbounded waits or retry storms.
+
 Correctness is unconditional: duplicate successful claims, lost committed
 mutations, invalid readiness, or an unreconciled final-state count fails the
 run at every scale. Capacity is machine-relative. The default `interactive-v1`
-profile defines a worker count as supported when, after warmup, correctness
+profile defines an agent count as supported when, after warmup, correctness
 holds, at least 99.9% of operations avoid terminal busy/I/O failure, claim p95
 is at most 250 ms, and all-mutation p99 is at most 1 second. Reports show the
-highest supported worker count and the complete saturation curve for every
+highest supported agent count and the complete saturation curve through 200 for every
 scale; users may supply and name other threshold profiles.
 
 Benchmarks are not ordinary unit tests. CI runs a fast 100/1,000-bead smoke
@@ -661,6 +683,67 @@ Use structured internal errors and print one concise diagnostic at the CLI
 boundary. Do not expose SQL, secrets, environment values, or backtraces by
 default.
 
+### 5.3 Help and manual contract
+
+The `clap` command tree is the single structural source of truth for public CLI
+documentation. Every public command path supports both:
+
+```text
+bead COMMAND [SUBCOMMAND ...] --help
+bead help COMMAND [SUBCOMMAND ...]
+```
+
+Help must work without a workspace, database, network, or writable current
+directory; it exits zero and performs no mutation. Every visible command,
+subcommand, positional argument, option, flag, alias, enumerated value, default,
+conflict, requirement, and repeatability rule has nonempty help. Short help is
+scannable; long help includes behavior, safety consequences, machine-output
+notes, and at least one realistic example for nontrivial leaf commands. Hidden
+implementation options are excluded from the public contract.
+
+Root help introduces the product before presenting the command inventory. Its
+short form contains a compact intended workflow:
+
+```text
+init workspace -> create/import beads -> add blocking relationships
+-> inspect ready work -> claim -> update/release -> close -> flush JSONL backup
+```
+
+Root long help and `bead(1)` explain the lifecycle in plain language: `open`
+beads may be ready; manual blocking or unfinished `blocks` edges remove them
+from the ready frontier; claim atomically assigns one ready bead and moves it to
+`in_progress`; release returns it to open/unassigned work; close requires a
+reason and may expose dependents; reopen restores an intentionally closed bead
+to open. They distinguish base state from effective `blocked` status and state
+that SQLite is authoritative live state while `issues.jsonl` is the portable
+backup only as of its last successful flush. The root page includes a minimal
+end-to-end command example, points automation to `--json` and capabilities, and
+links each lifecycle operation to its command page.
+
+Generate section-1 manual pages from that same command tree and structured
+long-form documentation. Ship `bead(1)` plus one page for every public command
+and nested leaf, using hyphenated names such as `bead-claim(1)`,
+`bead-dep(1)`, and `bead-dep-add(1)`. Parent pages summarize their children;
+leaf pages completely document their arguments and options. Each page contains
+the applicable NAME, SYNOPSIS, DESCRIPTION, OPTIONS, EXIT STATUS, FILES,
+ENVIRONMENT, EXAMPLES, and SEE ALSO sections. It identifies the exact bead-rs
+release and machine-output/profile stability where relevant.
+
+Generated roff lives under `man/man1/`, is included in source and release
+packages, and is reproducible byte-for-byte for a fixed release. Distribution
+packages install it into the platform man path. Because `cargo install` does
+not install ancillary man files, document a supported command or release-script
+path that copies the packaged pages into an explicitly selected man root; never
+write a system directory implicitly. Man generation and installation are
+offline and noninteractive.
+
+Tests recursively walk the public `clap::Command` tree and fail when any command
+or argument lacks required help, when a leaf lacks an example, when either help
+spelling fails, or when generated man-page names/content differ from committed
+artifacts. Snapshot tests normalize only the version/date fields explicitly
+declared variable. A packaging test verifies every expected page is present in
+the `.crate` and cross-links resolve to an existing page.
+
 ## 6. JSONL backup and compatibility profiles
 
 ### 6.1 Canonical JSONL
@@ -809,6 +892,8 @@ src/
     needle_v1.rs
   output.rs           deterministic rendering
   error.rs            error taxonomy
+  docs.rs             structured long help and manual supplements
+man/man1/             reproducible generated section-1 manual pages
 tests/
   cli/                isolated subprocess tests
   conformance/        normative lanes
@@ -822,6 +907,8 @@ research/fixtures/    independent fixtures and manifests
 Suggested dependencies, subject to Rust 1.75 verification:
 
 - `clap` 4 with derive;
+- `clap_mangen` or an equivalently bounded roff generator sharing the `clap`
+  command tree;
 - `rusqlite` with bundled SQLite;
 - `serde` and `serde_json`;
 - `time` or `chrono` for RFC 3339;
@@ -855,6 +942,8 @@ Required layers:
 6. Package tests installing the `.crate` into a temporary Cargo root.
 7. Rapid-fire lifecycle stress and benchmark harnesses covering the matrix and
    report contract in section 3.5.10.
+8. Recursive CLI documentation coverage, help snapshots, reproducible man-page
+   generation, cross-link checks, and package-content verification.
 
 Critical scenarios beyond the conformance specification:
 
@@ -915,7 +1004,9 @@ The feature ledger remains release authority. Execute it in these increments:
 13. **F013:** dry-run, path safety, atomic migration output, receipts.
 14. **F015:** deterministic lifecycle stress harness, fast matrix, full-scale
     benchmark driver, capacity calculation, and schema-stable reports.
-15. **F014:** package/install smoke test, licensing, provenance verification.
+15. **F016:** complete help tree, generated man pages, drift/coverage tests, and
+    documented explicit installation.
+16. **F014:** package/install smoke test, licensing, provenance verification.
 
 One Marathon iteration implements one coherent increment, runs targeted and
 repository gates, changes a feature's `passes` and evidence only after all its
@@ -946,7 +1037,7 @@ profile exits nonzero instead of returning mislabeled native capabilities.
 
 ## 12. Adopted post-0.1 roadmap
 
-These features are accepted for development after the F001-F014 release core.
+These features are accepted for development after the F001-F016 release core.
 They require their own normative specifications, conformance scenarios, and
 future Marathon ledger entries before implementation begins.
 
@@ -1146,13 +1237,15 @@ operation.
 
 Before `.marathon/COMPLETE`:
 
-- F001-F015 have concrete passing evidence;
+- F001-F016 have concrete passing evidence;
 - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and
   `cargo test` pass on the release commit;
 - native, interchange, NEEDLE, concurrency, and migration lanes pass;
 - the rapid-fire benchmark smoke matrix passes and a full 100-to-1,000,000-bead
   run either completes or records explicit resource-limited results for every
   uncompleted scale;
+- every public command path passes recursive help coverage and every generated
+  section-1 man page is current, cross-linked, and present in the package;
 - `cargo package` succeeds from a clean checkout;
 - the packaged crate installs into a temporary root and its `bead` completes
   init, create, list, claim, update, dependency, flush/import, doctor,

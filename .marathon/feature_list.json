@@ -198,8 +198,24 @@
       "acceptance": [
         "Deterministic workloads cover claim-close, claim-release, mixed lifecycle, and dependency churn without duplicate claims or final-state divergence",
         "Fast verification covers 100 and 1000 beads while the full driver reports every scale from 100 through 1000000 beads",
-        "Worker saturation sweeps cover independent, chain, wide-DAG, diamond, and mixed-lifecycle datasets and produce schema-stable JSON with frontier width, latency, throughput, contention, cache, resource, environment, and highest-supported-worker results",
+        "Agent saturation sweeps cover 1 through 200 agents at approximately logarithmic steps across independent, chain, wide-DAG, diamond, and mixed-lifecycle datasets and report frontier, latency, throughput, SQLite contention/write amplification, cache, resources, and highest-supported-agent results",
         "Uncompleted large-scale runs report an explicit resource-limited result instead of silently skipping a scale"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "F016",
+      "priority": 2,
+      "description": "Complete CLI help tree and generated section-1 man pages",
+      "spec": "docs/plan/plan.md#53-help-and-manual-contract",
+      "depends_on": ["F010", "F011", "F013"],
+      "acceptance": [
+        "Every public command, subcommand, argument, option, value domain, default, conflict, and requirement has tested short and long help",
+        "bead --help, every nested --help path, and equivalent bead help paths work without workspace access or mutation",
+        "Root help and bead(1) explain the intended workflow, ready frontier, lifecycle transitions, blocking semantics, atomic claim, and live-SQLite versus flushed-JSONL boundary",
+        "Reproducible bead(1) and per-command section-1 man pages are generated from the authoritative command tree with required reference sections and valid cross-links",
+        "Help/man drift tests pass and every expected page plus explicit installation guidance is included in the packaged crate"
       ],
       "passes": false,
       "evidence": []
@@ -209,7 +225,7 @@
       "priority": 2,
       "description": "Release packaging, installation, and license verification",
       "spec": "research/specs/conformance-v1.md",
-      "depends_on": ["F010", "F011", "F012", "F013", "F015"],
+      "depends_on": ["F010", "F011", "F012", "F013", "F015", "F016"],
       "acceptance": [
         "cargo package succeeds from a clean checkout",
         "Packaged installation provides the bead executable",

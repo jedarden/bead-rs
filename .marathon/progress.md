@@ -141,4 +141,22 @@ rewrite or delete earlier entries.
   before packaging and release completion.
 - Clarified that ranking operates only on the ready frontier and that benchmark
   results distinguish total graph size from frontier width and graph shape.
+- Expanded every scale to an approximately logarithmic 1-to-200-agent sweep and
+  required complete degradation curves rather than stopping at first failure.
+- Added measurable SQLite-efficiency constraints for bounded indexed queries,
+  short writer-lock holds, query-plan checks, contention, WAL behavior, and
+  write amplification.
+- No feature pass state changed.
+
+## 2026-08-08 — CLI help and man-page contract specified
+
+- Required short and long help for every public command path, argument, option,
+  value domain, default, conflict, and requirement, usable without a workspace.
+- Defined reproducible section-1 `bead(1)` and per-command man pages generated
+  from the authoritative `clap` command tree and structured supplements.
+- Added recursive coverage, examples, snapshot/drift, cross-link, package
+  content, and explicit non-system installation requirements.
+- Required root help and `bead(1)` to teach the intended workflow, ready
+  frontier, lifecycle, dependency semantics, atomic claims, and backup boundary.
+- Added F016 and made packaging depend on complete CLI documentation.
 - No feature pass state changed.
