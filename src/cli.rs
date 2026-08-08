@@ -57,13 +57,25 @@ pub enum Command {
     /// Show a single issue
     Show(ShowOptions),
 
+    /// Update an issue
+    Update(UpdateOptions),
+
+    /// Release a claimed issue
+    Release(ReleaseOptions),
+
+    /// Close an issue
+    Close(CloseOptions),
+
+    /// Reopen a closed issue
+    Reopen(ReopenOptions),
+
+    /// Claim an issue from the ready frontier
+    Claim(ClaimOptions),
+
     /// Not yet implemented
     #[command(subcommand)]
     #[allow(clippy::enum_variant_names)]
     Unimplemented(UnimplementedCommand),
-
-    /// Claim an issue from the ready frontier
-    Claim(ClaimOptions),
 }
 
 /// Options for workspace initialization
@@ -157,13 +169,57 @@ pub struct ClaimOptions {
     pub json: bool,
 }
 
+/// Options for updating an issue
+#[derive(Parser, Debug)]
+pub struct UpdateOptions {
+    /// Issue ID
+    pub id: String,
+
+    /// New status
+    #[arg(long)]
+    pub status: Option<String>,
+
+    /// New assignee
+    #[arg(long)]
+    pub assignee: Option<String>,
+
+    /// Clear assignee (only for open assigned issues)
+    #[arg(long)]
+    pub clear_assignee: bool,
+
+    /// New notes
+    #[arg(long)]
+    pub notes: Option<String>,
+}
+
+/// Options for releasing an issue
+#[derive(Parser, Debug)]
+pub struct ReleaseOptions {
+    /// Issue ID
+    pub id: String,
+}
+
+/// Options for closing an issue
+#[derive(Parser, Debug)]
+pub struct CloseOptions {
+    /// Issue ID
+    pub id: String,
+
+    /// Close reason (required)
+    #[arg(long)]
+    pub reason: String,
+}
+
+/// Options for reopening an issue
+#[derive(Parser, Debug)]
+pub struct ReopenOptions {
+    /// Issue ID
+    pub id: String,
+}
+
 /// Placeholder for unimplemented commands
 #[derive(Subcommand, Debug)]
 pub enum UnimplementedCommand {
-    Update,
-    Release,
-    Close,
-    Reopen,
     Label,
     Dep,
     Sync,

@@ -5,11 +5,13 @@
 
 pub mod claim;
 pub mod issues;
+pub mod lifecycle;
 
 pub use claim::claim_issue;
 pub use issues::create_issue;
 pub use issues::get_issue_by_id;
 pub use issues::list_issues;
+pub use lifecycle::{close_issue, release_issue, reopen_issue, update_issue};
 
 // Placeholder modules for future implementation
 // pub mod dependencies;

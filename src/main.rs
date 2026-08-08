@@ -36,6 +36,10 @@ fn execute_command(cli: Cli) -> Result<()> {
         Command::Claim(opts) => cmd_claim(opts),
         Command::List(opts) => cmd_list(opts),
         Command::Show(opts) => cmd_show(opts),
+        Command::Update(opts) => cmd_update(opts),
+        Command::Release(opts) => cmd_release(opts),
+        Command::Close(opts) => cmd_close(opts),
+        Command::Reopen(opts) => cmd_reopen(opts),
         Command::Unimplemented(_) => Err(Error::cli_usage(
             "This command is not yet implemented. See `bead --help` for available commands.",
         )),
@@ -253,6 +257,89 @@ fn cmd_show(opts: cli::ShowOptions) -> Result<()> {
             println!("Type: {}", issue_type);
         }
     }
+
+    Ok(())
+}
+
+fn cmd_update(opts: cli::UpdateOptions) -> Result<()> {
+    // Discover workspace
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    // Open database connection
+    let db_path = config.database_path();
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    // Update the issue
+    let id = service::update_issue(
+        &conn,
+        &opts.id,
+        opts.status.as_deref(),
+        opts.assignee.as_deref(),
+        opts.clear_assignee,
+        opts.notes.as_deref(),
+    )?;
+
+    // Print only the ID on success
+    println!("{}", id);
+
+    Ok(())
+}
+
+fn cmd_release(opts: cli::ReleaseOptions) -> Result<()> {
+    // Discover workspace
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    // Open database connection
+    let db_path = config.database_path();
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    // Release the issue
+    let id = service::release_issue(&conn, &opts.id)?;
+
+    // Print only the ID on success
+    println!("{}", id);
+
+    Ok(())
+}
+
+fn cmd_close(opts: cli::CloseOptions) -> Result<()> {
+    // Discover workspace
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    // Open database connection
+    let db_path = config.database_path();
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    // Close the issue
+    let id = service::close_issue(&conn, &opts.id, &opts.reason)?;
+
+    // Print only the ID on success
+    println!("{}", id);
+
+    Ok(())
+}
+
+fn cmd_reopen(opts: cli::ReopenOptions) -> Result<()> {
+    // Discover workspace
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    // Open database connection
+    let db_path = config.database_path();
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    // Reopen the issue
+    let id = service::reopen_issue(&conn, &opts.id)?;
+
+    // Print only the ID on success
+    println!("{}", id);
 
     Ok(())
 }

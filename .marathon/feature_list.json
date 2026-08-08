@@ -126,8 +126,22 @@
         "Close retains a required reason",
         "Reopen restores the documented open lifecycle state"
       ],
-      "passes": false,
-      "evidence": []
+      "passes": true,
+      "evidence": [
+        "cargo test -- --test-threads=1: 90 tests passed (25 unit + 31 lifecycle + 11 init + 7 create + 6 list + 5 show + 5 claim)",
+        "cargo fmt --check: passed",
+        "cargo clippy --all-targets -- -D warnings: passed",
+        "Implemented `bead update` command: supports --status, --assignee, --clear-assignee, --notes with validation and atomic transactions",
+        "Implemented `bead release` command: transitions in-progress to open/unassigned, idempotent on open/unassigned, conflicts on other states",
+        "Implemented `bead close` command: sets closed status with required reason, idempotent when reason matches, conflicts otherwise",
+        "Implemented `bead reopen` command: restores closed issues to open while retaining assignee, idempotent on open",
+        "All operations are atomic with proper audit events (updated, released, closed, reopened, assignment_cleared)",
+        "Operation-by-base-state matrix satisfied: close/open/in_progress/deferred, reopen/open/in_progress/deferred/closed, release/in_progress/open/deferred/closed with proper idempotency and conflict detection",
+        "Created 31 comprehensive integration tests covering all lifecycle operations, idempotency, conflicts, and edge cases",
+        "Added Display trait to BaseStatus for better error messages",
+        "Added can_transition_to method to BaseStatus for transition validation",
+        "All acceptance criteria met: atomic mutations, proper idempotency handling, complete conflict matrix, required close reason, documented reopen behavior"
+      ]
     },
     {
       "id": "F006",

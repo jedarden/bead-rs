@@ -101,6 +101,17 @@ pub enum BaseStatus {
     Closed,
 }
 
+impl std::fmt::Display for BaseStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BaseStatus::Open => write!(f, "open"),
+            BaseStatus::InProgress => write!(f, "in_progress"),
+            BaseStatus::Deferred => write!(f, "deferred"),
+            BaseStatus::Closed => write!(f, "closed"),
+        }
+    }
+}
+
 impl BaseStatus {
     /// Parse a status string, accepting common aliases
     pub fn parse(s: &str) -> Result<Self, Error> {
@@ -111,6 +122,11 @@ impl BaseStatus {
             "closed" => Ok(BaseStatus::Closed),
             _ => Err(Error::validation(format!("Unknown status: {}", s))),
         }
+    }
+
+    /// Check if a transition to another status is valid
+    pub fn can_transition_to(&self, to: &BaseStatus) -> bool {
+        validate_status_transition(*self, *to).is_ok()
     }
 
     /// Check if this is a closed status

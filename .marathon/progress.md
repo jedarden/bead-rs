@@ -368,3 +368,35 @@ rewrite or delete earlier entries.
   - Twenty sequential claims never receive duplicate IDs (verified with HashSet)
 - **Next recommended feature**: F005 (Update, close, and reopen lifecycle commands) - now unblocked
 - F004 pass state changed to true with evidence.
+
+## 2026-08-08 — F005 implementation completed
+
+- Implemented `bead update` command with arguments: --status, --assignee, --clear-assignee, --notes
+- Implemented `bead release` command to atomically transition in-progress work to open/unassigned
+- Implemented `bead close` command with required --reason argument
+- Implemented `bead reopen` command to restore closed issues to open
+- Created service layer in `src/service/lifecycle.rs` with business logic for all lifecycle operations
+- Added `Display` trait to `BaseStatus` enum for better error messages
+- Added `can_transition_to()` method to `BaseStatus` for transition validation
+- Implemented atomic transactions for all lifecycle mutations with proper audit events
+- Implemented complete operation-by-base-state matrix:
+  - **close**: semantic close on open/in_progress/deferred; idempotent on closed when reason matches; conflict otherwise
+  - **reopen**: semantic reopen on closed; idempotent on open; conflict on in_progress/deferred
+  - **release**: semantic release on in-progress; idempotent on open/unassigned; conflicts on assigned open, deferred, or closed
+  - **update --clear-assignee**: only works on open assigned issues; conflicts on in_progress/deferred/closed; idempotent on open unassigned
+- Implemented proper idempotency handling without duplicate timestamps or events
+- Implemented conflict detection for all invalid operations
+- Added 31 comprehensive integration tests covering all lifecycle operations, idempotency cases, conflicts, and edge cases
+- Fixed clippy warnings: removed unnecessary borrows and return statements
+- All 90 tests pass (25 unit + 31 lifecycle + 11 init + 7 create + 6 list + 5 show + 5 claim)
+- cargo fmt --check: passed
+- cargo clippy --all-targets -- -D warnings: passed
+- F005 acceptance criteria met:
+  - Status, assignee, and notes updates are atomic (single write transaction)
+  - Release atomically transitions in-progress to open/unassigned with documented idempotency/conflict/output/audit behavior
+  - clear-assignee handles only open assigned work; generic update cannot bypass reopen for closed beads
+  - Close, reopen, and release satisfy complete operation-by-base-state matrix without duplicate timestamps or events
+  - Close retains required reason; idempotent when reason matches, conflicts otherwise
+  - Reopen restores documented open lifecycle state while retaining assignee
+- **Next recommended feature**: F006 (Labels and dependency graph operations) - now unblocked
+- F005 pass state changed to true with evidence.
