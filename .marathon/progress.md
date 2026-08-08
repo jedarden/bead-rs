@@ -127,6 +127,16 @@ rewrite or delete earlier entries.
 - Left verifiable acceptance evidence pending further product consideration.
 - No F001-F014 pass state changed.
 
+## 2026-08-08 — Phase 0 governance artifacts established
+
+- Created `docs/adr/README.md` and `docs/adr/000-template.md` for architecture decision records.
+- Defined `docs/traceability/release-evidence-v1.schema.json` as the canonical evidence report schema.
+- Implemented `docs/traceability/verify-evidence.sh` as a noninteractive evidence verifier.
+- Documented F012 and F017 external dependency ownership in `docs/traceability/external-dependencies.md`.
+- Marathon controls already synchronized with phase model; bootstrap scope is F001-F011.
+- Phase 0 governance infrastructure is complete; external dependencies remain blocked on owner assignment and independent review.
+- No F001-F014 pass state changed.
+
 ## 2026-08-08 — Claim performance and capacity plan specified
 
 - Made ranking hybrid and incremental: writes maintain or invalidate only
@@ -248,3 +258,27 @@ rewrite or delete earlier entries.
   concrete lossless consume/emit operation paths.
 - Reached the gap-review workflow's five-round stopping limit.
 - No feature pass state changed.
+
+## 2026-08-08 — Phase 0 governance artifacts established
+
+- Created `docs/adr/README.md` and `docs/adr/000-template.md` for architecture decision records.
+- Defined `docs/traceability/release-evidence-v1.schema.json` as the canonical evidence report schema.
+- Implemented `docs/traceability/verify-evidence.sh` as a noninteractive evidence verifier.
+- Documented F012 and F017 external dependency ownership in `docs/traceability/external-dependencies.md`.
+- Marathon controls already synchronized with phase model; bootstrap scope is F001-F011.
+- Phase 0 governance infrastructure is complete; external dependencies remain blocked on owner assignment and independent review.
+- No F001-F014 pass state changed.
+
+## 2026-08-08 — F001 implementation started
+
+- Set up project dependencies: clap, rusqlite, serde, serde_json, thiserror, anyhow, time, rand, sha2
+- Created error taxonomy with structured Error types and exit code mapping
+- Implemented SQLite migration system with versioned schema (migration 1)
+- Created independent SQLite schema with 11 core tables: workspace, issues, issue_extensions, labels, dependencies, comments, issue_data, claim_telemetry, events, checkpoint_state, schema_migrations
+- Implemented workspace initialization with directory structure, .gitignore, and config.json
+- Created CLI structure with clap derive parsing for `bead init` command
+- Implemented integration tests in tests/ directory
+- Fixed PRAGMA journal_mode execution by using query_row() instead of execute()
+- **Remaining issue**: SQL execution bug still occurring during initialization causing "Execute returned results - did you mean to call query?" error
+- **Next step**: Debug and fix remaining SQL execution bug to make F001 tests pass
+- No F001-F014 pass state changed.

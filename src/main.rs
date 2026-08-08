@@ -1,31 +1,66 @@
+#![forbid(unsafe_code)]
+
+mod cli;
+mod error;
+mod store;
+
+use clap::Parser;
+use crate::cli::{Cli, Command};
+use crate::error::{Error, Result};
+use crate::store::Store;
 use std::process::ExitCode;
 
-const HELP: &str = "bead-rs
-
-Usage: bead [OPTIONS] <COMMAND>
-
-This repository currently contains the clean-room specifications and project
-scaffold. Runtime commands will be introduced only with their conformance
-tests.
-
-Options:
-  -h, --help       Print help
-  -V, --version    Print version
-";
-
 fn main() -> ExitCode {
-    match std::env::args().nth(1).as_deref() {
-        Some("-V" | "--version") => {
-            println!("bead {}", env!("CARGO_PKG_VERSION"));
-            ExitCode::SUCCESS
+    // Parse CLI arguments
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(err) => {
+            // Clap will display the error message
+            eprintln!("{err}");
+            return ExitCode::from(2u8);
         }
-        None | Some("-h" | "--help") => {
-            print!("{HELP}");
-            ExitCode::SUCCESS
-        }
-        Some(command) => {
-            eprintln!("bead: command not implemented in the specification scaffold: {command}");
-            ExitCode::from(2)
+    };
+
+    // Execute command
+    let result = execute_command(cli);
+
+    match result {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("bead: {err}");
+            ExitCode::from(err.exit_code() as u8)
         }
     }
 }
+
+fn execute_command(cli: Cli) -> Result<()> {
+    match cli.command {
+        Command::Init(opts) => cmd_init(opts),
+        Command::Unimplemented(_) => Err(Error::cli_usage(
+            "This command is not yet implemented. See `bead --help` for available commands.",
+        )),
+    }
+}
+
+fn cmd_init(opts: cli::InitOptions) -> Result<()> {
+    let store = store::SqliteStore::new();
+
+    // Check if workspace already exists
+    if let Some(existing_config) = store::WorkspaceConfig::discover()? {
+        eprintln!("Workspace already exists at: {}", existing_config.root.display());
+        eprintln!("Prefix: {}", existing_config.prefix);
+        eprintln!("UUID: {}", existing_config.uuid);
+        return Ok(());
+    }
+
+    // Initialize new workspace
+    let config = store.init_workspace(&opts.prefix)?;
+
+    eprintln!("Initialized workspace:");
+    eprintln!("  Root: {}", config.root.display());
+    eprintln!("  UUID: {}", config.uuid);
+    eprintln!("  Prefix: {}", config.prefix);
+
+    Ok(())
+}
+

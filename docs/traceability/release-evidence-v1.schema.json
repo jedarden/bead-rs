@@ -1,0 +1,193 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:bead-rs:schema:release-evidence:v1",
+  "title": "Release Evidence Report v1",
+  "description": "Canonical evidence report linking requirements, features, beads, and gate results for bead-rs releases",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "report_type",
+    "generated_at",
+    "tool_version",
+    "workspace_uuid",
+    "mapping_hash",
+    "bootstrap_commit",
+    "artifact_hash",
+    "checkpoint_hash",
+    "needle_config_revision",
+    "features",
+    "gates"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Schema version for compatibility"
+    },
+    "report_type": {
+      "type": "string",
+      "const": "release_evidence",
+      "description": "Identifies this as a release evidence report"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC timestamp when the report was generated"
+    },
+    "tool_version": {
+      "type": "string",
+      "description": "Version of the bead binary that generated this report"
+    },
+    "workspace_uuid": {
+      "type": "string",
+      "format": "uuid",
+      "description": "UUID of the workspace that generated this report"
+    },
+    "mapping_hash": {
+      "type": "string",
+      "description": "SHA-256 of the canonical plan-to-bead mapping document"
+    },
+    "bootstrap_commit": {
+      "type": "string",
+      "description": "Git commit hash of the bootstrap MVP"
+    },
+    "artifact_hash": {
+      "type": "string",
+      "description": "SHA-256 of the installed bootstrap artifact"
+    },
+    "checkpoint_hash": {
+      "type": "string",
+      "description": "SHA-256 of the authoritative checkpoint at handoff"
+    },
+    "needle_config_revision": {
+      "type": "string",
+      "description": "Revision identifier of the NEEDLE configuration used for canary tests"
+    },
+    "features": {
+      "type": "array",
+      "description": "Evidence for each feature from the feature ledger",
+      "items": {
+        "type": "object",
+        "required": ["id", "passes", "evidence"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^F[0-9]{3}$",
+            "description": "Feature identifier"
+          },
+          "passes": {
+            "type": "boolean",
+            "description": "Whether all acceptance criteria are satisfied"
+          },
+          "evidence": {
+            "type": "array",
+            "description": "Commands and results that verify the feature",
+            "items": {
+              "type": "object",
+              "required": ["command", "result", "timestamp"],
+              "properties": {
+                "command": {
+                  "type": "string",
+                  "description": "Command that demonstrates the feature"
+                },
+                "result": {
+                  "type": "string",
+                  "description": "Output or verification result"
+                },
+                "timestamp": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "bead_id": {
+                  "type": "string",
+                  "description": "Native bead ID that records this evidence"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "gates": {
+      "type": "object",
+      "description": "Evidence for each release gate",
+      "required": ["G0", "G1", "G2", "G3", "G4"],
+      "properties": {
+        "G0": {
+          "$ref": "#/definitions/gate"
+        },
+        "G1": {
+          "$ref": "#/definitions/gate"
+        },
+        "G2": {
+          "$ref": "#/definitions/gate"
+        },
+        "G3": {
+          "$ref": "#/definitions/gate"
+        },
+        "G4": {
+          "$ref": "#/definitions/gate"
+        }
+      }
+    },
+    "handoff_state": {
+      "type": "string",
+      "enum": ["pending", "final"],
+      "description": "State of the bootstrap handoff (present only after G2)"
+    }
+  },
+  "definitions": {
+    "gate": {
+      "type": "object",
+      "required": ["name", "description", "passes", "evidence"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Gate identifier"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable gate description"
+        },
+        "passes": {
+          "type": "boolean",
+          "description": "Whether all gate criteria are satisfied"
+        },
+        "responsible_role": {
+          "type": "string",
+          "description": "Role accountable for this gate"
+        },
+        "reviewer": {
+          "type": "string",
+          "description": "Role responsible for independent review"
+        },
+        "evidence": {
+          "type": "array",
+          "description": "Verification evidence for this gate",
+          "items": {
+            "type": "object",
+            "required": ["check", "result", "timestamp"],
+            "properties": {
+              "check": {
+                "type": "string",
+                "description": "Description of what was checked"
+              },
+              "result": {
+                "type": "string",
+                "description": "Result of the check"
+              },
+              "timestamp": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "bead_id": {
+                "type": "string",
+                "description": "Native bead ID that records this evidence"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
