@@ -31,7 +31,15 @@ functional specifications and independently created conformance fixtures.
 | 2026-08-07 | License under Apache-2.0 | Permissive terms, explicit patent grant, NOTICE support |
 | 2026-08-07 | Use `bead` as the binary name | Distinct invocation; compatibility shims remain opt-in |
 | 2026-08-07 | Interoperate through versioned CLI/JSONL profiles | Avoid source reuse and cross-tool SQLite mutation |
+| 2026-08-07 | Bootstrap with Marathon Coding | Independent headless iteration harness avoids a runtime dependency on another bead implementation |
 
 Any future exposure or provenance exception must be appended here; do not
 rewrite prior entries.
 
+## Marathon Coding provenance
+
+Marathon Coding was developed independently and in parallel with the method
+later popularized as the Ralph loop. Its use here does not imply derivation
+from Ralph. The `bead-rs` integration repeatedly launches fresh headless coding
+iterations from a committed, hot-reloadable mission and durable repository
+artifacts.

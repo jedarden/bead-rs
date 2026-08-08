@@ -1,0 +1,207 @@
+{
+  "schema_version": 1,
+  "release": "0.1.0",
+  "rules": {
+    "selection": "Choose the lowest priority number, then listed order, whose dependencies pass.",
+    "mutation": "Only passes and evidence may be changed by implementation iterations.",
+    "completion": "Every feature must pass before .marathon/COMPLETE is created."
+  },
+  "features": [
+    {
+      "id": "F001",
+      "priority": 0,
+      "description": "Native SQLite workspace initialization and versioned schema",
+      "spec": "research/specs/interchange-v1.md#native-store requirements from project notes",
+      "depends_on": [],
+      "acceptance": [
+        "bead init creates a valid .beads workspace without touching unrelated files",
+        "Repeated initialization is safe and deterministic",
+        "Schema creation is transactional"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "F002",
+      "priority": 0,
+      "description": "Canonical native issue model with validated lifecycle and identifiers",
+      "spec": "research/specs/interchange-v1.md",
+      "depends_on": ["F001"],
+      "acceptance": [
+        "Model represents required and optional interchange data",
+        "Unknown extension fields can be retained",
+        "Invalid lifecycle transitions and malformed identifiers are rejected"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "F003",
+      "priority": 0,
+      "description": "Create, list, and show commands with stable JSON output",
+      "spec": "research/specs/needle-cli-contract-v1.md",
+      "depends_on": ["F001", "F002"],
+      "acceptance": [
+        "Create commits a new issue and prints only its ID on success",
+        "List supports JSON, status, assignee, and explicit limit",
+        "Show returns the requested issue in NEEDLE-compatible JSON"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "F004",
+      "priority": 0,
+      "description": "Atomic server-selected claim and release behavior",
+      "spec": "research/specs/needle-cli-contract-v1.md#claim-semantics",
+      "depends_on": ["F003"],
+      "acceptance": [
+        "Selection and assignment occur in one write transaction",
+        "No eligible work is a successful structured domain result",
+        "Twenty simultaneous claimers never receive duplicate successful IDs"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "F005",
+      "priority": 1,
+      "description": "Update, close, and reopen lifecycle commands",
+      "spec": "research/specs/needle-cli-contract-v1.md#required-commands",
+      "depends_on": ["F003"],
+      "acceptance": [
+        "Status, assignee, and notes updates are atomic",
+        "Close retains a required reason",
+        "Reopen restores the documented open lifecycle state"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "F006",
+      "priority": 1,
+      "description": "Labels and dependency graph operations",
+      "spec": "research/specs/interchange-v1.md#dependencies",
+      "depends_on": ["F003", "F005"],
+      "acceptance": [
+        "Label add and remove are idempotent",
+        "Dependency direction follows blocked, blocker, kind",
+        "Readiness changes atomically with blocker lifecycle"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "F007",
+      "priority": 1,
+      "description": "Deterministic JSONL checkpoint export",
+      "spec": "research/specs/interchange-v1.md#determinism",
+      "depends_on": ["F002", "F006"],
+      "acceptance": [
+        "sync --flush-only observes one committed snapshot",
+        "Records and semantically unordered collections are stably ordered",
+        "Destination replacement is atomic"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "F008",
+      "priority": 1,
+      "description": "Validated JSONL import with unknown-field preservation",
+      "spec": "research/specs/interchange-v1.md#transport",
+      "depends_on": ["F002", "F007"],
+      "acceptance": [
+        "Malformed input reports its line and activates no partial state",
+        "Unknown fields survive a same-profile round trip",
+        "sync --import-only reconciles a valid checkpoint transactionally"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "F009",
+      "priority": 1,
+      "description": "Diagnostics and scoped repair",
+      "spec": "research/specs/needle-cli-contract-v1.md#required-commands",
+      "depends_on": ["F007", "F008"],
+      "acceptance": [
+        "doctor performs read-only integrity checks",
+        "doctor --repair changes only diagnosed conditions",
+        "Warnings and repairs use the required stable prefixes"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "F010",
+      "priority": 1,
+      "description": "Machine-readable capability handshake",
+      "spec": "research/specs/needle-cli-contract-v1.md#capability-handshake-extension",
+      "depends_on": ["F004", "F008", "F009"],
+      "acceptance": [
+        "Capabilities identify contract and store-layout versions",
+        "Atomic claim, lifecycle, checkpoint, and command support are explicit",
+        "Unsupported profiles fail closed"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "F011",
+      "priority": 2,
+      "description": "Complete NEEDLE v1 subprocess compatibility suite",
+      "spec": "research/specs/needle-cli-contract-v1.md",
+      "depends_on": ["F004", "F005", "F006", "F007", "F008", "F009"],
+      "acceptance": [
+        "Every required command is exercised as a subprocess",
+        "HOME and workspace are isolated for every subprocess test",
+        "stdout, stderr, exit status, and filesystem effects satisfy the contract"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "F012",
+      "priority": 2,
+      "description": "Interchange profiles for br-v1 and bf-v1",
+      "spec": "research/specs/interchange-v1.md",
+      "depends_on": ["F007", "F008"],
+      "acceptance": [
+        "Profiles are explicit and versioned",
+        "Every lossy transformation is reported",
+        "Fixtures are independently authored or sanitized black-box observations"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "F013",
+      "priority": 2,
+      "description": "Migration dry-run and audit receipts",
+      "spec": "docs/notes/interoperability-architecture.md#migration-workflow",
+      "depends_on": ["F008", "F012"],
+      "acceptance": [
+        "Migration never overwrites its input",
+        "Dry-run validates without activating destination state",
+        "Receipt records hashes and transformation counts"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "F014",
+      "priority": 2,
+      "description": "Release packaging, installation, and license verification",
+      "spec": "research/specs/conformance-v1.md",
+      "depends_on": ["F010", "F011", "F012", "F013"],
+      "acceptance": [
+        "cargo package succeeds from a clean checkout",
+        "Packaged installation provides the bead executable",
+        "Apache-2.0 license, NOTICE, README, and provenance ship in the package"
+      ],
+      "passes": false,
+      "evidence": []
+    }
+  ]
+}

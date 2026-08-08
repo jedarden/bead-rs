@@ -49,3 +49,13 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
+## Marathon Coding
+
+- `.marathon/instruction.md` is the live mission read at every iteration.
+- `.marathon/feature_list.json` is the release ledger. Change only a feature's
+  `passes` value and its evidence after the stated verification succeeds.
+- Append durable handoffs to `.marathon/progress.md`; do not rewrite history.
+- Commit one coherent, verified increment per iteration.
+- `.marathon/COMPLETE` may be created only after every feature passes and all
+  release gates in the mission succeed.
+- Publishing to crates.io is intentionally excluded from autonomous authority.
