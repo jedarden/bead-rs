@@ -138,7 +138,12 @@ pub fn list_issues(
 
     // Add ready frontier filter
     if ready_only {
-        query.push_str(" AND base_status = 'open' AND (manual_blocked IS NULL OR manual_blocked = 0) AND assignee IS NULL");
+        // A ready issue must be: open, unassigned, not manually blocked, and has no unfinished blockers
+        // A blocker is unfinished unless its base state is 'closed'
+        query.push_str(" AND base_status = 'open' AND (manual_blocked IS NULL OR manual_blocked = 0) AND assignee IS NULL AND NOT EXISTS (
+            SELECT 1 FROM dependencies WHERE blocked_issue_id = issues.id AND kind = 'blocks'
+            AND blocker_issue_id IN (SELECT id FROM issues WHERE base_status != 'closed')
+        )");
     }
 
     // Order by priority (ASC), created_at (ASC), then id (ASC) for FIFO claim order
