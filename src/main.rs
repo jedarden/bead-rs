@@ -2,6 +2,7 @@
 
 mod cli;
 mod error;
+mod model;
 mod store;
 
 use crate::cli::{Cli, Command};
@@ -12,14 +13,8 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     // Parse CLI arguments
-    let cli = match Cli::try_parse() {
-        Ok(cli) => cli,
-        Err(err) => {
-            // Clap will display the error message
-            eprintln!("{err}");
-            return ExitCode::from(2u8);
-        }
-    };
+    // Use parse() instead of try_parse() so --help and --version are handled automatically
+    let cli = Cli::parse();
 
     // Execute command
     let result = execute_command(cli);

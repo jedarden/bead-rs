@@ -291,3 +291,31 @@ rewrite or delete earlier entries.
   - Schema creation is transactional (migrations run in transaction)
 - **Next recommended feature**: F002 (Canonical native issue model) - now unblocked
 - F001 pass state changed to true with evidence.
+
+## 2026-08-08 — F002 implementation completed
+
+- Created `src/model.rs` module implementing the canonical native issue model
+- Implemented `Issue` struct with all required fields from interchange-v1.md:
+  - Required: id, title, priority, base_status, created_at, updated_at
+  - Optional: description, notes, assignee, issue_type, manual_blocked, closed_at, close_reason, source_repo, profile, schema_ref, data
+- Implemented `extensions: HashMap<String, serde_json::Value>` with `#[serde(flatten)]` for unknown field preservation
+- Implemented `BaseStatus` enum (Open, InProgress, Deferred, Closed) with `parse()` for string conversion
+- Implemented validation functions:
+  - `validate_issue_id()`: rejects empty, control chars, whitespace, path separators, NUL, >255 bytes
+  - `validate_title()`: requires 1-4096 bytes
+  - `validate_long_text()`: enforces 4 MiB limit
+  - `validate_priority()`: enforces 0-4 range (P0-P4)
+  - `validate_status_transition()`: enforces plan section 3.3 transition matrix
+- Implemented `Issue::validate()`: enforces closed state invariants, required fields, and field rules
+- Implemented `Issue::is_ready()`: checks ready frontier predicate (open, unassigned, not manually blocked)
+- Added 11 comprehensive unit tests covering ID validation, title validation, priority validation, status parsing, transitions, and complete issue validation
+- Fixed clippy warnings: removed unused import, used range_contains syntax, added dead_code allowance for public API
+- All 22 tests pass (11 existing + 11 new model tests)
+- cargo fmt --check: passed
+- cargo clippy --all-targets -- -D warnings: passed
+- F002 acceptance criteria met:
+  - Model represents required and optional interchange data
+  - Unknown extension fields can be retained (via extensions HashMap with serde flatten)
+  - Invalid lifecycle transitions and malformed identifiers are rejected (via validation functions)
+- **Next recommended feature**: F003 (Create, list, and show commands) - now unblocked
+- F002 pass state changed to true with evidence.
