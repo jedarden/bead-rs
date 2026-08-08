@@ -83,3 +83,13 @@ rewrite or delete earlier entries.
 - Defined native P0-P5 priority ordering from urgent through aspirational,
   including aspirational-worker opt-in and explicit lossy profile mapping.
 - No F001-F014 pass state changed.
+
+## 2026-08-08 — Priority range corrected to P0-P4
+
+- Supersedes the P0-P5 detail in the immediately preceding planning entry.
+- Removed P5 from the active plan and interchange specification.
+- P4 is now the aspirational/backlog tier and retains optional automatic-worker
+  opt-in behavior.
+- The P0-P4 range matches observed bead tooling and avoids an unnecessary lossy
+  compatibility mapping.
+- No F001-F014 pass state changed.

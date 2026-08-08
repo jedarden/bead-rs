@@ -39,6 +39,7 @@ functional specifications and independently created conformance fixtures.
 | 2026-08-07 | Keep comments complete in backup but optional in retrieval | Preserve recoverability while allowing agents to control conversation context |
 | 2026-08-07 | Use declarative conditional dependencies and schema-bound data | Extend coordination without scripts, SQL exposure, or executable plugins |
 | 2026-08-08 | Adopt versioned intelligent claim scheduling | Combine deterministic impact, aging, rotation, failure-aware retry, and bounded context without changing `fifo-v1` silently |
+| 2026-08-08 | Standardize native priority on P0-P4 | Match the observed ecosystem range and avoid lossy P5 compatibility mappings |
 
 Any future exposure or provenance exception must be appended here; do not
 rewrite prior entries.

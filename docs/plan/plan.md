@@ -83,7 +83,7 @@ another tool's suffix algorithm.
 | `title` | required, 1 to 4,096 UTF-8 bytes |
 | `description` | defaults empty, at most 4 MiB |
 | `notes` | defaults empty, at most 4 MiB |
-| `priority` | native P0-P5 urgency class; lower is more urgent, default P2 |
+| `priority` | native P0-P4 urgency class; lower is more urgent, default P2 |
 | `issue_type` | nonempty string, default `task` |
 | `base_status` | `open`, `in_progress`, `deferred`, or `closed` |
 | `manual_blocked` | explicit operator block, separate from graph blockers |
@@ -119,14 +119,13 @@ Native priority taxonomy is:
 | P1 / `1` | critical | essential work that should precede ordinary delivery |
 | P2 / `2` | high | important planned work and the native default |
 | P3 / `3` | normal | ordinary work with no elevated urgency |
-| P4 / `4` | low/backlog | useful work that may wait behind active plans |
-| P5 / `5` | aspirational | speculative or someday work, claimable only when policy permits |
+| P4 / `4` | aspirational/backlog | speculative, someday, or low-urgency work, claimable only when policy permits |
 
-Native create/update rejects values outside 0-5. JSON stores the integer and
-human output may show the `P` name. Profiles state their supported range. A
-profile limited to P0-P4 may map P5 to P4 only with an explicit lossy
-transformation report and must preserve the original value in profile metadata
-when round-trip preservation is promised.
+Native create/update rejects values outside 0-4. JSON stores the integer and
+human output may show the `P` name. The P0-P4 range intentionally matches the
+observed bead ecosystem and avoids priority clamping or lossy transformations
+at compatibility boundaries. Profiles still state their supported range and
+must report any narrower mapping.
 
 ### 3.3 Lifecycle and effective status
 
@@ -231,9 +230,9 @@ Defaults for an eventual `aging-v1`/`balanced-v1` policy are a 24-hour interval
 and at most two promotions. The exact values are versioned configuration. A
 captured selection instant makes the calculation internally consistent and the
 claim event records the resulting bucket. Aging never bypasses eligibility.
-P5 remains eligible native work, but a workspace may require an explicit
+P4 remains eligible native work, but a workspace may require an explicit
 `include_aspirational` policy flag before automatic workers claim it. Aging may
-promote old P5 work within the configured cap; it never rewrites the declared
+promote old P4 work within the configured cap; it never rewrites the declared
 priority.
 
 #### 3.5.3 Completion-unlock impact
@@ -404,8 +403,8 @@ rotation, continuously arriving work, every failure class, retry cadence,
 quarantine, revision-epoch reset, context overflow, cache invalidation, and at
 least twenty concurrent claimers. Repeating a claim against identical state,
 captured time, request capabilities, and policy must select the same bead.
-Priority tests cover every P0-P5 boundary, aspirational opt-in, bounded
-promotion, and lossy legacy-profile mapping.
+Priority tests cover every P0-P4 boundary, aspirational opt-in, bounded
+promotion, and profile-range validation.
 
 ## 4. Workspace and independent SQLite design
 
@@ -810,7 +809,7 @@ may take multiple iterations and remains false until complete.
   "version": "0.1.0",
   "store_layout": 1,
   "atomic_claim": true,
-  "priorities": {"min": 0, "max": 5, "default": 2, "p5_requires_opt_in": true},
+  "priorities": {"min": 0, "max": 4, "default": 2, "p4_aspirational_requires_opt_in": true},
   "statuses": ["blocked", "closed", "deferred", "in_progress", "open"],
   "checkpoint_modes": ["flush-only", "import-only"],
   "schemas": ["urn:bead-rs:schema:issue:native-v1"],
