@@ -344,9 +344,13 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_init_workspace() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
+
+        // Save original directory to restore later (canonicalize to get absolute path)
+        let original_dir = std::env::current_dir().unwrap().canonicalize().unwrap();
 
         std::env::set_current_dir(root).unwrap();
 
@@ -380,6 +384,10 @@ mod tests {
         // Check config.json was created
         let config_path = root.join(".beads/config.json");
         assert!(config_path.exists());
+
+        // Restore original directory before dropping temp
+        std::env::set_current_dir(original_dir).unwrap();
+        drop(temp);
     }
 
     #[test]
@@ -387,6 +395,9 @@ mod tests {
     fn test_init_workspace_idempotent() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
+
+        // Save original directory to restore later (canonicalize to get absolute path)
+        let original_dir = std::env::current_dir().unwrap().canonicalize().unwrap();
 
         std::env::set_current_dir(root).unwrap();
 
@@ -402,7 +413,8 @@ mod tests {
         assert_eq!(uuid1, result2.uuid);
         assert_eq!(result1.prefix, result2.prefix);
 
-        // Keep temp alive until end of test
-        let _ = temp;
+        // Restore original directory before dropping temp
+        std::env::set_current_dir(original_dir).unwrap();
+        drop(temp);
     }
 }

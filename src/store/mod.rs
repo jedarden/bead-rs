@@ -110,12 +110,21 @@ pub trait Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
+    #[serial]
     fn test_workspace_discovery_none() {
+        // Save original directory to restore later (canonicalize to get absolute path)
+        let original_dir = std::env::current_dir().unwrap().canonicalize().unwrap();
+
         // In a temp directory, there should be no workspace
         let temp = tempfile::tempdir().unwrap();
         std::env::set_current_dir(temp.path()).unwrap();
         assert!(WorkspaceConfig::discover().unwrap().is_none());
+
+        // Restore original directory before dropping temp
+        std::env::set_current_dir(original_dir).unwrap();
+        drop(temp);
     }
 }
