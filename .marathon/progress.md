@@ -34,3 +34,15 @@ rewrite or delete earlier entries.
 - The candidates were not added to the 0.1 roadmap or feature ledger; adoption
   awaits an explicit product decision.
 - No feature pass state changed.
+
+## 2026-08-07 — Feature candidates dispositioned
+
+- Promoted decision explanations, fenced leases, logical revisions, safe
+  queries/views, and public schema identification to the post-0.1 roadmap.
+- Specified `schema_ref` so each bead identifies its governing immutable public
+  schema independently from its profile and private SQLite layout.
+- Deferred resource locks, bulk manifests, idempotency keys, and worker
+  capabilities to the ideas ledger.
+- Rejected native SQLite backup/restore; JSONL is the portable recovery backup,
+  while SQLite supplies ACID live operation.
+- No F001-F014 pass state changed.

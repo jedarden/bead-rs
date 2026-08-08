@@ -34,6 +34,8 @@ functional specifications and independently created conformance fixtures.
 | 2026-08-07 | Bootstrap with Marathon Coding | Independent headless iteration harness avoids a runtime dependency on another bead implementation |
 | 2026-08-07 | Specify an independent normalized SQLite schema | Satisfy public storage semantics without reproducing another implementation's schema or SQL |
 | 2026-08-07 | Record sanitized `bf 0.4.0` process-boundary observations | Isolated black-box specification activity; implementation details deliberately excluded |
+| 2026-08-07 | Use JSONL as the portable backup and recovery boundary | Keep SQLite focused on private ACID live state and avoid a second native backup format |
+| 2026-08-07 | Identify each bead's public schema with `schema_ref` | Improve explicit cross-tool validation without exposing the SQLite schema |
 
 Any future exposure or provenance exception must be appended here; do not
 rewrite prior entries.

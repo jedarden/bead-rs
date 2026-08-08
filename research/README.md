@@ -8,9 +8,9 @@ tests, SQL, documentation prose, or implementation plans.
 
 - [Clean-room protocol](specs/clean-room-protocol.md)
 - [Canonical interchange v1](specs/interchange-v1.md)
+- [Bead schema identification v1](specs/schema-identification-v1.md)
 - [NEEDLE CLI contract v1](specs/needle-cli-contract-v1.md)
 - [Conformance plan](specs/conformance-v1.md)
 
 `docs/notes/` contains non-normative architectural discussion. When a note and
 a specification disagree, the specification controls.
-

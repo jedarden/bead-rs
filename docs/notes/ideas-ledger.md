@@ -260,3 +260,16 @@ coordination.
   claim flags, indexes, and behavior when requirements are absent.
 - Strongest objection: unconstrained capability taxonomies become metadata
   sprawl; use opaque exact-match strings and no inheritance in v1.
+
+### Product decision — 2026-08-07
+
+- **Adopted:** explain claim/readiness decisions, fenced claim leases, logical
+  revision guards, safe query language/saved views, and machine-readable public
+  schemas.
+- **Schema refinement:** each native bead carries an immutable public
+  `schema_ref`; schema discovery, capabilities, and migration receipts expose
+  the identifiers for interoperability.
+- **Deferred to this ledger:** atomic resource locks, atomic bulk transaction
+  manifests, mutation idempotency keys, and worker capability declarations.
+- **Rejected:** native SQLite backup and restore. JSONL is the portable backup
+  and recovery contract; SQLite primarily supplies ACID live operation.

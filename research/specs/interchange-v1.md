@@ -20,6 +20,11 @@ failed parse as an empty store.
 | `created_at` | RFC 3339 string | Creation instant |
 | `updated_at` | RFC 3339 string | Last semantic modification |
 
+Native records also carry `schema_ref`, an absolute URI identifying the
+immutable public schema governing that bead representation. Its semantics are
+defined by `schema-identification-v1.md`. External profiles must explicitly
+map, preserve, or report omission of this identifier.
+
 ## Optional issue fields
 
 `description`, `assignee`, `labels`, `dependencies`, `comments`, `closed_at`,
@@ -54,4 +59,3 @@ Timestamp values retain their represented instant and available precision.
 Import validates the full input before activating any state. Export writes a
 temporary file, flushes it, and atomically replaces only an explicitly selected
 destination. Input files are never overwritten by migration.
-

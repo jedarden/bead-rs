@@ -4,9 +4,10 @@ Status: implementation-ready clean-room plan.
 
 This is the execution blueprint for the first usable `bead-rs` release. The
 installed executable is `bead`. SQLite is its authoritative live store,
-`.beads/issues.jsonl` is a portable checkpoint, and the initial compatibility
-target is NEEDLE v1. This plan defines an independent native architecture; it
-is not a translation of another bead implementation.
+`.beads/issues.jsonl` is the portable recovery backup and interchange artifact,
+and the initial compatibility target is NEEDLE v1. SQLite provides the live
+ACID working state. This plan defines an independent native architecture; it is
+not a translation of another bead implementation.
 
 ## 1. Authority and clean-room boundary
 
@@ -36,6 +37,7 @@ In scope:
 - issue CRUD, assignment, lifecycle, labels, notes, and dependencies;
 - deterministic readiness and atomic server-selected claiming;
 - deterministic checkpoint import/export and unknown-field preservation;
+- explicit per-bead public schema identification;
 - diagnostics and narrowly scoped repair;
 - machine-readable capabilities and NEEDLE v1 subprocess compatibility;
 - explicit `native-v1`, `needle-v1`, `br-v1`, and `bf-v1` profiles;
@@ -50,6 +52,7 @@ Out of scope:
 - fuzzy dependency-direction inference;
 - silent recovery from malformed JSONL;
 - crates.io publication;
+- native SQLite backup/restore formats; JSONL is the supported backup boundary;
 - compatibility claims without corresponding conformance evidence.
 
 ## 3. Canonical domain model
@@ -91,7 +94,14 @@ another tool's suffix algorithm.
 | `close_reason` | nonblank for closed issues; required by `close` |
 | `source_repo` | optional source-workspace descriptor |
 | `profile` | origin profile for extension round trips |
+| `schema_ref` | absolute URI naming the immutable public schema governing this bead representation |
 | `extensions` | unknown top-level JSON values keyed by original name |
+
+Native v1 records use
+`urn:bead-rs:schema:issue:native-v1`. A schema reference describes the public
+JSON representation, never the private SQLite layout. Unknown references are
+preserved during inspection/migration but fail closed for activation unless an
+explicit profile adapter declares compatibility.
 
 Labels, dependency edges, comments, claim telemetry, and audit events are
 normalized child records. Reads assemble them into an interchange view.
@@ -161,7 +171,7 @@ processes must never receive the same successful issue ID.
 ```text
 .beads/
   beads.db          authoritative native SQLite database
-  issues.jsonl      checkpoint, present after first flush
+  issues.jsonl      portable recovery backup, present after first flush
   config.json       nonsecret workspace configuration
   receipts/         migration receipts created on request
   .gitignore        ignores journals and temporary files
@@ -243,7 +253,9 @@ Human output may evolve; named-profile machine output is stable.
 | `bead sync --flush-only [--profile P]` | atomic checkpoint export |
 | `bead sync --import-only [--profile P]` | transactional reconciliation |
 | `bead doctor [--repair]` | diagnose; optionally perform safe repairs |
-| `bead capabilities --format json --profile P` | versioned capabilities |
+| `bead capabilities --format json --profile P` | versioned capabilities and supported schema references |
+| `bead schema list --format json` | list supported public document schemas |
+| `bead schema show SCHEMA_REF --format json` | emit the exact versioned JSON Schema document |
 | `bead migrate --from P --input I --output O [--dry-run]` | transform without overwriting input |
 
 The native command is `bead`. Do not create a `br` executable; that name is a
@@ -294,7 +306,7 @@ Use structured internal errors and print one concise diagnostic at the CLI
 boundary. Do not expose SQL, secrets, environment values, or backtraces by
 default.
 
-## 6. Checkpoints and compatibility profiles
+## 6. JSONL backup and compatibility profiles
 
 ### 6.1 Canonical JSONL
 
@@ -312,7 +324,14 @@ the represented instant is unchanged.
 Known fields win over same-name extension keys. Report that collision as a
 transformation; never emit duplicate JSON keys silently.
 
-### 6.2 Flush algorithm
+### 6.2 Backup flush algorithm
+
+SQLite is authoritative between flushes because it supplies transactional live
+operation. `.beads/issues.jsonl` is the supported portable backup at the last
+successful flush and the source for disaster recovery into a newly initialized
+store. The CLI and documentation must call out its recorded snapshot sequence
+and freshness; they must never imply that an older backup contains unflushed
+mutations. There is no separate native SQLite backup format.
 
 1. Open a read transaction and capture the event sequence.
 2. Assemble all records from that single committed snapshot.
@@ -364,6 +383,12 @@ closed.
 The observed `bf` spelling `dep add BLOCKER --blocks BLOCKED` belongs only to
 an explicit future CLI adapter. Native and NEEDLE syntax remains
 `dep add BLOCKED BLOCKER --type blocks`.
+
+Each emitted native bead includes its `schema_ref`. Profiles explicitly map,
+preserve, or report omission of the reference. Supported public schemas use
+immutable absolute identifiers and JSON Schema Draft 2020-12; the schema
+document's `$id` equals the reference. See
+`research/specs/schema-identification-v1.md`.
 
 ### 6.5 Migration receipts
 
@@ -538,14 +563,59 @@ may take multiple iterations and remains false until complete.
   "atomic_claim": true,
   "statuses": ["blocked", "closed", "deferred", "in_progress", "open"],
   "checkpoint_modes": ["flush-only", "import-only"],
-  "commands": ["claim", "close", "create", "dep", "doctor", "label", "list", "reopen", "show", "sync", "update"]
+  "schemas": ["urn:bead-rs:schema:issue:native-v1"],
+  "commands": ["claim", "close", "create", "dep", "doctor", "label", "list", "reopen", "schema", "show", "sync", "update"]
 }
 ```
 
 Arrays are lexically stable. Additive fields are allowed. An unsupported
 profile exits nonzero instead of returning mislabeled native capabilities.
 
-## 12. Release gates
+## 12. Adopted post-0.1 roadmap
+
+These features are accepted for development after the F001-F014 release core.
+They require their own normative specifications, conformance scenarios, and
+future Marathon ledger entries before implementation begins.
+
+### R001 — Explain claim and readiness decisions
+
+Add a nonmutating, machine-readable decision trace with versioned semantic
+reason codes for lifecycle, assignment, blockers, manual blocking, resource
+conflicts, and other eligibility rules. This makes empty queues and surprising
+selection behavior diagnosable without revealing SQL or private store details.
+
+### R002 — Fenced claim leases
+
+Add opt-in expiring claims, renewals, and monotonically increasing fencing
+tokens. A stale worker must be unable to update or close work after expiry and
+reassignment. This provides safe recovery from crashed or disconnected agents
+without weakening the simple nonleased claim path.
+
+### R003 — Logical revision guards
+
+Give each bead a monotonically increasing logical revision and accept an
+`--if-revision` precondition on mutations. This prevents silent lost updates
+across concurrent humans and workers without depending on wall-clock ordering.
+Profiles must state whether and how they preserve the revision.
+
+### R004 — Safe query language and saved views
+
+Define a small, versioned, typed query grammar for supported fields,
+dependency/readiness predicates, deterministic sorting, projections, and named
+local views. It must never expose raw SQL or the private schema. A deliberately
+limited first grammar replaces fragile shell filtering while keeping query
+cost and compatibility bounded.
+
+### R005 — Machine-readable schemas and per-bead schema references
+
+Ship immutable JSON Schema documents for public issue records, capabilities,
+migration receipts, decision traces, and future bulk/error formats. Every
+native bead carries `schema_ref`, allowing consumers to identify exactly which
+public schema governs it. `bead schema` resolves supported identifiers, while
+capabilities and migration receipts enumerate them. This gives interoperating
+tools an explicit validation contract without making SQLite an API.
+
+## 13. Release gates
 
 Before `.marathon/COMPLETE`:
 
@@ -564,7 +634,21 @@ Before `.marathon/COMPLETE`:
 - compatibility claims name exact profiles and known losses;
 - publication remains separately human-authorized.
 
-## 13. Inputs still required for external profiles
+## 14. Deferred feature notes
+
+The following candidates remain intentionally deferred in
+`docs/notes/ideas-ledger.md` and are not roadmap commitments:
+
+- atomic resource locks;
+- atomic bulk transaction manifests;
+- mutation idempotency keys;
+- worker capability declarations.
+
+Native SQLite backup/restore is rejected. Deterministic JSONL flush/import is
+the backup and recovery contract; SQLite exists primarily to provide ACID live
+operation.
+
+## 15. Inputs still required for external profiles
 
 The core can proceed now. F012 still needs complete independently approved
 field/nullability/status/dependency fixtures for `br-v1` and `bf-v1`. F014
