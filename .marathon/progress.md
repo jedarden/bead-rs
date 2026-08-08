@@ -104,3 +104,14 @@ rewrite or delete earlier entries.
 - Removed the roadmap's stray implication that resource conflicts are already
   part of claim/readiness explanations.
 - No F001-F014 pass state changed.
+
+## 2026-08-08 — Third feature ideation run recorded
+
+- Applied the workspace `plan-idea-gen` funnel at quick scale: 40 base ideas,
+  three crossover/completeness entrants, clustering, triage, pairwise ranking,
+  adversarial kill pass, and ten finalists.
+- Kept the run constrained to optional, local mechanisms and excluded the
+  recently deferred file-intent/write-set gating design.
+- Appended every candidate, verdict, and finalist dossier to the ideas ledger;
+  none is adopted yet.
+- No F001-F014 pass state changed.

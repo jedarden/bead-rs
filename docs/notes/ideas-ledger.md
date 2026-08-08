@@ -562,3 +562,194 @@ Potentially reusable ideas remain notes only: normalized repository-relative
 paths, read-versus-write modes, compact dependency chains for known overlaps,
 derived-edge provenance, and diagnostics that explain suspected collisions.
 They require a new product decision and specification before implementation.
+
+## 2026-08-08 — plan-idea-gen run 3: evidence without gates
+
+Target: `docs/plan/plan.md`. Generated: 40 new base ideas plus 3 crossover or
+completeness entrants. Deduplicated mechanisms: 43. Triage survivors: 25 plus
+2 crossovers. Pairwise advancers: 14. Kill-pass survivors: 12. Finalists: 10.
+This quick-scale run checked candidates against both prior 100-idea runs,
+R001-R019, and the decision to defer file-writing gates.
+
+| # | Idea and mechanism | Cluster | Verdict |
+| ---: | --- | --- | --- |
+| 1 | Claim rehearsal — simulate the next N selections without assignment | Claim insight | KILL: future queue simulation misleads under concurrency and failures |
+| 2 | Negative readiness query — report minimal changes that would make one bead ready | Claim insight | MERGED into finalist 31 |
+| 3 | Closure proof bundle — machine-readable evidence separate from prose | Evidence | MERGED into finalist 41 |
+| 4 | Dependency rationale — optional reason and provenance on every edge | Graph | **FINALIST:** makes graph structure explain itself |
+| 5 | Failure salvage brief — bounded handoff view after a failed attempt | Outcomes | MERGED into finalist 42 |
+| 6 | Acceptance checklist — ordered, individually checkable completion items | Evidence | MERGED into finalist 41 |
+| 7 | Review lifecycle overlay — optional verification without another terminal status | Review | KILL: should wait for acceptance evidence semantics |
+| 8 | Label vocabulary schema — allowed labels, aliases, descriptions, deprecations | Policy | KILL: schema-bound data can carry it until demand proves native semantics |
+| 9 | Actor provenance envelope — bounded tool/harness/session mutation metadata | Outcomes | MERGED into finalist 42 |
+| 10 | Graph slice export — deterministic dependency neighborhood around one bead | Graph | **FINALIST:** portable bounded agent/visualization context |
+| 11 | Workspace bundle migration — merge several workspaces with namespace receipts | Migration | KILL: cross-workspace identity and dependency collision policy is premature |
+| 12 | Portable read-only query snapshot with schemas and hashes | Interchange | KILL: partial export is easily confused with recovery backup |
+| 13 | Cross-profile comparison — semantic losses for two renderings side by side | Migration | **FINALIST:** makes interoperability loss concrete before export |
+| 14 | Detached planning annotations — disposable nonauthoritative planning guesses | Metadata | KILL: metadata without durable semantics invites drift |
+| 15 | Alternate display aliases for immutable IDs | Identity | KILL: creates ambiguous human identity |
+| 16 | Workspace policy lint — diagnose contradictory or ineffective configuration | Policy | **FINALIST:** prevents opaque scheduling mistakes without enforcement |
+| 17 | Command examples as versioned capability data | CLI | KILL: documentation surface, not a top product mechanism |
+| 18 | Deterministic shell completion generated from command metadata | CLI | KILL: tooling polish before the command surface stabilizes |
+| 19 | Compact graph summary — counts, depth, and next actionable relationship | Claim insight | KILL: graph slice and why facade subsume it |
+| 20 | Mutation preview — validate and show semantic delta without commit | Mutation | **FINALIST:** safe inspection of consequential operations |
+| 21 | Atomic compare-and-swap batch of revision-guarded mutations | Mutation | KILL: duplicates deferred bulk manifests with greater conflict complexity |
+| 22 | Saved claim presets — named policy parameters and projections | Policy | KILL: ordinary versioned workspace configuration suffices |
+| 23 | Dependency reason search | Graph | KILL: safe queries can compose over edge rationale |
+| 24 | Deterministic clone from selected fields | CLI | KILL: copying is modest convenience and can duplicate stale assumptions |
+| 25 | Manual queue pinning inside a priority band | Policy | KILL: another time-sensitive scheduling override |
+| 26 | Sensitive-content lint — warn on likely credentials before JSONL export | Reliability | **FINALIST:** reduces accidental secret persistence without blocking work |
+| 27 | Public semantic-state fingerprint | Reliability | KILL: backup manifests and semantic proof already hash stronger boundaries |
+| 28 | Partial-read backup damage map without activation | Recovery | KILL: could be mistaken for safe partial recovery |
+| 29 | Clock anomaly diagnostics | Reliability | KILL: scoped doctor can absorb it as a conformance case |
+| 30 | Resource budget report — size, largest beads, growth, projection pressure | Reliability | KILL: useful diagnostic, but less central than the final ten |
+| 31 | `why` command — status, readiness, rank, and legal next operations | Claim insight | **FINALIST:** one stable human and machine explanation facade |
+| 32 | Machine-readable legal-next-action error hints | CLI | KILL: error-schema polish after the lifecycle API stabilizes |
+| 33 | Workspace tour — health, freshness, ready work, and active profile | Claim insight | KILL: composes existing diagnostic and capability commands |
+| 34 | Priority explanation in capabilities | CLI | KILL: should be part of the existing capability contract |
+| 35 | Plain-sentence dependency direction | CLI | KILL: presentation feature only |
+| 36 | Explicit recurring-bead materialization — no scheduler or daemon | Workflow | **FINALIST:** repeatable work without hidden automation |
+| 37 | Outcome artifact catalog — typed references to produced commits/reports/files | Outcomes | MERGED into finalist 42 |
+| 38 | Local metrics snapshot for throughput, age, failures, and queue health | Reliability | KILL: premature analytics surface before meaningful history exists |
+| 39 | Deterministic sample of completed work for review | Review | KILL: creates a second scheduler before review semantics exist |
+| 40 | Explicit revision-guarded undo recipe | Mutation | KILL: reliable semantic inverses are narrower than mutation preview |
+| 41 | Verifiable acceptance evidence — checklist items linked to evidence | Evidence | **FINALIST:** combines task definition and optional completion proof |
+| 42 | Portable execution outcome — bounded attempt, actor, handoff, and artifact envelope | Outcomes | **FINALIST:** interoperable result context without full conversations |
+| 43 | Revisit conditions for deferred beads | Policy | KILL: dependencies and saved queries can express the useful portion |
+
+### Finalist dossiers
+
+#### 1. Dependency rationale
+
+Attach an optional concise reason and provenance envelope to each dependency
+edge. It won the graph-semantics cluster because knowing *why* A blocks B is
+more durable and actionable than merely drawing the edge.
+
+- Complexity: **S**
+- First step: specify rationale size, provenance fields, mutation semantics,
+  deterministic backup ordering, and loss behavior in external profiles.
+- Strongest objection: metadata increases graph and backup weight; keep it
+  optional, bounded, and excluded from readiness evaluation.
+
+#### 2. Graph slice export
+
+Export a deterministic, bounded dependency neighborhood around a selected bead,
+with explicit depth, direction, and field projection. It beat compact summaries
+because agents and visualization tools can consume the same portable structure.
+
+- Complexity: **M**
+- First step: define root, inbound/outbound traversal, cycle-safe ordering,
+  truncation markers, schema, and maximum node/edge budgets.
+- Strongest objection: a partial graph can look like a backup; label the format
+  non-recoverable and never accept it through backup import.
+
+#### 3. Cross-profile comparison
+
+Render one bead or fixture through two explicit profiles and report field-level
+semantic preservation, transformation, and loss before migration. It won the
+interchange cluster because receipts explain what happened after conversion,
+while this lets an operator decide beforehand.
+
+- Complexity: **M**
+- First step: define a semantic comparison result keyed by canonical field path
+  and reuse profile adapters without comparing incidental JSON formatting.
+- Strongest objection: adapter combinations multiply quickly; support only
+  explicitly named installed profiles and bound record counts.
+
+#### 4. Workspace policy lint
+
+Statically diagnose contradictory, unreachable, redundant, or ineffective
+claim and retention configuration without changing it. It won policy safety
+because complex versioned scheduling becomes operable only when mistakes are
+explainable before workers encounter an empty queue.
+
+- Complexity: **M**
+- First step: enumerate policy invariants and define stable, versioned warning
+  codes plus a read-only `policy check --format json` result.
+- Strongest objection: lint rules can lag policy versions; bind every rule to
+  exact policy/config schema versions and fail closed on unknown versions.
+
+#### 5. Mutation preview
+
+Validate a proposed update, close, reopen, or dependency change and emit its
+exact semantic delta without committing. It won mutation safety because it
+helps humans and automation inspect consequences without imposing a new gate.
+
+- Complexity: **M**
+- First step: specify canonical before/after field deltas, derived readiness
+  effects, exit behavior, and the captured revision/sequence.
+- Strongest objection: state may change after preview; mark it advisory and let
+  callers pair execution with R003 revision guards.
+
+#### 6. Sensitive-content lint
+
+Scan content headed for the portable JSONL backup for high-confidence credential
+shapes and report field locations without retaining or printing matched values.
+It won reliability because accidental secret persistence is costly and backups
+are explicitly durable and Git-friendly.
+
+- Complexity: **M**
+- First step: define a small built-in versioned rule set, redacted diagnostic
+  schema, size bounds, and explicit warning-only invocation.
+- Strongest objection: detection has false positives and false negatives; never
+  claim completeness, never block flush by default, and do not load executable
+  or remote rule packs.
+
+#### 7. `why` command
+
+Provide one read-only entry point that explains effective status, readiness,
+claim ranking factors, active blockers, and currently legal next operations.
+It won novice usability because users should not have to assemble several
+diagnostic commands to understand one bead.
+
+- Complexity: **M**
+- First step: define a stable facade schema over lifecycle rules and R001/R019
+  reason codes, ensuring it calls the same domain evaluators.
+- Strongest objection: it overlaps claim explanations; it must remain a facade,
+  never a parallel policy engine.
+
+#### 8. Explicit recurring-bead materialization
+
+Store a nonexecuting recurrence template and create its next bead only through
+an explicit command, carrying a deterministic series reference. It won workflow
+automation because repeated maintenance is common while daemon scheduling and
+hidden mutation remain out of scope.
+
+- Complexity: **L**
+- First step: specify immutable template versions, occurrence identity,
+  selected copied fields, idempotency, and explicit materialization receipts.
+- Strongest objection: recurrence can become a scheduler by stealth; core must
+  never wake, poll, or create occurrences without a direct invocation.
+
+#### 9. Verifiable acceptance evidence
+
+Add ordered acceptance items whose status may remain unchecked, satisfied,
+waived, or linked to typed evidence, while closure policy stays configurable.
+It won evidence/review because it connects the requested outcome to the proof
+without forcing every project into a heavyweight workflow.
+
+- Complexity: **L**
+- First step: define item IDs, ordering, immutable statement/revision rules,
+  evidence references, waiver rationale, backup mapping, and optional policy.
+- Strongest objection: checklists create bureaucracy; default to absent and do
+  not require satisfaction for close unless a workspace explicitly opts in.
+
+#### 10. Portable execution outcome
+
+Record a bounded, schema-versioned result envelope for an attempt: outcome
+class, actor/tool provenance, concise handoff, and typed artifact references.
+It won the outcome cluster because both successful and failed work need portable
+context, but copying prompts or entire conversations would explode bead size.
+
+- Complexity: **L**
+- First step: define allowlisted fields, byte limits, privacy rules, attempt
+  linkage, projection controls, and profile loss reporting.
+- Strongest objection: provenance can expose identities or prompt material;
+  prohibit arbitrary environment capture and keep verbose context in optional
+  comments or external references.
+
+### Run-3 disposition
+
+No finalist is adopted automatically. Selection remains a product decision;
+until then all ten are candidates in this ledger and no F001-F014 or R001-R019
+state changes.
