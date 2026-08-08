@@ -221,11 +221,27 @@
       "evidence": []
     },
     {
+      "id": "F017",
+      "priority": 2,
+      "description": "Adaptive Git-trackable sharded checkpoints with forensic history",
+      "spec": "docs/plan/plan.md#611-adaptive-sharded-checkpoint-set",
+      "depends_on": ["F005", "F006", "F007", "F008", "F009", "F010"],
+      "acceptance": [
+        "Every flush captures all lifecycle states, complete portable bead content, dependencies, comments, structured extensions, and the continuous durable audit-event history",
+        "Native checkpoints deterministically switch from one issues.jsonl file to a manifest-backed content-addressed prefix-sharded issue and sequence-sharded event corpus at versioned size or record thresholds",
+        "Shard splits rewrite only the overflowing prefix, sealed event shards remain immutable, and interrupted publication preserves the previous verified checkpoint root",
+        "Monolithic and sharded imports validate all hashes, partitions, counts, uniqueness, event continuity, and graph semantics before activation and restore to semantically equivalent public state",
+        "Checkpoint artifacts are not ignored, sync reports changed Git-trackable paths, and documentation requires an external flush-before-commit workflow without bead-rs invoking Git"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
       "id": "F014",
       "priority": 2,
       "description": "Release packaging, installation, and license verification",
       "spec": "research/specs/conformance-v1.md",
-      "depends_on": ["F010", "F011", "F012", "F013", "F015", "F016"],
+      "depends_on": ["F010", "F011", "F012", "F013", "F015", "F016", "F017"],
       "acceptance": [
         "cargo package succeeds from a clean checkout",
         "Packaged installation provides the bead executable",

@@ -160,3 +160,18 @@ rewrite or delete earlier entries.
   frontier, lifecycle, dependency semantics, atomic claims, and backup boundary.
 - Added F016 and made packaging depend on complete CLI documentation.
 - No feature pass state changed.
+
+## 2026-08-08 — Git-trackable forensic checkpoints specified
+
+- Required flushed portable artifacts to retain the full bead corpus across all
+  lifecycle states plus continuous durable audit-event history for later
+  forensic investigation.
+- Defined automatic monolith-to-sharded transition using a canonical manifest,
+  content-addressed objects, incrementally split hash-prefix issue partitions,
+  and immutable sequence-ranged event shards.
+- Required atomic manifest-last publication, complete hash/partition/event
+  validation, monolithic/sharded restore equivalence, and changed-path reports.
+- Clarified that checkpoint artifacts are committed by the surrounding Git
+  workflow and mirrored to GitHub; bead-rs itself never commits or pushes.
+- Added F017 and made packaging depend on its verified implementation.
+- No feature pass state changed.

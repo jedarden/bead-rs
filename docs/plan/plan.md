@@ -28,7 +28,7 @@ conflict by correcting the plan, never by silently changing the requirement.
 
 ## 2. Release definition
 
-Version 0.1 is complete when F001-F016 in `.marathon/feature_list.json` pass
+Version 0.1 is complete when F001-F017 in `.marathon/feature_list.json` pass
 and every release gate in `.marathon/instruction.md` succeeds.
 
 In scope:
@@ -36,7 +36,8 @@ In scope:
 - workspace initialization and versioned native SQLite migrations;
 - issue CRUD, assignment, lifecycle, labels, notes, and dependencies;
 - deterministic readiness and atomic server-selected claiming;
-- deterministic checkpoint import/export and unknown-field preservation;
+- deterministic monolithic or sharded checkpoint import/export, complete
+  forensic history, and unknown-field preservation;
 - explicit per-bead public schema identification;
 - diagnostics and narrowly scoped repair;
 - machine-readable capabilities and NEEDLE v1 subprocess compatibility;
@@ -542,7 +543,11 @@ as build artifacts, not source-controlled performance claims.
 ```text
 .beads/
   beads.db          authoritative native SQLite database
-  issues.jsonl      portable recovery backup, present after first flush
+  issues.jsonl      small-workspace portable checkpoint
+  checkpoint/
+    manifest.json   current sharded-checkpoint manifest when sharding is active
+    previous.json   immediately previous verified manifest for crash recovery
+    objects/        content-addressed issue and event JSONL shards
   config.json       nonsecret workspace configuration
   receipts/         migration receipts created on request
   .gitignore        ignores journals and temporary files
@@ -552,6 +557,14 @@ as build artifacts, not source-controlled performance claims.
 unrelated files. Repeating it with the same prefix succeeds; a conflicting
 prefix fails without mutation. Use user-only write permissions where
 supported.
+
+The generated `.beads/.gitignore` ignores SQLite, WAL/journal files, locks, and
+operation-owned temporaries, but does not ignore `issues.jsonl`, current or
+previous checkpoint manifests, or referenced checkpoint objects. Those files are
+deterministic project artifacts intended to be committed. `bead-rs` never runs
+Git commands or creates commits; the surrounding repository workflow flushes
+before commit and pushes to its authoritative host, from which a configured
+mirror may publish the history to GitHub.
 
 Workspace discovery walks from the current directory toward the filesystem
 root until `.beads/config.json` is found. Never follow a `.beads` symlink
@@ -629,6 +642,7 @@ Human output may evolve; named-profile machine output is stable.
 | `bead dep remove BLOCKED BLOCKER [--type KIND]` | remove matching edge(s) |
 | `bead sync --flush-only [--profile P]` | atomic checkpoint export |
 | `bead sync --import-only [--profile P]` | transactional reconciliation |
+| `bead sync --status --format json` | freshness, root hash, mode, and Git-trackable changed paths |
 | `bead doctor [--repair]` | diagnose; optionally perform safe repairs |
 | `bead capabilities --format json --profile P` | versioned capabilities and supported schema references |
 | `bead schema list --format json` | list supported public document schemas |
@@ -720,6 +734,10 @@ backup only as of its last successful flush. The root page includes a minimal
 end-to-end command example, points automation to `--json` and capabilities, and
 links each lifecycle operation to its command page.
 
+Root help also states that checkpoint files are designed to be Git-tracked and
+that users or automation should run `bead sync --flush-only` before committing
+the repository. It must not imply that `bead-rs` performs the commit or push.
+
 Generate section-1 manual pages from that same command tree and structured
 long-form documentation. Ship `bead(1)` plus one page for every public command
 and nested leaf, using hyphenated names such as `bead-claim(1)`,
@@ -748,9 +766,10 @@ the `.crate` and cross-links resolve to an existing page.
 
 ### 6.1 Canonical JSONL
 
-JSONL is UTF-8 with one compact object and LF per issue. Blank lines may be
-ignored. Malformed or non-object lines fail with a one-based line number.
-Reject duplicate IDs before activating any state.
+JSONL is UTF-8 with one compact object and LF per issue. In native monolithic
+mode each issue record includes its complete durable audit-event array in event
+sequence order. Blank lines may be ignored. Malformed or non-object lines fail
+with a one-based line number. Reject duplicate IDs before activating any state.
 
 Canonical export order is ID ascending. Known fields follow the interchange
 specification, optional known fields follow, and extension keys sort lexically.
@@ -762,32 +781,124 @@ the represented instant is unchanged.
 Known fields win over same-name extension keys. Report that collision as a
 transformation; never emit duplicate JSON keys silently.
 
+The native recovery corpus is historical, not merely a queue of unfinished
+work. It retains open, in-progress, deferred, and closed beads; complete
+dependency, comment, schema-bound data, and unknown-extension content; and the
+complete ordered public audit-event stream needed to reconstruct lifecycle,
+assignment, dependency, and other semantic mutations. Claim telemetry or
+private diagnostic material is included only when its public schema explicitly
+marks it durable and nonsecret. Normal cleanup never drops closed beads or
+historical events from the portable corpus. Any future pruning operation must
+be explicit, separately specified, and produce a forensic receipt.
+
+#### 6.1.1 Adaptive sharded checkpoint set
+
+Small workspaces use `.beads/issues.jsonl` for maximum compatibility. Native
+defaults switch to a sharded checkpoint when the monolith would exceed 50,000
+issue records, 64 MiB total, or 8 MiB for any history-bearing issue line; all
+thresholds are versioned configuration and recorded in the manifest. Operators
+may force monolithic or sharded output, but forcing a monolith never bypasses
+record/byte safety limits.
+
+The sharded format uses `.beads/checkpoint/manifest.json` as its sole root of
+trust. It records format/schema version, store UUID, snapshot and maximum event
+sequence, creation time, profile, complete record/event counts, partition
+algorithm and thresholds, and every referenced object path, byte length,
+SHA-256, record range, and semantic role. The manifest itself has a canonical
+SHA-256 reported by `sync --status`. Import rejects missing, extra-referenced,
+duplicate, overlapping, mispartitioned, miscounted, or hash-mismatched data
+before activating any state.
+
+Issue shard assignment is deterministic:
+
+```text
+key = SHA-256(UTF-8 bead ID)
+partition = the manifest-declared leading hexadecimal prefix of key
+```
+
+Begin with a shallow prefix. When one shard exceeds its record or byte target,
+split only that prefix into its sixteen next-hex-digit children. Do not
+automatically merge shards on later flushes: avoiding oscillation and wholesale
+Git diffs is more valuable than recovering a few small files. An explicit
+future compaction operation may produce a new partition plan and receipt.
+Records within each issue shard sort by bead ID.
+
+Audit events are stored separately from issue snapshots in immutable,
+contiguous sequence-range JSONL objects. Seal an event object at 100,000 events
+or 64 MiB, then start the next range. A flush may replace only the unsealed tail;
+sealed objects never change. This makes forensic history append-friendly and
+prevents a frequently updated bead from rewriting its entire history-bearing
+issue shard.
+
+Object filenames contain their content SHA-256 and live under
+`.beads/checkpoint/objects/`; identical content is reused. Before publishing a
+new root, preserve the old root atomically as `previous.json`. Publish
+`manifest.json` only after every referenced object is durable and verified. The
+working tree may remove objects unreferenced by both manifests after the switch;
+Git history retains committed prior objects. Interrupted flushes preserve at
+least one valid manifest and its referenced objects.
+
+The monolithic and sharded representations are semantically equivalent. A
+fresh store restored from either must produce the same canonical public state
+and audit-event history. External compatibility profiles that require one file
+may export a monolith explicitly to a caller-selected path without changing the
+native checkpoint mode.
+
 ### 6.2 Backup flush algorithm
 
 SQLite is authoritative between flushes because it supplies transactional live
-operation. `.beads/issues.jsonl` is the supported portable backup at the last
-successful flush and the source for disaster recovery into a newly initialized
-store. The CLI and documentation must call out its recorded snapshot sequence
-and freshness; they must never imply that an older backup contains unflushed
-mutations. There is no separate native SQLite backup format.
+operation. The monolithic `.beads/issues.jsonl` or sharded checkpoint manifest
+is the supported portable backup at the last successful flush and the source
+for disaster recovery into a newly initialized store. The CLI and documentation
+must call out its recorded snapshot sequence and freshness; they must never
+imply that an older backup contains unflushed mutations. There is no separate
+native SQLite backup format.
 
 1. Open a read transaction and capture the event sequence.
-2. Assemble all records from that single committed snapshot.
-3. Serialize to a uniquely named temporary sibling in `.beads/`.
-4. Flush and `sync_all` the file.
-5. Atomically rename it over `.beads/issues.jsonl`.
-6. Sync the parent directory where supported.
-7. Record SHA-256, snapshot sequence, and time in a short write transaction.
+2. Assemble all issue records and durable audit events from that single
+   committed snapshot.
+3. Select monolithic or sharded mode from explicit configuration or recorded
+   thresholds; retain an existing valid partition plan and split only
+   overflowing shards.
+4. Serialize new content-addressed objects or a uniquely named monolithic
+   temporary; reuse already verified objects without rewriting them.
+5. Flush and `sync_all` every new file, verify lengths/hashes/counts, then sync
+   its parent directory where supported.
+6. Publish the monolith or canonical manifest last through atomic replacement,
+   then sync the parent directory. Never expose a manifest referencing an
+   incomplete object set.
+7. Record root hash, snapshot sequence, event range, mode, partition plan, and
+   time in a short write transaction.
+8. Emit machine-readable freshness and changed-path information so an external
+   Git workflow can verify that every checkpoint mutation is included in its
+   commit.
 
 A write after step 1 may make the checkpoint an older committed snapshot; its
 recorded sequence makes this explicit. Never truncate the prior checkpoint in
 place. On failure preserve it and remove only this operation's temporary file.
 
+Every committed semantic mutation advances the live event sequence and makes
+checkpoint status dirty until a successful flush covers that sequence.
+`sync --status --format json` reports live and flushed sequences, root hash,
+mode, changed paths, and whether the checkpoint is ready to commit. Repository
+automation must treat a dirty checkpoint as a failed pre-commit/release gate,
+run `sync --flush-only`, and include every reported path in the same Git commit
+as the related project change. This workflow preserves forensic material on the
+remote history without making the bead CLI a Git client.
+
 ### 6.3 Import reconciliation
 
-`sync --import-only` fully parses and validates `.beads/issues.jsonl` before
-activation. Default safety limits are 1 million records, 16 MiB per line, 4
-GiB total, and `serde_json`'s bounded nesting behavior.
+`sync --import-only` discovers and fully validates either the sharded manifest
+or `.beads/issues.jsonl` before activation; simultaneous roots with unequal
+semantics are an explicit conflict. Default safety limits are 1 million issue
+records, 16 MiB per line, 4 GiB total, and `serde_json`'s bounded nesting
+behavior. Event limits are independently configured and never inferred from
+the issue-record limit.
+
+Sharded import streams objects in manifest order, verifies each content hash
+and partition membership, and rejects duplicate issue IDs or event sequences
+across shards. Validation of the entire manifest, graph, event continuity, and
+semantic state completes before the activation transaction.
 
 In one write transaction:
 
@@ -1006,7 +1117,9 @@ The feature ledger remains release authority. Execute it in these increments:
     benchmark driver, capacity calculation, and schema-stable reports.
 15. **F016:** complete help tree, generated man pages, drift/coverage tests, and
     documented explicit installation.
-16. **F014:** package/install smoke test, licensing, provenance verification.
+16. **F017:** adaptive deterministic sharding, complete forensic event history,
+    semantic restore equivalence, and Git-trackable checkpoint verification.
+17. **F014:** package/install smoke test, licensing, provenance verification.
 
 One Marathon iteration implements one coherent increment, runs targeted and
 repository gates, changes a feature's `passes` and evidence only after all its
@@ -1027,6 +1140,7 @@ may take multiple iterations and remains false until complete.
   "priorities": {"min": 0, "max": 4, "default": 2, "p4_aspirational_requires_opt_in": true},
   "statuses": ["blocked", "closed", "deferred", "in_progress", "open"],
   "checkpoint_modes": ["flush-only", "import-only"],
+  "checkpoint_formats": ["monolithic-jsonl-v1", "sharded-jsonl-v1"],
   "schemas": ["urn:bead-rs:schema:issue:native-v1"],
   "commands": ["claim", "close", "create", "dep", "doctor", "label", "list", "reopen", "schema", "show", "sync", "update"]
 }
@@ -1037,7 +1151,7 @@ profile exits nonzero instead of returning mislabeled native capabilities.
 
 ## 12. Adopted post-0.1 roadmap
 
-These features are accepted for development after the F001-F016 release core.
+These features are accepted for development after the F001-F017 release core.
 They require their own normative specifications, conformance scenarios, and
 future Marathon ledger entries before implementation begins.
 
@@ -1237,7 +1351,7 @@ operation.
 
 Before `.marathon/COMPLETE`:
 
-- F001-F016 have concrete passing evidence;
+- F001-F017 have concrete passing evidence;
 - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and
   `cargo test` pass on the release commit;
 - native, interchange, NEEDLE, concurrency, and migration lanes pass;
@@ -1246,6 +1360,9 @@ Before `.marathon/COMPLETE`:
   uncompleted scale;
 - every public command path passes recursive help coverage and every generated
   section-1 man page is current, cross-linked, and present in the package;
+- monolithic and sharded restore-equivalence tests pass; the checkpoint covers
+  every bead and durable audit event; and no referenced checkpoint artifact is
+  ignored by Git packaging rules;
 - `cargo package` succeeds from a clean checkout;
 - the packaged crate installs into a temporary root and its `bead` completes
   init, create, list, claim, update, dependency, flush/import, doctor,
