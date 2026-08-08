@@ -829,7 +829,7 @@ future Marathon ledger entries before implementation begins.
 ### R001 — Explain claim and readiness decisions
 
 Add a nonmutating, machine-readable decision trace with versioned semantic
-reason codes for lifecycle, assignment, blockers, manual blocking, resource
+reason codes for lifecycle, assignment, blockers, manual blocking, policy
 conflicts, and other eligibility rules. This makes empty queues and surprising
 selection behavior diagnosable without revealing SQL or private store details.
 
@@ -997,9 +997,17 @@ The following candidates remain intentionally deferred in
 `docs/notes/ideas-ledger.md` and are not roadmap commitments:
 
 - atomic resource locks;
+- predeclared file-intent manifests, file-derived dependency serialization,
+  edit fencing, and post-diff path enforcement;
 - atomic bulk transaction manifests;
 - mutation idempotency keys;
 - worker capability declarations.
+
+Workers are not required to predict or declare files before claiming or
+starting a bead. `bead-rs` does not gate edits on an accepted read/write set,
+base revision, intent hash, or planning phase. A future file-writing
+coordination mechanism may reuse the deferred research, but it needs a separate
+product decision and normative specification before becoming a roadmap item.
 
 Native SQLite backup/restore is rejected. Deterministic JSONL flush/import is
 the backup and recovery contract; SQLite exists primarily to provide ACID live

@@ -93,3 +93,14 @@ rewrite or delete earlier entries.
 - The P0-P4 range matches observed bead tooling and avoids an unnecessary lossy
   compatibility mapping.
 - No F001-F014 pass state changed.
+
+## 2026-08-08 — File-intent gating deferred
+
+- Explicitly excluded predeclared file manifests, planning gates, intent
+  fencing, file-derived dependency enforcement, and post-diff path checks from
+  the adopted roadmap.
+- Preserved the explored collision-reduction concepts in the ideas ledger for
+  reconsideration under a future file-writing mechanism.
+- Removed the roadmap's stray implication that resource conflicts are already
+  part of claim/readiness explanations.
+- No F001-F014 pass state changed.

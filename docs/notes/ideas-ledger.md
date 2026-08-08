@@ -537,3 +537,28 @@ a backup is trustworthy only when its real recovery path is exercised.
 - **Additional adopted requirements:** scoped doctor/diagnostic modes,
   declarative conditional dependencies, and general namespaced structured JSON
   data governed by public schema references.
+
+## Deferred file-writing coordination — 2026-08-08
+
+Agents commonly work on the same branch, so coordinating beads that may touch
+the same files could reduce edit collisions. The explored design would have:
+
+- recorded exact or pattern-based read/write file intents on a bead;
+- used a read-only discovery phase before accepting the intended write set;
+- derived ordinary blocking dependencies between beads with overlapping write
+  intents, preferably as a deterministic chain rather than an all-pairs graph;
+- versioned the accepted intent with a base revision, intent hash, and fencing
+  token;
+- required intent expansion before writing an undeclared path; and
+- compared the resulting diff with the accepted intent before completion.
+
+This design is **deferred, not adopted**. Requiring workers to predict files and
+pass a planning or manifest gate is too restrictive for the current product.
+Natural-language work also cannot reliably determine every eventual write in
+advance. No claim, update, or close operation should enforce these mechanisms.
+A different file-writing coordination model will be designed later.
+
+Potentially reusable ideas remain notes only: normalized repository-relative
+paths, read-versus-write modes, compact dependency chains for known overlaps,
+derived-edge provenance, and diagnostics that explain suspected collisions.
+They require a new product decision and specification before implementation.
