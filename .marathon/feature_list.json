@@ -335,8 +335,21 @@
         "HOME and workspace are isolated for every subprocess test",
         "stdout, stderr, exit status, and filesystem effects satisfy the contract"
       ],
-      "passes": false,
-      "evidence": []
+      "passes": true,
+      "evidence": [
+        "cargo test --test needle_v1_compatibility: 11 tests passed",
+        "cargo test: 179 tests passed (all integration and unit tests)",
+        "cargo fmt --check: passed",
+        "cargo clippy --all-targets -- -D warnings: passed",
+        "TestWorkspace helper provides proper directory isolation and cleanup",
+        "Every required command exercised as subprocess: init, create, claim, list, show, lifecycle (update, release, close, reopen), dependency commands, checkpoint commands, diagnostics, capabilities",
+        "Exit codes validated: 2 for invalid commands, 3 for no workspace, 4 for invalid status transitions",
+        "Workspace isolation verified: separate workspaces maintain independent issue sets",
+        "JSON output format validated for all commands",
+        "ID format validation: prefix + 16 hex characters",
+        "Filesystem effects validated: workspace creation, checkpoint file generation",
+        "All tests use serial execution for proper isolation"
+      ]
     },
     {
       "id": "F012",

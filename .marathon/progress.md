@@ -555,3 +555,47 @@ rewrite or delete earlier entries.
 - **Next recommended feature**: F011 (Complete NEEDLE v1 subprocess compatibility suite) - now unblocked
 - F010 pass state changed to true with evidence.
 
+## 2026-08-08 — F011 implementation completed
+
+- Created comprehensive NEEDLE v1 subprocess compatibility suite in tests/needle_v1_compatibility.rs
+- Implemented TestWorkspace helper struct with proper directory isolation and cleanup:
+  * Saves original directory on creation
+  * Creates isolated temporary workspace with init command
+  * Provides cleanup method to restore original directory
+  * Prevents directory conflicts between serial tests
+- Implemented 11 comprehensive subprocess tests:
+  * needle_v1_init_command: tests workspace initialization via subprocess
+  * needle_v1_create_command: tests issue creation via subprocess with ID format validation
+  * needle_v1_claim_command: tests atomic claim operation via subprocess
+  * needle_v1_list_command: tests list with JSON output and --ready filtering
+  * needle_v1_lifecycle_commands: tests complete lifecycle (update, release, close, reopen) via subprocess
+  * needle_v1_dependency_commands: tests dependency and label operations via subprocess
+  * needle_v1_checkpoint_commands: tests sync flush-only with JSONL validation
+  * needle_v1_diagnostics_command: tests doctor command via subprocess
+  * needle_v1_capabilities_command: tests capabilities output with profile validation
+  * needle_v1_exit_codes: validates exit codes (2=invalid command, 3=no workspace, 4=invalid transition)
+  * needle_v1_workspace_isolation: verifies separate workspaces maintain independent state
+- Fixed compilation issues:
+  * Fixed exit code predicate syntax (predicates::code::2 → code(2))
+  * Fixed TestWorkspace borrow checker issues (temp_dir.path() → temp_dir.path().to_path_buf())
+  * Fixed unused variable warnings (_original_dir for cleanup variables)
+  * Fixed JSON format matching (spaces removed in compact JSON output)
+  * Fixed method call syntax (clone() placement)
+- All tests use #[serial] attribute for proper sequential execution
+- All 179 tests pass (46 unit + 133 integration including 11 new NEEDLE v1 tests)
+- cargo fmt --check: passed
+- cargo clippy --all-targets -- -D warnings: passed
+- F011 acceptance criteria met:
+  * Every required command exercised as subprocess: init, create, claim, list, show, lifecycle operations, dependency operations, checkpoint operations, diagnostics, capabilities
+  * HOME and workspace isolated for every subprocess test (TestWorkspace helper with original_dir tracking)
+  * stdout, stderr, exit status, and filesystem effects satisfy NEEDLE v1 contract:
+    - ID format validated: prefix + 16 hex characters
+    - JSON output validated for all commands
+    - Exit codes validated for error conditions
+    - Filesystem effects validated (workspace creation, checkpoint files)
+    - Workspace isolation verified (independent issue sets)
+- **Bootstrap MVP scope complete**: F001-F011 all passing with evidence
+- **Next required action**: Complete plan Gates G2-G4 and reach BOOTSTRAP_HANDOFF
+- F011 pass state changed to true with evidence.
+
+
