@@ -221,3 +221,17 @@ rewrite or delete earlier entries.
   moved all of its storage additions out of migration 1 into a post-spec core
   migration.
 - No feature pass state changed.
+
+## 2026-08-08 — Gap-review round 4
+
+- Defined a complete migration-1 F007/F008 issue-only checkpoint contract so
+  core sync can be implemented without using specification-blocked F017 design.
+- Normalized every sharded reference beneath one checkpoint-set base and
+  specified closed standalone packages without traversal exceptions.
+- Completed migration grammar with explicit source/target profiles, stdout and
+  optional-file receipt channels, atomic publication, and dry-run behavior.
+- Defined restore equivalence as the validated source corpus plus exactly one
+  new durable operation receipt, excluding only operational bookkeeping.
+- Marked the capabilities example provisional and required F017 to advertise
+  all final normative forensic formats, modes, and schemas.
+- No feature pass state changed.

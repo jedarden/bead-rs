@@ -103,7 +103,7 @@
       "acceptance": [
         "sync --flush-only observes one committed snapshot",
         "Records and semantically unordered collections are stably ordered",
-        "Destination replacement is atomic"
+        "The pre-F017 issues.jsonl destination replacement and checkpoint-state update are crash-safe and atomic"
       ],
       "passes": false,
       "evidence": []
@@ -118,7 +118,7 @@
         "Malformed input reports its line and activates no partial state",
         "Unknown fields survive a same-profile round trip",
         "Import accepts exactly one explicit input path and never discovers or ranks sibling roots heuristically",
-        "sync --import-only requires explicit restore-into-empty or merge semantics and reconciles a valid checkpoint transactionally",
+        "Pre-F017 sync import accepts only an empty initialized target and transactionally activates one fully validated issue-only checkpoint",
         "Import dry-run performs full validation and reconciliation analysis with canonical counts while leaving every durable workspace byte unchanged"
       ],
       "passes": false,
@@ -190,8 +190,9 @@
       "depends_on": ["F008", "F012"],
       "acceptance": [
         "Migration never overwrites its input",
+        "Source and target profiles are explicit and every input, output, and optional receipt path is distinct and non-overwriting",
         "Dry-run validates without activating destination state",
-        "Receipt records hashes and transformation counts"
+        "Stdout and any requested receipt file carry the canonical receipt/report with hashes, transformation counts, and deterministic preview semantics"
       ],
       "passes": false,
       "evidence": []
@@ -241,7 +242,8 @@
         "Every pointer-selected root is immutable and content-addressed; shard splits rewrite only the overflowing prefix, sealed event shards remain immutable, and pointer/tombstone mode transitions preserve an authoritative verified root across interruption",
         "Explicit empty-store restore and provenance-preserving merge validate UUIDs, event identities and continuity, hashes, partitions, counts, uniqueness, replayed state, and graph semantics before activation",
         "Durable restore and merge receipts round-trip through monolithic and sharded checkpoints while dry-run and failed-operation material remain nondurable",
-        "Checkpoint artifacts are not ignored, sync reports changed Git-trackable paths, and documentation requires an external flush-before-commit workflow without bead-rs invoking Git"
+        "Checkpoint artifacts are not ignored, sync reports changed Git-trackable paths, and documentation requires an external flush-before-commit workflow without bead-rs invoking Git",
+        "Final capabilities enumerate every normative forensic checkpoint format, mode, and readable/writable public schema introduced by checkpoint-set-v1"
       ],
       "passes": false,
       "evidence": []

@@ -662,7 +662,7 @@ database definition.
 | `issue_data` | issue ID + namespace PK, schema reference, canonical JSON value, issue FK cascade |
 | `claim_telemetry` | claimed-event sequence PK/FK plus nullable model, harness, and harness-version hints; absent when no hint was supplied |
 | `events` | integer sequence, optional issue ID, kind, actor, time, and canonical JSON detail |
-| `checkpoint_state` | singleton last issue-interchange hash, covered event sequence, and export time |
+| `checkpoint_state` | singleton last issue-interchange hash, covered event sequence, and export time for the pre-F017 `.beads/issues.jsonl` checkpoint |
 
 Add only indexes justified by v0.1 queries:
 
@@ -680,6 +680,19 @@ revision-guard, recovery-subsystem, provenance-receipt, origin-event-identity,
 tombstone, changed-path, or compatibility-shaped columns without the owning
 feature's new migration. A post-0.1 `scheduling_metrics`
 cache is permitted only under the correctness rules in section 3.5.9.
+
+Before F017 is available, migration 1 and F007/F008 implement the complete
+issue-only checkpoint contract: `bead sync --flush-only` atomically replaces
+`.beads/issues.jsonl` from one read snapshot, and `bead sync --import-only`
+stages and validates exactly one explicitly named issue-per-line JSONL file
+before applying it transactionally. The migration-1 `checkpoint_state` row is
+sufficient for that contract: its covered event sequence identifies the live
+snapshot represented by the issue projection even though the file contains no
+event records. No pointer, manifest, shard, forensic event, or provenance
+receipt is created or required. F017 later upgrades these commands to the
+native forensic checkpoint-set grammar and storage described provisionally in
+section 6; that upgrade owns its additional migration and must preserve the
+working issue-only import/export path as `issues-jsonl-v1` interchange.
 
 After `research/specs/checkpoint-set-v1.md` is independently accepted, F017
 owns a new core migration—not migration 1—that adds immutable event origin
@@ -717,14 +730,14 @@ Human output may evolve; named-profile machine output is stable.
 | `bead label remove ID --label L` | idempotent absence |
 | `bead dep add BLOCKED BLOCKER --type KIND` | add canonical edge |
 | `bead dep remove BLOCKED BLOCKER [--type KIND]` | remove matching edge(s) |
-| `bead sync --flush-only [--profile P] [--output PATH]` | atomic `native-v1` checkpoint publication when output is omitted; explicit standalone monolith export when supplied |
-| `bead sync --import-only --input PATH (--restore-into-empty\|--merge) --actor ACTOR [--profile P] [--dry-run]` | validated restore or transactional reconciliation/analysis from exactly the named pointer, manifest, or monolith, using its self-described profile or an explicit compatible override; actor is required even for dry-run |
-| `bead sync --status --format json` | freshness, root hash, mode, and Git-trackable changed paths |
+| `bead sync --flush-only [--profile P] [--output PATH]` | before F017, atomically publish issue-only `.beads/issues.jsonl` when output is omitted or export that issue-only format to a new explicit path; after F017, use the upgraded forensic publication/export contract in section 6 |
+| `bead sync --import-only --input PATH [--profile P] [--dry-run]` | before F017, stage and transactionally replace an empty store from exactly one explicitly named issue-only JSONL file; after F017, this base grammar is extended with the required `(--restore-into-empty\|--merge) --actor ACTOR` forensic semantics in section 6.3 |
+| `bead sync --status --format json` | before F017, issue-only checkpoint hash, covered/live sequence, time, and dirty state; after F017, the richer root/mode/changed-path status in section 6.2 |
 | `bead doctor [--repair]` | diagnose; optionally perform safe repairs |
 | `bead capabilities --format json --profile P` | versioned capabilities and supported schema references |
 | `bead schema list --format json` | list supported public document schemas |
 | `bead schema show SCHEMA_REF --format json` | emit the exact versioned JSON Schema document |
-| `bead migrate --from P --input I --output O [--dry-run]` | transform without overwriting input |
+| `bead migrate --from P --to P --input I --output O [--receipt R] [--dry-run]` | explicit profile transform with deterministic report/receipt behavior and without overwriting any existing path |
 
 The native command is `bead`. Do not create a `br` executable; that name is a
 deprecated compatibility shim in the surrounding environment. Alternate
@@ -876,6 +889,30 @@ conformance fixtures. Under `AGENTS.md`, no F017 implementation may be derived
 from these sections alone. If that future specification differs, it prevails
 and this plan must be corrected before implementation.
 
+Until that specification and F017 migration land, F007/F008 use only the
+issue-per-line grammar: flush output is compact UTF-8 JSON, one issue per line
+in bytewise issue-ID order with a final LF; empty state is a zero-byte file;
+known/extension ordering and collision rules below apply, but forensic record
+envelopes do not. Import accepts blank lines, treats every nonblank line as one
+issue object, rejects malformed/non-object lines with a one-based line number,
+duplicate IDs, invalid fields, dangling dependencies, and blocking cycles, and
+activates only after the whole file validates. It requires an empty target,
+preserves unknown fields and comments/data carried by the issue schema, and
+replaces no nonempty live state. `--dry-run` performs identical staging and
+validation without changing SQLite, checkpoint metadata, or files. This is the
+complete migration-1 F007/F008 behavior, not an incomplete implementation of
+the blocked forensic format. The pre-F017 grammar has no `--actor`,
+`--restore-into-empty`, or `--merge`: import's only activation mode is replace
+into an empty initialized store. Profile defaults to `native-v1`; publication
+without `--output` permits only that profile, while an explicit new output path
+may select an installed issue-only profile and returns its deterministic loss
+report. Import uses a self-described installed issue profile or requires an
+explicit matching `--profile`; ambiguity and mismatch fail closed. Flush writes
+an operation-owned temporary sibling, verifies its hash/count, atomically
+renames it, syncs the parent where supported, and only then updates
+`checkpoint_state`. Import success reports profile, input hash, issue count,
+and covered sequence; dry-run reports the same analysis with `dry_run: true`.
+
 The proposed forensic JSONL encoding is UTF-8 with one compact object and LF
 per record. Its proposed monolithic representation uses exactly three
 top-level record envelopes:
@@ -964,6 +1001,22 @@ and is never a discovery or recovery source unless a caller explicitly names
 that exact file as standalone input. Files not selected by `current.json` are
 inactive even if they remain after a crash. Import never chooses between roots
 or views by existence or modification time.
+
+The normalized checkpoint-set base is the directory containing
+`current.json`, normally `.beads/checkpoint/`. Every relative reference in a
+pointer or manifest is a slash-separated path relative to that same base—not
+relative to the referring file's directory. Normalize before access; reject
+absolute paths, empty or `.`/`..` components, backslashes, symlinks in any
+component, and any resolved path outside the base. Thus a manifest under
+`manifests/` references `objects/<sha256>.jsonl`, never `../objects/...`, and a
+copied manifest cannot silently retarget sibling files. A standalone sharded
+package is a newly created directory containing `current.json` plus every
+referenced manifest/object at its base-relative path; it is written through an
+operation-owned sibling directory and atomically renamed after closure/hash
+verification. A bare manifest is valid only in its original checkpoint set;
+portable single-file output remains the explicit standalone monolith. Import
+applies the same base and traversal rules to both workspace and standalone
+checkpoint-set directories.
 
 The sharded manifest records format/schema version, store UUID, snapshot and
 maximum local ingestion sequence, creation time, profile, complete issue/event/receipt counts, partition
@@ -1131,8 +1184,10 @@ missing actor input fails CLI validation before input staging and produces no
 receipt or mutation. `PATH` names exactly one regular
 monolithic JSONL file, sharded manifest, or native `current.json` pointer. A
 pointer is followed only from that named path, and every referenced relative
-path is resolved beneath the pointer or manifest directory after rejecting
-symlinks and traversal. A manifest or pointer input receives full hash and
+path is resolved from the normalized checkpoint-set base defined in section
+6.1.1 after rejecting symlinks and traversal. An explicitly named bare manifest
+is accepted only at `<base>/manifests/NAME`; its base is the parent of that
+literal `manifests` directory. A manifest or pointer input receives full hash and
 declared-count validation. A pointerless legacy monolith is accepted only when
 its file is named by `--input`; sibling files are never discovered or
 heuristically ranked, and its issue, event, provenance-receipt, and total counts
@@ -1176,6 +1231,21 @@ a gap in the restored historical sequence. Its uniqueness key is
 `(kind, target_store_uuid, source_root_hash)`. Any nonempty target, UUID
 ambiguity, sequence gap, replay mismatch, or root-hash mismatch fails without
 mutation.
+
+Restore equivalence is defined over the canonical public forensic corpus, not
+SQLite rows or checkpoint bookkeeping. Let `S` be the fully validated source
+corpus (issues, events, and provenance receipts) in canonical order. Immediately
+after restore, render the target through the same canonical corpus encoder and
+remove exactly the newly inserted restore receipt identified by the operation's
+returned receipt ID; no other receipt, event, field, or record may be excluded.
+The remaining bytes and per-type counts must equal `S`, and recomputing the
+corpus root over them must equal the validated source root. The full target
+corpus must therefore equal `S` plus exactly that one restore receipt in normal
+receipt sort order. Local ingestion sequences, `checkpoint_state`, pointers,
+manifests, generation metadata, changed paths, staging paths, and file mtimes
+are operational metadata outside this comparator; any public issue/event/
+receipt payload is inside it. Failure of either comparison rolls back the
+restore and its receipt.
 
 `--merge` preserves the target store UUID and never presents foreign history
 as locally originated. For a same-UUID checkpoint, target and input event
@@ -1295,9 +1365,31 @@ document's `$id` equals the reference. See
 
 ### 6.5 Migration receipts
 
-Migration takes explicit, distinct input and output paths. Resolve aliases and
-reject identical files before opening output. Write through a temporary sibling
-and atomic rename.
+The full grammar is `bead migrate --from SOURCE_PROFILE --to TARGET_PROFILE
+--input INPUT --output OUTPUT [--receipt RECEIPT] [--dry-run]`. Both profiles
+are required and must be installed profile identifiers; inference
+from filenames is forbidden. `INPUT`, `OUTPUT`, and optional `RECEIPT` are
+explicit distinct file paths after resolving existing ancestors and aliases.
+Input is an existing read-only regular file. Output and receipt destinations
+must not exist and must not alias input or each other. Output must not name a
+workspace-managed file; a receipt may be placed in the designated
+`.beads/receipts/` directory but nowhere else under `.beads`.
+A real migration writes and verifies an operation-owned temporary sibling for
+the transformed output, atomically renames it, then optionally does the same
+for the receipt. If receipt publication fails, remove only an output created by
+this invocation before returning failure, so success never leaves one requested
+artifact without the other.
+
+Every invocation emits exactly one compact canonical JSON report plus LF on
+stdout and diagnostics only on stderr. For a successful real migration the
+report is the canonical receipt, byte-identical to `RECEIPT` when that option
+is supplied. `--dry-run` performs the same parsing, limits, transformation,
+loss analysis, and output-byte hashing, but creates neither `OUTPUT` nor
+`RECEIPT`, allocates no durable receipt ID or time, and emits a canonical
+`receipt_preview` report with those materialized fields absent. Consequently
+dry-run never uses either destination as a hidden output channel. Exit 2 covers
+grammar/path validation, exit 4 a profile transformation conflict, and exit 5
+malformed input or integrity/transformation failure.
 
 The canonical JSON receipt has top-level `schema_ref` equal to
 `urn:bead-rs:schema:migration-receipt:native-v1`. It includes tool version, UTC time, profiles, input
@@ -1514,7 +1606,8 @@ change receives a new identity. Proposed checkpoint pointer, manifest, shard,
 and provenance-receipt schemas are deliberately absent from this catalog until
 the normative F017 specification assigns them.
 
-`bead capabilities --format json --profile needle-v1` returns at least:
+Before F017, `bead capabilities --format json --profile needle-v1` returns at
+least the following **provisional pre-F017** example:
 
 ```json
 {
@@ -1535,6 +1628,16 @@ the normative F017 specification assigns them.
   "commands": ["capabilities", "claim", "close", "create", "dep", "doctor", "init", "label", "list", "migrate", "release", "reopen", "schema", "show", "sync", "update"]
 }
 ```
+
+This example is not the final 0.1 capability document. The normative
+`checkpoint-set-v1` specification must assign the forensic pointer, manifest,
+shard, and provenance-receipt schema identities and the exact checkpoint format
+names. F017 must then extend `checkpoint_modes`, `checkpoint_formats`, and the
+read/write schema catalog to advertise every format and immutable public schema
+that the final implementation actually consumes or emits, following the exact
+normative names and support semantics. F010 tests this provisional document;
+the final F017/release tests replace the expected catalog with the normative
+one and fail if the shipped checkpoint grammar or schema resolver is omitted.
 
 Schema catalog arrays are lexical, duplicate-free exact-identity sets.
 `read` means the profile can validate and consume the document without
