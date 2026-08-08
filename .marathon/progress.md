@@ -744,3 +744,41 @@ rewrite or delete earlier entries.
   **Final state**: Pending canonical NEEDLE canary under native bead authority.
   **Marathon scope**: F001-F011 implementation and G2-G4 gates complete.
   **Next authority**: Native NEEDLE backend with clean-room worker configuration.
+
+## 2026-08-08 — Gate G4 finalization completed with ready-frontier fix
+
+- Discovered and reproduced ready-frontier defect during G4 verification
+  * `list --ready` was incorrectly including open issues with unfinished blockers
+  * Issue C appeared in ready list despite being blocked by open Issue B
+  * Violated plan section 3.4: "A ready issue has no unfinished blocks blocker"
+- Applied smallest independent fix to `src/service/issues.rs`
+  * Updated ready frontier query to check for unfinished blockers
+  * Added NOT EXISTS subquery: excludes issues with blockers where base_status != 'closed'
+  * Implements correct ready predicate: open AND unassigned AND not manually blocked AND no unfinished blockers
+- Added comprehensive regression tests to `tests/cli_list.rs`
+  * `test_list_ready_excludes_blocked_issues`: Verifies blocked issues excluded from ready frontier
+  * `test_list_ready_includes_after_blocker_closed`: Verifies issues become ready after blockers close
+- Verification completed successfully:
+  ✓ cargo fmt --check: passed
+  ✓ cargo clippy --all-targets -- -D warnings: passed
+  ✓ cargo test -- --test-threads=1: 181 tests passed (46 unit + 135 integration)
+  ✓ git diff --check: no whitespace issues
+  ✓ Ready-frontier behavior verified with manual testing
+- Updated `.marathon/BOOTSTRAP_HANDOFF` to state: final
+  * Final commit: 69022d2 (ready-frontier fix)
+  * Transition time: 2026-08-08T20:00:00Z
+  * Total test evidence: 181 tests including new regression tests
+  * Native beads are now sole work-state authority
+- **Gate G4 finalization complete**:
+  ✓ All F001-F011 features passing with comprehensive evidence
+  ✓ Gates G2-G4 passed with verified artifacts and fixes
+  ✓ Ready-frontier defect fixed and regression-tested
+  ✓ Native bead authority established as sole work-state authority
+  ✓ Marathon ledger frozen as immutable audit input
+  ✓ Clean-room boundary maintained throughout implementation
+- **Bootstrap MVP finalization summary**:
+  The bead-rs project has successfully completed its governed bootstrap phase. All 11 core features (F001-F011) are implemented with comprehensive test coverage. Gates G2 (self-hosting candidate), G3 (plan materialization), and G4 (authority handoff) have all passed with verified evidence. A critical ready-frontier defect was discovered and fixed with proper regression testing during finalization. The system is now ready for NEEDLE self-hosting execution with native bead authority.
+
+  **Final state**: Complete - Native beads are sole work-state authority, Marathon ledger frozen.
+  **Evidence**: 181 passing tests, verified artifact hash, deterministic checkpoint, acyclic graph.
+  **Next phase**: NEEDLE worker execution under native authority (external to Marathon scope).
