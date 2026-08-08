@@ -21,8 +21,8 @@ Rust task-coordination system. Work autonomously in small, verified increments.
 ## Start every iteration
 
 1. Run `pwd` and confirm it is the `bead-rs` repository.
-2. Read `AGENTS.md`, `PROVENANCE.md`, `.marathon/progress.md`, and
-   `.marathon/feature_list.json`.
+2. Read `AGENTS.md`, `PROVENANCE.md`, `docs/plan/plan.md`,
+   `.marathon/progress.md`, and `.marathon/feature_list.json`.
 3. Read `git status --short` and the recent Git log. Preserve unfinished work.
 4. Run `cargo test` to establish the current baseline.
 5. Select the earliest highest-priority feature whose dependencies pass and
@@ -34,6 +34,8 @@ report its result, and exit without changing source.
 ## Work rules
 
 - Implement one coherent feature or one blocking defect per iteration.
+- Treat `docs/plan/plan.md` as the implementation blueprint; normative files
+  under `research/specs/` prevail if a contradiction is discovered.
 - Cite the governing specification in code or test documentation where useful.
 - Prefer a small native design over compatibility-shaped internal structure.
 - SQLite is the native live store. Never write another tool's database.

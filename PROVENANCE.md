@@ -32,6 +32,8 @@ functional specifications and independently created conformance fixtures.
 | 2026-08-07 | Use `bead` as the binary name | Distinct invocation; compatibility shims remain opt-in |
 | 2026-08-07 | Interoperate through versioned CLI/JSONL profiles | Avoid source reuse and cross-tool SQLite mutation |
 | 2026-08-07 | Bootstrap with Marathon Coding | Independent headless iteration harness avoids a runtime dependency on another bead implementation |
+| 2026-08-07 | Specify an independent normalized SQLite schema | Satisfy public storage semantics without reproducing another implementation's schema or SQL |
+| 2026-08-07 | Record sanitized `bf 0.4.0` process-boundary observations | Isolated black-box specification activity; implementation details deliberately excluded |
 
 Any future exposure or provenance exception must be appended here; do not
 rewrite prior entries.

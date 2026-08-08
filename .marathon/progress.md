@@ -13,3 +13,13 @@ rewrite or delete earlier entries.
 - No release feature in `.marathon/feature_list.json` has been implemented.
 - Start with F001 and maintain Rust 1.75 compatibility.
 
+## 2026-08-07 — Implementation plan prepared
+
+- Added `docs/plan/plan.md` as the implementation blueprint for the independent
+  SQLite model, lifecycle, dependencies, claiming, profiles, checkpoint safety,
+  diagnostics, testing, and release gates.
+- Added a sanitized behavior report that excludes upstream schema, SQL, tests,
+  source, and internal design.
+- Wired the plan into the mandatory start-of-iteration reading order.
+- No feature pass state changed; implementation and verification remain for
+  later Marathon iterations.

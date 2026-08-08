@@ -22,7 +22,9 @@ corresponding independent specification and conformance fixtures are accepted.
 - Preservation of unknown interchange fields during round trips.
 
 See [the research index](research/README.md) and
-[interoperability notes](docs/notes/interoperability-architecture.md).
+[interoperability notes](docs/notes/interoperability-architecture.md). The
+[0.1 implementation plan](docs/plan/plan.md) defines the independent native
+schema, lifecycle, dependency, checkpoint, CLI, and verification design.
 
 ## Marathon Coding
 
