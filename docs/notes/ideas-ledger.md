@@ -750,6 +750,16 @@ context, but copying prompts or entire conversations would explode bead size.
 
 ### Run-3 disposition
 
-No finalist is adopted automatically. Selection remains a product decision;
-until then all ten are candidates in this ledger and no F001-F014 or R001-R019
-state changes.
+Product decision on 2026-08-08:
+
+- **Rejected:** dependency rationale and graph slice export.
+- **Adopted:** cross-profile semantic comparison, workspace policy lint,
+  general mutation dry-run, the unified `why` facade, and explicit recurring
+  bead materialization. These are R020-R024 in the plan.
+- **Deferred to notes:** sensitive-content lint and portable execution outcomes.
+- **Pending:** verifiable acceptance evidence, awaiting a product decision after
+  further explanation. It remains neither adopted nor rejected.
+- General mutation dry-run is an extension rather than a duplicate: the plan
+  already required dry-run for migration/import analysis, but not for ordinary
+  update, lifecycle, or dependency mutations.
+- No F001-F014 pass state changed.

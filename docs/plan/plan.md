@@ -972,6 +972,52 @@ then independently specify and conform `aging-v1`, `impact-v1`, `rotation-v1`,
 and `balanced-v1` before enabling them. `balanced-v1` becomes a default only
 through an explicit release/configuration decision, never silently.
 
+### R020 — Cross-profile semantic comparison
+
+Add a read-only comparison that renders selected native records through two
+explicit installed profiles and reports preserved, transformed, omitted, and
+unsupported semantic fields by canonical field path. Compare meaning rather
+than incidental JSON formatting, bound the record count, and never write either
+representation. This lets an operator understand interoperability loss before
+running migration instead of learning only from the resulting receipt.
+
+### R021 — Workspace policy lint
+
+Add `bead policy check --format json` to diagnose contradictory, unreachable,
+redundant, and ineffective scheduling or retention configuration without
+changing it. Every stable diagnostic is bound to exact policy and configuration
+schema versions; an unknown version fails closed rather than applying guessed
+rules. Policy lint is advisory and cannot make a bead eligible or ineligible.
+
+### R022 — General mutation dry-run
+
+Extend the existing migration/import dry-run concept to ordinary semantic
+mutations. `update`, `close`, `reopen`, and dependency mutations accept a
+consistent `--dry-run` mode that performs normal authorization, validation,
+cycle analysis, and derived-status calculation, then emits a canonical
+before/after semantic delta without committing rows, events, revisions, or
+checkpoint metadata. The result records the observed revision and workspace
+sequence and is explicitly advisory; callers use R003 revision guards if the
+subsequent real mutation must apply to that same state.
+
+### R023 — Unified `why` explanation facade
+
+Add a read-only `bead why ID` command that explains effective status,
+readiness, active blockers, claim-ranking factors, and currently legal next
+operations in human and stable machine-readable forms. It must call the same
+domain evaluators and reason codes used by R001 and R019, never implement a
+parallel policy engine. This gives humans and agents one entry point for the
+question “why is this bead in this state, and what can happen next?”
+
+### R024 — Explicit recurring-bead materialization
+
+Store immutable, nonexecuting recurrence-template versions and create the next
+occurrence only through an explicit command. Each occurrence carries a stable
+series reference, selected copied fields, and an idempotent materialization
+receipt. Core `bead-rs` never wakes, polls, interprets wall-clock schedules, or
+creates work autonomously; an external caller may decide when to invoke the
+operation.
+
 ## 13. Release gates
 
 Before `.marathon/COMPLETE`:
@@ -1002,6 +1048,8 @@ The following candidates remain intentionally deferred in
 - atomic bulk transaction manifests;
 - mutation idempotency keys;
 - worker capability declarations.
+- sensitive-content linting for backup-bound fields;
+- portable execution-outcome envelopes.
 
 Workers are not required to predict or declare files before claiming or
 starting a bead. `bead-rs` does not gate edits on an accepted read/write set,

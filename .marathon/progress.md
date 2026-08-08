@@ -115,3 +115,14 @@ rewrite or delete earlier entries.
 - Appended every candidate, verdict, and finalist dossier to the ideas ledger;
   none is adopted yet.
 - No F001-F014 pass state changed.
+
+## 2026-08-08 — Third-run candidates dispositioned
+
+- Promoted cross-profile comparison, policy lint, general mutation dry-run,
+  unified `why`, and explicit recurrence materialization to R020-R024.
+- Clarified that general mutation dry-run extends the existing migration/import
+  dry-run contract to update, lifecycle, and dependency operations.
+- Rejected dependency rationale and graph slice export; deferred secret lint and
+  portable execution outcomes to notes.
+- Left verifiable acceptance evidence pending further product consideration.
+- No F001-F014 pass state changed.
