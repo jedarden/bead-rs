@@ -44,8 +44,8 @@ fi
 
 "$skill_dir/marathon.sh" "${args[@]}"
 
-nohup "$script_dir/watch-completion.sh" "$session_name" "$script_dir/COMPLETE" \
+nohup "$script_dir/watch-completion.sh" "$session_name" \
+    "$script_dir/BOOTSTRAP_HANDOFF" '^state: final$' \
     >"$log_dir/completion-watch.log" 2>&1 &
 
-printf 'Completion watcher started for tmux session %s.\n' "$session_name"
-
+printf 'Bootstrap handoff watcher started for tmux session %s.\n' "$session_name"

@@ -1,5 +1,15 @@
 # bead-rs 0.1 implementation plan
 
+Plan revision: 2
+
+As of: 2026-08-08
+
+Status owner: bead-rs release owner
+
+Decision authority: accepted ADRs explain choices; normative files under
+`research/specs/` define behavior; this plan defines delivery; the active
+execution ledger defines work state.
+
 Status: partially implementation-ready. F017 is specification-blocked pending
 an independently reviewed normative `research/specs/checkpoint-set-v1.md`, and
 the 0.1 release is also externally blocked on the independently approved
@@ -32,8 +42,39 @@ conflict by correcting the plan, never by silently changing the requirement.
 
 ## 2. Release definition
 
-Version 0.1 is complete when F001-F017 in `.marathon/feature_list.json` pass
-and every release gate in `.marathon/instruction.md` succeeds.
+Version 0.1 is complete when F001-F017 have concrete passing evidence in the
+active traceability system and every final release gate succeeds. Before G4,
+`.marathon/feature_list.json` is that work-state system. After G4, the reviewed
+native-bead mapping and evidence are authoritative; the frozen Marathon ledger
+is an audit input, not a second mutable status store.
+
+Delivery has three distinct milestones that must not be conflated:
+
+1. **Bootstrap MVP:** F001-F011 provide a native store, issue CRUD and graph
+   operations, atomic claiming, the pre-F017 issue-only checkpoint, diagnostics,
+   capabilities, and the complete `needle-v1` provider contract. The bootstrap
+   is an installed, pinned development artifact used to prove self-hosting; it
+   is not version 0.1 and does not authorize compatibility claims for `br-v1`
+   or `bf-v1`.
+2. **Self-hosted execution:** after the bootstrap gates pass, the installed
+   `bead` binary materializes the remaining reviewed plan into a fresh native
+   bead workspace. After graph reconciliation and a one-worker canary, clean-room
+   NEEDLE workers use that workspace as execution authority. This changes how
+   work is coordinated; it does not make any materialized feature complete.
+3. **Version 0.1:** NEEDLE workers complete F012, F013, F015, F016, F017, and
+   finally F014 packaging, and every final release gate passes. Post-0.1
+   R-items remain outside this release unless an accepted ADR, normative
+   specification, and ledger change explicitly promote one.
+
+The bootstrap MVP is successful when an implementer unfamiliar with the
+internals can install the pinned artifact into a temporary root, initialize an
+isolated workspace, create and relate work, obtain distinct atomic claims from
+20 competing processes, round-trip the issue-only checkpoint, diagnose the
+workspace, negotiate `needle-v1` capabilities, and complete a consumer-side
+NEEDLE canary without touching another implementation's store. The intended
+users are local coding-agent operators and NEEDLE workers that need a
+deterministic, recoverable, auditable work queue. Materializing plan prose as
+beads is representation evidence only, never implementation evidence.
 
 “Partially implementation-ready” means F001-F011, F015, and F016 have enough
 clean-room specification to proceed. F013's design is ready but its execution
@@ -1512,6 +1553,9 @@ src/
   error.rs            error taxonomy
   docs.rs             structured long help and manual supplements
 man/man1/             reproducible generated section-1 manual pages
+docs/adr/              indexed architecture decision records and template
+docs/runbooks/         bootstrap, materialization, NEEDLE cutover, rollback
+docs/traceability/     reviewed requirement-to-bead mapping and gate evidence
 tests/
   cli/                isolated subprocess tests
   conformance/        normative lanes
@@ -1594,47 +1638,288 @@ setup may use an independently implemented fixture generator through the public
 store/service boundary; it must not copy another implementation's database or
 measure fixture creation as claim latency.
 
+Transition verification additionally uses only the installed bootstrap
+artifact and public CLI in disposable paths. It must prove:
+
+- every active F-item and explicitly adopted R-item has exactly one disposition
+  in the materialization mapping: bootstrap-complete, materialized, deferred,
+  blocked, rejected, or superseded;
+- executable mapping rows and generated native bead IDs are one-to-one, and
+  every materialized bead has a stable source locator, bounded outcome,
+  acceptance evidence, milestone, and complete dependency mapping;
+- the generated graph is acyclic, its ready frontier matches the reviewed
+  expected frontier, and export/import preserves the mapping and graph;
+- a consumer-side NEEDLE canary negotiates `needle-v1` capabilities against the
+  pinned installed `bead`, atomically claims one bead, records bounded evidence
+  and a close reason, and cannot duplicate a claim under a second worker; and
+- stopping NEEDLE and restoring the last verified checkpoint/configuration
+  returns the workspace to the pre-canary state without asking Marathon and
+  NEEDLE to mutate the same execution state concurrently.
+
 ## 10. Marathon execution order
 
-The feature ledger remains release authority. Execute it in these increments:
+Marathon is the bootstrap mechanism, not the permanent coordinator. The
+feature ledger remains execution authority through Gate G3. Gate G4 transfers
+that authority once, explicitly, to the native bead workspace. The source plan,
+handoff-time Marathon ledger snapshot, reviewed mapping, and checkpoint remain
+immutable audit inputs after handoff; they are not independently mutable
+competing ledgers. Subsequent feature evidence lives on the mapped native beads
+and in a generated release-evidence report; it is never hand-maintained in both
+stores.
 
-### Phase A: trustworthy native core
+Before implementation resumes, synchronize `.marathon/feature_list.json`,
+`.marathon/instruction.md`, the Marathon runner/watcher, and documentation with
+these gates. A prose-only phase change is invalid. `.marathon/COMPLETE` retains
+its existing meaning of a fully verified version 0.1; use a distinct committed
+handoff record for G4 containing a state (`pending` or `final`), the bootstrap
+commit, artifact hash, checkpoint hash, mapping hash, NEEDLE configuration
+revision, and UTC state-transition time.
+
+### Phase 0: governance and specification readiness
+
+- Freeze the bootstrap scope at F001-F011 and map every bootstrap requirement
+  to its normative source and acceptance evidence.
+- Establish `docs/adr/README.md` and an ADR template before accepting new
+  architectural or delivery decisions.
+- Record owners and independent reviewers for the missing F012 fixtures and
+  F017 specification; an unowned external input is still blocked.
+- Update Marathon control files once so they stop at the handoff rather than
+  waiting for full 0.1 before allowing self-hosting.
+- Define `docs/traceability/release-evidence-v1.schema.json` and a versioned,
+  noninteractive verifier used by the release watcher. The report is generated
+  from the reviewed mapping, native bead states/evidence, commit and artifact
+  hashes, and gate results; it is not a second hand-edited status store.
+
+**Gate G0 — governed bootstrap:** no orphan bootstrap requirement; all required
+normative inputs exist; clean-room worker configuration is documented; the
+ledger and mission agree with this phase model. Evidence is the reviewed
+traceability table, accepted phase-boundary ADR, and synchronized control-file
+diff. Accountable role: release owner; independent review: clean-room reviewer.
+
+### Phase 1: native bootstrap core under Marathon
 
 1. **F001:** package, config, connection policy, migration 1, idempotent init,
    future-version refusal.
 2. **F002:** validated types, IDs, timestamps, transition matrix, extensions.
 3. **F003:** create/list/show and stable machine output.
 4. **F004:** readiness, transactional claim, empty result, 20-process test.
-
-### Phase B: work coordination
-
 5. **F005:** atomic update/release, close/reopen, audit events.
 6. **F006:** labels, canonical edges, cycles, derived blocking, graph tests.
-7. **F007:** single-snapshot deterministic, crash-safe flush.
-8. **F008:** staged import, extension preservation, reconciliation/rollback.
+
+**Gate G1 — trustworthy native core:** a disposable workspace passes the
+isolated init, create, dependency, readiness, 20-way claim, release, close, and
+reopen workflow plus formatting, Clippy, and tests. No external implementation
+store is opened or changed. Accountable role: bootstrap implementer; review:
+clean-room reviewer; evidence: feature ledger commands and committed handoff.
+
+### Phase 2: durable NEEDLE-capable bootstrap MVP under Marathon
+
+7. **F007:** single-snapshot deterministic, crash-safe issue-only flush.
+8. **F008:** staged issue-only import, extension preservation, and rollback.
 9. **F009:** read-only doctor and narrow repair allowlist.
-10. **F010:** immutable capability document.
+10. **F010:** provisional bootstrap capability document.
+11. **F011:** full `needle-v1` provider subprocess matrix in isolated workspaces.
+12. **Bootstrap packaging gate:** build and install the exact artifact into a
+    temporary Cargo root, verify minimal complete recursive help for bootstrap
+    commands, and record its SHA-256. This is not F014 final packaging and does
+    not mark F016 complete.
 
-### Phase C: compatibility and release
+**Gate G2 — self-hosting candidate:** the pinned installed artifact passes
+issue-only flush/import recovery, doctor, capability negotiation, the provider
+suite, a consumer-side NEEDLE test, package-content/provenance checks, and the
+G1 workflow when invoked from the installed path. F012, F013, F015, F016,
+F017, and F014 remain incomplete. Accountable role: release owner; review:
+NEEDLE adapter owner and clean-room reviewer; evidence: artifact hash,
+installation transcript, provider/consumer results, and checkpoint hash.
 
-11. **F011:** full NEEDLE subprocess matrix in isolated workspaces.
-12. **F012:** external profile matrices, independent fixtures, loss reports.
-13. **F013:** dry-run, path safety, atomic migration output, receipts.
-14. **F015:** deterministic lifecycle stress harness, fast matrix, full-scale
-    benchmark driver, capacity calculation, and schema-stable reports.
-15. **F016:** complete help tree, generated man pages, drift/coverage tests, and
-    documented explicit installation.
-16. **F017 (specification-blocked):** after independently reviewed
-    `research/specs/checkpoint-set-v1.md` exists, implement its distinct native
-    forensic checkpoint set, adaptive deterministic sharding, complete event
-    history, semantic restore equivalence, and Git-trackable verification. Do
-    not implement F017 from this plan alone.
-17. **F014:** package/install smoke test, licensing, provenance verification.
+### Phase 3: materialize the remaining plan as native beads
 
-One Marathon iteration implements one coherent increment, runs targeted and
-repository gates, changes a feature's `passes` and evidence only after all its
-acceptance criteria succeed, appends a handoff, and commits. A large feature
-may take multiple iterations and remains false until complete.
+Use only the pinned G2 `bead` binary, its public CLI, this plan, accepted ADRs,
+normative specifications, the reviewed ideas-ledger dispositions, and the
+Marathon ledger. Create a new disposable native workspace; never write another
+tool's database and never convert directly into an active workspace.
+
+This is a controlled translation of already reviewed work, not autonomous
+LLM-generated decomposition. The ideas ledger rejected provider-coupled,
+nondeterministic decomposition, and that decision remains in force. Likewise,
+do not require predicted file read/write manifests: file-intent gating remains
+deferred because discovery cannot reliably identify every eventual edit.
+
+For every remaining F-item and every adopted R-item, record exactly one
+disposition row with:
+
+```text
+milestone / outcome / normative source and locator / F-or-R ID / native bead ID
+/ bounded deliverable / dependencies / priority / accountable role or worker class
+/ code or artifact surface / acceptance command or evidence / gate / risks / ADRs
+/ disposition and rationale
+```
+
+Create a native bead only for independently executable remaining work. An
+R-item marked core-incorporated maps to its owning F-bead and is recorded as
+covered rather than duplicated. Rejected, superseded, pending, and deferred
+ideas receive explicit non-executable dispositions; translation does not
+silently promote them.
+
+External readiness is represented in the graph, not entrusted to prose. Create
+separate prerequisite acceptance beads for the independently reviewed
+`br-v1` fixtures, `bf-v1` fixtures, and `checkpoint-set-v1.md`, each satisfied
+only by the accepted artifact hash and review evidence. F012 depends on both
+fixture-acceptance beads; F017 depends on the checkpoint-spec acceptance bead.
+Keep F012 and F017 explicitly `deferred` as defense in depth until a reviewer
+closes their prerequisites and performs the recorded `deferred`-to-`open`
+activation. F013, F016, and F014 remain transitively blocked by their owning
+feature dependencies. G3 asserts that none of these externally blocked beads
+appears in the ready frontier.
+
+Create beads first, record their generated IDs, then add dependencies using
+canonical direction. Because the bootstrap has no atomic bulk-manifest feature,
+any interrupted or invalid materialization discards the disposable workspace
+and starts again; it never repairs a half-activated graph in place. Use
+`description`, notes, labels, and dependencies without inventing unsupported
+schema. Do not copy the entire plan into each bead: store concise executable
+context and stable repository-relative source locators. A reviewer must resolve
+every omission, duplicate, ambiguous dependency, rejected item, and superseded
+requirement before activation.
+
+**Gate G3 — reconciled execution graph:** every source item has exactly one
+disposition, and executable mapping rows form a bijection with native bead IDs;
+every bead is queryable; the graph is acyclic; the ready frontier equals the
+reviewed expected frontier and excludes deferred external/profile/F017 and
+post-0.1 roadmap work; round-trip export/import preserves IDs, fields, unknown
+extensions, and edges;
+`doctor` passes; and a deterministic checkpoint plus mapping hash is committed.
+This proves representation only. Accountable role: materialization operator;
+review: release owner and independent plan reviewer.
+
+### Phase 4: Marathon-to-NEEDLE authority handoff
+
+The preferred steady state is a native NEEDLE `bead` backend that discovers the
+explicit provider, negotiates `bead capabilities --format json --profile
+needle-v1`, and fails closed if a mandatory capability is absent. An explicitly
+enabled compatibility alias may be used for a disposable pre-cutover canary,
+but it is not the steady-state integration and must not silently impersonate a
+different native tool.
+
+Pin NEEDLE to the G2 artifact hash and canonical G3 workspace. Transfer every
+clean-room restriction from `AGENTS.md` and the Marathon mission into worker
+configuration: no prohibited repositories, CASS, inherited session history,
+global memory, real external databases, or non-independent fixtures. Start one
+worker against a disposable copy. After it succeeds, fence and stop Marathon,
+verify it cannot restart or mutate work, and commit the handoff record in
+`pending` state. The pending commit transfers provisional authority to the
+native workspace before the first canonical mutation. Run one canonical
+worker, then increase only to the concurrency demonstrated by the bootstrap
+tests. On success, update and commit the record as `final`.
+
+**Gate G4 — authority transferred:** the canary claims exactly one ready bead,
+receives bounded source context, performs only permitted work, records concrete
+verification and a close reason, flushes a verified checkpoint, and does not
+duplicate a claim when a second worker competes. Before writing
+the pending handoff record, stop Marathon and verify no Marathon process can
+mutate execution state. From the pending record onward, native beads are the
+only work-state authority; G4 completes only when the canonical canary evidence
+and final handoff record are committed.
+
+Before the pending record, rollback leaves Marathon authoritative. At or after
+the pending record, rollback stops all NEEDLE workers, preserves diagnostics,
+restores the last verified native checkpoint/configuration in a new empty
+workspace, and either retries under provisional native authority or explicitly
+returns authority to the frozen Marathon snapshot through a reviewed ADR and
+committed reversal record. Never run Marathon and NEEDLE as concurrent writers
+or merge their divergent work-state claims.
+
+### Phase 5: complete version 0.1 under NEEDLE
+
+1. **F012:** external profile matrices, independent fixtures, loss reports.
+2. **F013:** dry-run, path safety, atomic migration output, receipts.
+3. **F015:** deterministic lifecycle stress harness, fast matrix, full-scale
+   benchmark driver, capacity calculation, and schema-stable reports.
+4. **F016:** complete help tree, generated man pages, drift/coverage tests, and
+   documented explicit installation.
+5. **F017 (specification-blocked):** only after the independently reviewed
+   normative checkpoint-set specification exists, implement the distinct
+   forensic checkpoint set, adaptive deterministic sharding, complete event
+   history, semantic restore equivalence, and Git-trackable verification.
+6. **F014:** final package/install smoke test, licensing, provenance, and full
+   0.1 release verification.
+
+F017 changes checkpoint and capability surfaces, so it invalidates the
+provisional F010/G2 capability evidence. Re-run capability, import/export,
+doctor, NEEDLE provider/consumer, packaging, and traceability gates against the
+final artifact through a distinct final-capability verification bead that
+depends on F017 and blocks F014. Its acceptance evidence includes the final
+artifact/spec hashes; the release-evidence verifier rejects provisional or
+hash-stale F010 evidence. A large feature must expose reviewed intermediate evidence
+gates even while its ledger `passes` value remains false; F017 at minimum uses
+specification, migration, monolith, sharding, restore, merge, and conformance
+sub-gates.
+
+**Gate G5 — version 0.1:** every F001-F017 feature has concrete passing
+evidence, every traceability row is satisfied or explicitly out of scope, and
+no post-0.1 R-extension bead is ready. All section 13 final release gates pass.
+Only G5 permits `.marathon/COMPLETE`.
+
+### Phase 6: post-0.1 roadmap under NEEDLE
+
+R001-R024 do not become executable merely because they appear in section 12.
+Phase 3 may materialize adopted R-items early so the entire reviewed plan has a
+durable mapping, but every independently executable R-extension bead is created
+in native `deferred` state through version 0.1; the bootstrap has no implicit
+milestone-blocking feature. G3 and G5 assert that no such bead is ready.
+After 0.1, an R-item becomes eligible only when its normative specification and
+required ADRs exist, dependencies are explicit, and a release owner assigns it
+to an active milestone and records an explicit `deferred`-to-`open` activation.
+NEEDLE then executes eligible native beads using the same evidence, checkpoint,
+and clean-room rules.
+
+### Decision records and change governance
+
+Create an ADR for every decision that changes architecture, persistent or
+public schema, compatibility profile, checkpoint semantics, security or
+recovery boundary, MVP/release scope, or execution-authority transition. ADRs
+are explanatory; they cannot override normative specifications. Each ADR has a
+stable number and title, status (`proposed`, `accepted`, `superseded`, or
+`rejected`), date, owner and deciders, context, considered options, decision,
+consequences, evidence, revisit trigger, and links to requirements, features,
+beads, and superseding ADRs.
+
+Seed ADRs for SQLite live authority with JSONL recovery; the staged native
+NEEDLE backend; the bootstrap/full-0.1 boundary; Marathon-to-native-beads-to-
+NEEDLE authority transfer; F012 external-profile deferral; and F017 placement.
+Record rejected alternatives rather than silently reopening them, including
+native SQLite backup, mandatory file-intent gates, live upstream database
+adapters, automatic Git publication, daemon/network authority, and arbitrary
+LLM-generated decomposition. Progress logs link ADRs but never substitute for
+them.
+
+This plan carries a revision and as-of date. A change that alters a gate,
+requirement disposition, phase, profile claim, or authority source must update
+the traceability mapping, affected ADR/spec/ledger links, plan revision, and a
+short change note in one coherent review. Unknown or contradictory state fails
+closed; no implementer resolves drift by choosing whichever artifact is most
+convenient.
+
+### Transition risk and responsibility register
+
+| Risk | Prevention and detection | Trigger and response/rollback | Accountable role / review evidence |
+| --- | --- | --- | --- |
+| Clean-room contamination | Isolated worker config, permitted-source manifest, provenance review | Any prohibited exposure stops the affected component and records it in `PROVENANCE.md` before independent reassessment | Clean-room reviewer / signed G0 and G4 review |
+| Omitted, duplicated, or invented materialized work | One disposition per source item, executable-row/bead-ID bijection, independent reconciliation | Count/hash mismatch or orphan row discards the disposable workspace and reruns materialization | Materialization operator + plan reviewer / G3 mapping |
+| Reversed or cyclic dependencies | Canonical direction review, cycle rejection, expected ready-frontier fixture | Cycle or frontier mismatch blocks activation; correct source mapping and rebuild fresh | Plan reviewer / G3 graph report |
+| Partial conversion or unknown-field loss | Fresh destination, public CLI only, checkpoint round trip and semantic comparison | Interrupted conversion or mismatch discards destination; never patch partial activation in place | Materialization operator / G3 checkpoint evidence |
+| Dual Marathon/NEEDLE authority | Explicit stop, process check, one committed handoff record | Any concurrent writer stops cutover; restore pre-cutover workspace and reconcile through ADR | Release owner / G4 handoff record |
+| NEEDLE capability mismatch or duplicate claim | Fail-closed handshake, provider/consumer suites, one-worker canary then bounded concurrency | Missing capability, duplicate ID, or state drift stops workers and restores last verified checkpoint | NEEDLE adapter owner / G2 and G4 results |
+| Worker scope or context escape | Bounded source locators and inherited clean-room restrictions | Unauthorized source/tool access stops worker and invokes contamination procedure | Worker operator + clean-room reviewer / worker config and audit |
+| Missing F012 fixtures or F017 specification | Named author, independent approver, explicit blocked state | Missing approval keeps dependent beads blocked; never narrow claims or implement from plan prose | External-artifact owner + approver / accepted artifact hashes |
+| Oversized F017 hides progress or failure | Reviewed sub-gates with independent evidence and capability invalidation | Any failed sub-gate leaves F017 false and rolls back only its bounded migration/activation step | F017 owner + recovery reviewer / sub-gate evidence |
+| Packaged binary differs from tested binary | Pin commit and artifact hash; run tests from installed path | Hash mismatch invalidates all canary evidence and returns to G2 packaging | Release owner / artifact manifest |
+| Checkpoint or cutover recovery fails | Verified pre-canary checkpoint and rehearsed empty-target restore | Failed restore blocks handoff/release and preserves source workspace for diagnosis | Recovery owner / restore-equivalence report |
+| MSRV or dependency drift | Lockfile, Rust 1.75 lane, dependency verification at F001 and final package | MSRV failure blocks artifact promotion; choose compatible dependency through ADR if architectural | Build owner / G2 and G5 package evidence |
+
+Roles may be held by agents or humans, but the accountable role and independent
+review evidence must be named before its gate can pass. Dates are optional;
+resolution owners and observable gate events are mandatory.
 
 ## 11. Capability document
 
@@ -1941,9 +2226,50 @@ operation.
 
 ## 13. Release gates
 
+### Bootstrap and handoff gates
+
+G2 may promote a bootstrap artifact only when:
+
+- F001-F011 have concrete passing evidence at the same commit;
+- formatting, Clippy, tests, isolated package installation, minimum recursive
+  help coverage, and provenance/package-content checks pass;
+- the pre-F017 issue-only checkpoint survives crash-safe flush, empty-target
+  import, semantic comparison, and `doctor` verification;
+- the installed binary passes the complete provider-side `needle-v1` suite and
+  a consumer-side NEEDLE canary using a pinned capability handshake; and
+- artifact, commit, test, and checkpoint hashes are recorded together.
+
+G4 may transfer execution authority only when:
+
+- the G3 mapping has no missing, duplicate, invented, or unresolved active
+  requirement and its dependency graph and expected ready frontier are verified;
+- F012, F017, their transitive dependents, and all post-0.1 R-extension beads
+  are absent from that frontier until their explicit activation conditions pass;
+- the canonical native workspace was created only with the pinned public
+  `bead` CLI and has a verified recovery checkpoint;
+- NEEDLE's native `bead` backend and clean-room worker configuration are pinned
+  and reviewed;
+- a disposable canary passes; Marathon is then stopped/fenced and a pending
+  handoff transfers provisional authority before the canonical one-worker
+  canary or duplicate-claim competition mutates native state; and
+- rollback is rehearsed and the final committed handoff record names the sole
+  work-state authority.
+
+Neither gate creates `.marathon/COMPLETE`, calls the artifact version 0.1, or
+claims `br-v1`/`bf-v1` compatibility.
+
+### Final version 0.1 gates
+
 Before `.marathon/COMPLETE`:
 
 - F001-F017 have concrete passing evidence;
+- the schema-valid generated release-evidence report maps every F-item to
+  satisfied native evidence at the final commit/artifact hash, passes the
+  versioned noninteractive verifier, and is the sole machine-readable completion
+  input consumed by the post-handoff release watcher;
+- a final-capability verification bead completed after F017 and blocks F014
+  until all capability, checkpoint, doctor, provider/consumer, and package
+  evidence is fresh for the final artifact;
 - the independently reviewed normative
   `research/specs/checkpoint-set-v1.md` exists before any F017 implementation
   evidence is accepted; plan prose alone is not implementation authority;
@@ -2002,6 +2328,15 @@ The core can proceed now. F012 still needs complete independently approved
 field/nullability/status/dependency fixtures for `br-v1` and `bf-v1`. F014
 also needs a consumer-side NEEDLE run if its deployment harness imposes a
 requirement absent from the v1 contract.
+
+Before G0 passes, the release owner must name separate accountable authors and
+independent approvers for the `br-v1` fixtures, `bf-v1` fixtures, and
+`checkpoint-set-v1.md`. “Independent approval” means the reviewer did not
+author the artifact, verifies its clean-room provenance and requirement
+coverage, and records the reviewed hash and decision. The owner rechecks each
+blocked input at the entry to Phase 5 and whenever its source specification
+changes; there is no time-based waiver. The NEEDLE adapter owner is separately
+accountable for the consumer-side suite and native backend used at G2/G4/G5.
 
 Do not guess missing details. Record new sanitized observable facts in a
 versioned `research/specs/` file, review them independently, then extend only

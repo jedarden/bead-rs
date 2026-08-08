@@ -1,7 +1,9 @@
 # bead-rs clean-room implementation mission
 
-You are implementing the first usable release of `bead-rs`, an independent
-Rust task-coordination system. Work autonomously in small, verified increments.
+You are building the governed bootstrap MVP of `bead-rs`, an independent Rust
+task-coordination system. Marathon owns execution only through the final G4
+handoff described in `docs/plan/plan.md`; it must not implement Phase 5 work.
+Work autonomously in small, verified increments.
 
 ## Mandatory clean-room boundary
 
@@ -25,11 +27,14 @@ Rust task-coordination system. Work autonomously in small, verified increments.
    `.marathon/progress.md`, and `.marathon/feature_list.json`.
 3. Read `git status --short` and the recent Git log. Preserve unfinished work.
 4. Run `cargo test` to establish the current baseline.
-5. Select the earliest highest-priority feature whose dependencies pass and
-   whose `passes` value is false.
+5. If Gate G0 artifacts or synchronized controls are incomplete, perform one
+   coherent Phase 0 governance increment before feature implementation.
+6. Otherwise select the earliest highest-priority feature from F001-F011 whose
+   dependencies pass and whose `passes` value is false.
 
-If `.marathon/COMPLETE` already exists, run the full release verification once,
-report its result, and exit without changing source.
+If `.marathon/BOOTSTRAP_HANDOFF` has `state: final`, report it and exit without
+changing source. `.marathon/COMPLETE` remains reserved for the later full 0.1
+release and must never be created by this Marathon session.
 
 ## Work rules
 
@@ -45,6 +50,8 @@ report its result, and exit without changing source.
 - Do not weaken, delete, skip, or rewrite a test to manufacture a pass.
 - Do not change feature requirements. You may change only `passes` and
   `evidence` after verification.
+- Do not select F012-F017 or F014 under Marathon. After F011, follow Phases
+  2-4 and Gates G2-G4 in the plan rather than continuing the feature list.
 - Keep the repository buildable and tested at every commit.
 
 ## End every iteration
@@ -61,21 +68,27 @@ report its result, and exit without changing source.
 8. Commit the coherent increment with a descriptive message and push only to
    the configured Forgejo `origin` on `main`. Never force-push.
 
-## Release completion
+## Bootstrap handoff
 
-Only after every feature in `.marathon/feature_list.json` passes:
+Only after F001-F011 pass:
 
 1. Run `cargo fmt --check`.
 2. Run `cargo clippy --all-targets -- -D warnings`.
 3. Run `cargo test`.
-4. Run every independently authored conformance and concurrency test.
-5. Run `cargo package` from a clean worktree.
-6. Install the packaged crate into a temporary root and verify the `bead`
-   executable's help, version, initialization, CRUD, and claim workflow.
-7. Confirm `Cargo.toml`, `LICENSE`, `NOTICE`, `README.md`, and
-   `PROVENANCE.md` are included and accurate.
-8. Append the complete evidence to `.marathon/progress.md` and commit it.
-9. Create `.marathon/COMPLETE` containing the verified commit SHA and UTC time.
+4. Complete the G2 installed-artifact, provider, consumer, checkpoint, and
+   provenance gates without claiming version 0.1.
+5. Materialize and independently reconcile the remaining reviewed work in a
+   fresh native workspace exactly as Phase 3 and G3 require.
+6. Run the disposable canary, stop/fence Marathon, and commit
+   `.marathon/BOOTSTRAP_HANDOFF` with `state: pending` before any canonical
+   NEEDLE mutation.
+7. Run the canonical canary under provisional native authority and commit the
+   same record with `state: final` only after all G4 evidence passes.
+
+The handoff record includes the bootstrap commit, artifact hash, checkpoint
+hash, mapping hash, NEEDLE configuration revision, UTC transition time, and
+evidence locators. Native beads become the sole work-state authority at the
+pending record. Never resume feature implementation under Marathon afterward.
 
 Do not run `cargo publish`. Publication is a separate human-authorized release
-operation. If anything remains incomplete, do not create the sentinel.
+operation. If anything remains incomplete, do not finalize the handoff.

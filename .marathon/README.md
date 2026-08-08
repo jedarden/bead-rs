@@ -8,9 +8,10 @@ This directory contains the durable control plane for the clean-room bootstrap.
 | `feature_list.json` | Machine-readable release requirements and evidence |
 | `progress.md` | Append-only handoff and decision log |
 | `start.sh` | Validated wrapper around the central Marathon Coding launcher |
-| `watch-completion.sh` | Stops the tmux loop after the release sentinel appears |
+| `watch-completion.sh` | Stops the tmux loop after the handoff record becomes final |
 
-Runtime logs and the `COMPLETE` sentinel are intentionally ignored by Git.
+Runtime logs and the full-release `COMPLETE` sentinel are intentionally ignored
+by Git. `BOOTSTRAP_HANDOFF` is a tracked pending/final authority record.
 
 ## Launch
 
@@ -34,3 +35,6 @@ Optional variables:
 The wrapper refuses to start without the clean-room acknowledgement and an
 explicit Claude configuration directory.
 
+This Marathon session implements only the governed bootstrap through G4. It
+must stop after the tracked `BOOTSTRAP_HANDOFF` record reaches `state: final`;
+the remaining 0.1 work is executed from native beads by NEEDLE workers.

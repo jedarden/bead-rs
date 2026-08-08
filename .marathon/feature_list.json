@@ -4,7 +4,9 @@
   "rules": {
     "selection": "Choose the lowest priority number, then listed order, whose dependencies pass.",
     "mutation": "Only passes and evidence may be changed by implementation iterations.",
-    "completion": "Every feature must pass before .marathon/COMPLETE is created."
+    "completion": "Every feature must pass before the later full-release .marathon/COMPLETE is created.",
+    "marathon_scope": "Marathon may implement only F001-F011, then must complete plan Gates G2-G4 and stop after BOOTSTRAP_HANDOFF reaches final.",
+    "post_handoff_authority": "After the pending handoff record, native bead state and generated release evidence are authoritative; this ledger is frozen audit input."
   },
   "features": [
     {
