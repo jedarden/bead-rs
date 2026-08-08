@@ -189,3 +189,19 @@ rewrite or delete earlier entries.
 - Split forensic import into exact empty-store restore and provenance-preserving
   merge with UUID, event identity, continuity, replay, and divergence rules.
 - No feature pass state changed.
+
+## 2026-08-08 — Gap-review round 2
+
+- Removed conditional dependencies and intelligent scheduling/cache structures
+  from migration 1 and defined the exact minimal FIFO claim audit.
+- Added typed issue, event, and provenance-receipt records so monolithic backups
+  preserve issue-less workspace events without duplication.
+- Defined explicit sync input/output paths, standalone export behavior, P4 FIFO
+  capability semantics, comment projections, ready filtering, clear-assignee,
+  and the closed-to-open reopen boundary.
+- Made recovery provenance durable and portable with exact restore/merge event
+  sequence and idempotency behavior.
+- Corrected checkpoint atomicity so every authoritative root is immutable and
+  content-addressed; `issues.jsonl` is a compatibility view, never the root
+  overwritten beneath an unchanged generation pointer.
+- No feature pass state changed.

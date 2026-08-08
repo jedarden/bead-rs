@@ -43,8 +43,9 @@
       "depends_on": ["F001", "F002"],
       "acceptance": [
         "Create commits a new issue and prints only its ID on success",
-        "List supports JSON, status, assignee, and explicit limit",
-        "Show returns the requested issue in NEEDLE-compatible JSON"
+        "Create defaults an omitted description to empty",
+        "List supports JSON, status, assignee, exact ready-frontier filtering, comment projection, and explicit limit",
+        "Show returns the requested issue in NEEDLE-compatible JSON with none, unresolved, or all comment projection"
       ],
       "passes": false,
       "evidence": []
@@ -72,6 +73,7 @@
       "acceptance": [
         "Status, assignee, and notes updates are atomic",
         "release atomically transitions in-progress work to open and unassigned with the documented idempotency, conflict, output, and audit behavior",
+        "clear-assignee handles only open assigned work and generic update cannot bypass reopen for a closed bead",
         "Close retains a required reason",
         "Reopen restores the documented open lifecycle state"
       ],
@@ -115,6 +117,7 @@
       "acceptance": [
         "Malformed input reports its line and activates no partial state",
         "Unknown fields survive a same-profile round trip",
+        "Import accepts exactly one explicit input path and never discovers or ranks sibling roots heuristically",
         "sync --import-only requires explicit restore-into-empty or merge semantics and reconciles a valid checkpoint transactionally",
         "Import dry-run performs full validation and reconciliation analysis with canonical counts while leaving every durable workspace byte unchanged"
       ],
@@ -144,6 +147,7 @@
       "acceptance": [
         "Capabilities identify contract and store-layout versions",
         "Atomic claim, lifecycle, checkpoint, and command support are explicit",
+        "Priority capabilities describe P4 as claimable under fifo-v1 without post-0.1 opt-in semantics",
         "The commands inventory exactly matches every application-defined visible public root command",
         "Unsupported profiles fail closed"
       ],
@@ -231,9 +235,11 @@
       "depends_on": ["F005", "F006", "F007", "F008", "F009", "F010"],
       "acceptance": [
         "Every flush captures all lifecycle states, complete portable bead content, dependencies, comments, structured extensions, and the continuous durable audit-event history",
+        "Native monoliths use typed issue, event, and provenance-receipt records and represent issue-less workspace events without duplication or synthetic issues",
         "Native checkpoints use an authoritative atomic current-generation pointer and deterministically switch from one issues.jsonl file to a manifest-backed content-addressed prefix-sharded issue and sequence-sharded event corpus at versioned size or record thresholds",
-        "Shard splits rewrite only the overflowing prefix, sealed event shards remain immutable, and pointer/tombstone mode transitions preserve an authoritative verified root across interruption",
+        "Every pointer-selected root is immutable and content-addressed; shard splits rewrite only the overflowing prefix, sealed event shards remain immutable, and pointer/tombstone mode transitions preserve an authoritative verified root across interruption",
         "Explicit empty-store restore and provenance-preserving merge validate UUIDs, event identities and continuity, hashes, partitions, counts, uniqueness, replayed state, and graph semantics before activation",
+        "Durable restore and merge receipts round-trip through monolithic and sharded checkpoints while dry-run and failed-operation material remain nondurable",
         "Checkpoint artifacts are not ignored, sync reports changed Git-trackable paths, and documentation requires an external flush-before-commit workflow without bead-rs invoking Git"
       ],
       "passes": false,

@@ -5,7 +5,8 @@ on the independently approved `br-v1` and `bf-v1` fixtures required by F012.
 
 This is the execution blueprint for the first usable `bead-rs` release. The
 installed executable is `bead`. SQLite is its authoritative live store,
-`.beads/issues.jsonl` is the portable recovery backup and interchange artifact,
+the monolithic or manifest-backed JSONL checkpoint is its portable recovery
+backup and interchange artifact,
 and the initial compatibility target is NEEDLE v1. SQLite provides the live
 ACID working state. This plan defines an independent native architecture; it is
 not a translation of another bead implementation.
@@ -117,8 +118,15 @@ Labels, dependency edges, comments, claim telemetry, and audit events are
 normalized child records. Reads assemble them into an interchange view.
 Recovery-backup views always include complete comments and structured data.
 Ordinary list/show views omit comment bodies by default and accept
-`--comments unresolved|all`; this makes conversational context optional without
-making the backup incomplete.
+`--comments none|unresolved|all`, defaulting to `none`; `none` may retain only
+counts and resolution metadata, `unresolved` includes bodies only for
+unresolved comments plus the minimum parent metadata needed to identify their
+threads, and `all` includes every comment body in canonical comment order.
+This makes conversational context optional without making the backup
+incomplete. The flag and those meanings apply to both native and `needle-v1`
+list/show parsing. A NEEDLE invocation that omits the flag therefore retains
+its v1 envelope and receives no comment bodies; capability-aware callers may
+request either additive projection explicitly.
 
 Native priority taxonomy is:
 
@@ -128,7 +136,7 @@ Native priority taxonomy is:
 | P1 / `1` | critical | essential work that should precede ordinary delivery |
 | P2 / `2` | high | important planned work and the native default |
 | P3 / `3` | normal | ordinary work with no elevated urgency |
-| P4 / `4` | aspirational/backlog | speculative, someday, or low-urgency work, claimable only when policy permits |
+| P4 / `4` | aspirational/backlog | speculative, someday, or low-urgency work; eligible under 0.1 `fifo-v1` |
 
 Native create/update rejects values outside 0-4. JSON stores the integer and
 human output may show the `P` name. The P0-P4 range intentionally matches the
@@ -155,9 +163,12 @@ Allowed base transitions are:
 `blocked` is an effective status, not a terminal base state. An unfinished
 `blocks` edge or `manual_blocked = true` makes a nonclosed issue report
 `blocked`. `update --status blocked` sets the manual flag while retaining its
-base state. `update --status open` clears the flag and sets the base state to
-open. Finishing the last graph blocker reveals the stored base status unless
-the manual flag remains set.
+base state. For a nonclosed bead, `update --status open` clears the flag and
+sets the base state to open. It is invalid for a closed bead: only `reopen ID`
+may cross `closed` to `open`, clear closure metadata, and append the reopen
+audit event. Thus generic update can never bypass reopen validation or its
+forensic record. Finishing the last graph blocker reveals the stored base
+status unless the manual flag remains set.
 
 Profiles map `done` and `completed` explicitly to `closed`. Unknown imported
 status values are retained in extensions and rejected for activation unless
@@ -166,8 +177,9 @@ the selected profile defines a mapping; they are never treated as open.
 `close` requires a nonblank reason, sets `closed`, clears manual blocking, and
 sets `closed_at`; assignment is retained. `reopen` sets `open`, clears closure
 metadata and manual blocking, and retains assignment. `release ID` accepts an
-`in_progress` bead, sets its base state to `open`, clears its assignment, and
-leaves its last-claim sequence and attempt history intact. Releasing an already
+`in_progress` bead, sets its base state to `open`, and clears its assignment.
+Migration 1 has no last-claim sequence or attempt history to preserve; R019
+defines preservation of those fields after its migration. Releasing an already
 open, unassigned bead succeeds idempotently without advancing `updated_at` or
 appending an event. Releasing an open but assigned bead, or a `deferred` or
 `closed` bead, is an invalid-transition conflict (exit 4) and makes no change;
@@ -176,6 +188,17 @@ A semantic release appends one durable `released` audit event containing the
 bead ID, prior assignee, actor when known, and resulting base state, then prints
 the released ID plus LF. Validation, state change, and event append occur in
 one write transaction.
+
+`update ID --clear-assignee` is the explicit operation for an assigned bead
+whose base state is already `open`; it conflicts with `--assignee`. On an open,
+assigned bead it clears the assignee and appends exactly one durable
+`assignment_cleared` event containing the bead ID, prior assignee, actor when
+known, and unchanged base state, in the same write transaction. On an open,
+already-unassigned bead it succeeds idempotently without changing
+`updated_at`, advancing the event sequence, or appending an event. On an
+`in_progress`, `deferred`, or `closed` bead it is an invalid-transition
+conflict (exit 4): use `release`, an explicit lifecycle update, or `reopen` as
+appropriate rather than silently changing assignment under that lifecycle.
 
 ### 3.4 Dependencies and readiness
 
@@ -195,8 +218,8 @@ version 0.1 has no readiness cache.
 ### 3.5 Claim selection
 
 Claim is a server-selected scheduling operation, not a client-side list followed
-by update. In 0.1, selection, final eligibility validation, assignment, the
-minimal claim audit record, and the `fifo-v1` tie-break state commit in one
+by update. In 0.1, selection, final eligibility validation, assignment, and the
+minimal claim audit record commit in one
 `BEGIN IMMEDIATE` transaction. Version 0.1 has no lease request, expiry,
 renewal, or fencing-token fields. Twenty competing processes must never receive
 the same successful issue ID.
@@ -205,6 +228,14 @@ Version 0.1 implements only `fifo-v1`: eligible issues sort by declared priority
 ascending, `created_at` ascending, then ID ascending. With no eligible issue,
 claim returns exit 0 and `{}` in JSON mode without mutation. The richer policies
 below are adopted post-0.1 behavior and must not silently change `fifo-v1`.
+`fifo-v1` persists no claim sequence, last-claim value, attempt counter,
+ready-age value, retry state, or ranking-factor snapshot. Its successful claim
+audit is exactly one `events` row whose kind is `claimed`, issue ID is the
+selected issue, actor is the assignee, time is the claim instant, and detail is
+the canonical object `{"policy":"fifo-v1","resulting_base_status":"in_progress"}`;
+the event table supplies its normal origin identity and ingestion sequence.
+Optional model, harness, and harness-version values are telemetry only in the
+separate `claim_telemetry` row and do not enter selection or the audit detail.
 
 Sections 3.5.1-3.5.9 specify the R019 extension unless a paragraph explicitly
 labels a `fifo-v1` invariant. Their intelligent-policy fields, counters,
@@ -289,8 +320,8 @@ fairness tie-breakers.
 
 #### 3.5.4 Rotation and least-recently-served fairness
 
-Maintain a monotonically increasing workspace `claim_sequence`. Each bead
-records its last successful claim sequence and attempt count. Within comparable
+R019 adds a monotonically increasing workspace `claim_sequence`. Each bead
+then records its last successful claim sequence and R019 attempt state. Within comparable
 effective priority and attempt tier, rank:
 
 1. never-claimed beads;
@@ -569,11 +600,11 @@ as build artifacts, not source-controlled performance claims.
 ```text
 .beads/
   beads.db          authoritative native SQLite database
-  issues.jsonl      small-workspace portable checkpoint
+  issues.jsonl      small-workspace compatibility view of the active monolith
   checkpoint/
     current.json    authoritative checkpoint-mode/generation pointer
     manifest.json   current sharded-checkpoint manifest when sharding is active
-    previous.json   immediately previous verified manifest for crash recovery
+    previous.json   immediately previous verified generation pointer
     objects/        content-addressed issue and event JSONL shards
   config.json       nonsecret workspace configuration
   receipts/         migration receipts created on request
@@ -615,17 +646,15 @@ database definition.
 | --- | --- |
 | `schema_migrations` | integer version PK, applied time, migration checksum |
 | `workspace` | singleton store UUID, prefix, layout version, creation time |
-| `issues` | canonical scalars, ID PK, lifecycle checks, timestamps; no lease, intelligent-policy, retry, quarantine, or revision-guard columns in migration 1 |
+| `issues` | ID PK; title, description, notes, priority, issue type, base status, manual-blocked flag, nullable assignee, created/updated/closed timestamps, nullable close reason/source repo, origin profile, and schema reference, with section 3 invariants as checks where SQLite can enforce them |
 | `issue_extensions` | issue ID + key PK, canonical JSON, origin profile |
 | `labels` | issue ID + label PK, issue FK cascade |
-| `dependencies` | blocked + blocker + kind PK, optional canonical condition JSON, two issue FKs cascade, no self-edge |
+| `dependencies` | blocked + blocker + kind PK, two issue FKs cascade, no self-edge; migration 1 has no condition column |
 | `comments` | random ID, issue ID, author, immutable body, reply-to ID, resolution state, creation time |
 | `issue_data` | issue ID + namespace PK, schema reference, canonical JSON value, issue FK cascade |
-| `claim_telemetry` | issue ID, claim time, assignee, optional model/harness/version |
-| `claim_attempts` | minimal immutable successful-claim audit identity, issue, actor, time, and `fifo-v1` tie-break snapshot; richer outcomes/lease/context fields require R002 or R019 migrations |
-| `scheduler_state` | only state proven necessary for deterministic `fifo-v1`; intelligent-policy sequence, retry cadence, graph revision, and configuration require R019 |
-| `scheduling_metrics` | optional derived issue/graph revision, unlock/critical-path metrics; never authoritative for eligibility |
+| `claim_telemetry` | claimed-event local ingestion sequence PK/FK plus nullable model, harness, and harness-version hints; absent when no hint was supplied |
 | `events` | local ingestion sequence plus immutable origin store UUID, origin sequence, event hash, optional issue ID, kind, actor, time, canonical JSON detail, and import provenance |
+| `provenance_receipts` | immutable receipt ID, `restore` or `merge` kind, source and target store UUIDs, source root hash, actor/time, canonical counts/result JSON, linked local summary-event identity when present, receipt hash, and uniqueness key |
 | `checkpoint_state` | singleton current generation/mode/root hash, snapshot and event sequences, export time, tombstone/changed-path state |
 
 Add only indexes justified by v0.1 queries:
@@ -635,10 +664,14 @@ Add only indexes justified by v0.1 queries:
 - labels by label and issue;
 - comments/events by issue plus time/sequence.
 
-Do not add caches, tombstones, recovery subsystems, or compatibility-shaped
-columns without a measured requirement and new migration. The post-0.1
-`scheduling_metrics` cache is permitted only under the correctness rules in
-section 3.5.9.
+Migration 1 contains exactly the tables listed above: it has no
+`claim_attempts`, `scheduler_state`, or `scheduling_metrics` table. Successful
+claims are audited only through `events`, with optional request telemetry in
+`claim_telemetry`. Do not add conditional-dependency, intelligent-policy,
+claim-sequence, attempt, retry, ready-age, graph-metric, cache, lease,
+revision-guard, tombstone, recovery-subsystem, or compatibility-shaped columns
+without the roadmap feature's new migration. A post-0.1 `scheduling_metrics`
+cache is permitted only under the correctness rules in section 3.5.9.
 
 ### 4.4 Migrations
 
@@ -657,10 +690,10 @@ Human output may evolve; named-profile machine output is stable.
 | --- | --- |
 | `bead init [--prefix P]` | initialize or verify workspace |
 | `bead create --title T [--description D] [--label L]...` | create with an empty description when omitted; print only ID plus LF |
-| `bead list --json [--status S] [--assignee A] --limit N` | records in claim order; limit 0-999999 |
-| `bead show ID --json` | one-element JSON array for NEEDLE v1 |
+| `bead list --json [--status S] [--assignee A] [--ready] [--comments none\|unresolved\|all] --limit N` | matching records in claim order; filters intersect; `--ready` applies the exact section 3.4 predicate; limit 0-999999 |
+| `bead show ID --json [--comments none\|unresolved\|all]` | one-element JSON array for NEEDLE v1 |
 | `bead claim --assignee A [telemetry] --json` | atomic claim; one JSON object |
-| `bead update ID [--status S] [--assignee A] [--notes N]` | atomically apply supplied changes |
+| `bead update ID [--status S] [--assignee A\|--clear-assignee] [--notes N]` | atomically apply supplied changes; closed-to-open requires `reopen` |
 | `bead release ID` | atomically return claimed work to open and unassigned; print ID plus LF |
 | `bead reopen ID` | restore open lifecycle |
 | `bead close ID --reason TEXT` | finish with retained reason |
@@ -668,8 +701,8 @@ Human output may evolve; named-profile machine output is stable.
 | `bead label remove ID --label L` | idempotent absence |
 | `bead dep add BLOCKED BLOCKER --type KIND` | add canonical edge |
 | `bead dep remove BLOCKED BLOCKER [--type KIND]` | remove matching edge(s) |
-| `bead sync --flush-only [--profile P]` | atomic checkpoint export |
-| `bead sync --import-only (--restore-into-empty\|--merge) [--profile P] [--dry-run]` | validated restore or transactional reconciliation/analysis |
+| `bead sync --flush-only [--profile P] [--output PATH]` | atomic native checkpoint publication when output is omitted; explicit standalone monolith export when supplied |
+| `bead sync --import-only --input PATH (--restore-into-empty\|--merge) [--profile P] [--dry-run]` | validated restore or transactional reconciliation/analysis from exactly the named pointer, manifest, or monolith |
 | `bead sync --status --format json` | freshness, root hash, mode, and Git-trackable changed paths |
 | `bead doctor [--repair]` | diagnose; optionally perform safe repairs |
 | `bead capabilities --format json --profile P` | versioned capabilities and supported schema references |
@@ -708,6 +741,12 @@ Profile writers may add required aliases but must never reverse direction.
 List emits one compact object per line; show emits a one-element array; claim
 emits `{"bead_id":"...","assignee":"..."}` on success and `{}` when empty.
 These are valid NEEDLE v1 envelopes and make empty results explicit.
+`list --ready` returns exactly the ready frontier defined in section 3.4,
+intersects with any other supplied filters, and uses the same deterministic
+priority/creation-time/ID order as `fifo-v1` claim. It is a read-only
+inspection and never reserves work; concurrent callers must still use `claim`
+to obtain atomic ownership. Comment projection does not change record
+selection, ordering, or the enclosing NEEDLE envelopes.
 
 ### 5.2 Exit taxonomy
 
@@ -750,6 +789,10 @@ short form contains a compact intended workflow:
 init workspace -> create/import beads -> add blocking relationships
 -> inspect ready work -> claim -> update/release -> close -> flush JSONL backup
 ```
+
+Here “inspect ready work” is the concrete nonmutating command
+`bead list --ready --json --limit N`; it uses claim order but does not reserve
+the displayed beads.
 
 Root long help and `bead(1)` explain the lifecycle in plain language: `open`
 beads may be ready; manual blocking or unfinished `blocks` edges remove them
@@ -801,12 +844,36 @@ compatible, while capability-aware consumers can discover it additively.
 
 ### 6.1 Canonical JSONL
 
-JSONL is UTF-8 with one compact object and LF per issue. In native monolithic
-mode each issue record includes its complete durable audit-event array in event
-sequence order. Blank lines may be ignored. Malformed or non-object lines fail
-with a one-based line number. Reject duplicate IDs before activating any state.
+JSONL is UTF-8 with one compact object and LF per record. Native
+`monolithic-jsonl-v1` uses exactly three top-level record envelopes:
 
-Canonical export order is ID ascending. Known fields follow the interchange
+```json
+{"record_type":"issue","issue":{}}
+{"record_type":"event","event":{}}
+{"record_type":"provenance_receipt","provenance_receipt":{}}
+```
+
+The envelope has exactly `record_type` and its matching payload key; the issue
+or event public schema governs those payloads. Provenance receipts use
+`urn:bead-rs:schema:provenance-receipt:native-v1`, whose required fields are
+`receipt_id`, `kind`, `source_store_uuid`, `target_store_uuid`,
+`source_root_sha256`, `actor`, `created_at`, `counts`, `result`,
+`summary_event_identity`, and `receipt_sha256`; the summary identity is null
+for restore and the exact local event identity for merge. This represents
+workspace events whose `issue_id` is absent without attaching them to a
+synthetic issue.
+Canonical monolith order is all issue records by issue ID ascending, followed
+by all event records by `(origin_store_uuid, origin_event_sequence)` ascending,
+then all provenance receipts by receipt ID ascending; UUID and receipt-ID
+comparisons are bytewise UTF-8. The complete file contains one issue record per
+issue, one event record per durable event, and one receipt record per durable
+receipt. Blank lines may be ignored but do not count as records. An unknown
+type, mismatched or extra envelope key, malformed or non-object line fails with
+a one-based line number. Import rejects duplicate issue IDs, event identities,
+or receipt IDs, origin-sequence gaps, and any declared per-type or total count
+mismatch before activation.
+
+Within an issue payload, known fields follow the interchange
 specification, optional known fields follow, and extension keys sort lexically.
 Labels sort lexically and are unique. Dependencies sort by blocker ID, kind,
 then blocked ID. Comments retain creation order with ID as tie-breaker.
@@ -826,11 +893,19 @@ marks it durable and nonsecret. Normal cleanup never drops closed beads or
 historical events from the portable corpus. Any future pruning operation must
 be explicit, separately specified, and produce a forensic receipt.
 
+Successful restore and merge provenance receipts are durable, nonsecret public
+recovery facts and are part of that corpus. Dry-run reports, failed-operation
+diagnostics, temporary staging data, busy/retry telemetry, absolute paths, and
+environment details are nondurable and never exported.
+External issue-only profile exports are distinct caller-selected artifacts and
+must report omitted recovery records as profile loss; they are not complete
+native backups.
+
 #### 6.1.1 Adaptive sharded checkpoint set
 
 Small workspaces use `.beads/issues.jsonl` for maximum compatibility. Native
 defaults switch to a sharded checkpoint when the monolith would exceed 50,000
-issue records, 64 MiB total, or 8 MiB for any history-bearing issue line; all
+issue records, 64 MiB total, or 8 MiB for any individual record line; all
 thresholds are versioned configuration and recorded in the manifest. Operators
 may force monolithic or sharded output, but forcing a monolith never bypasses
 record/byte safety limits.
@@ -839,13 +914,16 @@ All native checkpoints use `.beads/checkpoint/current.json` as the sole
 authoritative discovery pointer. It canonically records a generation ID,
 `monolithic` or `sharded` mode, store UUID, snapshot sequence, active-root path
 and SHA-256, and a deterministic set of paths added, replaced, and deleted by
-that generation. In monolithic mode the active root is `.beads/issues.jsonl`;
-in sharded mode it is `.beads/checkpoint/manifest.json`. Files not selected by
+that generation, plus complete issue, event, provenance-receipt, and
+total-record counts. In monolithic mode the active root is an immutable
+content-addressed JSONL object under `.beads/checkpoint/objects/`, and
+`.beads/issues.jsonl` is a byte-identical compatibility view. In sharded mode
+the active root is `.beads/checkpoint/manifest.json`. Files not selected by
 `current.json` are inactive even if they remain after a crash. Import never
 chooses between roots by existence or modification time.
 
 The sharded manifest records format/schema version, store UUID, snapshot and
-maximum event sequence, creation time, profile, complete record/event counts, partition
+maximum event sequence, creation time, profile, complete issue/event/receipt counts, partition
 algorithm and thresholds, and every referenced object path, byte length,
 SHA-256, record range, and semantic role. The manifest itself has a canonical
 SHA-256 reported by `sync --status`. Import rejects missing, extra-referenced,
@@ -873,11 +951,22 @@ sealed objects never change. This makes forensic history append-friendly and
 prevents a frequently updated bead from rewriting its entire history-bearing
 issue shard.
 
+Sharded checkpoints likewise store provenance receipts in a separate
+content-addressed JSONL object set declared by the manifest with receipt count,
+schema reference, byte length, and SHA-256. Receipt objects sort by receipt ID
+and participate in root verification and restore-equivalence exactly like issue
+and event objects.
+
 Object filenames contain their content SHA-256 and live under
-`.beads/checkpoint/objects/`; identical content is reused. Before publishing a
-new root, preserve the old sharded manifest as `previous.json`. Publish each
-data root only after all of its content is durable and verified, then atomically
-replace `current.json` as the commit point. A mode transition publishes a new
+`.beads/checkpoint/objects/`; identical content is reused. This includes the
+complete native monolith object, so publishing never overwrites a root named by
+the current generation. Before publishing a new root, preserve the old
+generation pointer as `previous.json`. Publish each data root only after all of
+its content is durable and verified, then atomically replace `current.json` as
+the commit point. In monolithic mode, replace the compatibility
+`.beads/issues.jsonl` only after the new immutable object is durable; status is
+not ready to commit until the view is byte-identical to the pointer-selected
+object. A mode transition publishes a new
 generation whose changed-path set includes the new root and objects, the
 pointer replacement, and tombstones (deletion entries) for the formerly active
 root and any objects referenced by neither the new generation nor the retained
@@ -896,6 +985,20 @@ and audit-event history. External compatibility profiles that require one file
 may export a monolith explicitly to a caller-selected path without changing the
 native checkpoint mode.
 
+`sync --flush-only --output PATH` is that standalone export operation. `PATH`
+must be an explicit regular-file destination outside `.beads/checkpoint`; after
+resolving existing ancestors and aliases it must not name the live database,
+configuration, authoritative checkpoint root/pointer, an input path, or any
+other workspace-managed file. The destination must not already exist. Export
+captures one read snapshot, enforces monolith limits, writes and verifies an
+operation-owned temporary sibling, then atomically renames it to `PATH` and
+syncs the parent where supported. It reports computed issue, event,
+provenance-receipt, and total-record counts. It does not replace `current.json`, change checkpoint mode/state
+or freshness, emit tombstones, or mutate SQLite. Failure removes only the
+operation-owned temporary. `--output` is invalid with a request for native
+adaptive/sharded publication; an explicit output is always a standalone
+monolith.
+
 ### 6.2 Backup flush algorithm
 
 SQLite is authoritative between flushes because it supplies transactional live
@@ -912,11 +1015,13 @@ native SQLite backup format.
 3. Select monolithic or sharded mode from explicit configuration or recorded
    thresholds; retain an existing valid partition plan and split only
    overflowing shards.
-4. Serialize new content-addressed objects or a uniquely named monolithic
-   temporary; reuse already verified objects without rewriting them.
+4. Serialize new content-addressed issue/event/receipt objects or a complete
+   content-addressed monolith object; reuse verified objects without rewriting
+   them.
 5. Flush and `sync_all` every new file, verify lengths/hashes/counts, then sync
    its parent directory where supported.
-6. Publish the monolith or canonical manifest, verify it, then atomically
+6. Publish the canonical manifest when sharded or the byte-identical
+   `.beads/issues.jsonl` compatibility view when monolithic, verify it, then atomically
    replace `current.json` as the generation commit point and sync the parent
    directory. Apply only the pointer-declared tombstones afterward. Never
    expose an authoritative pointer referencing an incomplete root or object
@@ -942,11 +1047,21 @@ remote history without making the bead CLI a Git client.
 
 ### 6.3 Import reconciliation
 
-`sync --import-only` requires exactly one explicit semantic mode:
-`--restore-into-empty` or `--merge`. It follows `checkpoint/current.json` and
-fully validates the selected root before activation. A legacy monolith without
-a pointer may be accepted only through an explicit caller-selected input path;
-simultaneous files are never heuristically ranked. Default safety limits are 1
+`sync --import-only` requires `--input PATH` and exactly one explicit semantic
+mode: `--restore-into-empty` or `--merge`. `PATH` names exactly one regular
+monolithic JSONL file, sharded manifest, or native `current.json` pointer. A
+pointer is followed only from that named path, and every referenced relative
+path is resolved beneath the pointer or manifest directory after rejecting
+symlinks and traversal. A manifest or pointer input receives full hash and
+declared-count validation. A pointerless legacy monolith is accepted only when
+its file is named by `--input`; sibling files are never discovered or
+heuristically ranked, and its issue, event, provenance-receipt, and total counts
+are computed and reported rather than trusted from external metadata. Input is opened read-only,
+must not alias the target database or an operation output, and is never renamed,
+deleted, repaired, or rewritten. Parsing and staging cause no durable mutation;
+only the single activation transaction described below may mutate SQLite, and
+failed validation leaves the workspace byte-for-byte unchanged except for
+removed operation-owned scratch. Default safety limits are 1
 million issue records, 16 MiB per line, 4 GiB total, and `serde_json`'s bounded
 nesting behavior. Event limits are independently configured and never inferred
 from the issue-record limit.
@@ -972,10 +1087,14 @@ envelope is itself audited without rewriting the imported actor or time.
 `--restore-into-empty` requires a newly initialized store with no semantic
 mutations. In one transaction it adopts the checkpoint store UUID, restores
 issues and the exact contiguous native event sequence, verifies that replayed
-event outcomes equal the checkpoint snapshot, records recovery provenance in a
-separate local restore receipt, and activates the result. The receipt does not
-alter the restored historical sequence. Any nonempty target, UUID ambiguity,
-sequence gap, replay mismatch, or root-hash mismatch fails without mutation.
+event outcomes equal the checkpoint snapshot, imports any prior provenance
+receipts, inserts one new immutable `restore` receipt, and activates the
+result. The receipt is stored in `provenance_receipts` and exported by the next
+native flush, but it has no origin event sequence and does not alter or create
+a gap in the restored historical sequence. Its uniqueness key is
+`(kind, target_store_uuid, source_root_hash)`. Any nonempty target, UUID
+ambiguity, sequence gap, replay mismatch, or root-hash mismatch fails without
+mutation.
 
 `--merge` preserves the target store UUID and never presents foreign history
 as locally originated. For a same-UUID checkpoint, target and input event
@@ -995,8 +1114,23 @@ history checks, one write transaction:
 - validate endpoints and cycles against the final staged graph;
 - preserve unknown values under their source profile;
 - append accepted origin events in origin order with their provenance
-  envelopes, followed by one local import-summary audit event containing only
-  counts, source identity/root hash, receipt ID, and reconciliation result.
+  envelopes, then allocate the next local-origin sequence for one local
+  import-summary audit event containing only counts, source identity/root hash,
+  receipt ID, and reconciliation result, and insert the linked immutable
+  `merge` receipt in `provenance_receipts` before commit.
+
+The merge receipt uniqueness key is
+`(kind, target_store_uuid, source_root_hash)` and its receipt hash covers all
+public fields except the hash itself. Repeating an already committed identical
+merge is an auditable idempotent success that returns the existing receipt and
+does not ingest events, allocate a local sequence, update timestamps, or append
+a second summary. A key collision with different receipt content is integrity
+failure. Imported events receive local ingestion sequence only; they retain
+their foreign origin identity. The local import-summary is the sole event
+sequence effect attributable to a semantic merge, while the linked receipt
+provides operation provenance without masquerading as source history. Receipt
+insert, imported-event ingestion, reconciliation changes, and summary-event
+append are atomic.
 
 Snapshot timestamps never authorize discarding, synthesizing, or reordering
 events. If snapshot reconciliation would produce state inconsistent with the
@@ -1243,7 +1377,7 @@ may take multiple iterations and remains false until complete.
   "version": "0.1.0",
   "store_layout": 1,
   "atomic_claim": true,
-  "priorities": {"min": 0, "max": 4, "default": 2, "p4_aspirational_requires_opt_in": true},
+  "priorities": {"min": 0, "max": 4, "default": 2, "p4_claimable_by_fifo": true},
   "statuses": ["blocked", "closed", "deferred", "in_progress", "open"],
   "checkpoint_modes": ["flush-only", "import-only"],
   "checkpoint_formats": ["monolithic-jsonl-v1", "sharded-jsonl-v1"],
