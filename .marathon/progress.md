@@ -478,7 +478,6 @@ rewrite or delete earlier entries.
 - **Next recommended feature**: F009 (Diagnostics and scoped repair) - now unblocked
 - F008 pass state changed to true with evidence.
 
-
 ## 2026-08-08 — F009 implementation completed
 
 - Added DoctorOptions CLI command with --repair flag
@@ -837,3 +836,73 @@ rewrite or delete earlier entries.
   **Final state**: Complete - Native beads are sole work-state authority, Marathon ledger frozen.
   **Evidence**: 181 passing tests, verified artifact hash, deterministic checkpoint, acyclic graph.
   **Next phase**: NEEDLE worker execution under native authority (external to Marathon scope).
+
+## 2026-08-09 — Current state assessment: All remaining features blocked on external dependencies
+
+- **Completed features**: F001-F011 (all passing), F015 (benchmark harness passing)
+- **Remaining incomplete features and blocking reasons**:
+  * **F012**: Interchange profiles for br-v1 and bf-v1 - BLOCKED on external fixtures
+    - Required: Independently authored br-v1 and bf-v1 profile fixtures
+    - External dependency owners: TO BE ASSIGNED
+    - External dependency reviewers: TO BE ASSIGNED
+    - Cannot proceed without independent fixture approval and clean-room validation
+
+  * **F017**: Adaptive Git-trackable sharded checkpoints with forensic history - BLOCKED on external specification
+    - Required: `research/specs/checkpoint-set-v1.md` specification and conformance fixtures
+    - Specification status: "required and not yet present; plan prose is nonnormative"
+    - External dependency owner: TO BE ASSIGNED
+    - External dependency reviewer: TO BE ASSIGNED (must be independent of implementation author)
+    - Cannot begin implementation until independently reviewed specification exists
+
+  * **F013**: Migration dry-run and audit receipts - BLOCKED on F012
+    - Depends on F008 (passing) and F012 (blocked)
+    - Cannot proceed until F012 external fixtures are approved
+
+  * **F016**: Complete CLI help tree and generated section-1 man pages - BLOCKED on F013
+    - Depends on F010 (passing), F011 (passing), and F013 (blocked)
+    - Cannot proceed until F013 is complete
+
+  * **F014**: Release packaging, installation, and license verification - BLOCKED on multiple dependencies
+    - Depends on F010, F011, F012, F013, F015, F016, F017
+    - Cannot proceed until all dependencies are complete
+
+- **Current working tree status**: Clean, no uncommitted changes
+- **Test baseline**: All 181 tests passing (46 unit + 135 integration)
+- **Code quality**: cargo fmt --check: passed, cargo clippy --all-targets -- -D warnings: passed
+
+- **Clean-room boundary compliance**:
+  ✓ All implementation work independently authored from specifications
+  ✓ No inspection of upstream source, tests, or internal documentation
+  ✓ External dependencies properly documented in `docs/traceability/external-dependencies.md`
+  ✓ No gate weakening or scope reduction to bypass blocking requirements
+
+- **Marathon protocol compliance**:
+  ✓ All F001-F011 and F015 features implemented with comprehensive evidence
+  ✓ Gates G2-G4 completed with verified artifacts
+  ✓ No unblocked features remain for implementation
+  ✓ No gate weakening or silent scope changes performed
+  ✓ External dependency ownership clearly documented but unassigned
+
+- **Current impasse analysis**:
+  According to the plan section 2 delivery definition and Marathon instructions, version 0.1 requires complete passing evidence for F001-F017 before `.marathon/COMPLETE` can be created. The plan explicitly states:
+
+  * "F017 is a design proposal only: implementation must not begin until the new normative `research/specs/checkpoint-set-v1.md` exists and has been independently reviewed. Plan prose cannot substitute for that specification."
+
+  * "No profile, fixture, evidence, or gate may be waived to turn that external dependency into a nominal 0.1 release."
+
+  The project has reached a governed checkpoint where all implementable features under current external constraints are complete. The remaining unimplemented features require external decisions and inputs that are beyond Marathon's autonomous authority.
+
+- **Next actions required** (external to Marathon autonomous scope):
+  1. Assign owners and reviewers for F012 external fixture specifications (br-v1 and bf-v1 profiles)
+  2. Assign owner and independent reviewer for F017 checkpoint-set-v1 specification
+  3. Create and independently review `research/specs/checkpoint-set-v1.md`
+  4. Create and independently approve br-v1 and bf-v1 fixture specifications
+  5. Once external specifications/fixtures are approved, Marathon can resume implementation of F012, F013, F016, F017, and F014
+
+- **Current project state**: Governed completion checkpoint
+  The bead-rs project has successfully implemented all features not blocked by external dependencies. The codebase is clean, tested, and ready for the remaining features once their external prerequisites are satisfied. This represents a complete and successful autonomous implementation phase under clean-room principles.
+
+  **Status**: Awaiting external specification/fixture assignments and approvals
+  **Compliance**: All clean-room and Marathon protocols maintained
+  **Evidence**: 181 passing tests, verified artifacts, comprehensive documentation
+  **Ready for**: External dependency resolution or explicit scope adjustment decision
