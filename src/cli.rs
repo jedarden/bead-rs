@@ -367,6 +367,10 @@ pub struct ClaimOptions {
     #[arg(long)]
     pub why: bool,
 
+    /// Scheduling policy for claim selection (fifo-v1, aging-v1, impact-v1, rotation-v1, balanced-v1)
+    #[arg(long, default_value = "fifo-v1")]
+    pub policy: String,
+
     /// Request a leased claim with time-to-live in seconds (optional)
     #[arg(long)]
     pub lease_ttl: Option<u64>,

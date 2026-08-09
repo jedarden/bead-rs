@@ -9,6 +9,8 @@ mod store;
 use crate::cli::{Cli, Command};
 use crate::error::{Error, Result};
 use crate::service::checkpoint::CheckpointMode;
+use crate::service::claim::{ClaimResult, EnhancedClaimResult};
+use crate::service::scheduling::SchedulingPolicy;
 use crate::store::Store;
 use anyhow::Context;
 use clap::Parser;
@@ -98,14 +100,44 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
         .unchecked_transaction()
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to start transaction: {}", e)))?;
 
-    // Claim an issue with optional lease support
-    let enhanced_result = service::claim_issue_with_lease(
-        &tx,
-        &opts.assignee,
-        opts.lease_ttl,
-        opts.renew_lease,
-        opts.fencing_token,
-    )?;
+    // Parse scheduling policy
+    let policy = SchedulingPolicy::from_string(&opts.policy)?;
+
+    // Perform claim based on policy
+    let (enhanced_result, claim_result) = if matches!(policy, SchedulingPolicy::FifoV1) {
+        // Use existing FIFO claim for backward compatibility
+        let enhanced = service::claim_issue_with_lease(
+            &tx,
+            &opts.assignee,
+            opts.lease_ttl,
+            opts.renew_lease,
+            opts.fencing_token,
+        )?;
+
+        let claim = ClaimResult {
+            bead_id: enhanced.bead_id.clone(),
+            assignee: enhanced.assignee.clone(),
+        };
+        (enhanced, claim)
+    } else {
+        // Use intelligent scheduling for R019 policies
+        let claim = service::claim_issue_with_policy(
+            &tx,
+            &opts.assignee,
+            &policy,
+            None, // model
+            None, // harness
+            None, // harness_version
+        )?;
+
+        // Create enhanced result without lease for intelligent policies
+        let enhanced = service::EnhancedClaimResult {
+            bead_id: claim.bead_id.clone(),
+            assignee: claim.assignee.clone(),
+            lease: None, // Intelligent policies don't include lease info in basic result
+        };
+        (enhanced, claim)
+    };
 
     // Get decision trace if requested (backward compatibility with R001)
     let trace = if opts.why {
@@ -123,13 +155,9 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
     // Output result
     if opts.json {
         let output = if let Some(trace_data) = trace {
-            // When --why is set, output enriched result with decision trace and lease info
+            // When --why is set, output enriched result with decision trace
             serde_json::to_string(&serde_json::json!({
-                "claim_result": {
-                    "bead_id": enhanced_result.bead_id,
-                    "assignee": enhanced_result.assignee,
-                    "lease": enhanced_result.lease
-                },
+                "claim_result": enhanced_result,
                 "decision_trace": trace_data
             }))
             .map_err(|e| {
@@ -146,15 +174,9 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
         };
         println!("{}", output);
     } else {
-        if let Some(bead_id) = &enhanced_result.bead_id {
+        if let Some(bead_id) = &claim_result.bead_id {
             println!("Claimed: {}", bead_id);
-            println!("Assignee: {}", enhanced_result.assignee);
-
-            // Display lease information if present
-            if let Some(lease_info) = &enhanced_result.lease {
-                println!("Lease expires at: {}", lease_info.expires_at);
-                println!("Fencing token: {}", lease_info.fencing_token);
-            }
+            println!("Assignee: {}", claim_result.assignee);
         } else {
             println!("No eligible work found.");
         }

@@ -4,8 +4,9 @@
 //! Claims execute in a single write transaction to ensure atomicity and prevent
 //! duplicate assignments under concurrent access.
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::service::leases::{create_lease, renew_lease, DEFAULT_LEASE_TTL};
+use crate::service::scheduling::{self, SchedulingPolicy};
 use rusqlite::OptionalExtension;
 use rusqlite::Transaction;
 use serde_json::json;
@@ -692,6 +693,179 @@ pub fn claim_issue_with_trace(
     };
 
     Ok((result, trace))
+}
+
+/// Intelligent claim with policy-based scheduling (R019)
+///
+/// This function extends claim logic to support R019's intelligent scheduling:
+/// - Policy-based ranking (fifo-v1, aging-v1, impact-v1, rotation-v1, balanced-v1)
+/// - Ready age promotion and bounded aging buckets
+/// - Completion-unlock impact measurement
+/// - Least-recently-served rotation with workspace claim sequence
+/// - Failure-aware attempt tiers and retry cadence
+/// - Comprehensive scheduling metrics and explainability
+///
+/// # Arguments
+/// * `tx` - Database transaction
+/// * `assignee` - Who is claiming the issue
+/// * `policy` - Scheduling policy to use for selection
+/// * `model` - Optional model name for telemetry
+/// * `harness` - Optional harness name for telemetry
+/// * `harness_version` - Optional harness version for telemetry
+///
+/// # Returns
+/// Standard claim result enhanced with scheduling information
+pub fn claim_issue_with_policy(
+    tx: &Transaction,
+    assignee: &str,
+    policy: &SchedulingPolicy,
+    model: Option<&str>,
+    harness: Option<&str>,
+    harness_version: Option<&str>,
+) -> Result<ClaimResult> {
+    match policy {
+        SchedulingPolicy::FifoV1 => {
+            // Use existing FIFO-v1 logic for backward compatibility
+            claim_issue(tx, assignee, model, harness, harness_version)
+        }
+        _ => {
+            // Use intelligent scheduling for other policies
+            intelligent_claim(tx, assignee, policy, model, harness, harness_version)
+        }
+    }
+}
+
+/// Intelligent claim with policy-based selection
+fn intelligent_claim(
+    tx: &Transaction,
+    assignee: &str,
+    policy: &SchedulingPolicy,
+    _model: Option<&str>,
+    _harness: Option<&str>,
+    _harness_version: Option<&str>,
+) -> Result<ClaimResult> {
+    // Increment workspace claim sequence for rotation tracking
+    let workspace_sequence = scheduling::increment_workspace_sequence(tx)?;
+
+    // Find eligible issues using the frontier definition
+    let eligible_issues = find_eligible_frontier(tx)?;
+
+    if eligible_issues.is_empty() {
+        return Ok(ClaimResult {
+            bead_id: None,
+            assignee: assignee.to_string(),
+        });
+    }
+
+    // Rank candidates using intelligent policy
+    let ranked_candidates =
+        scheduling::rank_candidates(tx, eligible_issues, policy, workspace_sequence)?;
+
+    // Select the top-ranked candidate
+    let selected_issue = ranked_candidates.first().cloned();
+
+    let issue_id = match selected_issue {
+        Some(id) => id,
+        None => {
+            return Ok(ClaimResult {
+                bead_id: None,
+                assignee: assignee.to_string(),
+            });
+        }
+    };
+
+    // Update scheduling state on claim
+    scheduling::update_claim_scheduling_state(tx, &issue_id, workspace_sequence)?;
+
+    // Transition the issue to in_progress and assign it
+    let now = OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    tx.execute(
+        "UPDATE issues SET base_status = 'in_progress', assignee = ?1, updated_at = ?2 WHERE id = ?3",
+        [&assignee as &dyn rusqlite::ToSql, &now as &dyn rusqlite::ToSql, &issue_id as &dyn rusqlite::ToSql],
+    )
+    .map_err(|e| {
+        Error::Internal(anyhow::anyhow!("Failed to update issue for claim: {}", e))
+    })?;
+
+    // Record the claim audit event with policy information
+    let event_detail = json!({
+        "policy": policy.as_str(),
+        "resulting_base_status": "in_progress",
+        "workspace_sequence": workspace_sequence,
+        "intelligent_scheduling": true
+    });
+
+    let event_detail_json = serde_json::to_string(&event_detail)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to serialize event detail: {}", e)))?;
+
+    let event_time = OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    tx.execute(
+        "INSERT INTO events (issue_id, kind, actor, time, detail) VALUES (?1, 'claimed', ?2, ?3, ?4)",
+        [&issue_id as &dyn rusqlite::ToSql, &assignee as &dyn rusqlite::ToSql, &event_time as &dyn rusqlite::ToSql, &event_detail_json as &dyn rusqlite::ToSql],
+    )
+    .map_err(|e| {
+        Error::Internal(anyhow::anyhow!("Failed to insert claim event: {}", e))
+    })?;
+
+    Ok(ClaimResult {
+        bead_id: Some(issue_id),
+        assignee: assignee.to_string(),
+    })
+}
+
+/// Find all eligible issues from the ready frontier
+///
+/// The ready frontier consists of issues that are:
+/// - Base status 'open'
+/// - No assignee (assignee IS NULL)
+/// - Not manually blocked (manual_blocked = 0)
+/// - No unfinished 'blocks' dependencies
+fn find_eligible_frontier(tx: &Transaction) -> Result<Vec<String>> {
+    let query = r#"
+        SELECT i.id
+        FROM issues i
+        WHERE i.base_status = 'open'
+          AND i.assignee IS NULL
+          AND i.manual_blocked = 0
+          AND NOT EXISTS (
+              SELECT 1
+              FROM dependencies d
+              JOIN issues blocker ON blocker.id = d.blocker_issue_id
+              WHERE d.blocked_issue_id = i.id
+                AND d.kind = 'blocks'
+                AND blocker.base_status != 'closed'
+          )
+        ORDER BY i.priority ASC, i.created_at ASC, i.id ASC
+    "#;
+
+    let mut eligible = Vec::new();
+    let mut stmt = tx.prepare(query).map_err(|e| {
+        Error::Internal(anyhow::anyhow!(
+            "Failed to prepare eligible frontier query: {}",
+            e
+        ))
+    })?;
+
+    let issue_rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| {
+            Error::Internal(anyhow::anyhow!(
+                "Failed to execute eligible frontier query: {}",
+                e
+            ))
+        })?;
+
+    for issue in issue_rows {
+        eligible.push(issue?);
+    }
+
+    Ok(eligible)
 }
 
 #[cfg(test)]

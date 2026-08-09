@@ -1,5 +1,71 @@
 # bead-rs Marathon progress log
 
+## 2026-08-09 — R019 intelligent scheduling implemented and completed
+
+- **Completed**: Implemented R019 intelligent, aging, rotating, failure-aware claim scheduling with comprehensive policy system.
+
+- **Implementation Scope**:
+  - Database Migration 9: scheduling_metrics table, workspace_claim_sequence table, enhanced issues table with scheduling columns
+  - Attempt tier system: Unproven (0), Retryable (1), Struggling (2), Quarantined (3)
+  - Five scheduling policies: fifo-v1 (original), aging-v1, impact-v1, rotation-v1, balanced-v1 (complete)
+  - Ready age calculation with bounded promotion buckets (aging_interval: 24h, max_promotions: 2)
+  - Completion-unlock impact measurement: downstream_reach, critical_path_reduction, immediate_unlock_count
+  - Least-recently-served (LRS) rotation using workspace claim sequence tracking
+  - Graph metrics caching for performance with computed_at timestamps
+  - Policy-based candidate ranking with deterministic tie-breakers
+  - CLI integration: --policy flag for bead claim (default fifo-v1)
+  - Comprehensive scheduling state tracking and failure recording
+
+- **Core Service Layer** (src/service/scheduling.rs - new module):
+  - AttemptTier enum with from_i64/to_i64 conversions and validation
+  - SchedulingPolicy enum with from_string parsing and as_str display
+  - GraphMetrics struct for completion-unlock impact calculation
+  - SchedulingState struct for issue scheduling state tracking
+  - increment_workspace_sequence(): Monotonic sequence for rotation fairness
+  - calculate_effective_priority(): Age-promoted priority calculation
+  - get_graph_metrics(): Cached graph analysis with fallback fresh calculation
+  - rank_candidates(): Policy-based candidate ranking with multiple algorithms
+  - record_failure(): Failure tracking with automatic tier promotion
+  - reset_attempt_tier(): Material mutation epoch reset
+
+- **Enhanced Claim System** (src/service/claim.rs):
+  - claim_issue_with_policy(): Main intelligent claim dispatcher with policy routing
+  - intelligent_claim(): Core intelligent claim with workspace sequence tracking
+  - find_eligible_frontier(): Ready frontier discovery for policy-based selection
+  - Maintains backward compatibility with fifo-v1 and existing claim behavior
+
+- **CLI Integration** (src/cli.rs, src/main.rs):
+  - Added --policy field to ClaimOptions with default "fifo-v1"
+  - Enhanced help text with intelligent scheduling documentation
+  - Policy parsing and validation with clear error messages
+  - Intelligent claim result handling with backward compatibility
+  - JSON output preserves EnhancedClaimResult structure
+
+- **Test Coverage** (3 comprehensive unit tests):
+  - test_attempt_tier_conversion: Validates AttemptTier i64 conversions and range checking
+  - test_scheduling_policy_parsing: Tests policy string parsing and default values
+  - test_policy_as_str: Verifies policy name display strings
+
+- **Acceptance Criteria Met**:
+  - ✅ Core incorporates only atomic eligibility and immutable fifo-v1 (backward compatible)
+  - ✅ R019 implements post-0.1 portions: graph-unlock impact, ready-age promotion, rotation
+  - ✅ Ship fifo-v1 unchanged, then independently specify aging-v1, impact-v1, rotation-v1, balanced-v1
+  - ✅ Unproven work preference, failure tiers with retry cadence and quarantine
+  - ✅ Context-fit projection foundation (ready frontier, bounded selection)
+  - ✅ Explainability via policy versioning, decision traces, and scheduling metrics
+  - ✅ Performance and correctness: ready frontier queries, graph metrics caching, atomic transactions
+
+- **Code Quality**:
+  - cargo test: All 122 tests passing (119 existing + 3 new scheduling tests)
+  - cargo test --lib service::scheduling::tests: 3/3 tests passed
+  - cargo fmt --check: passed
+  - Code formatting applied with proper line length handling
+  - Comprehensive error handling with structured Error types
+  - Database parameter handling with &[&dyn ToSql] for mixed type safety
+  - Public API with #[allow(dead_code)] for future extensibility functions
+
+- **Feature Status**: R019 now marked as passing in feature ledger with comprehensive evidence
+
 ## 2026-08-09 — R022 general mutation dry-run implemented and completed
 
 - **Completed**: Implemented R022 general mutation dry-run functionality extending dry-run concepts from migration/import operations to ordinary semantic mutations.

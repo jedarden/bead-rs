@@ -7,7 +7,7 @@ use rusqlite::{Connection, Result as SqliteResult};
 use sha2::{Digest, Sha256};
 
 /// Current migration version
-pub const CURRENT_VERSION: i64 = 8;
+pub const CURRENT_VERSION: i64 = 9;
 
 /// Apply all pending migrations to the database
 pub fn apply_migrations(conn: &Connection) -> SqliteResult<()> {
@@ -75,6 +75,7 @@ fn get_migration(version: i64) -> Migration {
         6 => migration_6(),
         7 => migration_7(),
         8 => migration_8(),
+        9 => migration_9(),
         v => panic!("Unknown migration version: {}", v),
     }
 }
@@ -489,6 +490,57 @@ CREATE INDEX IF NOT EXISTS recurrence_materializations_template ON recurrence_ma
 
 -- Index for looking up materializations by occurrence
 CREATE INDEX IF NOT EXISTS recurrence_materializations_occurrence ON recurrence_materializations (occurrence_id);
+"#;
+
+    Migration {
+        sql: sql.to_string(),
+    }
+}
+
+/// Migration 9: Intelligent scheduling metrics (R019)
+///
+/// This migration adds support for post-0.1 intelligent claim scheduling:
+/// - Ready age tracking for aging promotion
+/// - Attempt tiers and failure counts
+/// - Workspace claim sequence for rotation
+/// - Last claim sequence for least-recently-served fairness
+/// - Scheduling metrics cache for graph computation
+/// - Retry state and quarantine tracking
+fn migration_9() -> Migration {
+    let sql = r#"
+-- Add scheduling state columns to issues table
+ALTER TABLE issues ADD COLUMN ready_since TEXT;
+ALTER TABLE issues ADD COLUMN last_claim_sequence INTEGER;
+ALTER TABLE issues ADD COLUMN attempt_tier INTEGER NOT NULL DEFAULT 0 CHECK (attempt_tier >= 0 AND attempt_tier <= 3);
+ALTER TABLE issues ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE issues ADD COLUMN retry_after_claim_sequence INTEGER;
+
+-- Create indexes for scheduling queries
+CREATE INDEX IF NOT EXISTS issues_ready_frontier ON issues (base_status, manual_blocked, assignee, priority, created_at, id);
+CREATE INDEX IF NOT EXISTS issues_attempt_tier ON issues (attempt_tier, last_claim_sequence);
+
+-- Scheduling metrics cache for computed graph metrics
+CREATE TABLE IF NOT EXISTS scheduling_metrics (
+    issue_id TEXT NOT NULL PRIMARY KEY,
+    graph_revision INTEGER NOT NULL,
+    downstream_reach INTEGER NOT NULL DEFAULT 0,
+    critical_path_reduction INTEGER NOT NULL DEFAULT 0,
+    immediate_unlock_count INTEGER NOT NULL DEFAULT 0,
+    computed_at TEXT NOT NULL,
+    FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE
+);
+
+-- Index for metrics invalidation queries
+CREATE INDEX IF NOT EXISTS scheduling_metrics_revision ON scheduling_metrics (graph_revision, computed_at);
+
+-- Workspace claim sequence for rotation tracking
+-- This singleton table maintains a monotonically increasing sequence number
+CREATE TABLE IF NOT EXISTS workspace_claim_sequence (
+    sequence INTEGER NOT NULL DEFAULT 0
+);
+
+-- Initialize the workspace claim sequence if not exists
+INSERT OR IGNORE INTO workspace_claim_sequence (sequence) VALUES (0);
 "#;
 
     Migration {
