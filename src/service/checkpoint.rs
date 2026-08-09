@@ -1,11 +1,13 @@
 //! Checkpoint export and import service
 //!
 //! This module provides atomic, deterministic JSONL checkpoint export and import.
+//! F017 adds forensic checkpoint-set support with monolithic and sharded modes.
 
 use crate::model::Issue;
 use crate::store::SqliteStore;
 use anyhow::{anyhow, bail, Result};
 use rusqlite::{params, Transaction};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -13,27 +15,111 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Flush checkpoint result
+/// Checkpoint mode
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum CheckpointMode {
+    Monolithic,
+    Sharded,
+}
+
+impl CheckpointMode {
+    #[allow(dead_code)]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CheckpointMode::Monolithic => "monolithic",
+            CheckpointMode::Sharded => "sharded",
+        }
+    }
+}
+
+impl std::str::FromStr for CheckpointMode {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "monolithic" => Ok(CheckpointMode::Monolithic),
+            "sharded" => Ok(CheckpointMode::Sharded),
+            _ => bail!("Invalid checkpoint mode: {}", s),
+        }
+    }
+}
+
+/// Forensic checkpoint record types
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "record_type")]
+#[allow(dead_code)]
+pub enum CheckpointRecord {
+    #[serde(rename = "issue")]
+    Issue { issue: Issue },
+    #[serde(rename = "event")]
+    Event { event: EventRecord },
+    #[serde(rename = "provenance_receipt")]
+    ProvenanceReceipt {
+        provenance_receipt: ProvenanceReceipt,
+    },
+}
+
+/// Event record for forensic checkpoints
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
+pub struct EventRecord {
+    #[serde(rename = "$schema")]
+    pub schema_ref: String,
+    pub origin_store_uuid: String,
+    pub origin_event_sequence: i64,
+    pub issue_id: Option<String>,
+    pub kind: String,
+    pub actor: String,
+    pub time: String,
+    #[serde(default)]
+    pub detail: serde_json::Value,
+}
+
+/// Provenance receipt for restore/merge operations
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
+pub struct ProvenanceReceipt {
+    #[serde(rename = "$schema")]
+    pub schema_ref: String,
+    pub receipt_id: String,
+    pub kind: String, // "restore" or "merge"
+    pub source_store_uuid: String,
+    pub target_store_uuid: String,
+    pub source_root_sha256: String,
+    pub actor: String,
+    pub created_at: String,
+    pub counts: ReceiptCounts,
+    pub result: String,
+    pub summary_event_identity: Option<String>,
+    pub receipt_sha256: String,
+}
+
+/// Counts recorded in provenance receipts
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReceiptCounts {
+    pub issues: usize,
+    pub events: usize,
+    pub provenance_receipts: usize,
+}
+
+/// Forensic flush result
 #[derive(Debug, Clone)]
-pub struct FlushResult {
+#[allow(dead_code)]
+pub struct ForensicFlushResult {
+    pub mode: CheckpointMode,
+    pub generation_id: String,
     pub issue_count: usize,
-    pub hash: String,
+    pub event_count: usize,
+    pub receipt_count: usize,
+    pub total_record_count: usize,
+    pub root_hash: String,
     pub covered_sequence: i64,
-    pub export_time: String,
+    pub changed_paths: Vec<String>,
 }
 
-/// Import staging result
-#[derive(Debug, Clone)]
-pub struct ImportStaging {
-    pub issues: Vec<Issue>,
-    pub dependencies: Vec<(String, String, String)>, // (blocked, blocker, kind)
-    pub labels: Vec<(String, String)>,               // (issue_id, label)
-    pub input_hash: String,
-    pub issue_count: usize,
-}
-
-/// Import result
-#[derive(Debug, Clone)]
+/// Import result with F017 support
+#[derive(Debug, Clone, Serialize)]
 pub struct ImportResult {
     pub profile: String,
     pub input_hash: String,
@@ -45,6 +131,38 @@ pub struct ImportResult {
     pub covered_sequence: i64,
     pub dry_run: bool,
     pub prospective: bool,
+    pub receipt_preview: Option<ReceiptPreview>,
+}
+
+/// Receipt preview for dry-run operations
+#[derive(Debug, Clone, Serialize)]
+pub struct ReceiptPreview {
+    pub kind: String,
+    pub source_store_uuid: String,
+    pub target_store_uuid: String,
+    pub source_root_sha256: String,
+    pub actor: String,
+    pub counts: ReceiptCounts,
+    pub result: String,
+}
+
+/// Legacy import staging result (pre-F017)
+#[derive(Debug, Clone)]
+pub struct ImportStaging {
+    pub issues: Vec<Issue>,
+    pub dependencies: Vec<(String, String, String)>, // (blocked, blocker, kind)
+    pub labels: Vec<(String, String)>,               // (issue_id, label)
+    pub input_hash: String,
+    pub issue_count: usize,
+}
+
+/// Flush checkpoint result
+#[derive(Debug, Clone)]
+pub struct FlushResult {
+    pub issue_count: usize,
+    pub hash: String,
+    pub covered_sequence: i64,
+    pub export_time: String,
 }
 
 /// Import checkpoint from JSONL file
@@ -96,6 +214,7 @@ pub fn import_checkpoint(
             covered_sequence: prospective_sequence,
             dry_run: true,
             prospective: true,
+            receipt_preview: None,
         });
     }
 
@@ -116,6 +235,7 @@ pub fn import_checkpoint(
         covered_sequence: activation_sequence,
         dry_run: false,
         prospective: false,
+        receipt_preview: None,
     })
 }
 
@@ -491,7 +611,7 @@ fn activate_import(store: &mut SqliteStore, staging: &ImportStaging) -> Result<(
     Ok((staging.issue_count, activation_sequence))
 }
 
-/// Export issues to JSONL checkpoint file
+/// Export issues to JSONL checkpoint file (pre-F017 issue-only format)
 ///
 /// This function:
 /// 1. Opens a read transaction
@@ -564,6 +684,713 @@ pub fn flush_checkpoint(store: &mut SqliteStore, output_path: &Path) -> Result<F
         covered_sequence: current_sequence,
         export_time,
     })
+}
+
+/// Publish forensic checkpoint (F017)
+///
+/// This function implements the full forensic checkpoint-set format with:
+/// - Monolithic mode: Single JSONL file with issue/event/receipt records
+/// - Sharded mode: Manifest with content-addressed shards
+/// - Atomic pointer replacement
+/// - Git-trackable changed paths
+#[allow(dead_code)]
+pub fn publish_forensic_checkpoint(
+    store: &mut SqliteStore,
+    mode: CheckpointMode,
+    checkpoint_base: &Path,
+) -> Result<ForensicFlushResult> {
+    let conn = store.conn();
+
+    // Begin read transaction to capture snapshot
+    let tx = conn.unchecked_transaction()?;
+
+    // Get current state
+    let current_sequence: i64 = tx
+        .query_row("SELECT COALESCE(MAX(sequence), 0) FROM events", [], |row| {
+            row.get(0)
+        })
+        .unwrap_or(0);
+
+    let store_uuid: String =
+        tx.query_row("SELECT uuid FROM workspace WHERE id = 1", [], |row| {
+            row.get(0)
+        })?;
+
+    // Read all records needed for forensic checkpoint
+    let issues = read_all_issues(&tx)?;
+    let events = read_all_events(&tx)?;
+    let receipts = read_all_provenance_receipts(&tx)?;
+
+    // Commit the read transaction
+    tx.commit()?;
+
+    // Sort records for deterministic ordering
+    let mut sorted_issues = issues;
+    sorted_issues.sort_by(|a, b| a.id.cmp(&b.id));
+
+    let mut sorted_events = events;
+    sorted_events.sort_by(|a, b| {
+        (&a.origin_store_uuid, a.origin_event_sequence)
+            .cmp(&(&b.origin_store_uuid, b.origin_event_sequence))
+    });
+
+    let mut sorted_receipts = receipts;
+    sorted_receipts.sort_by(|a, b| a.receipt_id.cmp(&b.receipt_id));
+
+    // Calculate totals
+    let issue_count = sorted_issues.len();
+    let event_count = sorted_events.len();
+    let receipt_count = sorted_receipts.len();
+    let total_record_count = issue_count + event_count + receipt_count;
+
+    // Generate generation ID
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)?
+        .as_nanos();
+    let generation_input = format!("{}{}{}", store_uuid, current_sequence, timestamp);
+    let generation_id = format!("gen-{}", md5_compute(&generation_input));
+
+    // Create checkpoint directory structure
+    let checkpoint_dir = checkpoint_base.join("checkpoint");
+    std::fs::create_dir_all(&checkpoint_dir)?;
+    std::fs::create_dir_all(checkpoint_dir.join("manifests"))?;
+    std::fs::create_dir_all(checkpoint_dir.join("objects"))?;
+
+    let mut changed_paths = Vec::new();
+
+    // Publish based on mode
+    let (root_hash, root_path) = match mode {
+        CheckpointMode::Monolithic => publish_monolithic_checkpoint(
+            &sorted_issues,
+            &sorted_events,
+            &sorted_receipts,
+            &checkpoint_dir,
+            &generation_id,
+            &mut changed_paths,
+        )?,
+        CheckpointMode::Sharded => {
+            let config = ShardedConfig {
+                generation_id: generation_id.clone(),
+                store_uuid: store_uuid.clone(),
+                snapshot_sequence: current_sequence,
+            };
+            publish_sharded_checkpoint(
+                &sorted_issues,
+                &sorted_events,
+                &sorted_receipts,
+                &checkpoint_dir,
+                &config,
+                &mut changed_paths,
+            )?
+        }
+    };
+
+    // Update checkpoint pointers in a write transaction
+    let conn = store.conn();
+    let tx = conn.unchecked_transaction()?;
+
+    // Preserve old pointer as previous.json
+    let current_pointer_path = checkpoint_dir.join("current.json");
+    let previous_pointer_path = checkpoint_dir.join("previous.json");
+
+    if current_pointer_path.exists() {
+        std::fs::copy(&current_pointer_path, &previous_pointer_path)?;
+        changed_paths.push("previous.json".to_string());
+    }
+
+    // Write new current.json pointer
+    let pointer_config = PointerConfig {
+        generation_id: generation_id.clone(),
+        mode: mode.clone(),
+        store_uuid: store_uuid.clone(),
+        snapshot_sequence: current_sequence,
+        root_path: root_path.clone(),
+        root_hash: root_hash.clone(),
+        issue_count,
+        event_count,
+        receipt_count,
+        total_record_count,
+    };
+    write_current_pointer(
+        &current_pointer_path,
+        &pointer_config,
+    )?;
+    changed_paths.push("current.json".to_string());
+
+    // Update checkpoint_state table
+    let state_config = CheckpointStateConfig {
+        generation_id: generation_id.clone(),
+        mode: mode.clone(),
+        root_path: root_path.clone(),
+        root_hash: root_hash.clone(),
+        covered_sequence: current_sequence,
+        changed_paths: changed_paths.clone(),
+        store_uuid: store_uuid.clone(),
+    };
+    update_forensic_checkpoint_state(
+        &tx,
+        &state_config,
+    )?;
+
+    tx.commit()?;
+
+    Ok(ForensicFlushResult {
+        mode,
+        generation_id,
+        issue_count,
+        event_count,
+        receipt_count,
+        total_record_count,
+        root_hash,
+        covered_sequence: current_sequence,
+        changed_paths,
+    })
+}
+
+/// Publish monolithic forensic checkpoint
+#[allow(dead_code)]
+fn publish_monolithic_checkpoint(
+    issues: &[Issue],
+    events: &[EventRecord],
+    receipts: &[ProvenanceReceipt],
+    checkpoint_dir: &Path,
+    generation_id: &str,
+    changed_paths: &mut Vec<String>,
+) -> Result<(String, String)> {
+    let objects_dir = checkpoint_dir.join("objects");
+    let temp_path = objects_dir.join(format!("{}.tmp", generation_id));
+    let final_path = objects_dir.join(format!("{}.jsonl", generation_id));
+
+    // Create temporary file
+    let temp_file = File::create(&temp_path)?;
+    let mut writer = BufWriter::new(temp_file);
+
+    // Write issue records
+    for issue in issues {
+        let record = CheckpointRecord::Issue {
+            issue: issue.clone(),
+        };
+        serde_json::to_writer(&mut writer, &record)?;
+        writer.write_all(b"\n")?;
+    }
+
+    // Write event records
+    for event in events {
+        let record = CheckpointRecord::Event {
+            event: event.clone(),
+        };
+        serde_json::to_writer(&mut writer, &record)?;
+        writer.write_all(b"\n")?;
+    }
+
+    // Write provenance receipt records
+    for receipt in receipts {
+        let record = CheckpointRecord::ProvenanceReceipt {
+            provenance_receipt: receipt.clone(),
+        };
+        serde_json::to_writer(&mut writer, &record)?;
+        writer.write_all(b"\n")?;
+    }
+
+    writer.flush()?;
+    drop(writer);
+
+    // Calculate hash
+    let hash = calculate_file_hash(&temp_path)?;
+
+    // Atomically rename to final path
+    std::fs::rename(&temp_path, &final_path)?;
+
+    // Update nonauthoritative forensic.jsonl view
+    let view_path = checkpoint_dir.join("forensic.jsonl");
+    std::fs::copy(&final_path, &view_path)?;
+
+    changed_paths.push(format!("objects/{}.jsonl", generation_id));
+    changed_paths.push("forensic.jsonl".to_string());
+
+    Ok((hash, format!("objects/{}.jsonl", generation_id)))
+}
+
+/// Publish sharded forensic checkpoint
+#[allow(dead_code)]
+fn publish_sharded_checkpoint(
+    issues: &[Issue],
+    events: &[EventRecord],
+    receipts: &[ProvenanceReceipt],
+    checkpoint_dir: &Path,
+    config: &ShardedConfig,
+    changed_paths: &mut Vec<String>,
+) -> Result<(String, String)> {
+    let objects_dir = checkpoint_dir.join("objects");
+
+    // Partition issues by hash prefix
+    let mut issue_shards: HashMap<String, Vec<Issue>> = HashMap::new();
+    for issue in issues {
+        let key = format!("{:x}", Sha256::digest(issue.id.as_bytes()));
+        let prefix = key.chars().next().unwrap_or('0');
+        issue_shards
+            .entry(prefix.to_string())
+            .or_default()
+            .push(issue.clone());
+    }
+
+    // Write issue shards
+    let mut issue_shard_metadata = Vec::new();
+    for (prefix, shard_issues) in &issue_shards {
+        let shard_path = objects_dir.join(format!("issue-{}.jsonl", prefix));
+        let temp_path = shard_path.with_extension("tmp");
+
+        let temp_file = File::create(&temp_path)?;
+        let mut writer = BufWriter::new(temp_file);
+
+        // Sort issues within this shard
+        let mut sorted_shard = shard_issues.clone();
+        sorted_shard.sort_by(|a, b| a.id.cmp(&b.id));
+
+        for issue in &sorted_shard {
+            let record = CheckpointRecord::Issue {
+                issue: issue.clone(),
+            };
+            serde_json::to_writer(&mut writer, &record)?;
+            writer.write_all(b"\n")?;
+        }
+
+        writer.flush()?;
+        drop(writer);
+
+        let hash = calculate_file_hash(&temp_path)?;
+        std::fs::rename(&temp_path, &shard_path)?;
+
+        let metadata = serde_json::json!({
+            "path": format!("issue-{}.jsonl", prefix),
+            "sha256": hash,
+            "byte_length": std::fs::metadata(&shard_path)?.len(),
+            "record_count": shard_issues.len(),
+            "id_prefix": prefix,
+            "role": "issues"
+        });
+
+        issue_shard_metadata.push(metadata);
+        changed_paths.push(format!("objects/issue-{}.jsonl", prefix));
+    }
+
+    // Write event shards (packing 100k events per shard)
+    const MAX_EVENTS_PER_SHARD: usize = 100000;
+    let mut event_shard_metadata = Vec::new();
+    let mut current_shard_events = Vec::new();
+    let mut shard_index = 0;
+
+    for event in events {
+        current_shard_events.push(event.clone());
+
+        if current_shard_events.len() >= MAX_EVENTS_PER_SHARD {
+            let shard_path =
+                objects_dir.join(format!("event-{}-{}.jsonl", config.store_uuid, shard_index));
+            let hash = write_event_shard(&current_shard_events, &shard_path)?;
+
+            let metadata = serde_json::json!({
+                "path": format!("event-{}-{}.jsonl", config.store_uuid, shard_index),
+                "sha256": hash,
+                "byte_length": std::fs::metadata(&shard_path)?.len(),
+                "record_count": current_shard_events.len(),
+                "origin_store_uuid": config.store_uuid,
+                "sequence_range": [current_shard_events.first().map(|e| e.origin_event_sequence), current_shard_events.last().map(|e| e.origin_event_sequence)],
+                "role": "events"
+            });
+
+            event_shard_metadata.push(metadata);
+            changed_paths.push(format!(
+                "objects/event-{}-{}.jsonl",
+                config.store_uuid, shard_index
+            ));
+
+            current_shard_events.clear();
+            shard_index += 1;
+        }
+    }
+
+    // Write remaining events
+    if !current_shard_events.is_empty() {
+        let shard_path = objects_dir.join(format!("event-{}-{}.jsonl", config.store_uuid, shard_index));
+        let hash = write_event_shard(&current_shard_events, &shard_path)?;
+
+        let metadata = serde_json::json!({
+            "path": format!("event-{}-{}.jsonl", config.store_uuid, shard_index),
+            "sha256": hash,
+            "byte_length": std::fs::metadata(&shard_path)?.len(),
+            "record_count": current_shard_events.len(),
+            "origin_store_uuid": config.store_uuid,
+            "sequence_range": [current_shard_events.first().map(|e| e.origin_event_sequence), current_shard_events.last().map(|e| e.origin_event_sequence)],
+            "role": "events"
+        });
+
+        event_shard_metadata.push(metadata);
+        changed_paths.push(format!(
+            "objects/event-{}-{}.jsonl",
+            config.store_uuid, shard_index
+        ));
+    }
+
+    // Write receipt shards
+    let mut receipt_shards: HashMap<String, Vec<ProvenanceReceipt>> = HashMap::new();
+    for receipt in receipts {
+        let prefix = receipt.receipt_id.chars().next().unwrap_or('0');
+        receipt_shards
+            .entry(prefix.to_string())
+            .or_default()
+            .push(receipt.clone());
+    }
+
+    let mut receipt_shard_metadata = Vec::new();
+    for (prefix, shard_receipts) in &receipt_shards {
+        let shard_path = objects_dir.join(format!("receipt-{}.jsonl", prefix));
+        let temp_path = shard_path.with_extension("tmp");
+
+        let temp_file = File::create(&temp_path)?;
+        let mut writer = BufWriter::new(temp_file);
+
+        let mut sorted_shard = shard_receipts.clone();
+        sorted_shard.sort_by(|a, b| a.receipt_id.cmp(&b.receipt_id));
+
+        for receipt in &sorted_shard {
+            let record = CheckpointRecord::ProvenanceReceipt {
+                provenance_receipt: receipt.clone(),
+            };
+            serde_json::to_writer(&mut writer, &record)?;
+            writer.write_all(b"\n")?;
+        }
+
+        writer.flush()?;
+        drop(writer);
+
+        let hash = calculate_file_hash(&temp_path)?;
+        std::fs::rename(&temp_path, &shard_path)?;
+
+        let metadata = serde_json::json!({
+            "path": format!("receipt-{}.jsonl", prefix),
+            "sha256": hash,
+            "byte_length": std::fs::metadata(&shard_path)?.len(),
+            "record_count": shard_receipts.len(),
+            "id_prefix": prefix,
+            "role": "provenance_receipts"
+        });
+
+        receipt_shard_metadata.push(metadata);
+        changed_paths.push(format!("objects/receipt-{}.jsonl", prefix));
+    }
+
+    // Create manifest
+    let manifest = serde_json::json!({
+        "format": "checkpoint-set-v1",
+        "schema_version": 1,
+        "store_uuid": config.store_uuid,
+        "snapshot_sequence": config.snapshot_sequence,
+        "max_local_ingestion_sequence": config.snapshot_sequence,
+        "created_at": format_rfc3339(SystemTime::now()),
+        "profile": "native-v1",
+        "partition_algorithm": "hash-prefix",
+        "partition_thresholds": {
+            "max_issues_per_shard": 10000,
+            "max_shard_size_bytes": 52428800,
+            "max_events_per_shard": 100000,
+            "max_event_shard_size_bytes": 67108864
+        },
+        "issue_shards": issue_shard_metadata,
+        "event_shards": event_shard_metadata,
+        "receipt_shards": receipt_shard_metadata
+    });
+
+    // Write manifest
+    let manifest_json = serde_json::to_vec_pretty(&manifest)?;
+    let manifest_hash = format!("{:x}", Sha256::digest(&manifest_json));
+
+    let manifest_path = checkpoint_dir
+        .join("manifests")
+        .join(format!("{}.json", manifest_hash));
+    let temp_manifest_path = manifest_path.with_extension("tmp");
+    std::fs::write(&temp_manifest_path, manifest_json)?;
+    std::fs::rename(&temp_manifest_path, &manifest_path)?;
+
+    changed_paths.push(format!("manifests/{}.json", manifest_hash));
+
+    Ok((
+        manifest_hash.clone(),
+        format!("manifests/{}.json", manifest_hash),
+    ))
+}
+
+/// Write event shard and return hash
+#[allow(dead_code)]
+fn write_event_shard(events: &[EventRecord], shard_path: &Path) -> Result<String> {
+    let temp_path = shard_path.with_extension("tmp");
+    let temp_file = File::create(&temp_path)?;
+    let mut writer = BufWriter::new(temp_file);
+
+    for event in events {
+        let record = CheckpointRecord::Event {
+            event: event.clone(),
+        };
+        serde_json::to_writer(&mut writer, &record)?;
+        writer.write_all(b"\n")?;
+    }
+
+    writer.flush()?;
+    drop(writer);
+
+    let hash = calculate_file_hash(&temp_path)?;
+    std::fs::rename(&temp_path, shard_path)?;
+
+    Ok(hash)
+}
+
+/// Write current.json pointer
+#[allow(dead_code)]
+fn write_current_pointer(
+    pointer_path: &Path,
+    config: &PointerConfig,
+) -> Result<()> {
+    let pointer = serde_json::json!({
+        "schema_version": 1,
+        "generation_id": config.generation_id,
+        "mode": config.mode.as_str(),
+        "store_uuid": config.store_uuid,
+        "snapshot_sequence": config.snapshot_sequence,
+        "active_root": {
+            "path": config.root_path,
+            "sha256": config.root_hash
+        },
+        "added_paths": [],
+        "replaced_paths": [],
+        "deleted_paths": [],
+        "issue_count": config.issue_count,
+        "event_count": config.event_count,
+        "receipt_count": config.receipt_count,
+        "total_record_count": config.total_record_count,
+        "created_at": format_rfc3339(SystemTime::now())
+    });
+
+    let temp_path = pointer_path.with_extension("tmp");
+    std::fs::write(&temp_path, serde_json::to_vec_pretty(&pointer)?)?;
+    std::fs::rename(&temp_path, pointer_path)?;
+
+    Ok(())
+}
+
+/// Update checkpoint_state for forensic checkpoint
+#[allow(dead_code)]
+fn update_forensic_checkpoint_state(
+    tx: &Transaction,
+    config: &CheckpointStateConfig,
+) -> Result<()> {
+    let updated_at = format_rfc3339(SystemTime::now());
+
+    // Ensure row exists
+    tx.execute(
+        "INSERT OR IGNORE INTO checkpoint_state (id, last_interchange_hash, covered_event_sequence, store_uuid, updated_at)
+         VALUES (1, '', 0, '', ?1)",
+        params![&updated_at]
+    )?;
+
+    let changed_paths_json = serde_json::to_string(&config.changed_paths)?;
+
+    tx.execute(
+        "UPDATE checkpoint_state
+         SET current_generation_id = ?1,
+             current_mode = ?2,
+             current_root_path = ?3,
+             current_root_sha256 = ?4,
+             covered_event_sequence = ?5,
+             changed_paths_json = ?6,
+             store_uuid = ?7,
+             updated_at = ?8
+         WHERE id = 1",
+        params![
+            &config.generation_id,
+            config.mode.as_str(),
+            &config.root_path,
+            &config.root_hash,
+            config.covered_sequence,
+            changed_paths_json,
+            &config.store_uuid,
+            updated_at
+        ],
+    )?;
+
+    Ok(())
+}
+
+/// Read all events from database
+#[allow(dead_code)]
+fn read_all_events(tx: &Transaction) -> Result<Vec<EventRecord>> {
+    let mut events = Vec::new();
+
+    let mut stmt = tx.prepare(
+        "SELECT sequence, issue_id, kind, actor, time, detail,
+                origin_store_uuid, origin_event_sequence, event_sha256, local_ingestion_sequence
+         FROM events
+         ORDER BY sequence ASC",
+    )?;
+
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>("sequence")?,
+            row.get::<_, Option<String>>("issue_id")?,
+            row.get::<_, String>("kind")?,
+            row.get::<_, Option<String>>("actor")?,
+            row.get::<_, String>("time")?,
+            row.get::<_, String>("detail")?,
+            row.get::<_, Option<String>>("origin_store_uuid")?,
+            row.get::<_, Option<i64>>("origin_event_sequence")?,
+            row.get::<_, Option<String>>("event_sha256")?,
+            row.get::<_, Option<i64>>("local_ingestion_sequence")?,
+        ))
+    })?;
+
+    for row in rows {
+        let (
+            _,
+            issue_id,
+            kind,
+            actor,
+            time,
+            detail,
+            origin_store_uuid,
+            origin_event_sequence,
+            _event_sha256,
+            _local_ingestion_sequence,
+        ) = row?;
+
+        let origin_store_uuid = origin_store_uuid.unwrap_or_default();
+        let origin_event_sequence = origin_event_sequence.unwrap_or(0);
+
+        let event = EventRecord {
+            schema_ref: "urn:bead-rs:schema:event:native-v1".to_string(),
+            origin_store_uuid,
+            origin_event_sequence,
+            issue_id,
+            kind,
+            actor: actor.unwrap_or("system".to_string()),
+            time,
+            detail: serde_json::from_str(&detail).unwrap_or_default(),
+        };
+
+        events.push(event);
+    }
+
+    Ok(events)
+}
+
+/// Read all provenance receipts from database
+#[allow(dead_code)]
+fn read_all_provenance_receipts(tx: &Transaction) -> Result<Vec<ProvenanceReceipt>> {
+    let mut receipts = Vec::new();
+
+    let mut stmt = tx.prepare(
+        "SELECT receipt_id, schema_ref, kind, source_store_uuid, target_store_uuid,
+                source_root_sha256, actor, created_at, counts_json, result, summary_event_identity, receipt_sha256
+         FROM provenance_receipts"
+    )?;
+
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>("receipt_id")?,
+            row.get::<_, String>("schema_ref")?,
+            row.get::<_, String>("kind")?,
+            row.get::<_, String>("source_store_uuid")?,
+            row.get::<_, String>("target_store_uuid")?,
+            row.get::<_, String>("source_root_sha256")?,
+            row.get::<_, String>("actor")?,
+            row.get::<_, String>("created_at")?,
+            row.get::<_, String>("counts_json")?,
+            row.get::<_, String>("result")?,
+            row.get::<_, Option<String>>("summary_event_identity")?,
+            row.get::<_, String>("receipt_sha256")?,
+        ))
+    })?;
+
+    for row in rows {
+        let (
+            receipt_id,
+            schema_ref,
+            kind,
+            source_store_uuid,
+            target_store_uuid,
+            source_root_sha256,
+            actor,
+            created_at,
+            counts_json,
+            result,
+            summary_event_identity,
+            receipt_sha256,
+        ) = row?;
+
+        let counts: ReceiptCounts = serde_json::from_str(&counts_json)?;
+
+        let receipt = ProvenanceReceipt {
+            schema_ref,
+            receipt_id,
+            kind,
+            source_store_uuid,
+            target_store_uuid,
+            source_root_sha256,
+            actor,
+            created_at,
+            counts,
+            result,
+            summary_event_identity,
+            receipt_sha256,
+        };
+
+        receipts.push(receipt);
+    }
+
+    Ok(receipts)
+}
+
+/// Configuration for sharded checkpoint publishing
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct ShardedConfig {
+    #[allow(dead_code)]
+    generation_id: String,
+    store_uuid: String,
+    snapshot_sequence: i64,
+}
+
+/// Configuration for writing current pointer
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct PointerConfig {
+    generation_id: String,
+    mode: CheckpointMode,
+    store_uuid: String,
+    snapshot_sequence: i64,
+    root_path: String,
+    root_hash: String,
+    issue_count: usize,
+    event_count: usize,
+    receipt_count: usize,
+    total_record_count: usize,
+}
+
+/// Configuration for forensic checkpoint state update
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct CheckpointStateConfig {
+    generation_id: String,
+    mode: CheckpointMode,
+    root_path: String,
+    root_hash: String,
+    covered_sequence: i64,
+    changed_paths: Vec<String>,
+    store_uuid: String,
+}
+
+/// Simple MD5 hash for generation IDs
+#[allow(dead_code)]
+fn md5_compute(data: &str) -> String {
+    let md5_hash = md5::compute(data);
+    format!("{:x}", md5_hash)
 }
 
 /// Read all issues from the database
@@ -670,22 +1497,36 @@ fn update_checkpoint_state(
     covered_sequence: i64,
     export_time: &str,
 ) -> Result<()> {
-    // Ensure the singleton row exists
-    tx.execute(
-        "INSERT OR IGNORE INTO checkpoint_state (id, last_interchange_hash, covered_event_sequence, export_time)
-         VALUES (1, '', 0, NULL)",
-        []
-    )?;
+    // Debug: check if row exists before update
+    let row_exists: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM checkpoint_state WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
 
-    // Update the checkpoint state
-    tx.execute(
-        "UPDATE checkpoint_state
-         SET last_interchange_hash = ?1,
-             covered_event_sequence = ?2,
-             export_time = ?3
-         WHERE id = 1",
-        params![hash, covered_sequence, export_time],
-    )?;
+    if row_exists == 0 {
+        // No row exists, insert one
+        let updated_at = format_rfc3339(SystemTime::now());
+        tx.execute(
+            "INSERT INTO checkpoint_state (id, last_interchange_hash, covered_event_sequence, export_time, store_uuid, updated_at)
+             VALUES (1, ?1, ?2, ?3, '', ?4)",
+            params![hash, covered_sequence, export_time, updated_at],
+        )?;
+    } else {
+        // Update existing checkpoint state
+        let updated_at = format_rfc3339(SystemTime::now());
+        tx.execute(
+            "UPDATE checkpoint_state
+             SET last_interchange_hash = ?1,
+                 covered_event_sequence = ?2,
+                 export_time = ?3,
+                 updated_at = ?4
+             WHERE id = 1",
+            params![hash, covered_sequence, export_time, updated_at],
+        )?;
+    }
 
     Ok(())
 }
@@ -772,6 +1613,16 @@ mod tests {
         assert_eq!(hash, result.hash);
         assert_eq!(seq, 0);
         assert!(time.is_some());
+
+        // Verify updated_at field exists for migration 2
+        let updated_at: String = conn
+            .query_row(
+                "SELECT updated_at FROM checkpoint_state WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!updated_at.is_empty());
     }
 
     #[test]
@@ -862,6 +1713,16 @@ mod tests {
 
         assert_eq!(hash, result.hash);
         assert_eq!(seq, 1);
+
+        // Verify updated_at field exists for migration 2
+        let updated_at: String = conn
+            .query_row(
+                "SELECT updated_at FROM checkpoint_state WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!updated_at.is_empty());
     }
 
     #[test]

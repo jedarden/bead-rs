@@ -257,21 +257,7 @@ impl Store for SqliteStore {
             )?;
         }
 
-        // Initialize checkpoint_state row if it doesn't exist
-        let checkpoint_exists: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM checkpoint_state WHERE id = 1",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
-
-        if checkpoint_exists == 0 {
-            conn.execute(
-                "INSERT INTO checkpoint_state (id, last_interchange_hash, covered_event_sequence) VALUES (1, '', 0)",
-                [],
-            )?;
-        }
+        // Note: checkpoint_state row is created by migration 2, no need to initialize here
 
         // Get workspace UUID
         let uuid: String =

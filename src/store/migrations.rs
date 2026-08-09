@@ -7,7 +7,7 @@ use rusqlite::{Connection, Result as SqliteResult};
 use sha2::{Digest, Sha256};
 
 /// Current migration version
-pub const CURRENT_VERSION: i64 = 1;
+pub const CURRENT_VERSION: i64 = 2;
 
 /// Apply all pending migrations to the database
 pub fn apply_migrations(conn: &Connection) -> SqliteResult<()> {
@@ -68,6 +68,7 @@ pub fn apply_migrations(conn: &Connection) -> SqliteResult<()> {
 fn get_migration(version: i64) -> Migration {
     match version {
         1 => migration_1(),
+        2 => migration_2(),
         v => panic!("Unknown migration version: {}", v),
     }
 }
@@ -208,6 +209,103 @@ CREATE INDEX IF NOT EXISTS events_issue ON events (issue_id, time);
     }
 }
 
+/// Migration 2: Forensic checkpoint-set v1 support
+///
+/// This migration adds support for F017's forensic checkpoint format:
+/// - Immutable event origin identity/hash and local ingestion ordering
+/// - Provenance receipts table for restore/merge operations
+/// - Enhanced checkpoint state with generation/mode/root tracking
+/// - Pending tombstones and changed path tracking for Git integration
+fn migration_2() -> Migration {
+    let sql = r#"
+-- Add event origin identity and local ingestion ordering to events table
+-- These columns are nullable for backward compatibility with existing events
+ALTER TABLE events ADD COLUMN origin_store_uuid TEXT;
+ALTER TABLE events ADD COLUMN origin_event_sequence INTEGER;
+ALTER TABLE events ADD COLUMN event_sha256 TEXT;
+ALTER TABLE events ADD COLUMN local_ingestion_sequence INTEGER;
+
+-- Create indexes for event identity and ordering
+CREATE INDEX IF NOT EXISTS events_origin_identity ON events (origin_store_uuid, origin_event_sequence);
+CREATE INDEX IF NOT EXISTS events_local_ingestion ON events (local_ingestion_sequence);
+
+-- Provenance receipts table for restore/merge operations
+CREATE TABLE IF NOT EXISTS provenance_receipts (
+    receipt_id TEXT NOT NULL PRIMARY KEY,
+    schema_ref TEXT NOT NULL DEFAULT 'urn:bead-rs:schema:provenance-receipt:native-v1',
+    kind TEXT NOT NULL CHECK (kind IN ('restore', 'merge')),
+    source_store_uuid TEXT NOT NULL,
+    target_store_uuid TEXT NOT NULL,
+    source_root_sha256 TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    counts_json TEXT NOT NULL,
+    result TEXT NOT NULL,
+    summary_event_identity TEXT,
+    receipt_sha256 TEXT NOT NULL
+);
+
+-- Index for provenance receipt uniqueness and queries
+CREATE INDEX IF NOT EXISTS provenance_receipts_uniqueness ON provenance_receipts (kind, target_store_uuid, source_root_sha256);
+
+-- Enhanced checkpoint state table for forensic checkpoints
+-- We need to recreate this table to add the new columns
+CREATE TABLE IF NOT EXISTS checkpoint_state_v2 (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    -- Migration-1 issue-only checkpoint fields
+    last_interchange_hash TEXT NOT NULL DEFAULT '',
+    covered_event_sequence INTEGER NOT NULL DEFAULT 0,
+    export_time TEXT,
+    -- F017 forensic checkpoint fields
+    current_generation_id TEXT,
+    current_mode TEXT CHECK (current_mode IN ('monolithic', 'sharded')),
+    current_root_path TEXT,
+    current_root_sha256 TEXT,
+    previous_generation_id TEXT,
+    previous_root_path TEXT,
+    pending_tombstones_json TEXT,
+    changed_paths_json TEXT,
+    store_uuid TEXT,
+    max_local_ingestion_sequence INTEGER DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+
+-- Migrate existing checkpoint state if it exists
+-- Use INSERT OR REPLACE to handle both cases: empty or existing data
+INSERT OR REPLACE INTO checkpoint_state_v2 (
+    id, last_interchange_hash, covered_event_sequence, export_time,
+    store_uuid, updated_at
+)
+SELECT
+    1,
+    COALESCE(last_interchange_hash, ''),
+    COALESCE(covered_event_sequence, 0),
+    export_time,
+    (SELECT uuid FROM workspace WHERE id = 1),
+    datetime('utc_now')
+FROM checkpoint_state
+WHERE id = 1;
+
+-- Ensure there's at least one row (for fresh databases or failed migration)
+INSERT OR IGNORE INTO checkpoint_state_v2 (
+    id, last_interchange_hash, covered_event_sequence, store_uuid, updated_at
+) VALUES (
+    1, '', 0, '', datetime('utc_now')
+);
+
+-- Drop old table and rename new one
+DROP TABLE checkpoint_state;
+ALTER TABLE checkpoint_state_v2 RENAME TO checkpoint_state;
+
+-- Index for checkpoint state queries
+CREATE INDEX IF NOT EXISTS checkpoint_state_generation ON checkpoint_state (current_generation_id);
+"#;
+
+    Migration {
+        sql: sql.to_string(),
+    }
+}
+
 /// Calculate SHA-256 checksum of a migration
 fn migration_checksum(sql: &str) -> String {
     let mut hasher = Sha256::new();
@@ -254,6 +352,7 @@ mod tests {
             "claim_telemetry",
             "events",
             "checkpoint_state",
+            "provenance_receipts",
         ];
 
         for table in &tables {
