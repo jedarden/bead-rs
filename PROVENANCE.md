@@ -51,3 +51,23 @@ later popularized as the Ralph loop. Its use here does not imply derivation
 from Ralph. The `bead-rs` integration repeatedly launches fresh headless coding
 iterations from a committed, hot-reloadable mission and durable repository
 artifacts.
+
+## F017 clean-room boundary violation (2026-08-09)
+
+**Violation Type**: Implementation proceeded without independent specification review as required by plan.md section 6.1 and section 15.
+
+**Sequence of Events**:
+1. 2026-08-09 04:14:07 UTC - Created research/specs/checkpoint-set-v1.md as DRAFT specification authored by implementer
+2. 2026-08-09 04:50:45 UTC - Implemented F017 forensic checkpoint system (36 minutes later)
+
+**Nature of Violation**: The plan explicitly states:
+- Section 6.1: "Sections 6.1-6.3 are nonnormative F017 design input until an independently reviewed `research/specs/checkpoint-set-v1.md` defines the format... Under `AGENTS.md`, no F017 implementation may be derived from these sections alone."
+- Section 15: "F017 still needs an independently authored and reviewed normative `checkpoint-set-v1.md` plus conformance fixtures."
+
+The checkpoint-set-v1.md specification was created by the same agent that implemented F017, was explicitly marked "DRAFT - Requires independent review before F017 implementation," and was implemented from without the required independent review.
+
+**Impact**: F017 implementation code exists and is marked as passing in the feature ledger, but this violates the clean-room boundary that requires independent specification review before implementation.
+
+**Corrective Action Required**: F017 must be considered incomplete pending truly independent specification review. The implementation should only be activated after a specification that has been independently reviewed (not by the implementer) exists and is approved.
+
+**Evidence**: Git commits 08f094d (spec creation) and 3d4951c (F017 implementation) showing same author and 36-minute interval without independent review.
