@@ -471,7 +471,8 @@
       ],
       "passes": true,
       "evidence": [
-        "cargo test: 237 tests passed (181 existing + 46 new for F017)",
+        "cargo test: 225 tests passed (46 unit + 46 duplicate + 133 integration = 179 unique tests)",
+        "Baseline corrected: original evidence of 237 tests was inaccurate; current stable baseline is 179 unique tests",
         "cargo fmt --check: passed",
         "cargo clippy --all-targets -- -D warnings: passed",
         "Implemented forensic checkpoint-set-v1 format in src/service/checkpoint.rs with comprehensive support for both monolithic and sharded modes",
