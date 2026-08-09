@@ -103,7 +103,8 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
 
     // Get decision trace if requested (backward compatibility with R001)
     let trace = if opts.why {
-        let (_, trace_data) = service::claim_issue_with_trace(&tx, &opts.assignee, None, None, None, true)?;
+        let (_, trace_data) =
+            service::claim_issue_with_trace(&tx, &opts.assignee, None, None, None, true)?;
         trace_data
     } else {
         None
@@ -118,9 +119,11 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
         let output = if let Some(trace_data) = trace {
             // When --why is set, output enriched result with decision trace and lease info
             serde_json::to_string(&serde_json::json!({
-                "bead_id": enhanced_result.bead_id,
-                "assignee": enhanced_result.assignee,
-                "lease": enhanced_result.lease,
+                "claim_result": {
+                    "bead_id": enhanced_result.bead_id,
+                    "assignee": enhanced_result.assignee,
+                    "lease": enhanced_result.lease
+                },
                 "decision_trace": trace_data
             }))
             .map_err(|e| {
@@ -442,7 +445,13 @@ fn cmd_close(opts: cli::CloseOptions) -> Result<()> {
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Close the issue
-    let id = service::close_issue(&conn, &opts.id, &opts.reason, opts.if_revision, opts.fencing_token)?;
+    let id = service::close_issue(
+        &conn,
+        &opts.id,
+        &opts.reason,
+        opts.if_revision,
+        opts.fencing_token,
+    )?;
 
     // Print only the ID on success
     println!("{}", id);

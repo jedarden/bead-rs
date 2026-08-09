@@ -5,7 +5,7 @@
 //! crashed or disconnected agents.
 
 use crate::error::Result;
-use rusqlite::{Transaction, OptionalExtension};
+use rusqlite::{OptionalExtension, Transaction};
 use time::OffsetDateTime;
 
 /// Lease information for a claimed issue
@@ -81,10 +81,7 @@ pub fn create_lease(
         )
         .optional()
         .map_err(|e| {
-            crate::Error::Internal(anyhow::anyhow!(
-                "Failed to generate fencing token: {}",
-                e
-            ))
+            crate::Error::Internal(anyhow::anyhow!("Failed to generate fencing token: {}", e))
         })?
         .unwrap_or(1); // Start at 1 if no existing lease
 
@@ -92,14 +89,15 @@ pub fn create_lease(
     tx.execute(
         "INSERT INTO leases (issue_id, assignee, fencing_token, expires_at, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5)",
-        [issue_id, assignee, &fencing_token.to_string(), &expires_at_str, &now_str],
+        [
+            issue_id,
+            assignee,
+            &fencing_token.to_string(),
+            &expires_at_str,
+            &now_str,
+        ],
     )
-    .map_err(|e| {
-        crate::Error::Internal(anyhow::anyhow!(
-            "Failed to create lease: {}",
-            e
-        ))
-    })?;
+    .map_err(|e| crate::Error::Internal(anyhow::anyhow!("Failed to create lease: {}", e)))?;
 
     Ok(LeaseClaimResult {
         issue_id: issue_id.to_string(),
@@ -170,14 +168,15 @@ pub fn renew_lease(
         "UPDATE leases
          SET assignee = ?1, fencing_token = ?2, expires_at = ?3, renewed_at = ?4
          WHERE issue_id = ?5",
-        [assignee, &fencing_token.to_string(), &expires_at_str, &now_str, issue_id],
+        [
+            assignee,
+            &fencing_token.to_string(),
+            &expires_at_str,
+            &now_str,
+            issue_id,
+        ],
     )
-    .map_err(|e| {
-        crate::Error::Internal(anyhow::anyhow!(
-            "Failed to renew lease: {}",
-            e
-        ))
-    })?;
+    .map_err(|e| crate::Error::Internal(anyhow::anyhow!("Failed to renew lease: {}", e)))?;
 
     Ok(LeaseClaimResult {
         issue_id: issue_id.to_string(),
@@ -226,10 +225,7 @@ pub fn get_active_lease(
         )
         .optional()
         .map_err(|e| {
-            crate::Error::Internal(anyhow::anyhow!(
-                "Failed to query active lease: {}",
-                e
-            ))
+            crate::Error::Internal(anyhow::anyhow!("Failed to query active lease: {}", e))
         })?;
 
     Ok(lease)
@@ -285,10 +281,7 @@ pub fn validate_lease_for_mutation(
                 )
                 .optional()
                 .map_err(|e| {
-                    crate::Error::Internal(anyhow::anyhow!(
-                        "Failed to check lease history: {}",
-                        e
-                    ))
+                    crate::Error::Internal(anyhow::anyhow!("Failed to check lease history: {}", e))
                 })?
                 .flatten();
 
@@ -320,6 +313,7 @@ pub fn validate_lease_for_mutation(
 ///
 /// # Returns
 /// true if an active lease exists, false otherwise
+#[allow(dead_code)]
 pub fn has_active_lease(tx: &Transaction, issue_id: &str) -> Result<bool> {
     let now = OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
@@ -344,6 +338,7 @@ pub fn has_active_lease(tx: &Transaction, issue_id: &str) -> Result<bool> {
 /// # Arguments
 /// * `tx` - Database transaction
 /// * `issue_id` - ID of the issue to clean up
+#[allow(dead_code)]
 pub fn cleanup_expired_leases(tx: &Transaction, issue_id: &str) -> Result<()> {
     let now = OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
@@ -354,10 +349,7 @@ pub fn cleanup_expired_leases(tx: &Transaction, issue_id: &str) -> Result<()> {
         [issue_id, &now],
     )
     .map_err(|e| {
-        crate::Error::Internal(anyhow::anyhow!(
-            "Failed to cleanup expired leases: {}",
-            e
-        ))
+        crate::Error::Internal(anyhow::anyhow!("Failed to cleanup expired leases: {}", e))
     })?;
 
     Ok(())
@@ -367,10 +359,14 @@ pub fn cleanup_expired_leases(tx: &Transaction, issue_id: &str) -> Result<()> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_lease_ttl_bounds() {
+    const _: () = {
         assert!(MIN_LEASE_TTL <= DEFAULT_LEASE_TTL);
         assert!(DEFAULT_LEASE_TTL <= MAX_LEASE_TTL);
+    };
+
+    #[test]
+    fn test_lease_ttl_bounds() {
+        // Test moved to const block above
     }
 
     #[test]

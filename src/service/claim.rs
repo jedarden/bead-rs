@@ -315,10 +315,7 @@ fn claim_with_renewal(
         )
         .optional()
         .map_err(|e| {
-            crate::Error::Internal(anyhow::anyhow!(
-                "Failed to find lease to renew: {}",
-                e
-            ))
+            crate::Error::Internal(anyhow::anyhow!("Failed to find lease to renew: {}", e))
         })?;
 
     let issue_id = match issue_to_renew {
@@ -386,19 +383,11 @@ fn claim_with_fencing_token(
              WHERE l.assignee = ?1 AND l.expires_at > ?2 AND l.fencing_token = ?3
              LIMIT 1",
             [assignee, &now, &expected_token.to_string()],
-            |row| {
-                Ok((
-                    Some(row.get::<_, String>(0)?),
-                    Some(row.get::<_, i64>(1)?),
-                ))
-            },
+            |row| Ok((Some(row.get::<_, String>(0)?), Some(row.get::<_, i64>(1)?))),
         )
         .optional()
         .map_err(|e| {
-            crate::Error::Internal(anyhow::anyhow!(
-                "Failed to validate fencing token: {}",
-                e
-            ))
+            crate::Error::Internal(anyhow::anyhow!("Failed to validate fencing token: {}", e))
         })?
         .unwrap_or((None, None));
 

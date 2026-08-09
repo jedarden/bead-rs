@@ -900,7 +900,13 @@ fn execute_mixed_workload(
                             tx.commit()?;
 
                             let close_tx = store.conn().unchecked_transaction()?;
-                            lifecycle::close_issue(&close_tx, bead_id, "benchmark cycle", None, None)?;
+                            lifecycle::close_issue(
+                                &close_tx,
+                                bead_id,
+                                "benchmark cycle",
+                                None,
+                                None,
+                            )?;
                             close_tx.commit()?;
                             metrics.closes += 1;
 

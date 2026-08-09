@@ -33,7 +33,11 @@ impl TestWorkspace {
             .expect("Failed to determine bead path");
 
         // Verify the bead binary exists
-        assert!(bead_path.exists(), "Bead binary not found at {:?}", bead_path);
+        assert!(
+            bead_path.exists(),
+            "Bead binary not found at {:?}",
+            bead_path
+        );
 
         // Initialize workspace using the local bead binary
         let output = Command::new(&bead_path)
@@ -63,6 +67,7 @@ impl TestWorkspace {
             .expect("Failed to run bead command")
     }
 
+    #[allow(dead_code)]
     fn run_bead_json<T>(&self, args: &[&str]) -> T
     where
         T: serde::de::DeserializeOwned,
@@ -88,8 +93,14 @@ fn test_basic_leased_claim() {
     workspace.run_bead(&["create", "--title", "Task 3", "--priority", "2"]);
 
     // Claim with lease (60 seconds TTL)
-    let output = workspace
-        .run_bead(&["claim", "--assignee", "alice", "--lease-ttl", "60", "--json"]);
+    let output = workspace.run_bead(&[
+        "claim",
+        "--assignee",
+        "alice",
+        "--lease-ttl",
+        "60",
+        "--json",
+    ]);
 
     if !output.status.success() {
         eprintln!("stderr: {}", String::from_utf8_lossy(&output.stderr));
@@ -97,8 +108,8 @@ fn test_basic_leased_claim() {
     }
     assert!(output.status.success());
 
-    let result: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .expect("Failed to parse claim result");
+    let result: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("Failed to parse claim result");
 
     // Verify basic claim result structure
     assert!(result["bead_id"].is_string());
@@ -137,7 +148,9 @@ fn test_lease_renewal() {
     let initial_fencing_token = initial_result["lease"]["fencing_token"]
         .as_i64()
         .expect("Failed to get initial fencing token");
-    let issue_id = initial_result["bead_id"].as_str().expect("Failed to get issue ID");
+    let issue_id = initial_result["bead_id"]
+        .as_str()
+        .expect("Failed to get issue ID");
 
     // Renew the lease
     let renew_output = workspace.run_bead(&[
@@ -152,8 +165,8 @@ fn test_lease_renewal() {
 
     assert!(renew_output.status.success());
 
-    let renew_result: serde_json::Value = serde_json::from_slice(&renew_output.stdout)
-        .expect("Failed to parse renewal result");
+    let renew_result: serde_json::Value =
+        serde_json::from_slice(&renew_output.stdout).expect("Failed to parse renewal result");
 
     // Verify renewal has incremented fencing token
     let renewed_fencing_token = renew_result["lease"]["fencing_token"]
@@ -171,19 +184,15 @@ fn test_fencing_token_validation() {
     // Create and claim an issue with a lease
     workspace.run_bead(&["create", "--title", "Task 1", "--priority", "0"]);
 
-    let claim_output = workspace.run_bead(&[
-        "claim",
-        "--assignee",
-        "alice",
-        "--lease-ttl",
-        "2",
-        "--json",
-    ]);
+    let claim_output =
+        workspace.run_bead(&["claim", "--assignee", "alice", "--lease-ttl", "2", "--json"]);
 
-    let claim_result: serde_json::Value = serde_json::from_slice(&claim_output.stdout)
-        .expect("Failed to parse claim result");
+    let claim_result: serde_json::Value =
+        serde_json::from_slice(&claim_output.stdout).expect("Failed to parse claim result");
 
-    let issue_id = claim_result["bead_id"].as_str().expect("Failed to get issue ID");
+    let issue_id = claim_result["bead_id"]
+        .as_str()
+        .expect("Failed to get issue ID");
     let fencing_token = claim_result["lease"]["fencing_token"]
         .as_i64()
         .expect("Failed to get fencing token");
@@ -233,8 +242,8 @@ fn test_backward_compatibility_non_leased_claims() {
 
     assert!(output.status.success());
 
-    let result: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .expect("Failed to parse claim result");
+    let result: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("Failed to parse claim result");
 
     // Verify claim succeeded but no lease info present
     assert!(result["bead_id"].is_string());
@@ -273,7 +282,11 @@ fn test_concurrent_leased_claims() {
         ]);
 
         if !create_output.status.success() {
-            eprintln!("Failed to create task {}: {}", i, String::from_utf8_lossy(&create_output.stderr));
+            eprintln!(
+                "Failed to create task {}: {}",
+                i,
+                String::from_utf8_lossy(&create_output.stderr)
+            );
         }
 
         assert!(create_output.status.success());
@@ -281,7 +294,10 @@ fn test_concurrent_leased_claims() {
 
     // Debug: Check what issues were created
     let list_output = workspace.run_bead(&["list", "--json"]);
-    eprintln!("Initial issues: {}", String::from_utf8_lossy(&list_output.stdout));
+    eprintln!(
+        "Initial issues: {}",
+        String::from_utf8_lossy(&list_output.stdout)
+    );
 
     // Simulate multiple workers claiming with leases
     let mut claimed_ids = std::collections::HashSet::new();
@@ -307,12 +323,15 @@ fn test_concurrent_leased_claims() {
 
         assert!(output.status.success());
 
-        let result: serde_json::Value = serde_json::from_slice(&output.stdout)
-            .expect("Failed to parse claim result");
+        let result: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("Failed to parse claim result");
 
         // Debug output to see what we got
         if worker_id == 0 {
-            eprintln!("Worker 0 claim result: {}", serde_json::to_string_pretty(&result).unwrap());
+            eprintln!(
+                "Worker 0 claim result: {}",
+                serde_json::to_string_pretty(&result).unwrap()
+            );
         }
 
         if let Some(bead_id) = result["bead_id"].as_str() {
@@ -333,7 +352,10 @@ fn test_concurrent_leased_claims() {
 
     // Verify we got at least some successful claims (not all workers may get work)
     assert!(successful_claims > 0, "At least one claim should succeed");
-    assert!(claimed_ids.len() <= 3, "Cannot claim more issues than workers");
+    assert!(
+        claimed_ids.len() <= 3,
+        "Cannot claim more issues than workers"
+    );
 
     // Verify each worker who got work can operate on their claimed issue with valid lease
     for (assignee, issue_id) in &workers {
@@ -341,8 +363,8 @@ fn test_concurrent_leased_claims() {
 
         assert!(output.status.success());
 
-        let result: serde_json::Value = serde_json::from_slice(&output.stdout)
-            .expect("Failed to parse show result");
+        let result: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("Failed to parse show result");
 
         // Verify the assignee matches
         let issue = &result[0];
@@ -371,8 +393,8 @@ fn test_lease_ttl_bounds() {
 
     assert!(output.status.success());
 
-    let result: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .expect("Failed to parse claim result");
+    let result: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("Failed to parse claim result");
 
     // Should get a valid lease despite TTL being below minimum
     assert!(result["lease"].is_object());
@@ -410,12 +432,14 @@ fn test_empty_queue_with_lease_request() {
 
     assert!(output.status.success());
 
-    let result: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .expect("Failed to parse claim result");
+    let result: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("Failed to parse claim result");
 
     // Empty queue should return null bead_id and null lease
-    assert!(result["bead_id"].is_null() || result["bead_id"].as_str().unwrap_or("") == "");
-    assert!(result["lease"].is_null() || result["lease"].as_object().map_or(true, |o| o.is_empty()));
+    assert!(result["bead_id"].is_null() || result["bead_id"].as_str().unwrap_or("").is_empty());
+    assert!(
+        result["lease"].is_null() || result["lease"].as_object().map_or(true, |o| o.is_empty())
+    );
 }
 
 #[test]
@@ -425,22 +449,18 @@ fn test_lease_renewal_without_active_lease() {
     workspace.run_bead(&["create", "--title", "Task 1", "--priority", "0"]);
 
     // Try to renew lease when no active lease exists
-    let output = workspace.run_bead(&[
-        "claim",
-        "--assignee",
-        "alice",
-        "--renew-lease",
-        "--json",
-    ]);
+    let output = workspace.run_bead(&["claim", "--assignee", "alice", "--renew-lease", "--json"]);
 
     assert!(output.status.success());
 
-    let result: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .expect("Failed to parse claim result");
+    let result: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("Failed to parse claim result");
 
     // Should return empty result since no lease exists to renew
-    assert!(result["bead_id"].is_null() || result["bead_id"].as_str().unwrap_or("") == "");
-    assert!(result["lease"].is_null() || result["lease"].as_object().map_or(true, |o| o.is_empty()));
+    assert!(result["bead_id"].is_null() || result["bead_id"].as_str().unwrap_or("").is_empty());
+    assert!(
+        result["lease"].is_null() || result["lease"].as_object().map_or(true, |o| o.is_empty())
+    );
 }
 
 #[test]
@@ -462,13 +482,16 @@ fn test_leased_claim_with_why_flag() {
 
     assert!(output.status.success());
 
-    let result: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .expect("Failed to parse claim result");
+    let result: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("Failed to parse claim result");
 
-    // Should have both lease info and decision trace
-    assert!(result["bead_id"].is_string());
-    assert!(result["lease"].is_object());
+    // Should have both claim_result with lease info and decision trace
+    assert!(result["claim_result"].is_object());
     assert!(result["decision_trace"].is_object());
+
+    let claim_result = &result["claim_result"];
+    assert!(claim_result["bead_id"].is_string());
+    assert!(claim_result["lease"].is_object());
 
     // Verify decision trace structure
     let trace = &result["decision_trace"];
@@ -485,39 +508,29 @@ fn test_lease_cleanup_after_expiry() {
     workspace.run_bead(&["create", "--title", "Task 1", "--priority", "0"]);
 
     // Claim with short lease
-    let claim_output = workspace.run_bead(&[
-        "claim",
-        "--assignee",
-        "alice",
-        "--lease-ttl",
-        "2",
-        "--json",
-    ]);
+    let claim_output =
+        workspace.run_bead(&["claim", "--assignee", "alice", "--lease-ttl", "2", "--json"]);
 
-    let claim_result: serde_json::Value = serde_json::from_slice(&claim_output.stdout)
-        .expect("Failed to parse claim result");
+    let claim_result: serde_json::Value =
+        serde_json::from_slice(&claim_output.stdout).expect("Failed to parse claim result");
 
-    let _issue_id = claim_result["bead_id"].as_str().expect("Failed to get issue ID");
+    let _issue_id = claim_result["bead_id"]
+        .as_str()
+        .expect("Failed to get issue ID");
 
     // Wait for lease to expire
     std::thread::sleep(std::time::Duration::from_secs(3));
 
     // Try to claim the same issue again (should be possible since lease expired)
-    let new_claim_output = workspace.run_bead(&[
-        "claim",
-        "--assignee",
-        "bob",
-        "--lease-ttl",
-        "60",
-        "--json",
-    ]);
+    let new_claim_output =
+        workspace.run_bead(&["claim", "--assignee", "bob", "--lease-ttl", "60", "--json"]);
 
     // Since the first issue is already assigned, this should claim a different issue or return empty
     // The expired lease should not prevent the new claim
     assert!(new_claim_output.status.success());
 
-    let new_result: serde_json::Value = serde_json::from_slice(&new_claim_output.stdout)
-        .expect("Failed to parse new claim result");
+    let new_result: serde_json::Value =
+        serde_json::from_slice(&new_claim_output.stdout).expect("Failed to parse new claim result");
 
     // If we got an issue, it should have a fresh lease
     if new_result["bead_id"].is_string() && !new_result["bead_id"].as_str().unwrap().is_empty() {
