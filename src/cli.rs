@@ -310,11 +310,31 @@ READY FRONTIER:
   Use 'bead list --ready --json --limit N' to inspect ready candidates without
   reserving them. List uses the same ordering as claim but is read-only.
 
+LEASED CLAIMS:
+  --lease-ttl SECONDS enables opt-in leased claims with fencing tokens.
+  Leased claims expire after the specified seconds, preventing stale workers
+  from mutating work after expiry. Each lease has a monotonically increasing
+  fencing token for safe recovery from crashed or disconnected agents.
+
+  --renew-lease renews an existing lease instead of claiming new work.
+  This requires the issue to already have an active lease for the assignee.
+
+  --fencing-token explicitly specifies a fencing token for advanced use cases.
+  Normally fencing tokens are auto-generated and incremented on each claim/renewal.
+
+  Standard non-leased claims remain the default and maintain backward compatibility.
+  Leased claims add safety for distributed fleets and crash recovery scenarios.
+
 CLAIM SEMANTICS:
   - Atomic: selection, assignment, and audit record are one transaction
   - Deterministic: same state always produces same result (fifo-v1)
   - Safe: concurrent claimants never receive duplicate successful IDs
-  - Empty queue: returns {} with exit 0, not an error"
+  - Empty queue: returns {} with exit 0, not an error
+
+LEASE EXPIRY:
+  Once a lease expires, the assignee cannot update, release, or close the issue
+  until the lease is renewed or a new claim is made. This prevents stale workers
+  from corrupting work that has been reassigned to other agents."
 )]
 pub struct ClaimOptions {
     /// Assignee name (required)
@@ -328,6 +348,18 @@ pub struct ClaimOptions {
     /// Explain the claim decision with a machine-readable trace
     #[arg(long)]
     pub why: bool,
+
+    /// Request a leased claim with time-to-live in seconds (optional)
+    #[arg(long)]
+    pub lease_ttl: Option<u64>,
+
+    /// Renew an existing lease instead of claiming new work
+    #[arg(long)]
+    pub renew_lease: bool,
+
+    /// Explicit fencing token for lease validation (advanced usage)
+    #[arg(long)]
+    pub fencing_token: Option<i64>,
 }
 
 /// Options for updating an issue
@@ -397,6 +429,10 @@ pub struct UpdateOptions {
     /// Expected revision for optimistic concurrency control
     #[arg(long)]
     pub if_revision: Option<i64>,
+
+    /// Fencing token for lease validation (advanced usage)
+    #[arg(long)]
+    pub fencing_token: Option<i64>,
 }
 
 /// Options for releasing an issue
@@ -446,6 +482,10 @@ pub struct ReleaseOptions {
     /// Expected revision for optimistic concurrency control
     #[arg(long)]
     pub if_revision: Option<i64>,
+
+    /// Fencing token for lease validation (advanced usage)
+    #[arg(long)]
+    pub fencing_token: Option<i64>,
 }
 
 /// Options for closing an issue
@@ -505,6 +545,10 @@ pub struct CloseOptions {
     /// Expected revision for optimistic concurrency control
     #[arg(long)]
     pub if_revision: Option<i64>,
+
+    /// Fencing token for lease validation (advanced usage)
+    #[arg(long)]
+    pub fencing_token: Option<i64>,
 }
 
 /// Options for reopening an issue
@@ -561,6 +605,10 @@ pub struct ReopenOptions {
     /// Expected revision for optimistic concurrency control
     #[arg(long)]
     pub if_revision: Option<i64>,
+
+    /// Fencing token for lease validation (advanced usage)
+    #[arg(long)]
+    pub fencing_token: Option<i64>,
 }
 
 /// Sync commands

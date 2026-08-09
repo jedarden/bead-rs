@@ -5,6 +5,7 @@
 //! duplicate assignments under concurrent access.
 
 use crate::error::Result;
+use crate::service::leases::{create_lease, renew_lease, DEFAULT_LEASE_TTL};
 use rusqlite::OptionalExtension;
 use rusqlite::Transaction;
 use serde_json::json;
@@ -179,6 +180,270 @@ pub fn claim_issue(
         bead_id: Some(issue_id),
         assignee: assignee.to_string(),
     })
+}
+
+/// Enhanced claim result with optional lease information
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EnhancedClaimResult {
+    pub bead_id: Option<String>,
+    pub assignee: String,
+    pub lease: Option<crate::service::LeaseClaimResult>,
+}
+
+/// Claim an issue with optional lease support
+///
+/// This function extends the basic claim logic to support R002's fenced claim leases:
+/// - Optionally creates a lease with fencing token and expiry
+/// - Supports lease renewal instead of new claim
+/// - Validates fencing tokens when provided
+/// - Maintains backward compatibility with non-leased claims
+///
+/// # Arguments
+/// * `tx` - Database transaction
+/// * `assignee` - Who is claiming the issue
+/// * `lease_ttl_seconds` - Optional TTL for leased claims
+/// * `renew_lease` - If true, renew existing lease instead of claiming new work
+/// * `fencing_token` - Optional fencing token for validation
+///
+/// # Returns
+/// Enhanced claim result including lease information if applicable
+pub fn claim_issue_with_lease(
+    tx: &Transaction,
+    assignee: &str,
+    lease_ttl_seconds: Option<u64>,
+    renew_lease: bool,
+    fencing_token: Option<i64>,
+) -> Result<EnhancedClaimResult> {
+    // Handle lease renewal if requested
+    if renew_lease {
+        return claim_with_renewal(tx, assignee, lease_ttl_seconds);
+    }
+
+    // Handle fencing token validation if provided
+    if let Some(token) = fencing_token {
+        return claim_with_fencing_token(tx, assignee, token, lease_ttl_seconds);
+    }
+
+    // Perform normal claim with optional lease creation
+    let eligible_issue = find_eligible_issue(tx)?;
+
+    let issue_id = match eligible_issue {
+        Some(id) => id,
+        None => {
+            // No eligible work - return empty result successfully
+            return Ok(EnhancedClaimResult {
+                bead_id: None,
+                assignee: assignee.to_string(),
+                lease: None,
+            });
+        }
+    };
+
+    // Transition the issue to in_progress and assign it
+    let now = OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    tx.execute(
+        "UPDATE issues SET base_status = 'in_progress', assignee = ?1, updated_at = ?2, revision = revision + 1 WHERE id = ?3",
+        [assignee, &now, &issue_id],
+    )?;
+
+    // Create lease if requested
+    let lease_info = if let Some(ttl) = lease_ttl_seconds {
+        Some(create_lease(tx, &issue_id, assignee, ttl)?)
+    } else {
+        None
+    };
+
+    // Record the claim audit event
+    let event_detail = if lease_info.is_some() {
+        json!({
+            "policy": "fifo-v1",
+            "resulting_base_status": "in_progress",
+            "lease_ttl_seconds": lease_ttl_seconds,
+            "with_lease": true
+        })
+    } else {
+        json!({
+            "policy": "fifo-v1",
+            "resulting_base_status": "in_progress",
+            "with_lease": false
+        })
+    };
+
+    let event_detail_json = serde_json::to_string(&event_detail).map_err(|e| {
+        crate::Error::Internal(anyhow::anyhow!("Failed to serialize event detail: {}", e))
+    })?;
+
+    let event_time = OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    tx.execute(
+        "INSERT INTO events (issue_id, kind, actor, time, detail) VALUES (?1, 'claimed', ?2, ?3, ?4)",
+        [&issue_id, assignee, &event_time, &event_detail_json],
+    )?;
+
+    Ok(EnhancedClaimResult {
+        bead_id: Some(issue_id),
+        assignee: assignee.to_string(),
+        lease: lease_info,
+    })
+}
+
+/// Handle lease renewal instead of new claim
+fn claim_with_renewal(
+    tx: &Transaction,
+    assignee: &str,
+    lease_ttl_seconds: Option<u64>,
+) -> Result<EnhancedClaimResult> {
+    // Find issues currently assigned to this assignee with active leases
+    let now = OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    let issue_to_renew: Option<String> = tx
+        .query_row(
+            "SELECT l.issue_id FROM leases l
+             JOIN issues i ON i.id = l.issue_id
+             WHERE l.assignee = ?1 AND l.expires_at > ?2
+             ORDER BY l.expires_at ASC
+             LIMIT 1",
+            [assignee, &now],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| {
+            crate::Error::Internal(anyhow::anyhow!(
+                "Failed to find lease to renew: {}",
+                e
+            ))
+        })?;
+
+    let issue_id = match issue_to_renew {
+        Some(id) => id,
+        None => {
+            // No active leases found - return empty result
+            return Ok(EnhancedClaimResult {
+                bead_id: None,
+                assignee: assignee.to_string(),
+                lease: None,
+            });
+        }
+    };
+
+    // Use default TTL if not specified
+    let ttl = lease_ttl_seconds.unwrap_or(DEFAULT_LEASE_TTL);
+
+    // Renew the lease
+    let renewed_lease = renew_lease(tx, &issue_id, assignee, ttl)?;
+
+    // Record the renewal audit event
+    let event_detail = json!({
+        "policy": "fifo-v1",
+        "action": "lease_renewed",
+        "lease_ttl_seconds": ttl,
+        "fencing_token": renewed_lease.fencing_token
+    });
+
+    let event_detail_json = serde_json::to_string(&event_detail).map_err(|e| {
+        crate::Error::Internal(anyhow::anyhow!("Failed to serialize event detail: {}", e))
+    })?;
+
+    let event_time = OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    tx.execute(
+        "INSERT INTO events (issue_id, kind, actor, time, detail) VALUES (?1, 'lease_renewed', ?2, ?3, ?4)",
+        [&issue_id, assignee, &event_time, &event_detail_json],
+    )?;
+
+    Ok(EnhancedClaimResult {
+        bead_id: Some(issue_id),
+        assignee: assignee.to_string(),
+        lease: Some(renewed_lease),
+    })
+}
+
+/// Handle claim with explicit fencing token
+fn claim_with_fencing_token(
+    tx: &Transaction,
+    assignee: &str,
+    expected_token: i64,
+    lease_ttl_seconds: Option<u64>,
+) -> Result<EnhancedClaimResult> {
+    // Find any active leases for this assignee and validate the fencing token
+    let now = OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    let (matching_issue, actual_token): (Option<String>, Option<i64>) = tx
+        .query_row(
+            "SELECT l.issue_id, l.fencing_token FROM leases l
+             JOIN issues i ON i.id = l.issue_id
+             WHERE l.assignee = ?1 AND l.expires_at > ?2 AND l.fencing_token = ?3
+             LIMIT 1",
+            [assignee, &now, &expected_token.to_string()],
+            |row| {
+                Ok((
+                    Some(row.get::<_, String>(0)?),
+                    Some(row.get::<_, i64>(1)?),
+                ))
+            },
+        )
+        .optional()
+        .map_err(|e| {
+            crate::Error::Internal(anyhow::anyhow!(
+                "Failed to validate fencing token: {}",
+                e
+            ))
+        })?
+        .unwrap_or((None, None));
+
+    match (matching_issue, actual_token) {
+        (Some(issue_id), Some(token)) if token == expected_token => {
+            // Valid fencing token found - perform claim with new lease
+            let ttl = lease_ttl_seconds.unwrap_or(DEFAULT_LEASE_TTL);
+            let new_lease = create_lease(tx, &issue_id, assignee, ttl)?;
+
+            // Record the fencing token claim audit event
+            let event_detail = json!({
+                "policy": "fifo-v1",
+                "action": "claim_with_fencing_token",
+                "previous_fencing_token": expected_token,
+                "new_fencing_token": new_lease.fencing_token,
+                "lease_ttl_seconds": ttl
+            });
+
+            let event_detail_json = serde_json::to_string(&event_detail).map_err(|e| {
+                crate::Error::Internal(anyhow::anyhow!("Failed to serialize event detail: {}", e))
+            })?;
+
+            let event_time = OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_else(|_| "unknown".to_string());
+
+            tx.execute(
+                "INSERT INTO events (issue_id, kind, actor, time, detail) VALUES (?1, 'claimed', ?2, ?3, ?4)",
+                [&issue_id, assignee, &event_time, &event_detail_json],
+            )?;
+
+            Ok(EnhancedClaimResult {
+                bead_id: Some(issue_id),
+                assignee: assignee.to_string(),
+                lease: Some(new_lease),
+            })
+        }
+        _ => {
+            // No matching fencing token found - this is an error
+            Err(crate::Error::LeaseConflict(format!(
+                "No active lease found with fencing token {} for assignee {}",
+                expected_token, assignee
+            )))
+        }
+    }
 }
 
 /// Collect eligibility factors for all issues in the workspace

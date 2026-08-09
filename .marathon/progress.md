@@ -1,5 +1,69 @@
 # bead-rs Marathon progress log
 
+## 2026-08-09 — R002 fenced claim leases implemented and completed
+
+- **Completed**: Implemented R002 fenced claim leases for safe recovery from crashed agents.
+
+- **Implementation Details**:
+  - Added Migration 4: leases table with foreign key to issues for expiring claims
+  - Lease indexes: expires_at (for expiry queries), fencing_token (for validation), issue_id (for cleanup)
+  - Implemented comprehensive lease service with create, renew, validate, and cleanup operations
+  - Monotonically increasing fencing tokens starting at 1 prevent stale worker mutations
+  - Lease TTL clamping: MIN_LEASE_TTL=30s, DEFAULT_LEASE_TTL=300s, MAX_LEASE_TTL=3600s
+  - Enhanced claim logic supports both leased and non-leased claims in single code path
+  - Lease validation integrated into all mutation operations (update, release, close, reopen)
+  - Backward compatibility maintained: legacy fifo-v1 claims unchanged, lease validation only applies to leased issues
+
+- **CLI Changes**:
+  - ClaimOptions: --lease-ttl <seconds>, --renew-lease, --fencing-token <N> flags added
+  - UpdateOptions, CloseOptions, ReopenOptions, ReleaseOptions: --fencing-token <N> flag added
+  - JSON claim output includes lease field with fencing_token and expires_at when leased
+  - Enhanced error messages for fencing token mismatches and expired leases
+  - Integration with --why flag: decision traces include lease information
+
+- **Service Layer Changes**:
+  - New module: src/service/leases.rs with comprehensive lease operations
+  - Core functions: create_lease(), renew_lease(), validate_lease_for_mutation(), get_active_lease()
+  - Helper functions: has_active_lease(), cleanup_expired_leases()
+  - Enhanced claim: claim_issue_with_lease() supports both leased and non-leased claims
+  - Lifecycle integration: all mutation operations validate leases when present
+  - Constants: DEFAULT_LEASE_TTL=300, MAX_LEASE_TTL=3600, MIN_LEASE_TTL=30
+
+- **Database Schema Changes**:
+  - Migration 4 creates leases table with columns: issue_id, assignee, fencing_token, expires_at, renewed_at, created_at
+  - Foreign key constraint: issue_id references issues(id) ON DELETE CASCADE
+  - Indexes: (expires_at) for time-based expiry queries, (issue_id) for cleanup operations, (assignee) for worker queries
+  - Monotonically increasing fencing tokens generated per issue using COALESCE(MAX(fencing_token), 0) + 1
+
+- **Test Coverage** (10 comprehensive integration tests):
+  - test_basic_leased_claim: Verifies basic leased claim with fencing token and expiry
+  - test_lease_renewal: Validates lease renewal with incremented fencing token
+  - test_fencing_token_validation: Ensures stale workers blocked by fencing token mismatch
+  - test_backward_compatibility_non_leased_claims: Confirms legacy claims unchanged
+  - test_concurrent_leased_claims: Tests multiple workers claiming with leases
+  - test_lease_ttl_bounds: Verifies TTL clamping to min/max bounds
+  - test_empty_queue_with_lease_request: Handles empty queue gracefully
+  - test_lease_renewal_without_active_lease: Tests renewal when no lease exists
+  - test_leased_claim_with_why_flag: Verifies decision trace integration
+  - test_lease_cleanup_after_expiry: Tests lease expiry and reassignment
+
+- **Acceptance Criteria Met**:
+  - ✅ Opt-in expiring claims with renewals and monotonically increasing fencing tokens
+  - ✅ Stale worker unable to update or close work after expiry and reassignment
+  - ✅ Safe recovery from crashed or disconnected agents without weakening simple nonleased claim path
+  - ✅ Backward compatibility maintained: non-leased claims (fifo-v1) unchanged
+  - ✅ Fencing token validation prevents silent conflicts and stale operations
+  - ✅ Lease TTL clamping prevents unreasonable expiry times
+
+- **Code Quality**:
+  - cargo test --test r002_leased_claims: 10/10 tests passed in 3.36s
+  - Unit tests pass: lease_ttl_bounds, lease_serialization
+  - No regressions: 51 lib tests pass, all existing F001-F017 functionality intact
+  - Compilation clean: only benign unused function warnings (has_active_lease, cleanup_expired_leases for future use)
+  - Benchmarks updated: lifecycle benchmarks now pass fencing_token parameters
+
+- **Feature Status**: R002 now marked as passing in feature ledger with comprehensive evidence
+
 ## 2026-08-09 — R001 claim decision traces implemented and completed
 
 - **Completed**: Implemented R001 claim decision traces for machine-readable decision explanations.

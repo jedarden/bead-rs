@@ -92,9 +92,22 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
         .unchecked_transaction()
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to start transaction: {}", e)))?;
 
-    // Claim an issue with optional decision trace
-    let (result, trace) =
-        service::claim_issue_with_trace(&tx, &opts.assignee, None, None, None, opts.why)?;
+    // Claim an issue with optional lease support
+    let enhanced_result = service::claim_issue_with_lease(
+        &tx,
+        &opts.assignee,
+        opts.lease_ttl,
+        opts.renew_lease,
+        opts.fencing_token,
+    )?;
+
+    // Get decision trace if requested (backward compatibility with R001)
+    let trace = if opts.why {
+        let (_, trace_data) = service::claim_issue_with_trace(&tx, &opts.assignee, None, None, None, true)?;
+        trace_data
+    } else {
+        None
+    };
 
     // Commit transaction
     tx.commit()
@@ -103,9 +116,11 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
     // Output result
     if opts.json {
         let output = if let Some(trace_data) = trace {
-            // When --why is set, output enriched result with decision trace
+            // When --why is set, output enriched result with decision trace and lease info
             serde_json::to_string(&serde_json::json!({
-                "claim_result": result,
+                "bead_id": enhanced_result.bead_id,
+                "assignee": enhanced_result.assignee,
+                "lease": enhanced_result.lease,
                 "decision_trace": trace_data
             }))
             .map_err(|e| {
@@ -115,16 +130,22 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
                 ))
             })?
         } else {
-            // Standard claim result
-            serde_json::to_string(&result).map_err(|e| {
+            // Standard claim result with lease information
+            serde_json::to_string(&enhanced_result).map_err(|e| {
                 Error::Internal(anyhow::anyhow!("Failed to serialize claim result: {}", e))
             })?
         };
         println!("{}", output);
     } else {
-        if let Some(bead_id) = result.bead_id {
+        if let Some(bead_id) = &enhanced_result.bead_id {
             println!("Claimed: {}", bead_id);
-            println!("Assignee: {}", result.assignee);
+            println!("Assignee: {}", enhanced_result.assignee);
+
+            // Display lease information if present
+            if let Some(lease_info) = &enhanced_result.lease {
+                println!("Lease expires at: {}", lease_info.expires_at);
+                println!("Fencing token: {}", lease_info.fencing_token);
+            }
         } else {
             println!("No eligible work found.");
         }
@@ -382,6 +403,7 @@ fn cmd_update(opts: cli::UpdateOptions) -> Result<()> {
         opts.clear_assignee,
         opts.notes.as_deref(),
         opts.if_revision,
+        opts.fencing_token,
     )?;
 
     // Print only the ID on success
@@ -401,7 +423,7 @@ fn cmd_release(opts: cli::ReleaseOptions) -> Result<()> {
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Release the issue
-    let id = service::release_issue(&conn, &opts.id, opts.if_revision)?;
+    let id = service::release_issue(&conn, &opts.id, opts.if_revision, opts.fencing_token)?;
 
     // Print only the ID on success
     println!("{}", id);
@@ -420,7 +442,7 @@ fn cmd_close(opts: cli::CloseOptions) -> Result<()> {
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Close the issue
-    let id = service::close_issue(&conn, &opts.id, &opts.reason, opts.if_revision)?;
+    let id = service::close_issue(&conn, &opts.id, &opts.reason, opts.if_revision, opts.fencing_token)?;
 
     // Print only the ID on success
     println!("{}", id);
@@ -439,7 +461,7 @@ fn cmd_reopen(opts: cli::ReopenOptions) -> Result<()> {
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Reopen the issue
-    let id = service::reopen_issue(&conn, &opts.id, opts.if_revision)?;
+    let id = service::reopen_issue(&conn, &opts.id, opts.if_revision, opts.fencing_token)?;
 
     // Print only the ID on success
     println!("{}", id);

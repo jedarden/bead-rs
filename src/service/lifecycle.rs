@@ -1,10 +1,11 @@
 //! Lifecycle service implementation
 //!
 //! This module provides the business logic for update, release, close, and reopen operations.
-//! All operations are atomic and include proper audit events.
+//! All operations are atomic and include proper audit events and lease validation.
 
 use crate::error::{Error, Result};
 use crate::model::{BaseStatus, Issue};
+use crate::service::validate_lease_for_mutation;
 use rusqlite::{Connection, OptionalExtension, Transaction};
 use serde_json::json;
 
@@ -18,6 +19,7 @@ pub fn update_issue(
     clear_assignee: bool,
     notes: Option<&str>,
     if_revision: Option<i64>,
+    fencing_token: Option<i64>,
 ) -> Result<String> {
     // Validate that assignee and clear_assignee are not both specified
     if assignee.is_some() && clear_assignee {
@@ -38,6 +40,11 @@ pub fn update_issue(
                 expected_revision, current_revision
             )));
         }
+    }
+
+    // Validate lease if issue has an active lease
+    if let Some(current_assignee) = &issue.assignee {
+        validate_lease_for_mutation(conn, id, current_assignee, fencing_token)?;
     }
 
     // Validate assignee value if present
@@ -70,7 +77,12 @@ pub fn update_issue(
 }
 
 /// Release an issue
-pub fn release_issue(conn: &Connection, id: &str, if_revision: Option<i64>) -> Result<String> {
+pub fn release_issue(
+    conn: &Connection,
+    id: &str,
+    if_revision: Option<i64>,
+    fencing_token: Option<i64>,
+) -> Result<String> {
     // Get current issue state
     let issue = get_issue_for_update(conn, id)?.ok_or_else(|| Error::not_found(id))?;
 
@@ -83,6 +95,11 @@ pub fn release_issue(conn: &Connection, id: &str, if_revision: Option<i64>) -> R
                 expected_revision, current_revision
             )));
         }
+    }
+
+    // Validate lease if issue has an active lease
+    if let Some(current_assignee) = &issue.assignee {
+        validate_lease_for_mutation(conn, id, current_assignee, fencing_token)?;
     }
 
     // Process in a write transaction
@@ -99,6 +116,7 @@ pub fn close_issue(
     id: &str,
     reason: &str,
     if_revision: Option<i64>,
+    fencing_token: Option<i64>,
 ) -> Result<String> {
     // Validate reason
     if reason.trim().is_empty() {
@@ -119,6 +137,11 @@ pub fn close_issue(
         }
     }
 
+    // Validate lease if issue has an active lease
+    if let Some(current_assignee) = &issue.assignee {
+        validate_lease_for_mutation(conn, id, current_assignee, fencing_token)?;
+    }
+
     // Process in a write transaction
     let mut tx = conn.unchecked_transaction()?;
     let result = close_issue_impl(&mut tx, &issue, reason)?;
@@ -128,7 +151,12 @@ pub fn close_issue(
 }
 
 /// Reopen an issue
-pub fn reopen_issue(conn: &Connection, id: &str, if_revision: Option<i64>) -> Result<String> {
+pub fn reopen_issue(
+    conn: &Connection,
+    id: &str,
+    if_revision: Option<i64>,
+    fencing_token: Option<i64>,
+) -> Result<String> {
     // Get current issue state
     let issue = get_issue_for_update(conn, id)?.ok_or_else(|| Error::not_found(id))?;
 
@@ -141,6 +169,11 @@ pub fn reopen_issue(conn: &Connection, id: &str, if_revision: Option<i64>) -> Re
                 expected_revision, current_revision
             )));
         }
+    }
+
+    // Validate lease if issue has an active lease
+    if let Some(current_assignee) = &issue.assignee {
+        validate_lease_for_mutation(conn, id, current_assignee, fencing_token)?;
     }
 
     // Process in a write transaction

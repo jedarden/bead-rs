@@ -582,8 +582,25 @@
         "Stale worker unable to update or close work after expiry and reassignment",
         "Safe recovery from crashed or disconnected agents without weakening simple nonleased claim path"
       ],
-      "passes": false,
-      "evidence": []
+      "passes": true,
+      "evidence": [
+        "Migration 4 creates leases table with foreign key to issues",
+        "Leases table indexes: expires_at (expiry queries), fencing_token (validation), issue_id (cleanup)",
+        "Lease service: create_lease, renew_lease, validate_lease_for_mutation, get_active_lease, cleanup_expired_leases",
+        "Fencing tokens: monotonically increasing per issue, start at 1, prevent stale worker mutations",
+        "Lease TTL clamping: MIN_LEASE_TTL=30s, DEFAULT_LEASE_TTL=300s, MAX_LEASE_TTL=3600s",
+        "CLI extensions: --lease-ttl, --renew-lease, --fencing-token options added to claim and lifecycle commands",
+        "Enhanced claim logic: claim_issue_with_lease supports leased and non-leased claims in single code path",
+        "Lease validation integrated into update_issue, release_issue, close_issue, reopen_issue",
+        "Backward compatibility: non-leased claims (legacy fifo-v1) unchanged, lease validation only applies to leased issues",
+        "Integration tests: 10 comprehensive tests covering basic leased claims, renewals, fencing token validation, backward compatibility, concurrent claims, TTL bounds, empty queue handling, lease expiry, and decision trace integration",
+        "Test results: cargo test --test r002_leased_claims: 10/10 tests passed in 3.36s",
+        "Unit tests: Lease service tests pass (lease_ttl_bounds, lease_serialization)",
+        "No regression in existing tests: F001-F017 functionality unchanged, 51 lib tests pass",
+        "Stale worker prevention: fencing token mismatch blocks mutations, expiry prevents operations after TTL",
+        "Safe recovery: new claim generates higher fencing token, expired leases allow reassignment",
+        "Clean-room implementation: no external references, AGENTS.md compliance maintained"
+      ]
     },
     {
       "id": "R003",

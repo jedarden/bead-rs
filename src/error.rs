@@ -22,6 +22,14 @@ pub enum Error {
     #[allow(dead_code)]
     Conflict(String),
 
+    /// Lease expiry or conflict (exit 4)
+    #[error("Lease error: {0}")]
+    LeaseExpired(String),
+
+    /// Lease fencing token conflict (exit 4)
+    #[error("Lease conflict: {0}")]
+    LeaseConflict(String),
+
     /// Integrity, import, or migration failure (exit 5)
     #[error("Integrity error: {0}")]
     #[allow(dead_code)]
@@ -63,7 +71,7 @@ impl Error {
         match self {
             Error::CliUsage(_) | Error::Model(_) => 2,
             Error::Workspace(_) => 3,
-            Error::Conflict(_) => 4,
+            Error::Conflict(_) | Error::LeaseExpired(_) | Error::LeaseConflict(_) => 4,
             Error::Integrity(_) => 5,
             Error::DatabaseBusy(_) => 6,
             _ => 1,

@@ -7,7 +7,7 @@ use rusqlite::{Connection, Result as SqliteResult};
 use sha2::{Digest, Sha256};
 
 /// Current migration version
-pub const CURRENT_VERSION: i64 = 3;
+pub const CURRENT_VERSION: i64 = 4;
 
 /// Apply all pending migrations to the database
 pub fn apply_migrations(conn: &Connection) -> SqliteResult<()> {
@@ -70,6 +70,7 @@ fn get_migration(version: i64) -> Migration {
         1 => migration_1(),
         2 => migration_2(),
         3 => migration_3(),
+        4 => migration_4(),
         v => panic!("Unknown migration version: {}", v),
     }
 }
@@ -327,6 +328,41 @@ CREATE INDEX IF NOT EXISTS issues_revision ON issues (id, revision);
     }
 }
 
+/// Migration 4: Fenced claim leases (R002)
+///
+/// This migration adds support for R002's fenced claim leases:
+/// - Leases table for tracking expiring claims with fencing tokens
+/// - Monotonically increasing fencing tokens for stale worker detection
+/// - Lease expiry validation for safe recovery from crashed agents
+/// - Maintains backward compatibility with non-leased claims
+fn migration_4() -> Migration {
+    let sql = r#"
+-- Leases table for fenced claim operations
+CREATE TABLE IF NOT EXISTS leases (
+    issue_id TEXT NOT NULL PRIMARY KEY,
+    assignee TEXT NOT NULL,
+    fencing_token INTEGER NOT NULL,
+    expires_at TEXT NOT NULL,
+    renewed_at TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE
+);
+
+-- Index for lease expiry queries (cleanup and validation)
+CREATE INDEX IF NOT EXISTS leases_expiry ON leases (expires_at);
+
+-- Index for fencing token validation during mutations
+CREATE INDEX IF NOT EXISTS leases_fencing ON leases (issue_id, assignee, fencing_token);
+
+-- Index for assignee lease queries (renewal, listing)
+CREATE INDEX IF NOT EXISTS leases_assignee ON leases (assignee, expires_at);
+"#;
+
+    Migration {
+        sql: sql.to_string(),
+    }
+}
+
 /// Calculate SHA-256 checksum of a migration
 fn migration_checksum(sql: &str) -> String {
     let mut hasher = Sha256::new();
@@ -374,6 +410,7 @@ mod tests {
             "events",
             "checkpoint_state",
             "provenance_receipts",
+            "leases",
         ];
 
         for table in &tables {
