@@ -906,3 +906,94 @@ rewrite or delete earlier entries.
   **Compliance**: All clean-room and Marathon protocols maintained
   **Evidence**: 181 passing tests, verified artifacts, comprehensive documentation
   **Ready for**: External dependency resolution or explicit scope adjustment decision
+
+## 2026-08-09 — Marathon iteration restart assessment
+
+- **Current baseline verification**:
+  ✓ cargo test: 181 tests passed (46 unit + 135 integration)
+  ✓ cargo fmt --check: passed
+  ✓ cargo clippy --all-targets -- -D warnings: passed
+  ✓ Working tree: clean (no uncommitted changes)
+  ✓ Git status: on main branch at commit 8b98d99
+
+- **Feature completion status**:
+  ✓ F001-F011: All passing with comprehensive evidence
+  ✓ F015: Benchmark harness complete and passing
+  ✗ F012: BLOCKED on external br-v1 and bf-v1 fixture specifications
+  ✗ F013: BLOCKED on F012 (transitive dependency)
+  ✗ F016: BLOCKED on F013 (transitive dependency)
+  ✗ F017: BLOCKED on external checkpoint-set-v1 specification
+  ✗ F014: BLOCKED on F012, F013, F016, F017 (transitive dependencies)
+
+- **External dependency analysis**:
+  According to the plan section 2 delivery definition and the explicit blocking constraints:
+  * "F017 is specification-blocked pending an independently reviewed normative `research/specs/checkpoint-set-v1.md`"
+  * "F012 is externally blocked on independently approved `br-v1` and `bf-v1` fixtures"
+  * "No profile, fixture, evidence, or gate may be waived to turn that external dependency into a nominal 0.1 release"
+
+  External dependencies documented in `docs/traceability/external-dependencies.md`:
+  * F012 requires: Owner and reviewer assignments for br-v1 and bf-v1 fixtures
+  * F017 requires: Owner and independent reviewer assignments for checkpoint-set-v1 specification
+  * Both require: Independent review and approval before implementation can proceed
+
+- **Marathon authority scope assessment**:
+  According to `.marathon/instruction.md`:
+  * "Marathon owns implementation of the full reviewed project: F001-F017 followed by every adopted R001-R024 roadmap item"
+  * "Work autonomously on main in small, verified increments until full-project completion"
+  * Clean-room boundary prevents inspection or duplication of upstream implementations
+  * Implementation must proceed only from independently authored specifications
+
+  Current constraint: External dependency ownership and independent review are organizational decisions that require human assignment and approval. These are outside Marathon's autonomous implementation authority but are prerequisites for completing F012 and F017.
+
+- **R001-R024 roadmap status**:
+  According to feature ledger rules: "After F001-F017 pass, materialize R001-R024 into the feature ledger from plan section 12, preserving their exact scope and core-incorporated versus extension dispositions, then implement the earliest unblocked extension."
+
+  Since F001-F017 have not all passed (F012, F013, F016, F017, F014 remain incomplete), R001-R024 cannot be materialized or implemented.
+
+- **Completion sentinel analysis**:
+  `.marathon/COMPLETE` does not exist and cannot be created because:
+  * Requirement: "Only after F001-F017 and R001-R024 have verified dispositions"
+  * Current state: F012 and F017 are blocked on external dependencies
+  * R001-R024: Cannot be materialized until F001-F017 pass
+  * Final release gates: Cannot run until all features pass
+
+- **Current Marathon implementation status**:
+  All autonomously implementable features under current external constraints have been completed with comprehensive evidence:
+  ✓ Native SQLite workspace initialization and versioned schema
+  ✓ Canonical native issue model with validated lifecycle
+  ✓ Create, list, and show commands with stable JSON output
+  ✓ Atomic server-selected claim and release behavior
+  ✓ Update, close, and reopen lifecycle commands
+  ✓ Labels and dependency graph operations
+  ✓ Deterministic JSONL checkpoint export
+  ✓ Validated JSONL import with unknown-field preservation
+  ✓ Diagnostics and scoped repair
+  ✓ Machine-readable capability handshake
+  ✓ Complete NEEDLE v1 subprocess compatibility suite
+  ✓ Rapid-fire lifecycle stress and capacity benchmark harness
+
+  Total: 181 passing tests (46 unit + 135 integration), 12/17 F-features complete
+
+- **Next required actions (external to Marathon autonomous scope)**:
+  1. Assign owners and reviewers for F012 external fixture specifications:
+     - br-v1 profile specification owner and reviewer
+     - bf-v1 profile specification owner and reviewer
+  2. Assign owner and independent reviewer for F017 checkpoint-set-v1 specification
+  3. Create and independently review `research/specs/checkpoint-set-v1.md`
+  4. Create and independently approve br-v1 and bf-v1 fixture specifications
+  5. Once external specifications/fixtures are approved, Marathon can resume implementation
+
+- **Alternative path (requires explicit decision)**:
+  If external dependencies cannot be satisfied, an explicit decision would be needed to:
+  * Adjust project scope to exclude F012 and/or F017 from version 0.1 requirements
+  * Modify the plan section 2 delivery definition
+  * Update feature ledger rules accordingly
+  * This would require explicit human authorization as it changes the release criteria
+
+- **Current Marathon capability**:
+  Marathon has successfully completed all autonomously implementable features and is maintaining a clean, tested, and documented codebase ready for resumption when external dependencies are resolved. The system is in a stable checkpoint state with all clean-room and governance protocols maintained.
+
+  **Status**: Governed implementation checkpoint - awaiting external dependency resolution
+  **Compliance**: All clean-room, Marathon, and phase protocols maintained
+  **Evidence**: 181 passing tests, verified artifacts, comprehensive documentation
+  **Ready for**: External dependency assignments or explicit scope adjustment decision
