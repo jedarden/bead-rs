@@ -51,6 +51,7 @@ fn execute_command(cli: Cli) -> Result<()> {
         Command::Query(opts) => cmd_query(opts),
         Command::Changes(opts) => cmd_changes(opts),
         Command::Data(opts) => cmd_data(opts),
+        Command::Recurrence(opts) => cmd_recurrence(opts),
         Command::Unimplemented(_) => Err(Error::cli_usage(
             "This command is not yet implemented. See `bead --help` for available commands.",
         )),
@@ -1624,6 +1625,235 @@ fn cmd_data_remove(opts: cli::DataRemoveOptions) -> Result<()> {
     eprintln!("Removed structured data:");
     eprintln!("  Issue: {}", opts.id);
     eprintln!("  Namespace: {}", opts.namespace);
+
+    Ok(())
+}
+
+fn cmd_recurrence(opts: cli::RecurrenceCommand) -> Result<()> {
+    match opts {
+        cli::RecurrenceCommand::Create(opts) => cmd_recurrence_create(opts),
+        cli::RecurrenceCommand::Show(opts) => cmd_recurrence_show(opts),
+        cli::RecurrenceCommand::List(opts) => cmd_recurrence_list(opts),
+        cli::RecurrenceCommand::Delete(opts) => cmd_recurrence_delete(opts),
+        cli::RecurrenceCommand::Materialize(opts) => cmd_recurrence_materialize(opts),
+        cli::RecurrenceCommand::History(opts) => cmd_recurrence_history(opts),
+    }
+}
+
+fn cmd_recurrence_create(opts: cli::RecurrenceCreateOptions) -> Result<()> {
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    let db_path = config.database_path();
+    let mut store = store::SqliteStore::with_path(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    // Parse labels if provided
+    let labels = if let Some(ref labels_str) = opts.labels {
+        if labels_str.is_empty() {
+            None
+        } else {
+            Some(
+                labels_str
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect(),
+            )
+        }
+    } else {
+        None
+    };
+
+    let request = crate::model::recurrence::CreateTemplateRequest {
+        id: opts.id.clone(),
+        title: opts.title.clone(),
+        description: opts.description.clone(),
+        base_title_template: opts.base_title_template.clone(),
+        base_description: opts.base_description.clone(),
+        priority: opts.priority,
+        issue_type: opts.issue_type,
+        labels,
+    };
+
+    let template = service::create_template(store.conn_mut(), request)?;
+
+    eprintln!("Created recurrence template:");
+    eprintln!("  ID: {}", template.id);
+    eprintln!("  Title: {}", template.title);
+    eprintln!("  Title Template: {}", template.base_title_template);
+    eprintln!("  Priority: {}", template.priority);
+    eprintln!("  Issue Type: {}", template.issue_type);
+    if let Some(ref description) = template.description {
+        eprintln!("  Description: {}", description);
+    }
+    if let Ok(labels_vec) = template.get_labels() {
+        if !labels_vec.is_empty() {
+            eprintln!("  Labels: {}", labels_vec.join(", "));
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_recurrence_show(opts: cli::RecurrenceShowOptions) -> Result<()> {
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    let db_path = config.database_path();
+    let mut store = store::SqliteStore::with_path(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    let template = service::get_template(store.conn(), &opts.id)?;
+    let history = service::get_materialization_history(store.conn(), &opts.id)?;
+
+    if opts.json {
+        let output = serde_json::json!({
+            "template": template,
+            "history": history
+        });
+        println!("{}", output);
+    } else {
+        eprintln!("Recurrence Template:");
+        eprintln!("  ID: {}", template.id);
+        eprintln!("  Title: {}", template.title);
+        if let Some(ref description) = template.description {
+            eprintln!("  Description: {}", description);
+        }
+        eprintln!("  Title Template: {}", template.base_title_template);
+        if let Some(ref base_description) = template.base_description {
+            eprintln!("  Description Template: {}", base_description);
+        }
+        eprintln!("  Priority: {}", template.priority);
+        eprintln!("  Issue Type: {}", template.issue_type);
+        if let Ok(labels_vec) = template.get_labels() {
+            if !labels_vec.is_empty() {
+                eprintln!("  Labels: {}", labels_vec.join(", "));
+            }
+        }
+        eprintln!("  Created At: {}", template.created_at);
+
+        eprintln!("\nMaterialization History:");
+        if history.is_empty() {
+            eprintln!("  No occurrences materialized yet");
+        } else {
+            for mat in &history {
+                eprintln!(
+                    "  Sequence {}: Issue {} (materialized {})",
+                    mat.series_sequence, mat.occurrence_id, mat.materialized_at
+                );
+                if let Some(ref actor) = mat.actor {
+                    eprintln!("    Actor: {}", actor);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_recurrence_list(opts: cli::RecurrenceListOptions) -> Result<()> {
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    let db_path = config.database_path();
+    let mut store = store::SqliteStore::with_path(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    let templates = service::list_templates(store.conn())?;
+
+    if opts.json {
+        let output = serde_json::to_string_pretty(&templates).unwrap();
+        println!("{}", output);
+    } else {
+        if templates.is_empty() {
+            eprintln!("No recurrence templates found");
+        } else {
+            eprintln!("Recurrence Templates:");
+            for template in &templates {
+                let history = service::get_materialization_history(store.conn(), &template.id)
+                    .unwrap_or_default();
+                let count = history.len();
+
+                eprintln!(
+                    "  {} - {} ({} occurrence(s))",
+                    template.id, template.title, count
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_recurrence_delete(opts: cli::RecurrenceDeleteOptions) -> Result<()> {
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    let db_path = config.database_path();
+    let mut store = store::SqliteStore::with_path(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    service::delete_template(store.conn_mut(), &opts.id)?;
+
+    eprintln!("Deleted recurrence template: {}", opts.id);
+
+    Ok(())
+}
+
+fn cmd_recurrence_materialize(opts: cli::RecurrenceMaterializeOptions) -> Result<()> {
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    let db_path = config.database_path();
+    let mut store = store::SqliteStore::with_path(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    let (_issue_id, materialization) =
+        service::materialize_next_occurrence(store.conn_mut(), &opts.id, opts.actor.as_deref())?;
+
+    eprintln!("Materialized next occurrence:");
+    eprintln!("  Template: {}", materialization.template_id);
+    eprintln!("  Sequence: {}", materialization.series_sequence);
+    eprintln!("  Issue ID: {}", materialization.occurrence_id);
+    if let Some(ref actor) = materialization.actor {
+        eprintln!("  Actor: {}", actor);
+    }
+    eprintln!("  Materialized At: {}", materialization.materialized_at);
+
+    Ok(())
+}
+
+fn cmd_recurrence_history(opts: cli::RecurrenceHistoryOptions) -> Result<()> {
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    let db_path = config.database_path();
+    let mut store = store::SqliteStore::with_path(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    let template = service::get_template(store.conn(), &opts.id)?;
+    let history = service::get_materialization_history(store.conn(), &opts.id)?;
+
+    if opts.json {
+        let output = serde_json::to_string_pretty(&history).unwrap();
+        println!("{}", output);
+    } else {
+        eprintln!("Materialization History for: {}", template.title);
+        if history.is_empty() {
+            eprintln!("  No occurrences materialized yet");
+        } else {
+            for mat in &history {
+                eprintln!(
+                    "  Sequence {}: Issue {} (materialized {})",
+                    mat.series_sequence, mat.occurrence_id, mat.materialized_at
+                );
+                if let Some(ref actor) = mat.actor {
+                    eprintln!("    Actor: {}", actor);
+                }
+            }
+        }
+    }
 
     Ok(())
 }

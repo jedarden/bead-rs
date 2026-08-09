@@ -102,6 +102,99 @@ pub fn create_issue(
     Ok(issue)
 }
 
+/// Internal function to create an issue with a specific ID (used by recurrence service)
+#[allow(clippy::too_many_arguments)]
+pub fn create_issue_internal(
+    conn: &Connection,
+    id: &str,
+    title: &str,
+    description: Option<&str>,
+    priority: i64,
+    issue_type: &str,
+    labels: &[String],
+    actor: Option<&str>,
+) -> Result<String> {
+    // Validate inputs
+    if title.is_empty() {
+        return Err(Error::validation("Title cannot be empty"));
+    }
+
+    if title.len() > 4096 {
+        return Err(Error::validation("Title cannot exceed 4,096 bytes"));
+    }
+
+    if !(0..=4).contains(&priority) {
+        return Err(Error::validation("Priority must be between 0 and 4"));
+    }
+
+    // Validate issue_type
+    if issue_type.is_empty() {
+        return Err(Error::validation("issue_type cannot be empty"));
+    }
+
+    // Validate labels
+    for label in labels {
+        crate::model::validate_label(label)?;
+    }
+
+    // Create timestamps
+    let now = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    // Begin transaction
+    let mut stmt = conn.prepare_cached("INSERT INTO issues (id, title, description, priority, base_status, issue_type, created_at, updated_at, revision, schema_ref) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)")?;
+
+    let schema_ref = "urn:bead-rs:schema:issue:native-v1";
+    let base_status = "open";
+    let initial_revision = 1i64;
+
+    stmt.execute((
+        id,
+        title,
+        description.unwrap_or(""),
+        priority,
+        base_status,
+        issue_type,
+        &now,
+        &now,
+        initial_revision,
+        schema_ref,
+    ))?;
+
+    // Add labels if provided
+    if !labels.is_empty() {
+        let mut label_stmt =
+            conn.prepare_cached("INSERT INTO labels (issue_id, label) VALUES (?1, ?2)")?;
+        for label in labels {
+            label_stmt.execute((id, label))?;
+        }
+    }
+
+    // Create audit event for the issue creation
+    let event_detail = serde_json::json!({
+        "actor": actor.unwrap_or("system"),
+        "issue_id": id,
+        "title": title,
+        "priority": priority,
+        "issue_type": issue_type,
+    });
+
+    let mut event_stmt = conn.prepare_cached(
+        "INSERT INTO events (issue_id, kind, actor, time, detail) VALUES (?1, ?2, ?3, ?4, ?5)",
+    )?;
+
+    event_stmt.execute((
+        id,
+        "created",
+        actor.unwrap_or("system"),
+        &now,
+        &event_detail.to_string(),
+    ))?;
+
+    Ok(id.to_string())
+}
+
 /// List issues with optional filtering
 pub fn list_issues(
     conn: &Connection,

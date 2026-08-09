@@ -104,6 +104,10 @@ pub enum Command {
     #[command(subcommand)]
     Data(DataCommand),
 
+    /// Manage recurrence templates
+    #[command(subcommand)]
+    Recurrence(RecurrenceCommand),
+
     /// Not yet implemented
     #[command(subcommand)]
     #[allow(clippy::enum_variant_names)]
@@ -1510,6 +1514,160 @@ pub struct DataRemoveOptions {
     /// Data namespace
     #[arg(long)]
     pub namespace: String,
+}
+
+/// Recurrence template commands
+#[derive(Subcommand, Debug)]
+pub enum RecurrenceCommand {
+    /// Create a new recurrence template
+    Create(RecurrenceCreateOptions),
+
+    /// Show a recurrence template
+    Show(RecurrenceShowOptions),
+
+    /// List all recurrence templates
+    List(RecurrenceListOptions),
+
+    /// Delete a recurrence template
+    Delete(RecurrenceDeleteOptions),
+
+    /// Materialize the next occurrence from a template
+    Materialize(RecurrenceMaterializeOptions),
+
+    /// Show materialization history for a template
+    History(RecurrenceHistoryOptions),
+}
+
+/// Options for creating a recurrence template
+#[derive(Parser, Debug)]
+#[command(
+    about = "Create a new recurrence template",
+    long_about = "Create an immutable recurrence template that defines how recurring issues should be created.
+
+Templates define the structure for recurring issues including title templates, default priority,
+issue type, and labels. Individual occurrences are created explicitly through the materialize
+command, not automatically on schedules.
+
+EXAMPLES:
+  bead recurrence create template-001 --title 'Daily Review' --base-title-template 'Daily Review {n}' --priority 2
+  bead recurrence create weekly-planning --title 'Weekly Planning' --base-title-template 'Week {n} Planning' --labels 'weekly,planning'"
+)]
+pub struct RecurrenceCreateOptions {
+    /// Template ID
+    #[arg(long)]
+    pub id: String,
+
+    /// Template title
+    #[arg(long)]
+    pub title: String,
+
+    /// Template description
+    #[arg(long)]
+    pub description: Option<String>,
+
+    /// Title template for occurrences (use {n} for sequence number)
+    #[arg(long)]
+    pub base_title_template: String,
+
+    /// Description template for occurrences
+    #[arg(long)]
+    pub base_description: Option<String>,
+
+    /// Priority for created issues (0-4, default 2)
+    #[arg(long)]
+    pub priority: Option<i64>,
+
+    /// Issue type for created issues (default 'task')
+    #[arg(long)]
+    pub issue_type: Option<String>,
+
+    /// Comma-separated list of labels to apply to occurrences
+    #[arg(long)]
+    pub labels: Option<String>,
+}
+
+/// Options for showing a recurrence template
+#[derive(Parser, Debug)]
+#[command(
+    about = "Show a recurrence template",
+    long_about = "Display detailed information about a specific recurrence template including
+its configuration and materialization history."
+)]
+pub struct RecurrenceShowOptions {
+    /// Template ID
+    #[arg(long)]
+    pub id: String,
+
+    /// Output in JSON format
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Options for listing recurrence templates
+#[derive(Parser, Debug)]
+#[command(
+    about = "List all recurrence templates",
+    long_about = "List all recurrence templates in the workspace with their basic configuration
+and occurrence counts."
+)]
+pub struct RecurrenceListOptions {
+    /// Output in JSON format
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Options for deleting a recurrence template
+#[derive(Parser, Debug)]
+#[command(
+    about = "Delete a recurrence template",
+    long_about = "Delete a recurrence template and its materialization history.
+This operation is irreversible and will remove all tracking of the template's occurrences."
+)]
+pub struct RecurrenceDeleteOptions {
+    /// Template ID
+    #[arg(long)]
+    pub id: String,
+}
+
+/// Options for materializing the next occurrence
+#[derive(Parser, Debug)]
+#[command(
+    about = "Materialize the next occurrence from a template",
+    long_about = "Create the next occurrence in the recurrence series as a new issue.
+Each occurrence carries a stable series reference and the created issue ID.
+
+This is an explicit operation - bead-rs never automatically creates occurrences on schedules.
+External schedulers should call this command when they want a new occurrence created.
+
+EXAMPLES:
+  bead recurrence materialize template-001
+  bead recurrence materialize daily-review --actor scheduler-1"
+)]
+pub struct RecurrenceMaterializeOptions {
+    /// Template ID
+    #[arg(long)]
+    pub id: String,
+
+    /// Actor performing the materialization
+    #[arg(long)]
+    pub actor: Option<String>,
+}
+
+/// Options for showing materialization history
+#[derive(Parser, Debug)]
+#[command(
+    about = "Show materialization history for a template",
+    long_about = "Display the complete materialization history for a recurrence template,
+showing all created occurrences with their sequence numbers and timestamps."
+)]
+pub struct RecurrenceHistoryOptions {
+    /// Template ID
+    #[arg(long)]
+    pub id: String,
+
+    /// Output in JSON format
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Placeholder for unimplemented commands

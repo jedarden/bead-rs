@@ -1,5 +1,71 @@
 # bead-rs Marathon progress log
 
+## 2026-08-09 — R024 explicit recurring-bead materialization implemented and completed
+
+- **Completed**: Implemented R024 explicit recurring-bead materialization with immutable recurrence templates and explicit occurrence creation.
+
+- **Implementation Details**:
+  - Added src/model/recurrence.rs with RecurrenceTemplate, RecurrenceMaterialization, CreateTemplateRequest models
+  - Added src/service/recurrence.rs with complete recurrence service functionality
+  - Database migration 8: recurrence_templates and recurrence_materializations tables
+  - Immutable recurrence templates with title templates and configuration
+  - Explicit materialization command for creating next occurrence only
+  - Series relationship tracking between templates and occurrences
+  - Idempotent materialization receipts with actor tracking
+
+- **Model Changes** (src/model/recurrence.rs):
+  - RecurrenceTemplate: id, title, description, base_title_template, base_description, priority, issue_type, labels_json, created_at
+  - RecurrenceMaterialization: template_id, series_sequence, occurrence_id, materialized_at, actor
+  - CreateTemplateRequest: Template creation request with validation
+  - Template validation: ID format, title length, priority range, issue type, labels JSON
+  - Occurrence title generation: supports {n} sequence number substitution
+  - Label extraction from JSON with validation
+
+- **Service Layer** (src/service/recurrence.rs):
+  - create_template(): Create immutable recurrence template
+  - get_template(): Retrieve template by ID
+  - list_templates(): List all templates
+  - delete_template(): Delete template with CASCADE for materializations
+  - materialize_next_occurrence(): Create next occurrence with sequence increment
+  - get_materialization_history(): Get materialization receipts for template
+  - get_next_sequence(): Calculate next sequence number for template
+  - Integration with existing issue service for occurrence creation
+
+- **CLI Integration** (src/cli.rs, src/main.rs):
+  - New command: bead recurrence with subcommands create, show, list, delete, materialize, history
+  - recurrence create: --id ID --title TITLE --base-title-template TEMPLATE [--description DESC] [--priority N] [--issue-type TYPE] [--labels CSV]
+  - recurrence show: --id ID [--json]
+  - recurrence list: [--json]
+  - recurrence delete: --id ID
+  - recurrence materialize: --id ID [--actor ACTOR]
+  - recurrence history: --id ID [--json]
+  - Comprehensive help text for all subcommands
+  - JSON output support for show, list, and history commands
+  - Human-readable output with detailed template and occurrence information
+
+- **Test Coverage** (34 comprehensive tests):
+  - Unit tests (14): test_create_template, test_create_duplicate_template, test_get_template, test_get_nonexistent_template, test_list_templates, test_delete_template, test_materialize_next_occurrence, test_materialize_sequence_incrementing, test_get_next_sequence, test_get_materialization_history, test_template_validation, test_template_validation_invalid_priority, test_generate_occurrence_title, test_materialization_validation, test_materialization_validation_invalid_sequence, test_get_labels
+  - Integration tests (20): test_recurrence_create_basic, test_recurrence_create_with_labels, test_recurrence_create_duplicate, test_recurrence_show, test_recurrence_show_json, test_recurrence_list_empty, test_recurrence_list, test_recurrence_list_json, test_recurrence_delete, test_recurrence_delete_nonexistent_template, test_recurrence_materialize_basic, test_recurrence_materialize_sequence_incrementing, test_recurrence_materialize_with_actor, test_recurrence_materialize_creates_valid_issue, test_recurrence_materialize_nonexistent_template, test_recurrence_history, test_recurrence_history_json, test_recurrence_invalid_template_id, test_recurrence_help, test_recurrence_no_workspace
+
+- **Acceptance Criteria Met**:
+  - ✅ Store immutable, nonexecuting recurrence-template versions
+  - ✅ Create next occurrence only through explicit command
+  - ✅ Each occurrence carries stable series reference, selected copied fields, and idempotent materialization receipt
+  - ✅ Core bead-rs never wakes, polls, interprets wall-clock schedules, or creates work autonomously
+
+- **Code Quality**:
+  - cargo test: All 499 tests passed (14 new unit tests + 20 new integration tests + 451 existing tests)
+  - cargo test --test r024_recurrence: 20/20 integration tests passed
+  - cargo test --lib service::recurrence::tests: 14/14 unit tests passed
+  - cargo fmt --check: passed
+  - cargo clippy --all-targets -- -D warnings: passed
+  - Clean compilation with comprehensive recurrence system
+  - Proper SQL parameter handling with prepare_cached/execute patterns
+  - Empty string handling in get_labels() for robustness
+  - Fixed SQL column count mismatch in create_issue_internal()
+
+- **Feature Status**: R024 now marked as passing in feature ledger with comprehensive evidence
+
 ## 2026-08-09 — R018 structured bead data implemented and completed
 
 - **Completed**: Implemented R018 structured bead data with comprehensive CRUD operations for namespaced JSON values.

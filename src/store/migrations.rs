@@ -7,7 +7,7 @@ use rusqlite::{Connection, Result as SqliteResult};
 use sha2::{Digest, Sha256};
 
 /// Current migration version
-pub const CURRENT_VERSION: i64 = 7;
+pub const CURRENT_VERSION: i64 = 8;
 
 /// Apply all pending migrations to the database
 pub fn apply_migrations(conn: &Connection) -> SqliteResult<()> {
@@ -74,6 +74,7 @@ fn get_migration(version: i64) -> Migration {
         5 => migration_5(),
         6 => migration_6(),
         7 => migration_7(),
+        8 => migration_8(),
         v => panic!("Unknown migration version: {}", v),
     }
 }
@@ -440,6 +441,54 @@ ALTER TABLE dependencies ADD COLUMN condition TEXT;
 
 -- Create index for conditional dependency queries
 CREATE INDEX IF NOT EXISTS dependencies_condition ON dependencies (condition);
+"#;
+
+    Migration {
+        sql: sql.to_string(),
+    }
+}
+
+/// Migration 8: Explicit recurring-bead materialization (R024)
+///
+/// This migration adds support for R024's recurrence templates:
+/// - Immutable recurrence-template versions
+/// - Materialization receipts for tracking series occurrences
+/// - Series references between templates and created issues
+/// - No automatic scheduling; explicit command only
+fn migration_8() -> Migration {
+    let sql = r#"
+-- Recurrence templates table
+-- Stores immutable templates that define how recurring issues should be created
+CREATE TABLE IF NOT EXISTS recurrence_templates (
+    id TEXT NOT NULL PRIMARY KEY,
+    title TEXT NOT NULL,
+    description TEXT,
+    base_title_template TEXT NOT NULL,
+    base_description TEXT,
+    priority INTEGER NOT NULL DEFAULT 2 CHECK (priority >= 0 AND priority <= 4),
+    issue_type TEXT NOT NULL DEFAULT 'task',
+    labels_json TEXT,
+    created_at TEXT NOT NULL
+);
+
+-- Recurrence materializations table
+-- Tracks materialization receipts and relationships between templates and occurrences
+CREATE TABLE IF NOT EXISTS recurrence_materializations (
+    template_id TEXT NOT NULL,
+    series_sequence INTEGER NOT NULL,
+    occurrence_id TEXT NOT NULL,
+    materialized_at TEXT NOT NULL,
+    actor TEXT,
+    PRIMARY KEY (template_id, series_sequence),
+    FOREIGN KEY (template_id) REFERENCES recurrence_templates(id) ON DELETE CASCADE,
+    FOREIGN KEY (occurrence_id) REFERENCES issues(id) ON DELETE CASCADE
+);
+
+-- Index for looking up materializations by template
+CREATE INDEX IF NOT EXISTS recurrence_materializations_template ON recurrence_materializations (template_id);
+
+-- Index for looking up materializations by occurrence
+CREATE INDEX IF NOT EXISTS recurrence_materializations_occurrence ON recurrence_materializations (occurrence_id);
 "#;
 
     Migration {

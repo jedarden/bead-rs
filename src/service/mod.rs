@@ -16,6 +16,7 @@ pub mod issues;
 pub mod leases;
 pub mod lifecycle;
 pub mod query;
+pub mod recurrence;
 pub mod rehearsal;
 
 pub use capabilities::generate_capabilities;
@@ -39,6 +40,10 @@ pub use leases::{validate_lease_for_mutation, LeaseClaimResult};
 pub use lifecycle::{close_issue, release_issue, reopen_issue, update_issue};
 pub use query::{
     delete_view, execute_query, get_view, list_views, parse_query, project_issue, save_view, Query,
+};
+pub use recurrence::{
+    create_template, delete_template, get_materialization_history, get_template, list_templates,
+    materialize_next_occurrence,
 };
 pub use rehearsal::run_recovery_rehearsal;
 

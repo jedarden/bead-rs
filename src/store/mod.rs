@@ -3,7 +3,7 @@
 //! This module provides the SQLite database backend, including schema migrations,
 //! connection management, and the core workspace initialization logic.
 
-mod migrations;
+pub mod migrations;
 mod sqlite;
 
 pub use sqlite::SqliteStore;

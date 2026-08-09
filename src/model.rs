@@ -8,6 +8,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+// Re-import rand for use in generate_issue_id
+use rand::Rng;
 
 /// Native issue ID validation
 ///
@@ -422,6 +424,42 @@ pub fn validate_reference_value(value: &str) -> Result<(), Error> {
     Ok(())
 }
 
+/// Validate label
+///
+/// Labels must be nonempty and must not exceed 255 bytes.
+pub fn validate_label(label: &str) -> Result<(), Error> {
+    if label.is_empty() {
+        return Err(Error::validation("Label cannot be empty"));
+    }
+
+    if label.len() > 255 {
+        return Err(Error::validation("Label cannot exceed 255 bytes"));
+    }
+
+    // No control characters
+    if label.chars().any(|c| c.is_control()) {
+        return Err(Error::validation("Label cannot contain control characters"));
+    }
+
+    Ok(())
+}
+
+/// Get current timestamp in RFC 3339 format
+pub fn current_timestamp() -> String {
+    time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_string())
+}
+
+/// Generate a unique issue ID with the default prefix
+pub fn generate_issue_id() -> Result<String, Error> {
+    let prefix = "bead";
+    let mut rng = rand::thread_rng();
+    let bytes: [u8; 8] = rng.gen();
+    let suffix = hex::encode(bytes);
+    Ok(format!("{}-{}", prefix, suffix))
+}
+
 impl ExternalReference {
     /// Validate an external reference
     pub fn validate(&self) -> Result<(), Error> {
@@ -630,3 +668,6 @@ mod tests {
         assert!(!in_progress.is_ready());
     }
 }
+
+// Recurrence template module (R024)
+pub mod recurrence;
