@@ -92,8 +92,9 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
         .unchecked_transaction()
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to start transaction: {}", e)))?;
 
-    // Claim an issue
-    let result = service::claim_issue(&tx, &opts.assignee, None, None, None)?;
+    // Claim an issue with optional decision trace
+    let (result, trace) =
+        service::claim_issue_with_trace(&tx, &opts.assignee, None, None, None, opts.why)?;
 
     // Commit transaction
     tx.commit()
@@ -101,9 +102,24 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
 
     // Output result
     if opts.json {
-        let output = serde_json::to_string(&result).map_err(|e| {
-            Error::Internal(anyhow::anyhow!("Failed to serialize claim result: {}", e))
-        })?;
+        let output = if let Some(trace_data) = trace {
+            // When --why is set, output enriched result with decision trace
+            serde_json::to_string(&serde_json::json!({
+                "claim_result": result,
+                "decision_trace": trace_data
+            }))
+            .map_err(|e| {
+                Error::Internal(anyhow::anyhow!(
+                    "Failed to serialize claim result with trace: {}",
+                    e
+                ))
+            })?
+        } else {
+            // Standard claim result
+            serde_json::to_string(&result).map_err(|e| {
+                Error::Internal(anyhow::anyhow!("Failed to serialize claim result: {}", e))
+            })?
+        };
         println!("{}", output);
     } else {
         if let Some(bead_id) = result.bead_id {
@@ -111,6 +127,68 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
             println!("Assignee: {}", result.assignee);
         } else {
             println!("No eligible work found.");
+        }
+
+        // Output decision trace in human-readable format if requested
+        if let Some(trace_data) = trace {
+            println!("\n=== Decision Trace ===");
+            println!("Version: {}", trace_data.version);
+            println!("Policy: {}", trace_data.policy);
+            println!("Assignee: {}", trace_data.assignee);
+            println!(
+                "Selection: {}",
+                if trace_data.has_selection {
+                    "Yes"
+                } else {
+                    "No"
+                }
+            );
+
+            if let Some(selected_id) = &trace_data.selected_issue_id {
+                println!("Selected Issue: {}", selected_id);
+            }
+
+            println!("\nReasons:");
+            for reason in &trace_data.reasons {
+                println!("  - {:?}", reason);
+            }
+
+            println!("\nEligibility Summary:");
+            println!(
+                "  Total Issues: {}",
+                trace_data.eligibility_summary.total_issues
+            );
+            println!(
+                "  Eligible: {}",
+                trace_data.eligibility_summary.eligible_count
+            );
+            println!(
+                "  Ineligible: {}",
+                trace_data.eligibility_summary.ineligible_count
+            );
+
+            if !trace_data
+                .eligibility_summary
+                .ineligibility_reasons
+                .is_empty()
+            {
+                println!("  Ineligibility Reasons:");
+                for (reason, count) in &trace_data.eligibility_summary.ineligibility_reasons {
+                    println!("    {}: {}", reason, count);
+                }
+            }
+
+            if let Some(factors) = &trace_data.selected_factors {
+                println!("\nSelected Issue Factors:");
+                println!("  Priority: {}", factors.priority);
+                println!("  Status: {}", factors.base_status);
+                println!("  Assigned: {}", factors.is_assigned);
+                println!("  Manually Blocked: {}", factors.is_manually_blocked);
+                println!(
+                    "  Unfinished Blockers: {}",
+                    factors.unfinished_blocker_count
+                );
+            }
         }
     }
 

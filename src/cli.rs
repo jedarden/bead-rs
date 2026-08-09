@@ -324,6 +324,10 @@ pub struct ClaimOptions {
     /// Output in JSON format
     #[arg(long)]
     pub json: bool,
+
+    /// Explain the claim decision with a machine-readable trace
+    #[arg(long)]
+    pub why: bool,
 }
 
 /// Options for updating an issue

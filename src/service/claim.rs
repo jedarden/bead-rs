@@ -8,6 +8,7 @@ use crate::error::Result;
 use rusqlite::OptionalExtension;
 use rusqlite::Transaction;
 use serde_json::json;
+use std::collections::HashMap;
 use time::OffsetDateTime;
 
 /// Claim result for JSON output
@@ -15,6 +16,103 @@ use time::OffsetDateTime;
 pub struct ClaimResult {
     pub bead_id: Option<String>,
     pub assignee: String,
+}
+
+/// Decision trace version for compatibility tracking
+const DECISION_TRACE_VERSION: &str = "v1";
+
+/// Semantic reason codes for decision explanations
+///
+/// These codes explain why an issue was selected or why no issue was available.
+/// They provide machine-readable diagnostics without exposing SQL or private
+/// store details.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasonCode {
+    /// Issue met all eligibility criteria and was selected
+    EligibleSelected,
+
+    /// No issues in the workspace are available for claiming
+    NoEligibleIssues,
+
+    /// Issue is already assigned to another worker
+    AlreadyAssigned,
+
+    /// Issue is manually blocked from claiming
+    ManuallyBlocked,
+
+    /// Issue has unfinished blocker dependencies
+    HasUnfinishedBlockers,
+
+    /// Issue is not in open status (e.g., closed, in_progress, deferred)
+    NotOpenStatus,
+
+    /// Selected based on priority ranking (highest priority first)
+    SelectedByPriority,
+
+    /// Selected based on FIFO ordering within same priority
+    SelectedByFifoOrder,
+
+    /// Workspace has no issues at all
+    EmptyWorkspace,
+}
+
+/// Issue eligibility factors for decision trace
+///
+/// This structure captures the factors that determined an issue's eligibility
+/// for claiming without exposing internal SQL or private store details.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EligibilityFactors {
+    pub issue_id: String,
+    pub is_eligible: bool,
+    pub reasons: Vec<ReasonCode>,
+    pub priority: i64,
+    pub created_at: String,
+    pub base_status: String,
+    pub is_assigned: bool,
+    pub is_manually_blocked: bool,
+    pub unfinished_blocker_count: i64,
+}
+
+/// Summary of all issues evaluated for claim decision
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EligibilitySummary {
+    pub total_issues: i64,
+    pub eligible_count: i64,
+    pub ineligible_count: i64,
+    pub ineligibility_reasons: HashMap<String, i64>, // reason code -> count
+}
+
+/// Machine-readable decision trace for claim operations
+///
+/// This trace explains the claim decision with versioned semantic reason codes,
+/// making empty queues and surprising selection behavior diagnosable without
+/// revealing SQL or private store details.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DecisionTrace {
+    /// Decision trace version for compatibility tracking
+    pub version: String,
+
+    /// Whether any issue was selected
+    pub has_selection: bool,
+
+    /// Selected issue ID (if any)
+    pub selected_issue_id: Option<String>,
+
+    /// Reason codes explaining the selection or lack thereof
+    pub reasons: Vec<ReasonCode>,
+
+    /// Summary of eligibility evaluation across all issues
+    pub eligibility_summary: EligibilitySummary,
+
+    /// Detailed factors for the selected issue (if any)
+    pub selected_factors: Option<EligibilityFactors>,
+
+    /// Assignee who performed or attempted the claim
+    pub assignee: String,
+
+    /// Claim policy used for selection
+    pub policy: String,
 }
 
 /// Claim an issue from the ready frontier using FIFO-v1 policy
@@ -83,6 +181,196 @@ pub fn claim_issue(
     })
 }
 
+/// Collect eligibility factors for all issues in the workspace
+///
+/// This function evaluates every issue for eligibility without exposing SQL
+/// details, providing the diagnostic information needed for decision traces.
+fn collect_eligibility_factors(
+    tx: &Transaction,
+    _assignee: &str,
+) -> Result<Vec<EligibilityFactors>> {
+    let query = r#"
+        SELECT
+            i.id,
+            i.base_status,
+            i.assignee,
+            i.manual_blocked,
+            i.priority,
+            i.created_at,
+            (
+                SELECT COUNT(*)
+                FROM dependencies d
+                JOIN issues blocker ON blocker.id = d.blocker_issue_id
+                WHERE d.blocked_issue_id = i.id
+                  AND d.kind = 'blocks'
+                  AND blocker.base_status != 'closed'
+            ) as unfinished_blockers
+        FROM issues i
+        ORDER BY i.priority ASC, i.created_at ASC, i.id ASC
+    "#;
+
+    let mut factors = Vec::new();
+    let mut stmt = tx.prepare(query).map_err(|e| {
+        crate::Error::Internal(anyhow::anyhow!(
+            "Failed to prepare eligibility query: {}",
+            e
+        ))
+    })?;
+
+    let issue_rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>("id")?,
+                row.get::<_, String>("base_status")?,
+                row.get::<_, Option<String>>("assignee")?,
+                row.get::<_, i64>("manual_blocked")?,
+                row.get::<_, i64>("priority")?,
+                row.get::<_, String>("created_at")?,
+                row.get::<_, i64>("unfinished_blockers")?,
+            ))
+        })
+        .map_err(|e| {
+            crate::Error::Internal(anyhow::anyhow!(
+                "Failed to execute eligibility query: {}",
+                e
+            ))
+        })?;
+
+    for issue in issue_rows {
+        let (id, base_status, assignee, manual_blocked, priority, created_at, unfinished_blockers) =
+            issue?;
+
+        let is_assigned = assignee.is_some();
+        let is_manually_blocked = manual_blocked != 0;
+        let is_open = base_status == "open";
+        let has_unfinished_blockers = unfinished_blockers > 0;
+
+        let mut reasons = Vec::new();
+        let mut is_eligible = true;
+
+        if !is_open {
+            reasons.push(ReasonCode::NotOpenStatus);
+            is_eligible = false;
+        }
+
+        if is_assigned {
+            reasons.push(ReasonCode::AlreadyAssigned);
+            is_eligible = false;
+        }
+
+        if is_manually_blocked {
+            reasons.push(ReasonCode::ManuallyBlocked);
+            is_eligible = false;
+        }
+
+        if has_unfinished_blockers {
+            reasons.push(ReasonCode::HasUnfinishedBlockers);
+            is_eligible = false;
+        }
+
+        if is_eligible {
+            reasons.push(ReasonCode::EligibleSelected);
+        }
+
+        factors.push(EligibilityFactors {
+            issue_id: id,
+            is_eligible,
+            reasons,
+            priority,
+            created_at,
+            base_status,
+            is_assigned,
+            is_manually_blocked,
+            unfinished_blocker_count: unfinished_blockers,
+        });
+    }
+
+    Ok(factors)
+}
+
+/// Build eligibility summary from collected factors
+fn build_eligibility_summary(factors: &[EligibilityFactors]) -> EligibilitySummary {
+    let mut ineligibility_reasons: HashMap<String, i64> = HashMap::new();
+
+    for factor in factors {
+        if !factor.is_eligible {
+            for reason in &factor.reasons {
+                if reason != &ReasonCode::EligibleSelected {
+                    let reason_str =
+                        serde_json::to_string(reason).unwrap_or_else(|_| "unknown".to_string());
+                    *ineligibility_reasons.entry(reason_str).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+
+    let eligible_count = factors.iter().filter(|f| f.is_eligible).count() as i64;
+    let ineligible_count = factors.len() as i64 - eligible_count;
+
+    EligibilitySummary {
+        total_issues: factors.len() as i64,
+        eligible_count,
+        ineligible_count,
+        ineligibility_reasons,
+    }
+}
+
+/// Create a decision trace for claim operations
+///
+/// This function builds a machine-readable explanation of the claim decision
+/// without revealing SQL or private store details.
+pub fn create_decision_trace(
+    tx: &Transaction,
+    selected_issue_id: Option<&str>,
+    assignee: &str,
+) -> Result<DecisionTrace> {
+    let factors = collect_eligibility_factors(tx, assignee)?;
+    let eligibility_summary = build_eligibility_summary(&factors);
+
+    let has_selection = selected_issue_id.is_some();
+    let selected_factors =
+        selected_issue_id.and_then(|id| factors.iter().find(|f| f.issue_id == id).cloned());
+
+    let mut reasons = Vec::new();
+
+    if let Some(selected_id) = selected_issue_id {
+        // Find the selected issue and explain why it was chosen
+        if let Some(selected) = factors.iter().find(|f| f.issue_id == selected_id) {
+            reasons.push(ReasonCode::EligibleSelected);
+
+            // Explain the ranking decision
+            let higher_priority_count = factors
+                .iter()
+                .filter(|f| f.is_eligible && f.priority < selected.priority)
+                .count();
+
+            if higher_priority_count == 0 {
+                reasons.push(ReasonCode::SelectedByPriority);
+            } else {
+                reasons.push(ReasonCode::SelectedByFifoOrder);
+            }
+        }
+    } else {
+        // No issue was selected - explain why
+        if eligibility_summary.total_issues == 0 {
+            reasons.push(ReasonCode::EmptyWorkspace);
+        } else if eligibility_summary.eligible_count == 0 {
+            reasons.push(ReasonCode::NoEligibleIssues);
+        }
+    }
+
+    Ok(DecisionTrace {
+        version: DECISION_TRACE_VERSION.to_string(),
+        has_selection,
+        selected_issue_id: selected_issue_id.map(|s| s.to_string()),
+        reasons,
+        eligibility_summary,
+        selected_factors,
+        assignee: assignee.to_string(),
+        policy: "fifo-v1".to_string(),
+    })
+}
+
 /// Find the next eligible issue using FIFO-v1 ranking
 ///
 /// Eligibility requires:
@@ -120,6 +408,36 @@ fn find_eligible_issue(tx: &Transaction) -> Result<Option<String>> {
         })?;
 
     Ok(issue_id)
+}
+
+/// Perform claim operation with optional decision trace
+///
+/// This function wraps the standard claim operation with optional decision trace
+/// collection for diagnostic purposes. The decision trace is nonmutating and
+/// only reads data to explain the claim decision.
+pub fn claim_issue_with_trace(
+    tx: &Transaction,
+    assignee: &str,
+    model: Option<&str>,
+    harness: Option<&str>,
+    harness_version: Option<&str>,
+    include_trace: bool,
+) -> Result<(ClaimResult, Option<DecisionTrace>)> {
+    // First perform the standard claim operation
+    let result = claim_issue(tx, assignee, model, harness, harness_version)?;
+
+    // Collect decision trace if requested
+    let trace = if include_trace {
+        Some(create_decision_trace(
+            tx,
+            result.bead_id.as_deref(),
+            assignee,
+        )?)
+    } else {
+        None
+    };
+
+    Ok((result, trace))
 }
 
 #[cfg(test)]

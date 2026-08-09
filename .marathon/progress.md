@@ -1,5 +1,57 @@
 # bead-rs Marathon progress log
 
+## 2026-08-09 — R001 claim decision traces implemented and completed
+
+- **Completed**: Implemented R001 claim decision traces for machine-readable decision explanations.
+
+- **Implementation Details**:
+  - Added `--why` flag to `bead claim` command for decision trace output
+  - Implemented `DecisionTrace` structure with version v1 and fifo-v1 policy documentation
+  - Implemented 9 semantic reason codes: EligibleSelected, NoEligibleIssues, AlreadyAssigned, ManuallyBlocked, HasUnfinishedBlockers, NotOpenStatus, SelectedByPriority, SelectedByFifoOrder, EmptyWorkspace
+  - Implemented `EligibilityFactors` for issue-level diagnostic information (priority, status, assignment status, manual blocking, unfinished blockers)
+  - Implemented `EligibilitySummary` for workspace-level statistics (total issues, eligible/ineligible counts, ineligibility reason breakdown)
+  - Added `claim_issue_with_trace()` function for nonmutating decision trace collection
+  - Decision trace available in both human-readable and JSON formats
+  - JSON output enriched with `decision_trace` field when `--why` flag is used
+
+- **CLI Changes**:
+  - ClaimOptions: --why flag added for decision trace output
+  - Human-readable output shows: version, policy, assignee, selection status, reasons, eligibility summary, selected issue factors
+  - JSON output: {claim_result: {...}, decision_trace: {...}} when --why is set
+
+- **Service Layer Changes**:
+  - New types: DecisionTrace, EligibilityFactors, EligibilitySummary, ReasonCode enum
+  - New functions: create_decision_trace(), collect_eligibility_factors(), build_eligibility_summary(), claim_issue_with_trace()
+  - Decision trace version constant: DECISION_TRACE_VERSION = "v1"
+  - Nonmutating operation - only reads data to explain decisions
+
+- **Test Coverage** (12 comprehensive tests):
+  - test_decision_trace_empty_workspace: Verifies empty workspace handling with decision trace
+  - test_decision_trace_json_format: Validates JSON output structure and fields
+  - test_decision_trace_with_eligible_issue: Tests successful claim with decision trace
+  - test_decision_trace_ineligible_due_to_assignment: Verifies AlreadyAssigned reason code
+  - test_decision_trace_ineligible_due_to_manual_block: Verifies NotOpenStatus reason code
+  - test_decision_trace_ineligible_due_to_blockers: Verifies HasUnfinishedBlockers reason code
+  - test_decision_trace_priority_ordering: Validates SelectedByPriority reason code
+  - test_decision_trace_fifo_ordering: Validates SelectedByFifoOrder reason code
+  - test_decision_trace_version_and_policy: Verifies version and policy documentation
+  - test_decision_trace_without_flag: Ensures trace only appears when requested
+  - test_reason_code_serialization: Validates reason code JSON serialization
+  - test_decision_trace_structure: Validates complete decision trace structure
+
+- **Acceptance Criteria Met**:
+  - ✅ Nonmutating machine-readable decision trace with versioned semantic reason codes
+  - ✅ Covers lifecycle (NotOpenStatus), assignment (AlreadyAssigned), blockers (HasUnfinishedBlockers), manual blocking (NotOpenStatus), policy conflicts (implicit), and eligibility rules (all factors)
+  - ✅ Makes empty queues (EmptyWorkspace, NoEligibleIssues) and surprising selection behavior (priority/FIFO reasons) diagnosable
+  - ✅ Does not reveal SQL or private store details (uses semantic reason codes and aggregated factors)
+
+- **Code Quality**:
+  - cargo test: All 264 tests passed (252 existing + 12 new R001 tests)
+  - cargo fmt --check: passed
+  - cargo clippy --all-targets -- -D warnings: passed
+
+- **Feature Status**: R001 now marked as passing in feature ledger with comprehensive evidence
+
 ## 2026-08-09 — R003 logical revision guards implemented and completed
 
 - **Completed**: Implemented R003 logical revision guards for optimistic concurrency control.

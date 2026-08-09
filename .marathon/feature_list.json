@@ -552,8 +552,22 @@
         "Covers lifecycle, assignment, blockers, manual blocking, policy conflicts, and eligibility rules",
         "Makes empty queues and surprising selection behavior diagnosable without revealing SQL or private store details"
       ],
-      "passes": false,
-      "evidence": []
+      "passes": true,
+      "evidence": [
+        "cargo test --test r001_decision_traces: 12 tests passed",
+        "cargo fmt --check: passed",
+        "cargo clippy --all-targets -- -D warnings: passed",
+        "Added --why flag to bead claim command for decision trace output",
+        "Implemented DecisionTrace structure with version v1 and fifo-v1 policy",
+        "Implemented 9 semantic reason codes: EligibleSelected, NoEligibleIssues, AlreadyAssigned, ManuallyBlocked, HasUnfinishedBlockers, NotOpenStatus, SelectedByPriority, SelectedByFifoOrder, EmptyWorkspace",
+        "Implemented EligibilityFactors for issue-level diagnostic information",
+        "Implemented EligibilitySummary for workspace-level statistics",
+        "Added claim_issue_with_trace() function for nonmutating decision trace collection",
+        "Decision trace available in both human-readable and JSON formats",
+        "JSON output enriched with decision_trace field when --why flag is used",
+        "Comprehensive test coverage: empty workspace, eligible issues, ineligible cases (assignment, manual block, blockers), priority/FIFO ordering, version/policy validation",
+        "All acceptance criteria met: nonmutating machine-readable trace with versioned semantic reason codes, covers lifecycle/assignment/blockers/policy/eligibility, makes queues and selection behavior diagnosable without SQL exposure"
+      ]
     },
     {
       "id": "R002",
