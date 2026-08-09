@@ -53,6 +53,7 @@ fn execute_command(cli: Cli) -> Result<()> {
         Command::Query(opts) => cmd_query(opts),
         Command::Changes(opts) => cmd_changes(opts),
         Command::Data(opts) => cmd_data(opts),
+        Command::Why(opts) => cmd_why(opts),
         Command::Recurrence(opts) => cmd_recurrence(opts),
         Command::Unimplemented(_) => Err(Error::cli_usage(
             "This command is not yet implemented. See `bead --help` for available commands.",
@@ -1922,6 +1923,170 @@ fn cmd_recurrence_materialize(opts: cli::RecurrenceMaterializeOptions) -> Result
     eprintln!("  Materialized At: {}", materialization.materialized_at);
 
     Ok(())
+}
+
+fn cmd_why(opts: cli::WhyOptions) -> Result<()> {
+    // Discover workspace
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    let db_path = config.database_path();
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    // Generate comprehensive why explanation
+    let explanation = service::explain_why(&conn, &opts.id)?;
+
+    if opts.json {
+        // Output machine-readable JSON
+        let output = serde_json::to_string_pretty(&explanation).map_err(|e| {
+            Error::Internal(anyhow::anyhow!(
+                "Failed to serialize why explanation: {}",
+                e
+            ))
+        })?;
+        println!("{}", output);
+    } else {
+        // Human-readable explanation
+        print_human_readable_why(&explanation);
+    }
+
+    Ok(())
+}
+
+fn print_human_readable_why(why: &service::WhyExplanation) {
+    println!("Why explanation for: {}", why.issue_id);
+
+    // Status section
+    println!("\n=== Status ===");
+    println!("Base Status: {}", why.base_status);
+    println!("Effective Status: {}", why.effective_status);
+    println!("Ready: {}", if why.is_ready { "Yes" } else { "No" });
+    println!(
+        "Assigned: {}",
+        why.assignee.as_ref().unwrap_or(&"None".to_string())
+    );
+    println!("Manual Blocked: {}", why.manual_blocked);
+    println!("Priority: P{}", why.priority);
+    println!("Issue Type: {}", why.issue_type);
+
+    // Timing information
+    println!("\n=== Timing ===");
+    println!("Created: {}", why.created_at);
+    println!("Updated: {}", why.updated_at);
+    if let Some(closed_at) = &why.closed_at {
+        println!("Closed: {}", closed_at);
+    }
+
+    // Blockers section
+    println!("\n=== Blockers ===");
+    if why.blockers.active_blocker_count > 0 {
+        println!("Active Blockers: {}", why.blockers.active_blocker_count);
+        for blocker in &why.blockers.active_blockers {
+            println!("  - {} ({})", blocker.issue_id, blocker.title);
+            println!("    Status: {}", blocker.status);
+            if blocker.is_conditional {
+                println!(
+                    "    Conditional: {}",
+                    blocker
+                        .condition_explanation
+                        .as_ref()
+                        .unwrap_or(&"No condition".to_string())
+                );
+            }
+        }
+    } else if why.blockers.total_dependency_count > 0 {
+        println!(
+            "No active blockers (has {} inactive dependencies)",
+            why.blockers.total_dependency_count
+        );
+    } else {
+        println!("No dependencies");
+    }
+
+    // Ranking factors section
+    println!("\n=== Ranking Factors ===");
+    println!(
+        "Declared Priority: P{}",
+        why.ranking_factors.declared_priority
+    );
+    println!(
+        "Effective Priority: P{}",
+        why.ranking_factors.effective_priority
+    );
+    if let Some(age_seconds) = why.ranking_factors.ready_age_seconds {
+        let age_minutes = age_seconds / 60;
+        println!(
+            "Ready Age: {} seconds ({} minutes)",
+            age_seconds, age_minutes
+        );
+    } else {
+        println!("Ready Age: Not currently ready");
+    }
+    println!(
+        "Attempt Tier: {}",
+        tier_name(why.ranking_factors.attempt_tier)
+    );
+    println!(
+        "Consecutive Failures: {}",
+        why.ranking_factors.consecutive_failures
+    );
+    if let Some(last_claim) = why.ranking_factors.last_claim_sequence {
+        println!("Last Claim Sequence: {}", last_claim);
+    } else {
+        println!("Last Claim Sequence: Never claimed");
+    }
+
+    if let Some(impact) = &why.ranking_factors.graph_impact {
+        println!("\n=== Graph Impact ===");
+        println!("Immediate Unlock Count: {}", impact.immediate_unlock_count);
+        println!("Downstream Reach: {}", impact.downstream_reach);
+        println!(
+            "Critical Path Reduction: {}",
+            impact.critical_path_reduction
+        );
+        if !impact.unlocked_priorities.is_empty() {
+            println!("Unlocked Priorities: {:?}", impact.unlocked_priorities);
+        }
+    }
+
+    // Legal operations section
+    println!("\n=== Legal Operations ===");
+    println!("Current State: {}", why.base_status);
+    for operation in &why.legal_operations {
+        let status = if operation.is_valid { "✓" } else { "✗" };
+        println!(
+            "{} {} - {}",
+            status,
+            operation.operation,
+            operation
+                .command_example
+                .as_ref()
+                .unwrap_or(&"".to_string())
+        );
+        if let Some(reason) = &operation.invalid_reason {
+            println!("    Reason: {}", reason);
+        }
+    }
+
+    // Reason codes section
+    if !why.reasons.is_empty() {
+        println!("\n=== Reason Codes ===");
+        for reason in &why.reasons {
+            println!("  - {}", format!("{:?}", reason));
+        }
+    }
+}
+
+/// Convert attempt tier to human-readable name
+fn tier_name(tier: i64) -> &'static str {
+    match tier {
+        0 => "Unproven",
+        1 => "Retryable",
+        2 => "Struggling",
+        3 => "Quarantined",
+        _ => "Unknown",
+    }
 }
 
 fn cmd_recurrence_history(opts: cli::RecurrenceHistoryOptions) -> Result<()> {

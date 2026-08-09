@@ -100,6 +100,9 @@ pub enum Command {
     /// Access cursor-based change feed for incremental local synchronization
     Changes(ChangesOptions),
 
+    /// Explain issue state, readiness, blockers, and legal operations
+    Why(WhyOptions),
+
     /// Manage structured bead data
     #[command(subcommand)]
     Data(DataCommand),
@@ -1205,6 +1208,47 @@ pub struct ChangesOptions {
     /// Validate a cursor and check for gaps
     #[arg(long)]
     pub validate: Option<String>,
+
+    /// Output in JSON format
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Options for the why explanation command (R023)
+#[derive(Parser, Debug)]
+#[command(
+    about = "Explain issue state, readiness, blockers, and legal operations",
+    long_about = "Provide comprehensive explanation of why an issue is in its current state,
+what operations are legal, and what factors affect its claim ranking.
+
+This command gives humans and agents one entry point for understanding issue state,
+readiness, active blockers, claim-ranking factors, and legal next operations. It calls
+the same domain evaluators and reason codes used by R001 (decision traces) and
+R019 (intelligent scheduling) to ensure consistency across all diagnostic interfaces.
+
+EXAMPLES:
+  bead why bead-123abc456789def              # Human-readable explanation
+  bead why bead-123abc456789def --json   # Machine-readable JSON output
+  bead why bead-123abc456789def          # Comprehensive state analysis
+
+EXPLANATION COVERAGE:
+  - Effective vs base status (blocked vs open/in_progress/closed)
+  - Ready frontier analysis (unassigned, no manual block, no active blockers)
+  - Active blocker analysis with blocker details
+  - Claim ranking factors (priority, age, rotation, attempt tier, graph impact)
+  - Legal operations list with validity checks and command examples
+  - Reuse of R001 reason codes and R019 scheduling metrics
+
+OUTPUT FORMAT:
+  Human-readable: Multi-section text with clear headers and actionable insights
+  JSON (--json): Structured WhyExplanation with all analysis components
+
+The command fails with exit code 3 if the issue is not found."
+)]
+pub struct WhyOptions {
+    /// Issue ID to explain
+    #[arg(long)]
+    pub id: String,
 
     /// Output in JSON format
     #[arg(long)]

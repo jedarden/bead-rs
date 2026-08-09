@@ -20,6 +20,7 @@ pub mod query;
 pub mod recurrence;
 pub mod rehearsal;
 pub mod scheduling;
+pub mod why;
 
 pub use capabilities::generate_capabilities;
 pub use changes::{
@@ -58,6 +59,10 @@ pub use rehearsal::run_recovery_rehearsal;
 // Scheduling types are part of R019 public API but may show as unused during compilation
 #[allow(unused_imports)]
 pub use scheduling::{AttemptTier, GraphMetrics, SchedulingPolicy, SchedulingState};
+pub use why::{
+    explain_why, BlockerAnalysis, BlockerDetail, GraphImpact, LegalOperation, RankingFactors,
+    WhyExplanation,
+};
 
 // Placeholder modules for future implementation
 // pub mod migrate;

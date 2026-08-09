@@ -1,5 +1,60 @@
 # bead-rs Marathon progress log
 
+## 2026-08-09 — R023 unified why explanation facade implemented and completed
+
+- **Completed**: Implemented R023 unified "why" explanation command providing comprehensive issue state analysis, blocker analysis, claim ranking factors, legal operations, and reason codes.
+
+- **Implementation Scope**:
+  - Unified why explanation facade (src/service/why.rs - new module)
+  - Comprehensive issue state analysis with effective status calculation
+  - Blocker analysis including active blockers, conditional dependencies, and total dependency tracking
+  - Claim ranking factors including priority, age, attempt tiers, consecutive failures, and graph impact
+  - Legal operations analysis showing what operations are valid for current issue state
+  - Reason codes for detailed explanations using existing R001/R019 evaluators
+  - JSON and human-readable output formats
+  - CLI integration with `bead why --id <ID> [--json]` command
+  - Backward compatibility with databases missing R019 scheduling columns
+
+- **Core Service Layer** (src/service/why.rs):
+  - WhyExplanation struct: Comprehensive issue analysis with all required fields
+  - BlockerAnalysis struct: Active blocker tracking with conditional dependency support
+  - RankingFactors struct: Claim ranking explanation with R019 integration
+  - LegalOperation struct: Operation validity checking with command examples
+  - explain_why(): Main why explanation generation function
+  - Graph impact metrics integration with R019 scheduling (graceful fallback)
+  - Database schema compatibility handling for pre-R019 databases
+
+- **CLI Integration** (src/cli.rs, src/main.rs):
+  - Added WhyOptions struct with --id and --json flags
+  - Added Command::Why variant to main CLI enum
+  - cmd_why function with workspace discovery and error handling
+  - print_human_readable_why function for formatted output
+  - JSON output with full serialization support
+
+- **Test Coverage** (11 comprehensive integration tests):
+  - test_why_explanation_basic: Basic issue state analysis
+  - test_why_explanation_with_blockers: Active blocker detection and analysis
+  - test_why_explanation_assigned_issue: Assignment status tracking
+  - test_why_explanation_manually_blocked: Manual blocking status
+  - test_why_explanation_closed_issue: Closed state legal operations
+  - test_why_explanation_in_progress_issue: In-progress state operations
+  - test_why_explanation_deferred_status: Deferred state operations
+  - test_why_explanation_multiple_blockers: Multiple blocker tracking
+  - test_why_explanation_json_output: JSON serialization and structure
+  - test_why_explanation_ranking_factors: Claim ranking factor analysis
+  - test_why_explanation_operations_include_commands: Command examples in output
+  - test_why_explanation_nonexistent_issue: Error handling for missing issues
+
+- **Acceptance Criteria Met**:
+  - ✅ Single entry point for issue state, readiness, blockers, and legal operations
+  - ✅ Reuses domain evaluators and reason codes from R001 (decision traces) and R019 (intelligent scheduling)
+  - ✅ JSON and human-readable output formats
+  - ✅ Comprehensive blocker analysis including conditional dependencies
+  - ✅ Claim ranking factors with R019 integration
+  - ✅ Legal operations with validity checking and command examples
+  - ✅ Backward compatibility with pre-R019 databases
+  - ✅ Comprehensive integration test coverage
+
 ## 2026-08-09 — R019 intelligent scheduling implemented and completed
 
 - **Completed**: Implemented R019 intelligent, aging, rotating, failure-aware claim scheduling with comprehensive policy system.

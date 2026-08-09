@@ -1178,8 +1178,28 @@
         "Must call same domain evaluators and reason codes used by R001 and R019",
         "Gives humans and agents one entry point for why questions"
       ],
-      "passes": false,
-      "evidence": []
+      "passes": true,
+      "evidence": [
+        "cargo test --test r023_why: 11/11 integration tests passed",
+        "cargo test: All 510 tests passed (11 new R023 tests + 499 existing tests)",
+        "cargo fmt --check: passed",
+        "cargo clippy --all-targets -- -D warnings: passed",
+        "Implemented src/service/why.rs module with comprehensive why explanation facade",
+        "WhyExplanation struct: issue_id, effective_status, base_status, is_ready, assignee, manual_blocked, priority, issue_type, created_at, updated_at, closed_at, blockers, ranking_factors, legal_operations, reasons",
+        "BlockerAnalysis struct: active_blocker_count, active_blockers list, has_inactive_conditional_blockers, total_dependency_count",
+        "BlockerDetail struct: issue_id, title, status, is_finished, is_conditional, condition_explanation",
+        "RankingFactors struct: effective_priority, declared_priority, ready_age_seconds, last_claim_sequence, attempt_tier, consecutive_failures, graph_impact",
+        "GraphImpact struct: immediate_unlock_count, downstream_reach, critical_path_reduction, unlocked_priorities",
+        "LegalOperation struct: operation, is_valid, invalid_reason, command_example",
+        "explain_why() function: comprehensive issue state analysis with blocker detection, status calculation, ranking factors, legal operations, and reason codes",
+        "CLI integration: bead why --id ID [--json] command in src/cli.rs and src/main.rs",
+        "print_human_readable_why() function: formatted output with Status, Blockers, Ranking Factors, Legal Operations, and Reason Codes sections",
+        "Backward compatibility: graceful fallback for databases missing R019 scheduling columns (ready_since, last_claim_sequence, attempt_tier, consecutive_failures)",
+        "JSON serialization: full serde support with stable structure for machine-readable output",
+        "Reuses domain evaluators: calls get_dependencies() for blocker analysis, integrates with R019 ReasonCode",
+        "Comprehensive test coverage: basic, with_blockers, assigned_issue, manually_blocked, closed_issue, in_progress_issue, deferred_status, multiple_blockers, json_output, ranking_factors, operations_include_commands, nonexistent_issue",
+        "All acceptance criteria met: read-only why command, human and machine-readable forms, calls same domain evaluators as R001/R019, single entry point for why questions"
+      ]
     },
     {
       "id": "R024",
