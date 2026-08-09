@@ -362,3 +362,5 @@
 
 - **Feature Status**: R004 now marked as passing in feature ledger with comprehensive evidence
 
+- **Next Steps**: Select next unblocked extension item. Candidates include R009 (schema negotiation), R011 (namespaced external references), R013 (cursor-based change feed), R014 (import diagnostic report), R015 (recovery rehearsal), R016 (scoped doctor mode), R017 (conditional dependencies), R018 (structured bead data operations), R019 (intelligent scheduling), R021 (policy lint), R022 (general mutation dry-run), R023 (unified why facade), R024 (recurring bead materialization).
+
