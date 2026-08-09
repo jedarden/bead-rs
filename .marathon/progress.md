@@ -4883,3 +4883,74 @@ Remaining features (F012, F013, F017, F014) all require external organizational 
 - **Next recommended feature**: F017 conformance gaps remain — forensic
   restore/merge operations, content-addressed adaptive shards, tombstone
   calculation, atomic file syncing, and capability reporting.
+
+## 2026-08-09 — F017 conformance findings #1, #3-#8 resolved, comprehensive integration testing
+
+- **Independent review conformance work completed**: Addressed 7 of 8 findings from
+  docs/reviews/f017-independent-review-2026-08-09.md. Only Finding #2 (restore/merge)
+  remains incomplete.
+
+- **Finding #1 (CLI activation)**: ✅ VERIFIED ALREADY COMPLETE
+  - `publish_forensic_checkpoint` already wired to `bead sync --flush-only`
+  - Monolithic mode functional with proper generation IDs and pointer management
+
+- **Finding #3 (Content-addressed paths)**: ✅ IMPLEMENTED
+  - Replaced stable logical filenames (issue-<prefix>.jsonl) with SHA-256 hash-based paths
+  - Both issue and event shards now use content-addressed object filenames
+  - Format: `<hash>.jsonl` where hash is SHA-256 of content
+  - Prevents accidental object replacement and enables deduplication
+
+- **Finding #4 (Adaptive shard splitting)**: ✅ IMPLEMENTED
+  - Issue shards: MAX_ISSUES_PER_SHARD (10,000) + MAX_BYTES_PER_SHARD (50MB)
+  - Event shards: MAX_EVENTS_PER_SHARD (100,000) + MAX_EVENT_BYTES_PER_SHARD (100MB)
+  - Deterministic distribution by issue ID sort order
+  - Adaptive splitting based on both count and byte thresholds
+
+- **Finding #5 (Pointer metadata)**: ✅ IMPLEMENTED
+  - `added_paths`, `replaced_paths`, `deleted_paths` calculated and exported
+  - `read_previous_pointer_files()` function tracks existing files
+  - Path categorization by comparing current vs previous checkpoint state
+  - Sorted output for deterministic JSON
+
+- **Finding #6 (File syncing)**: ✅ IMPLEMENTED
+  - `sync_all()` calls before all atomic renames
+  - Temp file syncing: File::open().sync_all()
+  - Parent directory syncing: File::open(parent_dir).sync_all()
+  - Applied to monolithic checkpoints, issue shards, event shards, manifests, and pointer files
+  - Crash-safe write-verify-rename patterns throughout
+
+- **Finding #7 (Integration tests)**: ✅ IMPLEMENTED
+  - New test file: tests/f017_forensic.rs with 6 comprehensive tests
+  - Coverage: monolithic checkpoint basic, content-addressed paths, pointer metadata tracking, doctor validation, crash safety/atomicity, forensic JSONL record types
+  - All tests use proper stderr reading (bead output goes to stderr)
+  - Tests verify: checkpoint structure, pointer metadata, content addressing, atomic operations, doctor validation
+
+- **Finding #8 (Capabilities/doctor)**: ✅ IMPLEMENTED
+  - Capabilities updated: `checkpoint_modes` = ["monolithic", "sharded"]
+  - Checkpoint formats: ["issues-jsonl-v1", "checkpoint-set-v1"]
+  - New forensic schemas: provenance-receipt, checkpoint-pointer, checkpoint-manifest
+  - Doctor updated: `check_forensic_checkpoint()` validates generation IDs, sequence matching, hash verification
+  - Doctor handles both pre-F017 (issues.jsonl) and F017 (current.json) formats
+
+- **Implementation details**:
+  - `write_issue_shard()` and `write_event_shard()` functions for adaptive shard writing
+  - `read_previous_pointer_files()` for tracking checkpoint state evolution
+  - `check_forensic_checkpoint()` and `check_pre_f017_checkpoint()` for dual-format validation
+  - Comprehensive file syncing before all atomic operations
+  - Content-addressed storage for all checkpoint objects
+
+- **Test verification**:
+  - cargo test: 232 tests passed (46 unit + 85 integration + 6 F017 + 95 other)
+  - cargo fmt --check: passed
+  - cargo clippy --all-targets -- -D warnings: passed
+  - All F017 forensic tests pass: monolithic basic, content addressing, pointer metadata, doctor validation, atomicity, record types
+
+- **Remaining conformance gap**: Finding #2 (Restore/merge functionality)
+  - `SyncImportOptions` lacks `--restore-into-empty` and `--merge` flags
+  - `import_checkpoint` only parses pre-F017 issue-per-line format
+  - Forensic validation, event replay, UUID handling, merge conflict handling, and durable restore/merge receipts are absent
+  - This is the only remaining F017 implementation gap
+
+- **Code quality verification**: All formatting, linting, and compilation checks pass. Clean-room boundary maintained with no exposure to prohibited upstream implementations.
+
+- **Next recommended feature**: Implement Finding #2 (restore/merge) to complete F017 conformance, then verify F017 passes and update feature ledger.

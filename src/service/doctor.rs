@@ -229,7 +229,7 @@ fn check_database_integrity(store: &impl Store) -> Result<String> {
     }
 }
 
-/// Check checkpoint state
+/// Check checkpoint state (handles both pre-F017 and F017 formats)
 fn check_checkpoint_state(store: &impl Store) -> Result<String> {
     let config = store.get_workspace_config()?;
     let db_path = config.root.join(".beads/beads.db");
@@ -237,7 +237,39 @@ fn check_checkpoint_state(store: &impl Store) -> Result<String> {
     let conn = rusqlite::Connection::open(&db_path)
         .map_err(|e| Error::Integrity(format!("Failed to open database: {}", e)))?;
 
-    // Get checkpoint state
+    // Get current event sequence
+    let current_sequence: i64 = conn
+        .query_row("SELECT COALESCE(MAX(sequence), 0) FROM events", [], |row| {
+            row.get(0)
+        })
+        .unwrap_or(0);
+
+    // Check for F017 forensic checkpoint first
+    let current_json_path = config.root.join(".beads/checkpoint/current.json");
+    if current_json_path.exists() {
+        return check_forensic_checkpoint(&config, &conn, current_sequence);
+    }
+
+    // Fall back to pre-F017 issues.jsonl check
+    check_pre_f017_checkpoint(&config, &conn, current_sequence)
+}
+
+/// Check F017 forensic checkpoint
+fn check_forensic_checkpoint(
+    config: &crate::store::WorkspaceConfig,
+    conn: &rusqlite::Connection,
+    current_sequence: i64,
+) -> Result<String> {
+    let current_json_path = config.root.join(".beads/checkpoint/current.json");
+
+    // Read current.json pointer
+    let pointer_content = std::fs::read_to_string(&current_json_path)
+        .map_err(|e| Error::Integrity(format!("Failed to read current.json: {}", e)))?;
+
+    let pointer: serde_json::Value = serde_json::from_str(&pointer_content)
+        .map_err(|e| Error::Integrity(format!("Failed to parse current.json: {}", e)))?;
+
+    // Get checkpoint state from database
     let covered_sequence: i64 = conn
         .query_row(
             "SELECT covered_event_sequence FROM checkpoint_state WHERE id = 1",
@@ -246,11 +278,117 @@ fn check_checkpoint_state(store: &impl Store) -> Result<String> {
         )
         .unwrap_or(0);
 
-    // Get current event sequence
-    let current_sequence: i64 = conn
-        .query_row("SELECT COALESCE(MAX(sequence), 0) FROM events", [], |row| {
-            row.get(0)
-        })
+    let stored_generation: String = conn
+        .query_row(
+            "SELECT current_generation_id FROM checkpoint_state WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or_else(|_| String::new());
+
+    // Extract pointer values
+    let pointer_generation = pointer
+        .get("generation_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let pointer_sequence = pointer
+        .get("snapshot_sequence")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+
+    let root_hash = pointer
+        .get("active_root")
+        .and_then(|v| v.get("sha256"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let active_root = pointer
+        .get("active_root")
+        .and_then(|v| v.get("path"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let _issue_count = pointer
+        .get("issue_count")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+
+    let _event_count = pointer
+        .get("event_count")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+
+    let total_count = pointer
+        .get("total_record_count")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+
+    // Validate generation ID matches
+    if !stored_generation.is_empty() && stored_generation != pointer_generation {
+        return Err(Error::Integrity(format!(
+            "Generation ID mismatch: database={}, pointer={}",
+            stored_generation, pointer_generation
+        )));
+    }
+
+    // Validate sequence numbers
+    if pointer_sequence != covered_sequence {
+        return Err(Error::Integrity(format!(
+            "Sequence mismatch: pointer={}, database={}",
+            pointer_sequence, covered_sequence
+        )));
+    }
+
+    // Check if checkpoint is dirty
+    if covered_sequence < current_sequence {
+        return Err(Error::workspace(format!(
+            "Checkpoint is dirty: covered={}, current={}",
+            covered_sequence, current_sequence
+        )));
+    }
+
+    // Verify root object file exists
+    let root_path = config.root.join(".beads/checkpoint").join(active_root);
+    if !root_path.exists() {
+        return Err(Error::Integrity(format!(
+            "Root object file missing: {}",
+            active_root
+        )));
+    }
+
+    // Verify root hash
+    if let Ok(actual_hash) = calculate_file_hash(&root_path) {
+        if root_hash != actual_hash {
+            return Err(Error::Integrity(format!(
+                "Root hash mismatch: pointer={}, actual={}",
+                root_hash, actual_hash
+            )));
+        }
+    }
+
+    Ok(format!(
+        "Forensic checkpoint valid: gen={}, covered={}, records={}, hash={}",
+        pointer_generation,
+        covered_sequence,
+        total_count,
+        root_hash.chars().take(8).collect::<String>()
+    ))
+}
+
+/// Check pre-F017 checkpoint (issues.jsonl)
+fn check_pre_f017_checkpoint(
+    config: &crate::store::WorkspaceConfig,
+    conn: &rusqlite::Connection,
+    current_sequence: i64,
+) -> Result<String> {
+    // Get checkpoint state
+    let covered_sequence: i64 = conn
+        .query_row(
+            "SELECT covered_event_sequence FROM checkpoint_state WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
         .unwrap_or(0);
 
     // Check if issues.jsonl exists

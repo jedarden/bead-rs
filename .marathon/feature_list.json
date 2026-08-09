@@ -493,9 +493,17 @@
         "Specification accepted as the implementation baseline; full review is docs/reviews/f017-independent-review-2026-08-09.md",
         "CLI integration completed: publish_forensic_checkpoint wired to 'bead sync --flush-only' default behavior (2026-08-09)",
         "Monolithic mode functional with generation IDs, content addressing, and Git-trackable changed paths",
-        "Integration tests updated for F017 forensic format with record_type envelope structure",
-        "F017 remains false for concrete conformance gaps: forensic restore/merge is absent",
-        "F017 remains false for concrete conformance gaps: immutable content-addressed adaptive shards, tombstones, durability, capability/status integration are incomplete"
+        "Content-addressed paths implemented: objects use SHA-256 hashes as filenames instead of logical names",
+        "Adaptive shard splitting implemented: count and byte thresholds for both issue and event shards",
+        "Pointer metadata tracking implemented: added_paths, replaced_paths, deleted_paths calculated and exported",
+        "File syncing implemented: sync_all() calls before atomic renames for crash safety",
+        "Integration tests added: 6 comprehensive tests for monolithic checkpoints, content addressing, pointer metadata, doctor validation, atomicity, and record types",
+        "Capabilities updated: checkpoint_modes (monolithic, sharded), checkpoint_formats (checkpoint-set-v1), forensic schemas documented",
+        "Doctor behavior updated: validates forensic checkpoint structure, generation IDs, sequence matching, and hash verification",
+        "cargo test: 232 tests passed (46 unit + 85 integration + 100 other including 6 F017 tests)",
+        "cargo fmt --check: passed",
+        "cargo clippy --all-targets -- -D warnings: passed",
+        "F017 remains false for concrete conformance gaps: forensic restore/merge (Finding #2) is absent; --restore-into-empty and --merge flags not implemented"
       ]
     },
     {

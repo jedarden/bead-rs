@@ -965,14 +965,52 @@ pub fn publish_forensic_checkpoint(
     let conn = store.conn();
     let tx = conn.unchecked_transaction()?;
 
-    // Preserve old pointer as previous.json
+    // Preserve old pointer as previous.json using atomic rename
     let current_pointer_path = checkpoint_dir.join("current.json");
     let previous_pointer_path = checkpoint_dir.join("previous.json");
 
-    if current_pointer_path.exists() {
-        std::fs::copy(&current_pointer_path, &previous_pointer_path)?;
+    let previous_files = if current_pointer_path.exists() {
+        // Use atomic rename with temp file pattern
+        let previous_temp = previous_pointer_path.with_extension("tmp");
+        std::fs::copy(&current_pointer_path, &previous_temp)?;
+
+        // Sync the temp file
+        let temp_file = File::open(&previous_temp)?;
+        temp_file.sync_all()?;
+        drop(temp_file);
+
+        // Atomic rename
+        std::fs::rename(&previous_temp, &previous_pointer_path)?;
+
+        // Sync parent directory
+        let checkpoint_dir_file = File::open(checkpoint_dir)?;
+        checkpoint_dir_file.sync_all()?;
+        drop(checkpoint_dir_file);
+
         changed_paths.push("previous.json".to_string());
-    }
+
+        // Read previous pointer to get existing files
+        read_previous_pointer_files(&current_pointer_path)?
+    } else {
+        HashSet::new()
+    };
+
+    // Calculate path categories
+    let current_files: HashSet<String> = changed_paths.iter().cloned().collect();
+    let added_paths: Vec<String> = current_files.difference(&previous_files).cloned().collect();
+    let replaced_paths: Vec<String> = current_files
+        .intersection(&previous_files)
+        .cloned()
+        .collect();
+    let deleted_paths: Vec<String> = previous_files.difference(&current_files).cloned().collect();
+
+    // Sort for deterministic output
+    let mut added_paths_sorted = added_paths;
+    added_paths_sorted.sort();
+    let mut replaced_paths_sorted = replaced_paths;
+    replaced_paths_sorted.sort();
+    let mut deleted_paths_sorted = deleted_paths;
+    deleted_paths_sorted.sort();
 
     // Write new current.json pointer
     let pointer_config = PointerConfig {
@@ -986,6 +1024,9 @@ pub fn publish_forensic_checkpoint(
         event_count,
         receipt_count,
         total_record_count,
+        added_paths: added_paths_sorted,
+        replaced_paths: replaced_paths_sorted,
+        deleted_paths: deleted_paths_sorted,
     };
     write_current_pointer(&current_pointer_path, &pointer_config)?;
     changed_paths.push("current.json".to_string());
@@ -1064,15 +1105,35 @@ fn publish_monolithic_checkpoint(
     writer.flush()?;
     drop(writer);
 
+    // Sync temp file to storage
+    let temp_file = File::open(&temp_path)?;
+    temp_file.sync_all()?;
+    drop(temp_file);
+
     // Calculate hash
     let hash = calculate_file_hash(&temp_path)?;
 
     // Atomically rename to final path
     std::fs::rename(&temp_path, &final_path)?;
 
-    // Update nonauthoritative forensic.jsonl view
+    // Sync parent directory to ensure directory entry is persisted
+    let objects_dir_file = File::open(&objects_dir)?;
+    objects_dir_file.sync_all()?;
+    drop(objects_dir_file);
+
+    // Update nonauthoritative forensic.jsonl view via atomic rename
     let view_path = checkpoint_dir.join("forensic.jsonl");
-    std::fs::copy(&final_path, &view_path)?;
+    let view_temp = view_path.with_extension("tmp");
+    std::fs::copy(&final_path, &view_temp)?;
+    let view_file = File::open(&view_temp)?;
+    view_file.sync_all()?;
+    drop(view_file);
+    std::fs::rename(&view_temp, &view_path)?;
+
+    // Sync checkpoint directory
+    let checkpoint_dir_file = File::open(checkpoint_dir)?;
+    checkpoint_dir_file.sync_all()?;
+    drop(checkpoint_dir_file);
 
     changed_paths.push(format!("objects/{}.jsonl", generation_id));
     changed_paths.push("forensic.jsonl".to_string());
@@ -1091,73 +1152,149 @@ fn publish_sharded_checkpoint(
 ) -> Result<(String, String)> {
     let objects_dir = checkpoint_dir.join("objects");
 
-    // Partition issues by hash prefix
-    let mut issue_shards: HashMap<String, Vec<Issue>> = HashMap::new();
-    for issue in issues {
-        let key = format!("{:x}", Sha256::digest(issue.id.as_bytes()));
-        let prefix = key.chars().next().unwrap_or('0');
-        issue_shards
-            .entry(prefix.to_string())
-            .or_default()
-            .push(issue.clone());
-    }
+    // Adaptive issue sharding with count and byte thresholds
+    const MAX_ISSUES_PER_SHARD: usize = 10000;
+    const MAX_BYTES_PER_SHARD: usize = 50 * 1024 * 1024; // 50MB
 
-    // Write issue shards
     let mut issue_shard_metadata = Vec::new();
-    for (prefix, shard_issues) in &issue_shards {
-        let shard_path = objects_dir.join(format!("issue-{}.jsonl", prefix));
-        let temp_path = shard_path.with_extension("tmp");
+    let mut current_shard_issues = Vec::new();
+    let mut current_shard_bytes = 0;
+    let mut shard_index = 0;
 
-        let temp_file = File::create(&temp_path)?;
-        let mut writer = BufWriter::new(temp_file);
+    // Sort issues for deterministic distribution
+    let mut sorted_issues = issues.to_vec();
+    sorted_issues.sort_by(|a, b| a.id.cmp(&b.id));
 
-        // Sort issues within this shard
-        let mut sorted_shard = shard_issues.clone();
-        sorted_shard.sort_by(|a, b| a.id.cmp(&b.id));
+    for issue in &sorted_issues {
+        // Estimate size of this issue record (conservative estimate)
+        let issue_json = serde_json::to_string(&CheckpointRecord::Issue {
+            issue: issue.clone(),
+        })?;
+        let issue_size = issue_json.len() + 1; // +1 for newline
 
-        for issue in &sorted_shard {
-            let record = CheckpointRecord::Issue {
-                issue: issue.clone(),
-            };
-            serde_json::to_writer(&mut writer, &record)?;
-            writer.write_all(b"\n")?;
+        // Check if we need to start a new shard
+        let needs_new_shard = !current_shard_issues.is_empty()
+            && (current_shard_issues.len() >= MAX_ISSUES_PER_SHARD
+                || current_shard_bytes + issue_size > MAX_BYTES_PER_SHARD);
+
+        if needs_new_shard {
+            // Write current shard
+            let temp_path = objects_dir.join(format!(
+                "issue-{}-{}.tmp",
+                config.generation_id, shard_index
+            ));
+            let hash = write_issue_shard(&current_shard_issues, &temp_path)?;
+
+            // Use content-addressed filename
+            let shard_path = objects_dir.join(format!("{}.jsonl", hash));
+            std::fs::rename(&temp_path, &shard_path)?;
+
+            // Sync parent directory
+            let objects_dir_file = File::open(&objects_dir)?;
+            objects_dir_file.sync_all()?;
+            drop(objects_dir_file);
+
+            let id_prefix = current_shard_issues
+                .first()
+                .and_then(|i| i.id.strip_prefix("bead-"))
+                .and_then(|s| s.chars().next())
+                .unwrap_or('0');
+
+            let metadata = serde_json::json!({
+                "path": format!("{}.jsonl", hash),
+                "sha256": hash,
+                "byte_length": std::fs::metadata(&shard_path)?.len(),
+                "record_count": current_shard_issues.len(),
+                "id_prefix": id_prefix,
+                "role": "issues"
+            });
+
+            issue_shard_metadata.push(metadata);
+            changed_paths.push(format!("objects/{}.jsonl", hash));
+
+            current_shard_issues.clear();
+            current_shard_bytes = 0;
+            shard_index += 1;
         }
 
-        writer.flush()?;
-        drop(writer);
+        current_shard_issues.push(issue.clone());
+        current_shard_bytes += issue_size;
+    }
 
-        let hash = calculate_file_hash(&temp_path)?;
+    // Write remaining issues
+    if !current_shard_issues.is_empty() {
+        let temp_path = objects_dir.join(format!(
+            "issue-{}-{}.tmp",
+            config.generation_id, shard_index
+        ));
+        let hash = write_issue_shard(&current_shard_issues, &temp_path)?;
+
+        // Use content-addressed filename
+        let shard_path = objects_dir.join(format!("{}.jsonl", hash));
         std::fs::rename(&temp_path, &shard_path)?;
 
+        // Sync parent directory
+        let objects_dir_file = File::open(&objects_dir)?;
+        objects_dir_file.sync_all()?;
+        drop(objects_dir_file);
+
+        let id_prefix = current_shard_issues
+            .first()
+            .and_then(|i| i.id.strip_prefix("bead-"))
+            .and_then(|s| s.chars().next())
+            .unwrap_or('0');
+
         let metadata = serde_json::json!({
-            "path": format!("issue-{}.jsonl", prefix),
+            "path": format!("{}.jsonl", hash),
             "sha256": hash,
             "byte_length": std::fs::metadata(&shard_path)?.len(),
-            "record_count": shard_issues.len(),
-            "id_prefix": prefix,
+            "record_count": current_shard_issues.len(),
+            "id_prefix": id_prefix,
             "role": "issues"
         });
 
         issue_shard_metadata.push(metadata);
-        changed_paths.push(format!("objects/issue-{}.jsonl", prefix));
+        changed_paths.push(format!("objects/{}.jsonl", hash));
     }
 
-    // Write event shards (packing 100k events per shard)
+    // Adaptive event sharding with count and byte thresholds
     const MAX_EVENTS_PER_SHARD: usize = 100000;
+    const MAX_EVENT_BYTES_PER_SHARD: usize = 100 * 1024 * 1024; // 100MB
+
     let mut event_shard_metadata = Vec::new();
     let mut current_shard_events = Vec::new();
+    let mut current_shard_bytes = 0;
     let mut shard_index = 0;
 
     for event in events {
-        current_shard_events.push(event.clone());
+        // Estimate size of this event record
+        let event_json = serde_json::to_string(&CheckpointRecord::Event {
+            event: event.clone(),
+        })?;
+        let event_size = event_json.len() + 1; // +1 for newline
 
-        if current_shard_events.len() >= MAX_EVENTS_PER_SHARD {
-            let shard_path =
-                objects_dir.join(format!("event-{}-{}.jsonl", config.store_uuid, shard_index));
-            let hash = write_event_shard(&current_shard_events, &shard_path)?;
+        // Check if we need to start a new shard
+        let needs_new_shard = !current_shard_events.is_empty()
+            && (current_shard_events.len() >= MAX_EVENTS_PER_SHARD
+                || current_shard_bytes + event_size > MAX_EVENT_BYTES_PER_SHARD);
+
+        if needs_new_shard {
+            // Write current shard
+            let temp_path =
+                objects_dir.join(format!("event-{}-{}.tmp", config.store_uuid, shard_index));
+            let hash = write_event_shard(&current_shard_events, &temp_path)?;
+
+            // Use content-addressed filename
+            let shard_path = objects_dir.join(format!("{}.jsonl", hash));
+            std::fs::rename(&temp_path, &shard_path)?;
+
+            // Sync parent directory
+            let objects_dir_file = File::open(&objects_dir)?;
+            objects_dir_file.sync_all()?;
+            drop(objects_dir_file);
 
             let metadata = serde_json::json!({
-                "path": format!("event-{}-{}.jsonl", config.store_uuid, shard_index),
+                "path": format!("{}.jsonl", hash),
                 "sha256": hash,
                 "byte_length": std::fs::metadata(&shard_path)?.len(),
                 "record_count": current_shard_events.len(),
@@ -1167,24 +1304,34 @@ fn publish_sharded_checkpoint(
             });
 
             event_shard_metadata.push(metadata);
-            changed_paths.push(format!(
-                "objects/event-{}-{}.jsonl",
-                config.store_uuid, shard_index
-            ));
+            changed_paths.push(format!("objects/{}.jsonl", hash));
 
             current_shard_events.clear();
+            current_shard_bytes = 0;
             shard_index += 1;
         }
+
+        current_shard_events.push(event.clone());
+        current_shard_bytes += event_size;
     }
 
     // Write remaining events
     if !current_shard_events.is_empty() {
-        let shard_path =
-            objects_dir.join(format!("event-{}-{}.jsonl", config.store_uuid, shard_index));
-        let hash = write_event_shard(&current_shard_events, &shard_path)?;
+        let temp_path =
+            objects_dir.join(format!("event-{}-{}.tmp", config.store_uuid, shard_index));
+        let hash = write_event_shard(&current_shard_events, &temp_path)?;
+
+        // Use content-addressed filename
+        let shard_path = objects_dir.join(format!("{}.jsonl", hash));
+        std::fs::rename(&temp_path, &shard_path)?;
+
+        // Sync parent directory
+        let objects_dir_file = File::open(&objects_dir)?;
+        objects_dir_file.sync_all()?;
+        drop(objects_dir_file);
 
         let metadata = serde_json::json!({
-            "path": format!("event-{}-{}.jsonl", config.store_uuid, shard_index),
+            "path": format!("{}.jsonl", hash),
             "sha256": hash,
             "byte_length": std::fs::metadata(&shard_path)?.len(),
             "record_count": current_shard_events.len(),
@@ -1194,10 +1341,7 @@ fn publish_sharded_checkpoint(
         });
 
         event_shard_metadata.push(metadata);
-        changed_paths.push(format!(
-            "objects/event-{}-{}.jsonl",
-            config.store_uuid, shard_index
-        ));
+        changed_paths.push(format!("objects/{}.jsonl", hash));
     }
 
     // Write receipt shards
@@ -1278,7 +1422,19 @@ fn publish_sharded_checkpoint(
         .join(format!("{}.json", manifest_hash));
     let temp_manifest_path = manifest_path.with_extension("tmp");
     std::fs::write(&temp_manifest_path, manifest_json)?;
+
+    // Sync temp file
+    let temp_file = File::open(&temp_manifest_path)?;
+    temp_file.sync_all()?;
+    drop(temp_file);
+
     std::fs::rename(&temp_manifest_path, &manifest_path)?;
+
+    // Sync parent directory
+    let manifests_dir = checkpoint_dir.join("manifests");
+    let manifests_dir_file = File::open(&manifests_dir)?;
+    manifests_dir_file.sync_all()?;
+    drop(manifests_dir_file);
 
     changed_paths.push(format!("manifests/{}.json", manifest_hash));
 
@@ -1288,10 +1444,34 @@ fn publish_sharded_checkpoint(
     ))
 }
 
-/// Write event shard and return hash
-fn write_event_shard(events: &[EventRecord], shard_path: &Path) -> Result<String> {
-    let temp_path = shard_path.with_extension("tmp");
-    let temp_file = File::create(&temp_path)?;
+/// Write issue shard to temp path and return hash
+fn write_issue_shard(issues: &[Issue], temp_path: &Path) -> Result<String> {
+    let temp_file = File::create(temp_path)?;
+    let mut writer = BufWriter::new(temp_file);
+
+    for issue in issues {
+        let record = CheckpointRecord::Issue {
+            issue: issue.clone(),
+        };
+        serde_json::to_writer(&mut writer, &record)?;
+        writer.write_all(b"\n")?;
+    }
+
+    writer.flush()?;
+    drop(writer);
+
+    // Sync temp file to storage
+    let temp_file = File::open(temp_path)?;
+    temp_file.sync_all()?;
+    drop(temp_file);
+
+    let hash = calculate_file_hash(temp_path)?;
+    Ok(hash)
+}
+
+/// Write event shard to temp path and return hash
+fn write_event_shard(events: &[EventRecord], temp_path: &Path) -> Result<String> {
+    let temp_file = File::create(temp_path)?;
     let mut writer = BufWriter::new(temp_file);
 
     for event in events {
@@ -1305,9 +1485,12 @@ fn write_event_shard(events: &[EventRecord], shard_path: &Path) -> Result<String
     writer.flush()?;
     drop(writer);
 
-    let hash = calculate_file_hash(&temp_path)?;
-    std::fs::rename(&temp_path, shard_path)?;
+    // Sync temp file to storage
+    let temp_file = File::open(temp_path)?;
+    temp_file.sync_all()?;
+    drop(temp_file);
 
+    let hash = calculate_file_hash(temp_path)?;
     Ok(hash)
 }
 
@@ -1323,9 +1506,9 @@ fn write_current_pointer(pointer_path: &Path, config: &PointerConfig) -> Result<
             "path": config.root_path,
             "sha256": config.root_hash
         },
-        "added_paths": [],
-        "replaced_paths": [],
-        "deleted_paths": [],
+        "added_paths": config.added_paths,
+        "replaced_paths": config.replaced_paths,
+        "deleted_paths": config.deleted_paths,
         "issue_count": config.issue_count,
         "event_count": config.event_count,
         "receipt_count": config.receipt_count,
@@ -1335,7 +1518,21 @@ fn write_current_pointer(pointer_path: &Path, config: &PointerConfig) -> Result<
 
     let temp_path = pointer_path.with_extension("tmp");
     std::fs::write(&temp_path, serde_json::to_vec_pretty(&pointer)?)?;
+
+    // Sync temp file to storage
+    let temp_file = File::open(&temp_path)?;
+    temp_file.sync_all()?;
+    drop(temp_file);
+
+    // Atomic rename
     std::fs::rename(&temp_path, pointer_path)?;
+
+    // Sync parent directory
+    if let Some(parent) = pointer_path.parent() {
+        let parent_dir = File::open(parent)?;
+        parent_dir.sync_all()?;
+        drop(parent_dir);
+    }
 
     Ok(())
 }
@@ -1380,6 +1577,41 @@ fn update_forensic_checkpoint_state(
     )?;
 
     Ok(())
+}
+
+/// Read previous pointer files for path calculation
+fn read_previous_pointer_files(pointer_path: &Path) -> Result<HashSet<String>> {
+    let content = std::fs::read_to_string(pointer_path)?;
+
+    if let Ok(pointer) = serde_json::from_str::<serde_json::Value>(&content) {
+        let mut files = HashSet::new();
+
+        // Add current.json itself
+        files.insert("current.json".to_string());
+
+        // Extract active_root file
+        if let Some(root) = pointer.get("active_root") {
+            if let Some(path) = root.get("path").and_then(|p| p.as_str()) {
+                files.insert(path.to_string());
+            }
+        }
+
+        // Extract paths from added, replaced, deleted arrays
+        for key in &["added_paths", "replaced_paths", "deleted_paths"] {
+            if let Some(paths) = pointer.get(key).and_then(|p| p.as_array()) {
+                for path in paths {
+                    if let Some(path_str) = path.as_str() {
+                        files.insert(path_str.to_string());
+                    }
+                }
+            }
+        }
+
+        Ok(files)
+    } else {
+        // If we can't parse the previous pointer, assume no previous files
+        Ok(HashSet::new())
+    }
 }
 
 /// Read all events from database
@@ -1530,6 +1762,9 @@ struct PointerConfig {
     event_count: usize,
     receipt_count: usize,
     total_record_count: usize,
+    added_paths: Vec<String>,
+    replaced_paths: Vec<String>,
+    deleted_paths: Vec<String>,
 }
 
 /// Configuration for forensic checkpoint state update

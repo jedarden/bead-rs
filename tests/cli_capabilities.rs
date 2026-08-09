@@ -74,12 +74,13 @@ fn test_capabilities_native_profile() {
 
     // Verify checkpoint modes
     let modes = caps["checkpoint_modes"].as_array().unwrap();
-    assert!(modes.contains(&Value::String("flush-only".to_string())));
-    assert!(modes.contains(&Value::String("import-only".to_string())));
+    assert!(modes.contains(&Value::String("monolithic".to_string())));
+    assert!(modes.contains(&Value::String("sharded".to_string())));
 
     // Verify checkpoint formats
     let formats = caps["checkpoint_formats"].as_array().unwrap();
     assert!(formats.contains(&Value::String("issues-jsonl-v1".to_string())));
+    assert!(formats.contains(&Value::String("checkpoint-set-v1".to_string())));
 
     // Verify schema_ref
     assert_eq!(
