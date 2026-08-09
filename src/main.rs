@@ -46,6 +46,7 @@ fn execute_command(cli: Cli) -> Result<()> {
         Command::Sync(opts) => cmd_sync(opts),
         Command::Doctor(opts) => cmd_doctor(opts),
         Command::Capabilities(opts) => cmd_capabilities(opts),
+        Command::Query(opts) => cmd_query(opts),
         Command::Unimplemented(_) => Err(Error::cli_usage(
             "This command is not yet implemented. See `bead --help` for available commands.",
         )),
@@ -917,6 +918,157 @@ fn cmd_capabilities(opts: cli::CapabilitiesOptions) -> Result<()> {
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to serialize capabilities: {}", e)))?;
 
     println!("{}", output);
+
+    Ok(())
+}
+
+fn cmd_query(opts: cli::QueryOptions) -> Result<()> {
+    // Discover workspace
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::cli_usage("No bead workspace found. Run 'bead init' first."))?;
+
+    // Open database connection
+    let db_path = config.database_path();
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    // Handle list views
+    if opts.list_views {
+        return cmd_list_views(&conn);
+    }
+
+    // Handle delete view
+    if let Some(view_name) = opts.delete_view {
+        return cmd_delete_view(&conn, &view_name);
+    }
+
+    // Handle execute saved view
+    if let Some(view_name) = opts.view {
+        return cmd_execute_view(&conn, &view_name, opts.output_json);
+    }
+
+    // Load query from file or inline JSON
+    let query_json = if let Some(file_path) = opts.file {
+        std::fs::read_to_string(&file_path)
+            .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to read query file: {}", e)))?
+    } else if let Some(inline_json) = opts.json {
+        inline_json
+    } else {
+        return Err(Error::cli_usage(
+            "Query specification required. Use --file <path> or --json '<query>'",
+        ));
+    };
+
+    // Parse and validate query
+    let query = service::parse_query(&query_json)?;
+
+    // Execute query
+    let issues = service::execute_query(&conn, &query)?;
+
+    // Apply projection if specified
+    let results: Vec<serde_json::Value> = if let Some(ref projection) = query.projection {
+        issues
+            .iter()
+            .map(|issue| service::project_issue(issue, projection).unwrap())
+            .collect()
+    } else {
+        issues
+            .iter()
+            .map(|issue| serde_json::to_value(issue).unwrap())
+            .collect()
+    };
+
+    // Save as view if requested
+    if let Some(view_name) = opts.save_as {
+        cmd_save_view(&conn, &view_name, &query, &query_json)?;
+        println!("Saved view: {}", view_name);
+    }
+
+    // Output results
+    if opts.output_json {
+        let output = serde_json::to_string_pretty(&results)
+            .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to serialize results: {}", e)))?;
+        println!("{}", output);
+    } else {
+        // Human-readable output
+        println!("Found {} issues", results.len());
+        for result in &results {
+            println!("  - {}", result);
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_list_views(conn: &rusqlite::Connection) -> Result<()> {
+    let views = service::list_views(conn)?;
+
+    if views.is_empty() {
+        println!("No saved views found.");
+        return Ok(());
+    }
+
+    println!("Saved views ({}):", views.len());
+    for view in views {
+        println!("  - {} ({})", view.name, view.description);
+        println!("    Created: {}", view.created_at);
+        println!("    Updated: {}", view.updated_at);
+    }
+
+    Ok(())
+}
+
+fn cmd_delete_view(conn: &rusqlite::Connection, view_name: &str) -> Result<()> {
+    service::delete_view(conn, view_name)?;
+    println!("Deleted view: {}", view_name);
+    Ok(())
+}
+
+fn cmd_execute_view(conn: &rusqlite::Connection, view_name: &str, output_json: bool) -> Result<()> {
+    let view = service::get_view(conn, view_name)?;
+    let query = service::parse_query(&view.query_json)?;
+
+    // Execute query
+    let issues = service::execute_query(conn, &query)?;
+
+    // Apply projection if specified
+    let results: Vec<serde_json::Value> = if let Some(ref projection) = query.projection {
+        issues
+            .iter()
+            .map(|issue| service::project_issue(issue, projection).unwrap())
+            .collect()
+    } else {
+        issues
+            .iter()
+            .map(|issue| serde_json::to_value(issue).unwrap())
+            .collect()
+    };
+
+    // Output results
+    if output_json {
+        let output = serde_json::to_string_pretty(&results)
+            .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to serialize results: {}", e)))?;
+        println!("{}", output);
+    } else {
+        // Human-readable output
+        println!("Found {} issues", results.len());
+        for result in &results {
+            println!("  - {}", result);
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_save_view(
+    conn: &rusqlite::Connection,
+    view_name: &str,
+    query: &service::Query,
+    query_json: &str,
+) -> Result<()> {
+    let description = format!("Query with {} predicates", query.predicates.len());
+
+    service::save_view(conn, view_name, &description, query_json)?;
 
     Ok(())
 }

@@ -90,6 +90,9 @@ pub enum Command {
     /// Show capabilities and supported features
     Capabilities(CapabilitiesOptions),
 
+    /// Execute safe query language queries
+    Query(QueryOptions),
+
     /// Not yet implemented
     #[command(subcommand)]
     #[allow(clippy::enum_variant_names)]
@@ -1031,6 +1034,87 @@ pub struct CapabilitiesOptions {
     /// Profile for capabilities output
     #[arg(long, default_value = "native-v1")]
     pub profile: String,
+}
+
+/// Options for query language execution
+#[derive(Parser, Debug)]
+#[command(
+    about = "Execute safe query language queries",
+    long_about = "Execute queries using the safe query language (R004).
+
+Queries are specified as JSON files with predicates, sorting, and projection.
+This provides a powerful, type-safe alternative to shell filtering while
+never exposing raw SQL or private schema details.
+
+QUERY LANGUAGE FEATURES:
+  - Predicates: field comparisons (equals, contains, greater than, etc.)
+  - Sorting: deterministic multi-field ordering
+  - Projection: select specific fields to return
+  - Versioned grammar: ensures forward compatibility
+  - Safe execution: only whitelisted fields and operators
+
+SUPPORTED FIELDS:
+  - id, title, description, notes, priority (0-4)
+  - status (open, in_progress, deferred, closed)
+  - blocked, assignee, type, created, updated, closed, close_reason
+
+EXAMPLES:
+  # Find all open issues with priority >= 2
+  bead query --file open_high.json
+  # Find issues assigned to alice
+  bead query --file alice_work.json --json
+  # Simple field projection
+  bead query --file titles_only.json
+
+QUERY FORMAT:
+  {
+    \"version\": \"v1\",
+    \"predicates\": [
+      {\"field\": \"status\", \"operator\": \"=\", \"value\": \"open\"},
+      {\"field\": \"priority\", \"operator\": \">=\", \"value\": 2}
+    ],
+    \"sort\": [
+      {\"field\": \"priority\", \"direction\": \"asc\"}
+    ],
+    \"limit\": 100
+  }
+
+OPERATORS:
+  - =, !=, >, <, >=, <=  (numeric and string comparison)
+  - contains, starts_with, ends_with  (string matching)
+  - is_null, not_null  (null checking)
+
+The query command never exposes raw SQL or internal schema details.
+All field names are validated against a public whitelist."
+)]
+pub struct QueryOptions {
+    /// Query specification file (JSON format)
+    #[arg(long)]
+    pub file: Option<String>,
+
+    /// Query specification as inline JSON
+    #[arg(long)]
+    pub json: Option<String>,
+
+    /// Output results in JSON format
+    #[arg(long)]
+    pub output_json: bool,
+
+    /// Save query as a named view
+    #[arg(long)]
+    pub save_as: Option<String>,
+
+    /// List all saved views
+    #[arg(long)]
+    pub list_views: bool,
+
+    /// Execute a saved view
+    #[arg(long)]
+    pub view: Option<String>,
+
+    /// Delete a saved view
+    #[arg(long)]
+    pub delete_view: Option<String>,
 }
 
 /// Placeholder for unimplemented commands

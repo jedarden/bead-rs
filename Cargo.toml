@@ -32,6 +32,7 @@ rand = "0.8"
 sha2 = "0.10"
 md5 = "0.7"
 hex = "0.4"
+uuid = { version = "1.0", features = ["v4"] }
 serial_test = "3.1"
 
 [dev-dependencies]

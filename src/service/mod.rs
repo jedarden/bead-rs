@@ -11,6 +11,7 @@ pub mod doctor;
 pub mod issues;
 pub mod leases;
 pub mod lifecycle;
+pub mod query;
 
 pub use capabilities::generate_capabilities;
 pub use checkpoint::{flush_checkpoint, import_forensic_checkpoint, publish_forensic_checkpoint};
@@ -22,6 +23,7 @@ pub use issues::get_issue_by_id;
 pub use issues::list_issues;
 pub use leases::{validate_lease_for_mutation, LeaseClaimResult};
 pub use lifecycle::{close_issue, release_issue, reopen_issue, update_issue};
+pub use query::{delete_view, execute_query, get_view, list_views, parse_query, project_issue, save_view, Query};
 
 // Placeholder modules for future implementation
 // pub mod migrate;

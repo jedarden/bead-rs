@@ -7,7 +7,7 @@ use rusqlite::{Connection, Result as SqliteResult};
 use sha2::{Digest, Sha256};
 
 /// Current migration version
-pub const CURRENT_VERSION: i64 = 4;
+pub const CURRENT_VERSION: i64 = 5;
 
 /// Apply all pending migrations to the database
 pub fn apply_migrations(conn: &Connection) -> SqliteResult<()> {
@@ -71,6 +71,7 @@ fn get_migration(version: i64) -> Migration {
         2 => migration_2(),
         3 => migration_3(),
         4 => migration_4(),
+        5 => migration_5(),
         v => panic!("Unknown migration version: {}", v),
     }
 }
@@ -356,6 +357,31 @@ CREATE INDEX IF NOT EXISTS leases_fencing ON leases (issue_id, assignee, fencing
 
 -- Index for assignee lease queries (renewal, listing)
 CREATE INDEX IF NOT EXISTS leases_assignee ON leases (assignee, expires_at);
+"#;
+
+    Migration {
+        sql: sql.to_string(),
+    }
+}
+
+/// Migration 5: Saved views for R004 safe query language
+fn migration_5() -> Migration {
+    let sql = r#"
+-- Saved views table for storing and reusing queries
+CREATE TABLE IF NOT EXISTS saved_views (
+    id TEXT NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT,
+    query_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+-- Index for view name lookups
+CREATE INDEX IF NOT EXISTS saved_views_name ON saved_views (name);
+
+-- Index for temporal queries
+CREATE INDEX IF NOT EXISTS saved_views_created ON saved_views (created_at);
 "#;
 
     Migration {

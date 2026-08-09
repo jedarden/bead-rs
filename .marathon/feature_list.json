@@ -643,8 +643,25 @@
         "Never exposes raw SQL or private schema",
         "Deliberately limited first grammar replaces fragile shell filtering"
       ],
-      "passes": false,
-      "evidence": []
+      "passes": true,
+      "evidence": [
+        "cargo test --test r004_query_language: 10 tests passed",
+        "cargo fmt --check: passed",
+        "cargo clippy --all-targets -- -D warnings: passed",
+        "Implemented versioned query grammar v1 with typed fields and operators",
+        "Query operators: equals, not_equals, greater_than, less_than, greater_than_or_equal, less_than_or_equal, contains, starts_with, ends_with, is_null, is_not_null",
+        "Supported fields: id, title, priority, base_status, manual_blocked, assignee, issue_type, created_at, updated_at, closed_at",
+        "Query validation with field/operator compatibility checking",
+        "SQL WHERE clause generation with parameterized queries",
+        "Deterministic ORDER BY clause with multi-field sorting",
+        "Field projection with selectable output fields",
+        "Named local views with save, list, delete, get, and execute operations",
+        "Database Migration 5: saved_views table with id, name, description, query_json, created_at, updated_at",
+        "CLI integration: bead query --file, --json, --save-as, --list-views, --view, --delete-view flags",
+        "Safe execution: only whitelisted fields, no raw SQL exposure, private schema protected",
+        "Comprehensive test coverage: basic predicates, string operators, invalid version, save/execute/delete views, projection, limit, empty results, file input, workspace validation",
+        "All acceptance criteria met: versioned typed grammar, predicates/sorting/projections/views, no SQL exposure, limited first grammar"
+      ]
     },
     {
       "id": "R005",
