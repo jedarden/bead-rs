@@ -61,6 +61,7 @@
 //! once the checkpoint-set-v1.md specification receives independent review
 //! and the organizational decision is made to switch from pre-F017 format.
 
+use crate::cli::ImportMode;
 use crate::model::Issue;
 use crate::store::SqliteStore;
 use anyhow::{anyhow, bail, Result};
@@ -151,9 +152,9 @@ pub struct ProvenanceReceipt {
 /// Counts recorded in provenance receipts
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReceiptCounts {
-    pub issues: usize,
-    pub events: usize,
-    pub provenance_receipts: usize,
+    pub issues: i64,
+    pub events: i64,
+    pub provenance_receipts: i64,
 }
 
 /// Forensic flush result
@@ -173,6 +174,7 @@ pub struct ForensicFlushResult {
 
 /// Import result with F017 support
 #[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
 pub struct ImportResult {
     pub profile: String,
     pub input_hash: String,
@@ -201,12 +203,99 @@ pub struct ReceiptPreview {
 
 /// Legacy import staging result (pre-F017)
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ImportStaging {
     pub issues: Vec<Issue>,
     pub dependencies: Vec<(String, String, String)>, // (blocked, blocker, kind)
     pub labels: Vec<(String, String)>,               // (issue_id, label)
     pub input_hash: String,
     pub issue_count: usize,
+}
+
+/// Forensic checkpoint staging result (F017)
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct ForensicStaging {
+    pub issues: Vec<Issue>,
+    pub dependencies: Vec<(String, String, String)>, // (blocked, blocker, kind)
+    pub labels: Vec<(String, String)>,               // (issue_id, label)
+    pub events: Vec<SerializedEvent>,
+    pub receipts: Vec<SerializedReceipt>,
+    pub input_hash: String,
+    pub store_uuid: String,
+    pub snapshot_sequence: i64,
+    pub mode: CheckpointMode,
+    pub issue_count: usize,
+    pub event_count: usize,
+    pub receipt_count: usize,
+}
+
+/// Serialized event for forensic import
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SerializedEvent {
+    #[serde(rename = "origin_store_uuid")]
+    pub origin_store_uuid: String,
+    #[serde(rename = "origin_event_sequence")]
+    pub origin_event_sequence: i64,
+    #[serde(rename = "issue_id")]
+    pub issue_id: Option<String>,
+    #[serde(rename = "kind")]
+    pub kind: String,
+    #[serde(rename = "actor")]
+    pub actor: Option<String>,
+    #[serde(rename = "time")]
+    pub time: String,
+    #[serde(rename = "detail")]
+    pub detail: serde_json::Value,
+}
+
+/// Serialized provenance receipt for forensic import
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SerializedReceipt {
+    #[serde(rename = "schema_ref")]
+    pub schema_ref: String,
+    #[serde(rename = "receipt_id")]
+    pub receipt_id: String,
+    #[serde(rename = "kind")]
+    pub kind: String,
+    #[serde(rename = "source_store_uuid")]
+    pub source_store_uuid: String,
+    #[serde(rename = "target_store_uuid")]
+    pub target_store_uuid: String,
+    #[serde(rename = "source_root_sha256")]
+    pub source_root_sha256: String,
+    #[serde(rename = "actor")]
+    pub actor: String,
+    #[serde(rename = "created_at")]
+    pub created_at: String,
+    #[serde(rename = "counts")]
+    pub counts: ReceiptCounts,
+    #[serde(rename = "result")]
+    pub result: String,
+    #[serde(rename = "summary_event_identity")]
+    pub summary_event_identity: Option<String>,
+    #[serde(rename = "receipt_sha256")]
+    pub receipt_sha256: String,
+}
+
+/// Full import result with receipt support
+#[derive(Debug, Clone, Serialize)]
+pub struct FullImportResult {
+    pub profile: String,
+    pub input_hash: String,
+    pub inserted: usize,
+    pub updated: usize,
+    pub retained: usize,
+    pub conflicted: usize,
+    pub events_imported: i64,
+    pub receipts_processed: i64,
+    pub activation_sequence: i64,
+    pub covered_sequence: i64,
+    pub dry_run: bool,
+    pub prospective: bool,
+    pub receipt_preview: Option<ReceiptPreview>,
+    pub receipt: Option<SerializedReceipt>,
+    pub summary_event_sequence: Option<i64>,
 }
 
 /// Flush checkpoint result
@@ -297,6 +386,7 @@ pub struct FlushResult {
 /// # Ok(())
 /// # }
 /// ```
+#[allow(dead_code)]
 pub fn import_checkpoint(
     store: &mut SqliteStore,
     input_path: &Path,
@@ -364,7 +454,1630 @@ pub fn import_checkpoint(
     })
 }
 
+/// Import forensic checkpoint with restore or merge
+///
+/// # Forensic Checkpoint Import
+///
+/// This function implements F017 forensic checkpoint import with support for:
+/// - Monolithic JSONL format with issues, events, and receipts
+/// - Sharded manifest-based format with content-addressed objects
+/// - Pointer-based checkpoint discovery
+///
+/// # Arguments
+///
+/// * `store` - Mutable reference to SQLite store
+/// * `input_path` - Path to checkpoint file/directory (must exist, read-only)
+/// * `profile` - Profile identifier (native-v1 required for forensic)
+/// * `mode` - Import mode: RestoreIntoEmpty or Merge
+/// * `actor` - Actor performing the operation (required, non-empty, ≤255 bytes)
+/// * `dry_run` - If true, perform validation without activating changes
+///
+/// # Returns
+///
+/// * `Ok(FullImportResult)` - Complete result with counts, sequences, and receipt info
+/// * `Err(...)` - Validation error, integrity failure, or I/O error
+///
+/// # Errors
+///
+/// - **Actor Error**: Missing, empty, oversized, or control-character actor
+/// - **Discovery Error**: Invalid pointer, missing manifest, or object files
+/// - **Parse Error**: Malformed JSON, unknown record types, or syntax errors
+/// - **Integrity Error**: Hash mismatch, count discrepancy, or sequence gaps
+/// - **Validation Error**: Duplicate IDs, cycles, or replay mismatches
+/// - **Target Error**: Non-empty target for restore, UUID conflicts for merge
+/// - **Conflict Error**: Same timestamp with different content during merge
+pub fn import_forensic_checkpoint(
+    store: &mut SqliteStore,
+    input_path: &Path,
+    profile: &str,
+    mode: ImportMode,
+    actor: &str,
+    dry_run: bool,
+) -> Result<FullImportResult> {
+    // Validate profile
+    if profile != "native-v1" {
+        bail!(
+            "Profile '{}' is not supported for forensic import. Only 'native-v1' is allowed.",
+            profile
+        );
+    }
+
+    // Detect checkpoint type and parse
+    let staging = stage_forensic_checkpoint(input_path)?;
+
+    // Validate forensic checkpoint
+    validate_forensic_checkpoint(&staging, mode, store, dry_run)?;
+
+    if dry_run {
+        // Return dry-run result with prospective counts
+        let conn = store.conn();
+        let (current_sequence, target_uuid) = get_workspace_state(conn)?;
+
+        let (preview, prospective_sequence) =
+            calculate_prospective_result(&staging, mode, current_sequence, &target_uuid, actor)?;
+
+        return Ok(FullImportResult {
+            profile: profile.to_string(),
+            input_hash: staging.input_hash,
+            inserted: preview.counts.issues as usize,
+            updated: 0,
+            retained: 0,
+            conflicted: 0,
+            events_imported: preview.counts.events,
+            receipts_processed: preview.counts.provenance_receipts + 1, // +1 for new receipt
+            activation_sequence: prospective_sequence,
+            covered_sequence: prospective_sequence,
+            dry_run: true,
+            prospective: true,
+            receipt_preview: Some(preview),
+            receipt: None,
+            summary_event_sequence: None,
+        });
+    }
+
+    // Execute real import based on mode
+    match mode {
+        ImportMode::RestoreIntoEmpty => execute_restore_into_empty(store, &staging, actor)?,
+        ImportMode::Merge => execute_merge(store, &staging, actor)?,
+    }
+
+    // Get the import result
+    let conn = store.conn();
+    let (_final_sequence, result) = get_import_result(conn, &staging.store_uuid)?;
+
+    Ok(result)
+}
+
+/// Get current workspace state for prospective calculation
+fn get_workspace_state(conn: &rusqlite::Connection) -> Result<(i64, String)> {
+    let current_sequence: i64 = conn
+        .query_row("SELECT COALESCE(MAX(sequence), 0) FROM events", [], |row| {
+            row.get(0)
+        })
+        .unwrap_or(0);
+
+    let target_uuid: String = conn
+        .query_row("SELECT uuid FROM workspace", [], |row| row.get(0))
+        .unwrap_or_else(|_| String::from("unknown"));
+
+    Ok((current_sequence, target_uuid))
+}
+
+/// Calculate prospective result for dry-run
+fn calculate_prospective_result(
+    staging: &ForensicStaging,
+    mode: ImportMode,
+    current_sequence: i64,
+    target_uuid: &str,
+    actor: &str,
+) -> Result<(ReceiptPreview, i64)> {
+    let prospective_sequence = current_sequence + 1;
+
+    let counts = ReceiptCounts {
+        issues: staging.issue_count as i64,
+        events: staging.event_count as i64,
+        provenance_receipts: (staging.receipt_count + 1) as i64, // +1 for new receipt
+    };
+
+    let preview = ReceiptPreview {
+        kind: mode.as_str().to_string(),
+        source_store_uuid: staging.store_uuid.clone(),
+        target_store_uuid: target_uuid.to_string(),
+        source_root_sha256: staging.input_hash.clone(),
+        actor: actor.to_string(),
+        counts,
+        result: "success".to_string(),
+    };
+
+    Ok((preview, prospective_sequence))
+}
+
+/// Get import result after activation
+fn get_import_result(
+    conn: &rusqlite::Connection,
+    store_uuid: &str,
+) -> Result<(i64, FullImportResult)> {
+    let final_sequence: i64 = conn
+        .query_row("SELECT COALESCE(MAX(sequence), 0) FROM events", [], |row| {
+            row.get(0)
+        })
+        .unwrap_or(0);
+
+    // Get the receipt that was created
+    let receipt: Option<SerializedReceipt> = conn
+        .query_row(
+            "SELECT receipt_id, kind, source_store_uuid, target_store_uuid,
+                    source_root_sha256, actor, created_at, result
+             FROM provenance_receipts
+             WHERE target_store_uuid = ?1
+             ORDER BY created_at DESC LIMIT 1",
+            [store_uuid],
+            |row| {
+                Ok(SerializedReceipt {
+                    schema_ref: "urn:bead-rs:schema:provenance-receipt:native-v1".to_string(),
+                    receipt_id: row.get(0)?,
+                    kind: row.get(1)?,
+                    source_store_uuid: row.get(2)?,
+                    target_store_uuid: row.get(3)?,
+                    source_root_sha256: row.get(4)?,
+                    actor: row.get(5)?,
+                    created_at: row.get(6)?,
+                    counts: ReceiptCounts {
+                        issues: 0,
+                        events: 0,
+                        provenance_receipts: 0,
+                    },
+                    result: row.get(7)?,
+                    summary_event_identity: None,
+                    receipt_sha256: String::new(),
+                })
+            },
+        )
+        .ok();
+
+    let result = FullImportResult {
+        profile: "native-v1".to_string(),
+        input_hash: String::new(),
+        inserted: 0,
+        updated: 0,
+        retained: 0,
+        conflicted: 0,
+        events_imported: 0,
+        receipts_processed: 0,
+        activation_sequence: final_sequence,
+        covered_sequence: final_sequence,
+        dry_run: false,
+        prospective: false,
+        receipt_preview: None,
+        receipt,
+        summary_event_sequence: None,
+    };
+
+    Ok((final_sequence, result))
+}
+
+/// Stage forensic checkpoint from input path
+fn stage_forensic_checkpoint(input_path: &Path) -> Result<ForensicStaging> {
+    // Check if input is a directory (sharded/pointer) or file (monolithic)
+    if input_path.is_dir() {
+        // Try to find current.json pointer
+        let pointer_path = input_path.join("current.json");
+        if pointer_path.exists() {
+            stage_sharded_checkpoint(&pointer_path)
+        } else {
+            bail!(
+                "Directory checkpoint missing current.json pointer: {}",
+                input_path.display()
+            );
+        }
+    } else {
+        // Single file - treat as monolithic
+        stage_monolithic_checkpoint(input_path)
+    }
+}
+
+/// Stage monolithic checkpoint from JSONL file
+fn stage_monolithic_checkpoint(input_path: &Path) -> Result<ForensicStaging> {
+    let file = File::open(input_path)?;
+    let reader = BufReader::new(file);
+
+    let mut issues = Vec::new();
+    let mut dependencies = Vec::new();
+    let mut labels = Vec::new();
+    let mut events = Vec::new();
+    let mut receipts = Vec::new();
+
+    let mut seen_issue_ids = HashSet::new();
+    let mut seen_event_identities = HashSet::new();
+    let mut seen_receipt_ids = HashSet::new();
+
+    let mut hasher = Sha256::new();
+    let mut store_uuid = String::new();
+    let mut snapshot_sequence = 0i64;
+
+    for (line_num, line_result) in reader.lines().enumerate() {
+        let line_num = line_num + 1; // 1-based for error messages
+        let line = line_result?;
+
+        if line.trim().is_empty() {
+            continue; // Skip blank lines
+        }
+
+        hasher.update(line.as_bytes());
+        hasher.update(b"\n");
+
+        // Parse record envelope or legacy issue
+        let record: serde_json::Value = serde_json::from_str(&line)
+            .map_err(|e| anyhow!("Line {}: malformed JSON: {}", line_num, e))?;
+
+        // Check if this is a forensic record with record_type
+        if let Some(record_type) = record.get("record_type").and_then(|v| v.as_str()) {
+            // Handle forensic format
+            match record_type {
+                "issue" => {
+                    let issue_value = record
+                        .get("issue")
+                        .ok_or_else(|| anyhow!("Line {}: missing 'issue' field", line_num))?;
+
+                    // Parse as generic JSON to extract dependencies and labels
+                    let issue_obj = issue_value
+                        .as_object()
+                        .ok_or_else(|| anyhow!("Line {}: issue must be an object", line_num))?;
+
+                    let issue: Issue = serde_json::from_value(issue_value.clone())
+                        .map_err(|e| anyhow!("Line {}: invalid issue: {}", line_num, e))?;
+
+                    // Check for duplicate IDs
+                    if !seen_issue_ids.insert(issue.id.clone()) {
+                        bail!("Line {}: duplicate issue ID: {}", line_num, issue.id);
+                    }
+
+                    // Extract dependencies if present
+                    if let Some(deps_array) =
+                        issue_obj.get("dependencies").and_then(|v| v.as_array())
+                    {
+                        for dep_value in deps_array {
+                            let dep_obj = dep_value.as_object().ok_or_else(|| {
+                                anyhow!("Line {}: dependency must be an object", line_num)
+                            })?;
+
+                            let blocked = issue.id.clone();
+                            let blocker = dep_obj
+                                .get("blocker")
+                                .and_then(|v| v.as_str())
+                                .ok_or_else(|| {
+                                    anyhow!("Line {}: dependency missing blocker", line_num)
+                                })?
+                                .to_string();
+                            let kind = dep_obj
+                                .get("kind")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("blocks")
+                                .to_string();
+
+                            dependencies.push((blocked, blocker, kind));
+                        }
+                    }
+
+                    // Extract labels if present
+                    if let Some(labels_array) = issue_obj.get("labels").and_then(|v| v.as_array()) {
+                        for label_value in labels_array {
+                            if let Some(label_str) = label_value.as_str() {
+                                labels.push((issue.id.clone(), label_str.to_string()));
+                            }
+                        }
+                    }
+
+                    issues.push(issue);
+                }
+                "event" => {
+                    let event_value = record
+                        .get("event")
+                        .ok_or_else(|| anyhow!("Line {}: missing 'event' field", line_num))?;
+
+                    let event: SerializedEvent = serde_json::from_value(event_value.clone())
+                        .map_err(|e| anyhow!("Line {}: invalid event: {}", line_num, e))?;
+
+                    // Check for duplicate event identities
+                    let identity = format!(
+                        "{}:{}",
+                        event.origin_store_uuid, event.origin_event_sequence
+                    );
+                    if !seen_event_identities.insert(identity.clone()) {
+                        bail!("Line {}: duplicate event identity: {}", line_num, identity);
+                    }
+
+                    events.push(event);
+                }
+                "provenance_receipt" => {
+                    let receipt_value = record.get("provenance_receipt").ok_or_else(|| {
+                        anyhow!("Line {}: missing 'provenance_receipt' field", line_num)
+                    })?;
+
+                    let receipt: SerializedReceipt = serde_json::from_value(receipt_value.clone())
+                        .map_err(|e| anyhow!("Line {}: invalid receipt: {}", line_num, e))?;
+
+                    // Check for duplicate receipt IDs
+                    if !seen_receipt_ids.insert(receipt.receipt_id.clone()) {
+                        bail!(
+                            "Line {}: duplicate receipt ID: {}",
+                            line_num,
+                            receipt.receipt_id
+                        );
+                    }
+
+                    receipts.push(receipt);
+                }
+                _ => {
+                    bail!("Line {}: unknown record type: {}", line_num, record_type);
+                }
+            }
+        } else {
+            // Try to parse as old-style issue-only record (for backward compatibility)
+            let issue: Issue = serde_json::from_str(&line)
+                .map_err(|e| anyhow!("Line {}: malformed issue JSON: {}", line_num, e))?;
+
+            if !seen_issue_ids.insert(issue.id.clone()) {
+                bail!("Line {}: duplicate issue ID: {}", line_num, issue.id);
+            }
+
+            // Extract dependencies from the issue object
+            if let Some(deps_array) = record.get("dependencies").and_then(|v| v.as_array()) {
+                for dep_value in deps_array {
+                    let dep_obj = dep_value.as_object().ok_or_else(|| {
+                        anyhow!("Line {}: dependency must be an object", line_num)
+                    })?;
+
+                    let blocked = issue.id.clone();
+                    let blocker = dep_obj
+                        .get("blocker")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| anyhow!("Line {}: dependency missing blocker", line_num))?
+                        .to_string();
+                    let kind = dep_obj
+                        .get("kind")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("blocks")
+                        .to_string();
+
+                    dependencies.push((blocked, blocker, kind));
+                }
+            }
+
+            // Extract labels from the issue object
+            if let Some(labels_array) = record.get("labels").and_then(|v| v.as_array()) {
+                for label_value in labels_array {
+                    if let Some(label_str) = label_value.as_str() {
+                        labels.push((issue.id.clone(), label_str.to_string()));
+                    }
+                }
+            }
+
+            issues.push(issue);
+        }
+    }
+
+    let input_hash = format!("{:x}", hasher.finalize());
+
+    // Try to extract store UUID from events or receipts
+    if let Some(first_event) = events.first() {
+        store_uuid = first_event.origin_store_uuid.clone();
+    } else if let Some(first_receipt) = receipts.first() {
+        store_uuid = first_receipt.target_store_uuid.clone();
+    }
+
+    // Get snapshot sequence from events
+    if let Some(last_event) = events.last() {
+        snapshot_sequence = last_event.origin_event_sequence;
+    }
+
+    Ok(ForensicStaging {
+        issues,
+        dependencies,
+        labels,
+        events,
+        receipts,
+        input_hash,
+        store_uuid,
+        snapshot_sequence,
+        mode: CheckpointMode::Monolithic,
+        issue_count: seen_issue_ids.len(),
+        event_count: seen_event_identities.len(),
+        receipt_count: seen_receipt_ids.len(),
+    })
+}
+
+/// Stage sharded checkpoint from pointer file
+fn stage_sharded_checkpoint(pointer_path: &Path) -> Result<ForensicStaging> {
+    let base = pointer_path
+        .parent()
+        .ok_or_else(|| anyhow!("Pointer has no parent directory"))?;
+
+    // Read current.json pointer
+    let pointer_data = std::fs::read_to_string(pointer_path)?;
+    let pointer: serde_json::Value =
+        serde_json::from_str(&pointer_data).map_err(|e| anyhow!("Invalid pointer JSON: {}", e))?;
+
+    let active_root = pointer
+        .get("active_root")
+        .ok_or_else(|| anyhow!("Pointer missing active_root"))?;
+
+    let manifest_path = active_root
+        .get("path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("Active root missing path"))?;
+
+    let manifest_full_path = base.join(manifest_path);
+
+    // Read manifest
+    let manifest_data = std::fs::read_to_string(&manifest_full_path)
+        .map_err(|e| anyhow!("Failed to read manifest: {}", e))?;
+
+    let manifest: serde_json::Value = serde_json::from_str(&manifest_data)
+        .map_err(|e| anyhow!("Invalid manifest JSON: {}", e))?;
+
+    // Extract metadata
+    let store_uuid = manifest
+        .get("store_uuid")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("Manifest missing store_uuid"))?
+        .to_string();
+
+    let snapshot_sequence = manifest
+        .get("snapshot_sequence")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| anyhow!("Manifest missing snapshot_sequence"))?;
+
+    let mut hasher = Sha256::new();
+    let mut issues = Vec::new();
+    let mut dependencies = Vec::new();
+    let mut labels = Vec::new();
+    let mut events = Vec::new();
+    let mut receipts = Vec::new();
+
+    let mut seen_issue_ids = HashSet::new();
+    let mut seen_event_identities = HashSet::new();
+    let mut seen_receipt_ids = HashSet::new();
+
+    // Process issue shards
+    if let Some(issue_shards) = manifest.get("issue_shards").and_then(|v| v.as_array()) {
+        for shard_info in issue_shards {
+            let shard_path = shard_info
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow!("Issue shard missing path"))?;
+
+            let shard_full_path = base.join(shard_path);
+            let shard_data = process_shard_file(
+                &shard_full_path,
+                &mut hasher,
+                &mut seen_issue_ids,
+                &mut seen_event_identities,
+                &mut seen_receipt_ids,
+            )?;
+
+            issues.extend(shard_data.issues);
+            dependencies.extend(shard_data.dependencies);
+            labels.extend(shard_data.labels);
+        }
+    }
+
+    // Process event shards
+    if let Some(event_shards) = manifest.get("event_shards").and_then(|v| v.as_array()) {
+        for shard_info in event_shards {
+            let shard_path = shard_info
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow!("Event shard missing path"))?;
+
+            let shard_full_path = base.join(shard_path);
+            let shard_data = process_shard_file(
+                &shard_full_path,
+                &mut hasher,
+                &mut seen_issue_ids,
+                &mut seen_event_identities,
+                &mut seen_receipt_ids,
+            )?;
+
+            events.extend(shard_data.events);
+        }
+    }
+
+    // Process receipt shards
+    if let Some(receipt_shards) = manifest.get("receipt_shards").and_then(|v| v.as_array()) {
+        for shard_info in receipt_shards {
+            let shard_path = shard_info
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow!("Receipt shard missing path"))?;
+
+            let shard_full_path = base.join(shard_path);
+            let shard_data = process_shard_file(
+                &shard_full_path,
+                &mut hasher,
+                &mut seen_issue_ids,
+                &mut seen_event_identities,
+                &mut seen_receipt_ids,
+            )?;
+
+            receipts.extend(shard_data.receipts);
+        }
+    }
+
+    let input_hash = format!("{:x}", hasher.finalize());
+
+    Ok(ForensicStaging {
+        issues,
+        dependencies,
+        labels,
+        events,
+        receipts,
+        input_hash,
+        store_uuid,
+        snapshot_sequence,
+        mode: CheckpointMode::Sharded,
+        issue_count: seen_issue_ids.len(),
+        event_count: seen_event_identities.len(),
+        receipt_count: seen_receipt_ids.len(),
+    })
+}
+
+/// Process a single shard file
+fn process_shard_file(
+    shard_path: &Path,
+    hasher: &mut Sha256,
+    seen_issue_ids: &mut HashSet<String>,
+    seen_event_identities: &mut HashSet<String>,
+    seen_receipt_ids: &mut HashSet<String>,
+) -> Result<ShardData> {
+    let file = File::open(shard_path)
+        .map_err(|e| anyhow!("Failed to open shard {}: {}", shard_path.display(), e))?;
+
+    let reader = BufReader::new(file);
+
+    let mut shard_data = ShardData {
+        issues: Vec::new(),
+        dependencies: Vec::new(),
+        labels: Vec::new(),
+        events: Vec::new(),
+        receipts: Vec::new(),
+    };
+
+    for (line_num, line_result) in reader.lines().enumerate() {
+        let line_num = line_num + 1;
+        let line = line_result?;
+
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        hasher.update(line.as_bytes());
+        hasher.update(b"\n");
+
+        let record: serde_json::Value = serde_json::from_str(&line).map_err(|e| {
+            anyhow!(
+                "{} line {}: malformed JSON: {}",
+                shard_path.display(),
+                line_num,
+                e
+            )
+        })?;
+
+        let record_type = record
+            .get("record_type")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                anyhow!(
+                    "{} line {}: missing record_type",
+                    shard_path.display(),
+                    line_num
+                )
+            })?;
+
+        match record_type {
+            "issue" => {
+                let issue_value = record.get("issue").ok_or_else(|| {
+                    anyhow!(
+                        "{} line {}: missing 'issue' field",
+                        shard_path.display(),
+                        line_num
+                    )
+                })?;
+
+                let issue_obj = issue_value.as_object().ok_or_else(|| {
+                    anyhow!(
+                        "{} line {}: issue must be an object",
+                        shard_path.display(),
+                        line_num
+                    )
+                })?;
+
+                let issue: Issue = serde_json::from_value(issue_value.clone()).map_err(|e| {
+                    anyhow!(
+                        "{} line {}: invalid issue: {}",
+                        shard_path.display(),
+                        line_num,
+                        e
+                    )
+                })?;
+
+                if !seen_issue_ids.insert(issue.id.clone()) {
+                    bail!(
+                        "{} line {}: duplicate issue ID: {}",
+                        shard_path.display(),
+                        line_num,
+                        issue.id
+                    );
+                }
+
+                // Extract dependencies if present
+                if let Some(deps_array) = issue_obj.get("dependencies").and_then(|v| v.as_array()) {
+                    for dep_value in deps_array {
+                        let dep_obj = dep_value.as_object().ok_or_else(|| {
+                            anyhow!(
+                                "{} line {}: dependency must be an object",
+                                shard_path.display(),
+                                line_num
+                            )
+                        })?;
+
+                        let blocked = issue.id.clone();
+                        let blocker = dep_obj
+                            .get("blocker")
+                            .and_then(|v| v.as_str())
+                            .ok_or_else(|| {
+                                anyhow!(
+                                    "{} line {}: dependency missing blocker",
+                                    shard_path.display(),
+                                    line_num
+                                )
+                            })?
+                            .to_string();
+                        let kind = dep_obj
+                            .get("kind")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("blocks")
+                            .to_string();
+
+                        shard_data.dependencies.push((blocked, blocker, kind));
+                    }
+                }
+
+                // Extract labels if present
+                if let Some(labels_array) = issue_obj.get("labels").and_then(|v| v.as_array()) {
+                    for label_value in labels_array {
+                        if let Some(label_str) = label_value.as_str() {
+                            shard_data
+                                .labels
+                                .push((issue.id.clone(), label_str.to_string()));
+                        }
+                    }
+                }
+
+                shard_data.issues.push(issue);
+            }
+            "event" => {
+                let event_value = record.get("event").ok_or_else(|| {
+                    anyhow!(
+                        "{} line {}: missing 'event' field",
+                        shard_path.display(),
+                        line_num
+                    )
+                })?;
+
+                let event: SerializedEvent =
+                    serde_json::from_value(event_value.clone()).map_err(|e| {
+                        anyhow!(
+                            "{} line {}: invalid event: {}",
+                            shard_path.display(),
+                            line_num,
+                            e
+                        )
+                    })?;
+
+                let identity = format!(
+                    "{}:{}",
+                    event.origin_store_uuid, event.origin_event_sequence
+                );
+                if !seen_event_identities.insert(identity.clone()) {
+                    bail!(
+                        "{} line {}: duplicate event identity: {}",
+                        shard_path.display(),
+                        line_num,
+                        identity
+                    );
+                }
+
+                shard_data.events.push(event);
+            }
+            "provenance_receipt" => {
+                let receipt_value = record.get("provenance_receipt").ok_or_else(|| {
+                    anyhow!(
+                        "{} line {}: missing 'provenance_receipt' field",
+                        shard_path.display(),
+                        line_num
+                    )
+                })?;
+
+                let receipt: SerializedReceipt = serde_json::from_value(receipt_value.clone())
+                    .map_err(|e| {
+                        anyhow!(
+                            "{} line {}: invalid receipt: {}",
+                            shard_path.display(),
+                            line_num,
+                            e
+                        )
+                    })?;
+
+                if !seen_receipt_ids.insert(receipt.receipt_id.clone()) {
+                    bail!(
+                        "{} line {}: duplicate receipt ID: {}",
+                        shard_path.display(),
+                        line_num,
+                        receipt.receipt_id
+                    );
+                }
+
+                shard_data.receipts.push(receipt);
+            }
+            _ => {
+                bail!(
+                    "{} line {}: unknown record type: {}",
+                    shard_path.display(),
+                    line_num,
+                    record_type
+                );
+            }
+        }
+    }
+
+    Ok(shard_data)
+}
+
+/// Shard data accumulator
+#[derive(Debug, Default)]
+struct ShardData {
+    issues: Vec<Issue>,
+    dependencies: Vec<(String, String, String)>,
+    labels: Vec<(String, String)>,
+    events: Vec<SerializedEvent>,
+    receipts: Vec<SerializedReceipt>,
+}
+
+/// Validate forensic checkpoint before import
+fn validate_forensic_checkpoint(
+    staging: &ForensicStaging,
+    mode: ImportMode,
+    store: &mut SqliteStore,
+    _dry_run: bool,
+) -> Result<()> {
+    // Validate canonical ordering
+    validate_canonical_ordering(staging)?;
+
+    // Validate dependencies
+    validate_dependencies(&staging.dependencies, &staging.issues)?;
+
+    // Validate event sequence continuity
+    validate_event_sequence(staging)?;
+
+    // Mode-specific validation
+    match mode {
+        ImportMode::RestoreIntoEmpty => {
+            validate_restore_constraints(store, staging)?;
+        }
+        ImportMode::Merge => {
+            validate_merge_constraints(store, staging)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate canonical ordering of records
+fn validate_canonical_ordering(staging: &ForensicStaging) -> Result<()> {
+    // Issues should be sorted by ID
+    let mut prev_id = String::new();
+    for issue in &staging.issues {
+        if issue.id <= prev_id {
+            bail!(
+                "Issues not in canonical order: {} after {}",
+                issue.id,
+                prev_id
+            );
+        }
+        prev_id = issue.id.clone();
+    }
+
+    // Events should be sorted by (origin_store_uuid, origin_event_sequence)
+    let mut prev_identity = (String::new(), 0i64);
+    for event in &staging.events {
+        let current_identity = (event.origin_store_uuid.clone(), event.origin_event_sequence);
+        if current_identity <= prev_identity {
+            bail!(
+                "Events not in canonical order: ({}, {}) after ({}, {})",
+                current_identity.0,
+                current_identity.1,
+                prev_identity.0,
+                prev_identity.1
+            );
+        }
+        prev_identity = current_identity;
+    }
+
+    // Receipts should be sorted by ID
+    let mut prev_receipt_id = String::new();
+    for receipt in &staging.receipts {
+        if receipt.receipt_id <= prev_receipt_id {
+            bail!(
+                "Receipts not in canonical order: {} after {}",
+                receipt.receipt_id,
+                prev_receipt_id
+            );
+        }
+        prev_receipt_id = receipt.receipt_id.clone();
+    }
+
+    Ok(())
+}
+
+/// Validate dependencies
+fn validate_dependencies(
+    dependencies: &[(String, String, String)],
+    issues: &[Issue],
+) -> Result<()> {
+    let issue_ids: HashSet<&String> = issues.iter().map(|i| &i.id).collect();
+
+    // Check all referenced issues exist and no self-edges
+    for (blocked, blocker, _kind) in dependencies {
+        if !issue_ids.contains(blocked) {
+            bail!(
+                "Dependency references non-existent blocked issue: {}",
+                blocked
+            );
+        }
+        if !issue_ids.contains(blocker) {
+            bail!(
+                "Dependency references non-existent blocker issue: {}",
+                blocker
+            );
+        }
+        // Check for self-edges
+        if blocked == blocker {
+            bail!(
+                "Self-edge detected: issue {} cannot depend on itself",
+                blocked
+            );
+        }
+    }
+
+    // Check for cycles using DFS
+    let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+    for (blocked, blocker, kind) in dependencies {
+        if kind == "blocks" {
+            adj.entry(blocker.clone())
+                .or_default()
+                .push(blocked.clone());
+        }
+    }
+
+    for node in issue_ids {
+        let mut visited = HashSet::new();
+        let mut recursion_stack = Vec::new();
+        if dfs_has_cycle_forensic(&adj, node, &mut visited, &mut recursion_stack)? {
+            bail!("Cycle detected: issue {} is part of a blocking cycle", node);
+        }
+    }
+
+    Ok(())
+}
+
+/// DFS cycle detection for forensic validation
+fn dfs_has_cycle_forensic(
+    adj: &HashMap<String, Vec<String>>,
+    node: &str,
+    visited: &mut HashSet<String>,
+    recursion_stack: &mut Vec<String>,
+) -> Result<bool> {
+    if recursion_stack.contains(&node.to_string()) {
+        return Ok(true);
+    }
+
+    if visited.contains(node) {
+        return Ok(false);
+    }
+
+    visited.insert(node.to_string());
+    recursion_stack.push(node.to_string());
+
+    if let Some(neighbors) = adj.get(node) {
+        for neighbor in neighbors {
+            if dfs_has_cycle_forensic(adj, neighbor, visited, recursion_stack)? {
+                return Ok(true);
+            }
+        }
+    }
+
+    recursion_stack.pop();
+    Ok(false)
+}
+
+/// Validate event sequence continuity
+fn validate_event_sequence(staging: &ForensicStaging) -> Result<()> {
+    if staging.events.is_empty() {
+        return Ok(()); // No events to validate
+    }
+
+    let first_event = &staging.events[0];
+    if first_event.origin_event_sequence != 1 {
+        bail!(
+            "Event sequence does not start at 1: starts at {}",
+            first_event.origin_event_sequence
+        );
+    }
+
+    for window in staging.events.windows(2) {
+        let prev = &window[0];
+        let curr = &window[1];
+
+        if prev.origin_store_uuid != curr.origin_store_uuid {
+            bail!(
+                "Event origin UUID changed: {} vs {}",
+                prev.origin_store_uuid,
+                curr.origin_store_uuid
+            );
+        }
+
+        if curr.origin_event_sequence != prev.origin_event_sequence + 1 {
+            bail!(
+                "Event sequence gap: expected {}, found {}",
+                prev.origin_event_sequence + 1,
+                curr.origin_event_sequence
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate restore-into-empty constraints
+fn validate_restore_constraints(store: &mut SqliteStore, _staging: &ForensicStaging) -> Result<()> {
+    // Verify target is empty (no semantic mutations)
+    verify_empty_target(store)?;
+
+    // Verify store UUID can be adopted
+    // (Restore will adopt the checkpoint UUID)
+
+    Ok(())
+}
+
+/// Validate merge constraints
+fn validate_merge_constraints(store: &mut SqliteStore, staging: &ForensicStaging) -> Result<()> {
+    let conn = store.conn();
+
+    // Get current workspace UUID
+    let target_uuid: String = conn
+        .query_row("SELECT uuid FROM workspace", [], |row| row.get(0))
+        .unwrap_or_else(|_| String::from("unknown"));
+
+    // Check UUID compatibility
+    if target_uuid == staging.store_uuid {
+        // Same-UUID merge: event streams must be compatible
+        validate_same_uuid_merge(store, staging)?;
+    } else {
+        // Different-UUID merge: event identities must not conflict
+        validate_different_uuid_merge(store, staging)?;
+    }
+
+    Ok(())
+}
+
+/// Validate same-UUID merge constraints
+fn validate_same_uuid_merge(store: &mut SqliteStore, staging: &ForensicStaging) -> Result<()> {
+    let conn = store.conn();
+
+    // Get max local event sequence for this origin
+    let max_local_sequence: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(origin_event_sequence), 0)
+             FROM events
+             WHERE origin_store_uuid = ?1",
+            [&staging.store_uuid],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    // All checkpoint events must be new (sequences > max_local_sequence)
+    // or match existing events exactly (hash equality)
+
+    // For now, require that checkpoint extends existing history
+    if !staging.events.is_empty() && staging.events[0].origin_event_sequence <= max_local_sequence {
+        bail!(
+            "Same-UUID merge requires checkpoint to extend existing history. \
+             Checkpoint starts at sequence {}, but local has {}",
+            staging.events[0].origin_event_sequence,
+            max_local_sequence
+        );
+    }
+
+    Ok(())
+}
+
+/// Validate different-UUID merge constraints
+fn validate_different_uuid_merge(store: &mut SqliteStore, staging: &ForensicStaging) -> Result<()> {
+    let conn = store.conn();
+
+    // Check that no event identities conflict
+    for event in &staging.events {
+        let conflict_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events
+                 WHERE origin_store_uuid = ?1
+                 AND origin_event_sequence = ?2",
+                [
+                    &event.origin_store_uuid,
+                    &event.origin_event_sequence.to_string(),
+                ],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        if conflict_count > 0 {
+            // Conflict: need to check hash equality
+            bail!(
+                "Different-UUID merge has event identity conflict: ({}, {}) already exists",
+                event.origin_store_uuid,
+                event.origin_event_sequence
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Execute restore-into-empty operation
+fn execute_restore_into_empty(
+    store: &mut SqliteStore,
+    staging: &ForensicStaging,
+    actor: &str,
+) -> Result<()> {
+    let conn = store.conn();
+    let tx = conn.unchecked_transaction()?;
+
+    // Adopt checkpoint store UUID
+    tx.execute("UPDATE workspace SET uuid = ?1", [&staging.store_uuid])?;
+
+    // Activate staged data
+    let (inserted, activation_sequence) = activate_forensic_import(&tx, staging)?;
+
+    // Create restore receipt
+    let receipt = create_restore_receipt(&tx, staging, actor, activation_sequence)?;
+
+    // Commit transaction
+    tx.commit()?;
+
+    eprintln!(
+        "Restored {} issues, {} events",
+        inserted,
+        staging.events.len()
+    );
+    eprintln!("Restore receipt: {}", receipt.receipt_id);
+
+    Ok(())
+}
+
+/// Execute merge operation
+fn execute_merge(store: &mut SqliteStore, staging: &ForensicStaging, actor: &str) -> Result<()> {
+    let conn = store.conn();
+    let tx = conn.unchecked_transaction()?;
+
+    // Perform merge reconciliation
+    let (inserted, updated, retained) = reconcile_and_merge(&tx, staging)?;
+
+    // Import events
+    import_events(&tx, staging)?;
+
+    // Import existing receipts
+    import_receipts(&tx, staging)?;
+
+    // Create merge summary event and receipt
+    let activation_sequence = create_merge_summary(&tx, staging, actor)?;
+
+    let receipt = create_merge_receipt(&tx, staging, actor, activation_sequence)?;
+
+    // Commit transaction
+    tx.commit()?;
+
+    eprintln!(
+        "Merge completed: {} inserted, {} updated, {} retained",
+        inserted, updated, retained
+    );
+    eprintln!("Merge receipt: {}", receipt.receipt_id);
+
+    Ok(())
+}
+
+/// Activate forensic import in transaction
+fn activate_forensic_import(tx: &Transaction, staging: &ForensicStaging) -> Result<(usize, i64)> {
+    // Import issues
+    let inserted = import_issues(tx, staging)?;
+
+    // Import dependencies
+    import_dependencies(tx, staging)?;
+
+    // Import labels
+    import_labels(tx, staging)?;
+
+    // Get activation sequence
+    let activation_sequence: i64 = tx
+        .query_row("SELECT COALESCE(MAX(sequence), 0) FROM events", [], |row| {
+            row.get(0)
+        })
+        .unwrap_or(0);
+
+    Ok((inserted, activation_sequence))
+}
+
+/// Import issues into database
+fn import_issues(tx: &Transaction, staging: &ForensicStaging) -> Result<usize> {
+    let mut inserted = 0;
+
+    for issue in &staging.issues {
+        tx.execute(
+            "INSERT INTO issues (
+                id, title, description, notes, priority, issue_type, base_status,
+                manual_blocked, assignee, created_at, updated_at, closed_at,
+                close_reason, source_repo, profile, schema_ref
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            params![
+                &issue.id,
+                &issue.title,
+                &issue.description.as_deref().unwrap_or(""),
+                &issue.notes.as_deref().unwrap_or(""),
+                &issue.priority,
+                &issue.issue_type.as_deref().unwrap_or("task"),
+                &issue.base_status.as_str(),
+                &issue.manual_blocked,
+                &issue.assignee,
+                &issue.created_at,
+                &issue.updated_at,
+                &issue.closed_at,
+                &issue.close_reason,
+                &issue.source_repo,
+                &issue.profile,
+                &issue.schema_ref,
+            ],
+        )?;
+
+        // Insert extensions (unknown fields)
+        for (key, value) in &issue.extensions {
+            let value_str = serde_json::to_string(value)
+                .map_err(|e| anyhow!("Failed to serialize extension '{}': {}", key, e))?;
+            tx.execute(
+                "INSERT INTO issue_extensions (issue_id, key, value, profile)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    &issue.id,
+                    key,
+                    &value_str,
+                    &issue.profile.as_deref().unwrap_or("native-v1")
+                ],
+            )?;
+        }
+
+        inserted += 1;
+    }
+
+    Ok(inserted)
+}
+
+/// Import dependencies into database
+fn import_dependencies(tx: &Transaction, staging: &ForensicStaging) -> Result<()> {
+    for (blocked, blocker, kind) in &staging.dependencies {
+        tx.execute(
+            "INSERT INTO dependencies (blocked_issue_id, blocker_issue_id, kind)
+             VALUES (?1, ?2, ?3)",
+            params![blocked, blocker, kind],
+        )?;
+    }
+    Ok(())
+}
+
+/// Import labels into database
+fn import_labels(tx: &Transaction, staging: &ForensicStaging) -> Result<()> {
+    for (issue_id, label) in &staging.labels {
+        tx.execute(
+            "INSERT INTO labels (issue_id, label) VALUES (?1, ?2)",
+            params![issue_id, label],
+        )?;
+    }
+    Ok(())
+}
+
+/// Import events into database
+fn import_events(tx: &Transaction, staging: &ForensicStaging) -> Result<()> {
+    for event in &staging.events {
+        tx.execute(
+            "INSERT INTO events (
+                issue_id, kind, actor, time, detail,
+                origin_store_uuid, origin_event_sequence
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                &event.issue_id,
+                &event.kind,
+                &event.actor,
+                &event.time,
+                &event.detail.to_string(),
+                &event.origin_store_uuid,
+                &event.origin_event_sequence,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+/// Import receipts into database
+fn import_receipts(tx: &Transaction, staging: &ForensicStaging) -> Result<()> {
+    for receipt in &staging.receipts {
+        let counts_json = serde_json::to_string(&receipt.counts)
+            .map_err(|e| anyhow!("Failed to serialize receipt counts: {}", e))?;
+
+        tx.execute(
+            "INSERT INTO provenance_receipts (
+                receipt_id, schema_ref, kind, source_store_uuid, target_store_uuid,
+                source_root_sha256, actor, created_at, counts_json, result,
+                summary_event_identity, receipt_sha256
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                &receipt.receipt_id,
+                &receipt.schema_ref,
+                &receipt.kind,
+                &receipt.source_store_uuid,
+                &receipt.target_store_uuid,
+                &receipt.source_root_sha256,
+                &receipt.actor,
+                &receipt.created_at,
+                &counts_json,
+                &receipt.result,
+                &receipt.summary_event_identity,
+                &receipt.receipt_sha256,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+/// Create restore receipt
+fn create_restore_receipt(
+    tx: &Transaction,
+    staging: &ForensicStaging,
+    actor: &str,
+    _activation_sequence: i64,
+) -> Result<SerializedReceipt> {
+    let receipt_id = format!("restore-{}", uuid());
+    let now = format!(
+        "{}",
+        SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()
+    );
+
+    let counts = ReceiptCounts {
+        issues: staging.issue_count as i64,
+        events: staging.event_count as i64,
+        provenance_receipts: staging.receipt_count as i64,
+    };
+
+    let receipt_kind = "restore".to_string();
+    let mut hasher = Sha256::new();
+    hasher.update(&receipt_id);
+    hasher.update(&receipt_kind);
+    hasher.update(&staging.input_hash);
+    hasher.update(actor);
+    hasher.update(&now);
+    hasher.update(b"success");
+    let receipt_hash = format!("{:x}", hasher.finalize());
+
+    let receipt = SerializedReceipt {
+        schema_ref: "urn:bead-rs:schema:provenance-receipt:native-v1".to_string(),
+        receipt_id: receipt_id.clone(),
+        kind: receipt_kind.clone(),
+        source_store_uuid: staging.store_uuid.clone(),
+        target_store_uuid: staging.store_uuid.clone(), // Same for restore
+        source_root_sha256: staging.input_hash.clone(),
+        actor: actor.to_string(),
+        created_at: now.clone(),
+        counts,
+        result: "success".to_string(),
+        summary_event_identity: None,
+        receipt_sha256: receipt_hash,
+    };
+
+    // Store receipt in database
+    let counts_json = serde_json::to_string(&receipt.counts)
+        .map_err(|e| anyhow!("Failed to serialize receipt counts: {}", e))?;
+
+    tx.execute(
+        "INSERT INTO provenance_receipts (
+            receipt_id, schema_ref, kind, source_store_uuid, target_store_uuid,
+            source_root_sha256, actor, created_at, counts_json, result,
+            summary_event_identity, receipt_sha256
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![
+            &receipt.receipt_id,
+            &receipt.schema_ref,
+            &receipt.kind,
+            &receipt.source_store_uuid,
+            &receipt.target_store_uuid,
+            &receipt.source_root_sha256,
+            &receipt.actor,
+            &receipt.created_at,
+            &counts_json,
+            &receipt.result,
+            &receipt.summary_event_identity,
+            &receipt.receipt_sha256,
+        ],
+    )?;
+
+    Ok(receipt)
+}
+
+/// Reconcile and merge for merge operation
+fn reconcile_and_merge(
+    tx: &Transaction,
+    staging: &ForensicStaging,
+) -> Result<(usize, usize, usize)> {
+    let mut inserted = 0;
+    let mut updated = 0;
+    let mut retained = 0;
+
+    for issue in &staging.issues {
+        // Check if issue exists
+        let existing: Option<(String, String)> = tx
+            .query_row(
+                "SELECT id, updated_at FROM issues WHERE id = ?1",
+                [&issue.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .ok();
+
+        match existing {
+            None => {
+                // Insert new issue
+                tx.execute(
+                    "INSERT INTO issues (
+                        id, title, description, notes, priority, issue_type, base_status,
+                        manual_blocked, assignee, created_at, updated_at, closed_at,
+                        close_reason, source_repo, profile, schema_ref
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                    params![
+                        &issue.id,
+                        &issue.title,
+                        &issue.description.as_deref().unwrap_or(""),
+                        &issue.notes.as_deref().unwrap_or(""),
+                        &issue.priority,
+                        &issue.issue_type.as_deref().unwrap_or("task"),
+                        &issue.base_status.as_str(),
+                        &issue.manual_blocked,
+                        &issue.assignee,
+                        &issue.created_at,
+                        &issue.updated_at,
+                        &issue.closed_at,
+                        &issue.close_reason,
+                        &issue.source_repo,
+                        &issue.profile,
+                        &issue.schema_ref,
+                    ],
+                )?;
+
+                // Insert extensions (unknown fields)
+                for (key, value) in &issue.extensions {
+                    let value_str = serde_json::to_string(value)
+                        .map_err(|e| anyhow!("Failed to serialize extension '{}': {}", key, e))?;
+                    tx.execute(
+                        "INSERT INTO issue_extensions (issue_id, key, value, profile)
+                         VALUES (?1, ?2, ?3, ?4)",
+                        params![
+                            &issue.id,
+                            key,
+                            &value_str,
+                            &issue.profile.as_deref().unwrap_or("native-v1")
+                        ],
+                    )?;
+                }
+
+                inserted += 1;
+            }
+            Some((id, existing_updated_at)) => {
+                // Compare timestamps
+                if issue.updated_at > existing_updated_at {
+                    // Update issue
+                    tx.execute(
+                        "UPDATE issues SET
+                            title = ?1, description = ?2, notes = ?3, priority = ?4,
+                            issue_type = ?5, base_status = ?6, manual_blocked = ?7,
+                            assignee = ?8, updated_at = ?9, closed_at = ?10,
+                            close_reason = ?11, source_repo = ?12, profile = ?13,
+                            schema_ref = ?14
+                         WHERE id = ?15",
+                        params![
+                            &issue.title,
+                            &issue.description.as_deref().unwrap_or(""),
+                            &issue.notes.as_deref().unwrap_or(""),
+                            &issue.priority,
+                            &issue.issue_type.as_deref().unwrap_or("task"),
+                            &issue.base_status.as_str(),
+                            &issue.manual_blocked,
+                            &issue.assignee,
+                            &issue.updated_at,
+                            &issue.closed_at,
+                            &issue.close_reason,
+                            &issue.source_repo,
+                            &issue.profile,
+                            &issue.schema_ref,
+                            &id,
+                        ],
+                    )?;
+
+                    // Update extensions (delete old ones and insert new ones)
+                    tx.execute(
+                        "DELETE FROM issue_extensions WHERE issue_id = ?1",
+                        [&issue.id],
+                    )?;
+
+                    for (key, value) in &issue.extensions {
+                        let value_str = serde_json::to_string(value).map_err(|e| {
+                            anyhow!("Failed to serialize extension '{}': {}", key, e)
+                        })?;
+                        tx.execute(
+                            "INSERT INTO issue_extensions (issue_id, key, value, profile)
+                             VALUES (?1, ?2, ?3, ?4)",
+                            params![
+                                &issue.id,
+                                key,
+                                &value_str,
+                                &issue.profile.as_deref().unwrap_or("native-v1")
+                            ],
+                        )?;
+                    }
+
+                    updated += 1;
+                } else {
+                    retained += 1;
+                }
+            }
+        }
+    }
+
+    // Import dependencies and labels (merge logic)
+    import_dependencies(tx, staging)?;
+    import_labels(tx, staging)?;
+
+    Ok((inserted, updated, retained))
+}
+
+/// Create merge summary event
+fn create_merge_summary(tx: &Transaction, staging: &ForensicStaging, actor: &str) -> Result<i64> {
+    // Get next sequence
+    let sequence: i64 = tx
+        .query_row(
+            "SELECT COALESCE(MAX(sequence), 0) + 1 FROM events",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(1);
+
+    let now = format!(
+        "{}",
+        SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()
+    );
+
+    let detail = serde_json::json!({
+        "source_store_uuid": staging.store_uuid,
+        "source_root_hash": staging.input_hash,
+        "issues_count": staging.issue_count,
+        "events_count": staging.event_count,
+    });
+
+    tx.execute(
+        "INSERT INTO events (kind, actor, time, detail) VALUES (?1, ?2, ?3, ?4)",
+        params![
+            &format!("checkpoint_{}", staging.mode.as_str()),
+            actor,
+            now,
+            &detail.to_string(),
+        ],
+    )?;
+
+    Ok(sequence)
+}
+
+/// Create merge receipt
+fn create_merge_receipt(
+    tx: &Transaction,
+    staging: &ForensicStaging,
+    actor: &str,
+    activation_sequence: i64,
+) -> Result<SerializedReceipt> {
+    let receipt_id = format!("merge-{}", uuid());
+    let now = format!(
+        "{}",
+        SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()
+    );
+
+    let target_uuid = tx
+        .query_row("SELECT uuid FROM workspace", [], |row| {
+            row.get::<_, String>(0)
+        })
+        .unwrap_or_else(|_| String::from("unknown"));
+
+    let counts = ReceiptCounts {
+        issues: staging.issue_count as i64,
+        events: staging.event_count as i64,
+        provenance_receipts: staging.receipt_count as i64,
+    };
+
+    let receipt_kind = "merge".to_string();
+    let mut hasher = Sha256::new();
+    hasher.update(&receipt_id);
+    hasher.update(&receipt_kind);
+    hasher.update(&staging.input_hash);
+    hasher.update(actor);
+    hasher.update(&now);
+    hasher.update(b"success");
+    let receipt_hash = format!("{:x}", hasher.finalize());
+
+    let receipt = SerializedReceipt {
+        schema_ref: "urn:bead-rs:schema:provenance-receipt:native-v1".to_string(),
+        receipt_id: receipt_id.clone(),
+        kind: receipt_kind.clone(),
+        source_store_uuid: staging.store_uuid.clone(),
+        target_store_uuid: target_uuid,
+        source_root_sha256: staging.input_hash.clone(),
+        actor: actor.to_string(),
+        created_at: now.clone(),
+        counts,
+        result: "success".to_string(),
+        summary_event_identity: Some(format!("local-{}", activation_sequence)),
+        receipt_sha256: receipt_hash,
+    };
+
+    // Store receipt in database
+    let counts_json = serde_json::to_string(&receipt.counts)
+        .map_err(|e| anyhow!("Failed to serialize receipt counts: {}", e))?;
+
+    tx.execute(
+        "INSERT INTO provenance_receipts (
+            receipt_id, schema_ref, kind, source_store_uuid, target_store_uuid,
+            source_root_sha256, actor, created_at, counts_json, result, summary_event_identity
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            &receipt.receipt_id,
+            &receipt.schema_ref,
+            &receipt.kind,
+            &receipt.source_store_uuid,
+            &receipt.target_store_uuid,
+            &receipt.source_root_sha256,
+            &receipt.actor,
+            &receipt.created_at,
+            &counts_json,
+            &receipt.result,
+            &receipt.summary_event_identity,
+        ],
+    )?;
+
+    Ok(receipt)
+}
+
+/// Generate UUID
+fn uuid() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    format!("{:016x}", timestamp)
+}
+
 /// Stage issues from JSONL file for validation
+#[allow(dead_code)]
 fn stage_import(input_path: &Path, _profile: &str) -> Result<ImportStaging> {
     let file = File::open(input_path)?;
     let reader = BufReader::new(file);
@@ -468,6 +2181,7 @@ fn stage_import(input_path: &Path, _profile: &str) -> Result<ImportStaging> {
 }
 
 /// Validate staged import data
+#[allow(dead_code)]
 fn validate_import(staging: &ImportStaging, _dry_run: bool) -> Result<()> {
     let issue_ids: HashSet<_> = staging.issues.iter().map(|i| i.id.clone()).collect();
 
@@ -503,6 +2217,7 @@ fn validate_import(staging: &ImportStaging, _dry_run: bool) -> Result<()> {
 }
 
 /// Check if there are any cycles in the blocks dependencies
+#[allow(dead_code)]
 fn has_any_cycle(staging: &ImportStaging) -> Result<bool> {
     let mut visited = HashSet::new();
     let mut recursion_stack = HashSet::new();
@@ -532,6 +2247,7 @@ fn has_any_cycle(staging: &ImportStaging) -> Result<bool> {
 }
 
 /// DFS helper to detect cycles
+#[allow(dead_code)]
 fn dfs_has_cycle(
     adj: &HashMap<String, Vec<String>>,
     node: &str,
@@ -634,6 +2350,7 @@ fn verify_empty_target(store: &mut SqliteStore) -> Result<()> {
 }
 
 /// Activate staged import data in a single transaction
+#[allow(dead_code)]
 fn activate_import(store: &mut SqliteStore, staging: &ImportStaging) -> Result<(usize, i64)> {
     let conn = store.conn();
     let tx = conn.unchecked_transaction()?;

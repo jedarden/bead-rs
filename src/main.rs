@@ -563,6 +563,35 @@ fn cmd_sync_flush_only(opts: cli::SyncFlushOptions) -> Result<()> {
 }
 
 fn cmd_sync_import_only(opts: cli::SyncImportOptions) -> Result<()> {
+    // Validate that exactly one mode is selected
+    let mode = if opts.restore_into_empty {
+        Some(cli::ImportMode::RestoreIntoEmpty)
+    } else if opts.merge {
+        Some(cli::ImportMode::Merge)
+    } else {
+        None
+    };
+
+    let mode = mode.ok_or_else(|| {
+        Error::cli_usage("Exactly one of --restore-into-empty or --merge must be specified")
+    })?;
+
+    // Validate that actor is provided
+    let actor = opts
+        .actor
+        .ok_or_else(|| Error::cli_usage("--actor is required for import operations"))?;
+
+    // Validate actor format
+    if actor.trim().is_empty() {
+        return Err(Error::cli_usage("Actor cannot be empty"));
+    }
+    if actor.len() > 255 {
+        return Err(Error::cli_usage("Actor cannot exceed 255 bytes"));
+    }
+    if actor.contains(char::is_control) {
+        return Err(Error::cli_usage("Actor cannot contain control characters"));
+    }
+
     // Discover workspace
     let config = store::WorkspaceConfig::discover()?
         .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
@@ -574,10 +603,10 @@ fn cmd_sync_import_only(opts: cli::SyncImportOptions) -> Result<()> {
         config.root.join(&opts.input)
     };
 
-    // Validate input file exists
+    // Validate input path exists
     if !input_path.exists() {
         return Err(Error::not_found(format!(
-            "Input file not found: {}",
+            "Input not found: {}",
             input_path.display()
         )));
     }
@@ -590,25 +619,68 @@ fn cmd_sync_import_only(opts: cli::SyncImportOptions) -> Result<()> {
     // Create store wrapper
     let mut store = store::SqliteStore::from_conn(conn);
 
-    // Import checkpoint
-    let result = service::import_checkpoint(&mut store, &input_path, &opts.profile, opts.dry_run)?;
+    // Import checkpoint with forensic mode
+    let result = service::import_forensic_checkpoint(
+        &mut store,
+        &input_path,
+        &opts.profile,
+        mode,
+        &actor,
+        opts.dry_run,
+    )?;
 
     // Print result
     if opts.dry_run {
-        eprintln!("Dry-run import analysis:");
+        eprintln!("Dry-run forensic import analysis:");
     } else {
-        eprintln!("Imported checkpoint:");
+        eprintln!("Forensic import completed:");
     }
+    eprintln!(
+        "  Mode: {}",
+        match mode {
+            cli::ImportMode::RestoreIntoEmpty => "restore-into-empty",
+            cli::ImportMode::Merge => "merge",
+        }
+    );
     eprintln!("  Profile: {}", result.profile);
     eprintln!("  Input hash: {}", result.input_hash);
-    eprintln!("  Inserted: {}", result.inserted);
-    eprintln!("  Updated: {}", result.updated);
-    eprintln!("  Retained: {}", result.retained);
-    eprintln!("  Conflicted: {}", result.conflicted);
-    eprintln!("  Activation sequence: {}", result.activation_sequence);
-    eprintln!("  Covered sequence: {}", result.covered_sequence);
+    eprintln!(
+        "  Issues: {} inserted, {} updated, {} retained, {} conflicted",
+        result.inserted, result.updated, result.retained, result.conflicted
+    );
+    eprintln!("  Events: {} imported", result.events_imported);
+    eprintln!("  Receipts: {} processed", result.receipts_processed);
     eprintln!("  Dry run: {}", result.dry_run);
     eprintln!("  Prospective: {}", result.prospective);
+
+    // Print receipt information
+    if let Some(receipt_preview) = result.receipt_preview {
+        eprintln!("  Receipt preview:");
+        eprintln!("    Kind: {}", receipt_preview.kind);
+        eprintln!("    Source UUID: {}", receipt_preview.source_store_uuid);
+        eprintln!("    Target UUID: {}", receipt_preview.target_store_uuid);
+        eprintln!(
+            "    Source root hash: {}",
+            receipt_preview.source_root_sha256
+        );
+        eprintln!("    Actor: {}", receipt_preview.actor);
+        eprintln!(
+            "    Counts: {}",
+            serde_json::to_string(&receipt_preview.counts).unwrap_or_default()
+        );
+        eprintln!("    Result: {}", receipt_preview.result);
+    }
+
+    // Print activation information for non-dry-run
+    if !result.dry_run {
+        if let Some(receipt) = result.receipt {
+            eprintln!("  Receipt ID: {}", receipt.receipt_id);
+            eprintln!("  Receipt hash: {}", receipt.receipt_sha256);
+            if let Some(seq) = result.summary_event_sequence {
+                eprintln!("  Summary event sequence: {}", seq);
+            }
+        }
+    }
 
     Ok(())
 }

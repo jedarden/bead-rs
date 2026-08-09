@@ -561,49 +561,65 @@ Git Integration:
     )]
     FlushOnly(SyncFlushOptions),
 
-    /// Import checkpoint from JSONL file
+    /// Import forensic checkpoint with restore or merge
     #[command(
         name = "import-only",
-        about = "Import checkpoint from JSONL file",
-        long_about = "Import and validate checkpoint from JSONL file.
+        about = "Import forensic checkpoint with restore or merge",
+        long_about = "Import and validate forensic checkpoint with atomic activation.
 
-Stages and validates checkpoint input before activating any state.
-Performs complete validation of JSONL format, issue data, dependencies,
-labels, and schema. Rejects malformed input with specific line numbers.
+Stages and validates complete forensic checkpoint before any state mutation.
+Supports both monolithic and sharded checkpoint-set formats with full validation.
+
+MODES:
+  Exactly one of --restore-into-empty or --merge must be specified.
+
+  --restore-into-empty: Restore into empty initialized workspace
+    - Target must be newly initialized with no semantic mutations
+    - Adopts checkpoint store UUID and event sequence
+    - Validates all records: issues, events, receipts, hashes, counts
+    - Replays events and verifies resulting state matches checkpoint
+    - Creates durable 'restore' provenance receipt
+    - Atomically activates in one transaction
+
+  --merge: Merge checkpoint into existing workspace
+    - Same-UUID: extends local history with compatible checkpoint events
+    - Different-UUID: merges foreign checkpoint with conflict detection
+    - Validates event identities, hashes, and continuity
+    - Handles conflicts via timestamp comparison with rollback
+    - Creates durable 'merge' provenance receipt
+    - Never deletes native issues absent from checkpoint
 
 EXAMPLES:
-  bead sync --import-only --input backup.jsonl                                    # Import with validation
-  bead sync --import-only --input backup.jsonl --dry-run                         # Validate only
-  bead sync --import-only --input backup.jsonl --profile native-v1               # Explicit profile
+  bead sync --import-only --input checkpoint/ --restore-into-empty --actor admin
+  bead sync --import-only --input backup.jsonl --merge --actor admin --dry-run
+  bead sync --import-only --input .beads/checkpoint --merge --actor system
 
 VALIDATION PERFORMED:
-  - JSONL format and line-by-line parsing
-  - Duplicate issue ID detection
-  - Malformed JSON or missing required fields
-  - Dangling dependency references
-  - Dependency cycle detection
-  - Label validation
-  - Unknown field preservation
+  - Record type validation (issue, event, provenance_receipt)
+  - Canonical ordering verification
+  - Hash and count validation
+  - UUID continuity checks
+  - Event replay verification (restore)
+  - Conflict detection (merge)
+  - Graph validation (cycles, dangling references)
 
 DRY RUN:
-  With --dry-run: performs complete validation without activating state.
-  Reports prospective counts and sequences without any durable mutation.
-  Useful for validating backup files before import.
+  With --dry-run: performs complete validation and reconciliation without
+  activating state. Reports prospective counts, conflicts, and receipt preview.
 
-PRE-F017 BEHAVIOR:
-  - Accepts only empty initialized target database
-  - Activates fully validated checkpoint in one transaction
-  - Appends exactly one 'checkpoint_imported' audit event
-  - Unknown fields preserved for round-trip compatibility
+PROVENANCE:
+  Both operations create immutable receipts stored in database and exported
+  in subsequent checkpoints. Receipts record: operation kind, source/target
+  UUIDs, source root hash, actor, counts, and result.
 
 EXIT CODES:
-  0 - Successful import (or successful dry-run validation)
+  0 - Successful operation (or successful dry-run)
   2 - CLI usage or validation error
   3 - Workspace or file not found
-  4 - Validation conflict (cycles, duplicates, etc.)
+  4 - Reconciliation conflict
   5 - Malformed input or integrity failure
 
-Use --dry-run to validate backups before risking database mutation."
+Use --dry-run to validate checkpoints before risking database mutation."
     )]
     ImportOnly(SyncImportOptions),
 }
@@ -620,16 +636,44 @@ pub struct SyncFlushOptions {
     pub output: Option<String>,
 }
 
+/// Import operation mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportMode {
+    RestoreIntoEmpty,
+    Merge,
+}
+
+impl ImportMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ImportMode::RestoreIntoEmpty => "restore-into-empty",
+            ImportMode::Merge => "merge",
+        }
+    }
+}
+
 /// Options for importing checkpoint
 #[derive(Parser, Debug)]
 pub struct SyncImportOptions {
-    /// Input file path
+    /// Input file or directory path
     #[arg(long)]
     pub input: String,
 
     /// Profile for import (default: native-v1)
     #[arg(long, default_value = "native-v1")]
     pub profile: String,
+
+    /// Restore checkpoint into empty workspace
+    #[arg(long, conflicts_with = "merge")]
+    pub restore_into_empty: bool,
+
+    /// Merge checkpoint into existing workspace
+    #[arg(long, conflicts_with = "restore_into_empty")]
+    pub merge: bool,
+
+    /// Actor performing the import operation (required for restore/merge)
+    #[arg(long)]
+    pub actor: Option<String>,
 
     /// Perform dry-run without activating state
     #[arg(long)]

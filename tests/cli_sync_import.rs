@@ -36,12 +36,16 @@ fn test_sync_import_only_basic() {
             import_path.to_str().unwrap(),
             "--profile",
             "native-v1",
+            "--restore-into-empty",
+            "--actor",
+            "testuser",
         ])
         .current_dir(temp_dir.path())
         .assert()
         .success()
-        .stderr(predicate::str::contains("Imported checkpoint:"))
-        .stderr(predicate::str::contains("Inserted: 2"));
+        .stderr(predicate::str::contains("Forensic import completed:"))
+        .stderr(predicate::str::contains("Mode: restore-into-empty"))
+        .stderr(predicate::str::contains("Restored 2 issues"));
 
     // Verify issues were imported
     Command::cargo_bin("bead")
@@ -79,6 +83,9 @@ fn test_sync_import_only_dry_run() {
         .args([
             "sync",
             "import-only",
+            "--restore-into-empty",
+            "--actor",
+            "testuser",
             "--input",
             import_path.to_str().unwrap(),
             "--profile",
@@ -88,7 +95,9 @@ fn test_sync_import_only_dry_run() {
         .current_dir(temp_dir.path())
         .assert()
         .success()
-        .stderr(predicate::str::contains("Dry-run import analysis:"))
+        .stderr(predicate::str::contains(
+            "Dry-run forensic import analysis:",
+        ))
         .stderr(predicate::str::contains("Prospective: true"));
 
     // Verify no issues were actually imported (workspace should still be empty)
@@ -124,6 +133,9 @@ fn test_sync_import_only_malformed_json() {
         .args([
             "sync",
             "import-only",
+            "--restore-into-empty",
+            "--actor",
+            "testuser",
             "--input",
             import_path.to_str().unwrap(),
         ])
@@ -158,6 +170,9 @@ fn test_sync_import_only_duplicate_id() {
         .args([
             "sync",
             "import-only",
+            "--restore-into-empty",
+            "--actor",
+            "testuser",
             "--input",
             import_path.to_str().unwrap(),
         ])
@@ -191,13 +206,16 @@ fn test_sync_import_only_missing_id() {
         .args([
             "sync",
             "import-only",
+            "--restore-into-empty",
+            "--actor",
+            "testuser",
             "--input",
             import_path.to_str().unwrap(),
         ])
         .current_dir(temp_dir.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("missing or invalid 'id' field"));
+        .stderr(predicate::str::contains("missing field `id`"));
 }
 
 #[test]
@@ -224,6 +242,9 @@ fn test_sync_import_only_self_edge() {
         .args([
             "sync",
             "import-only",
+            "--restore-into-empty",
+            "--actor",
+            "testuser",
             "--input",
             import_path.to_str().unwrap(),
         ])
@@ -258,6 +279,9 @@ fn test_sync_import_only_cycle() {
         .args([
             "sync",
             "import-only",
+            "--restore-into-empty",
+            "--actor",
+            "testuser",
             "--input",
             import_path.to_str().unwrap(),
         ])
@@ -291,13 +315,18 @@ fn test_sync_import_only_dangling_dependency() {
         .args([
             "sync",
             "import-only",
+            "--restore-into-empty",
+            "--actor",
+            "testuser",
             "--input",
             import_path.to_str().unwrap(),
         ])
         .current_dir(temp_dir.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("unknown blocker issue"));
+        .stderr(predicate::str::contains(
+            "Dependency references non-existent blocker issue",
+        ));
 }
 
 #[test]
@@ -324,6 +353,9 @@ fn test_sync_import_only_invalid_profile() {
         .args([
             "sync",
             "import-only",
+            "--restore-into-empty",
+            "--actor",
+            "testuser",
             "--input",
             import_path.to_str().unwrap(),
             "--profile",
@@ -332,7 +364,9 @@ fn test_sync_import_only_invalid_profile() {
         .current_dir(temp_dir.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("is not supported before F017"));
+        .stderr(predicate::str::contains(
+            "is not supported for forensic import. Only 'native-v1' is allowed",
+        ));
 }
 
 #[test]
@@ -367,6 +401,9 @@ fn test_sync_import_only_empty_target() {
         .args([
             "sync",
             "import-only",
+            "--restore-into-empty",
+            "--actor",
+            "testuser",
             "--input",
             import_path.to_str().unwrap(),
         ])
@@ -401,14 +438,17 @@ fn test_sync_import_only_with_dependencies() {
         .args([
             "sync",
             "import-only",
+            "--restore-into-empty",
+            "--actor",
+            "testuser",
             "--input",
             import_path.to_str().unwrap(),
         ])
         .current_dir(temp_dir.path())
         .assert()
         .success()
-        .stderr(predicate::str::contains("Imported checkpoint:"))
-        .stderr(predicate::str::contains("Inserted: 2"));
+        .stderr(predicate::str::contains("Forensic import completed:"))
+        .stderr(predicate::str::contains("Restored 2"));
 
     // Verify dependency was created
     Command::cargo_bin("bead")
@@ -444,13 +484,16 @@ fn test_sync_import_only_with_labels() {
         .args([
             "sync",
             "import-only",
+            "--restore-into-empty",
+            "--actor",
+            "testuser",
             "--input",
             import_path.to_str().unwrap(),
         ])
         .current_dir(temp_dir.path())
         .assert()
         .success()
-        .stderr(predicate::str::contains("Inserted: 1"));
+        .stderr(predicate::str::contains("Restored 1"));
 
     // Verify labels were imported
     Command::cargo_bin("bead")
@@ -491,13 +534,16 @@ fn test_sync_import_only_blank_lines() {
         .args([
             "sync",
             "import-only",
+            "--restore-into-empty",
+            "--actor",
+            "testuser",
             "--input",
             import_path.to_str().unwrap(),
         ])
         .current_dir(temp_dir.path())
         .assert()
         .success()
-        .stderr(predicate::str::contains("Inserted: 2"));
+        .stderr(predicate::str::contains("Restored 2"));
 }
 
 #[test]
@@ -524,13 +570,16 @@ fn test_sync_import_only_unknown_field_preservation() {
         .args([
             "sync",
             "import-only",
+            "--restore-into-empty",
+            "--actor",
+            "testuser",
             "--input",
             import_path.to_str().unwrap(),
         ])
         .current_dir(temp_dir.path())
         .assert()
         .success()
-        .stderr(predicate::str::contains("Inserted: 1"));
+        .stderr(predicate::str::contains("Restored 1"));
 
     // Flush to export and verify unknown fields are preserved
     let export_path = temp_dir.path().join("export.jsonl");
@@ -569,6 +618,9 @@ fn test_sync_import_only_without_workspace() {
         .args([
             "sync",
             "import-only",
+            "--restore-into-empty",
+            "--actor",
+            "testuser",
             "--input",
             import_path.to_str().unwrap(),
         ])
@@ -594,9 +646,17 @@ fn test_sync_import_only_nonexistent_input() {
     // Try to import nonexistent file
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["sync", "import-only", "--input", "nonexistent.jsonl"])
+        .args([
+            "sync",
+            "import-only",
+            "--restore-into-empty",
+            "--actor",
+            "testuser",
+            "--input",
+            "nonexistent.jsonl",
+        ])
         .current_dir(temp_dir.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("Input file not found"));
+        .stderr(predicate::str::contains("Input not found"));
 }
