@@ -7,7 +7,7 @@ use rusqlite::{Connection, Result as SqliteResult};
 use sha2::{Digest, Sha256};
 
 /// Current migration version
-pub const CURRENT_VERSION: i64 = 6;
+pub const CURRENT_VERSION: i64 = 7;
 
 /// Apply all pending migrations to the database
 pub fn apply_migrations(conn: &Connection) -> SqliteResult<()> {
@@ -73,6 +73,7 @@ fn get_migration(version: i64) -> Migration {
         4 => migration_4(),
         5 => migration_5(),
         6 => migration_6(),
+        7 => migration_7(),
         v => panic!("Unknown migration version: {}", v),
     }
 }
@@ -417,6 +418,28 @@ CREATE INDEX IF NOT EXISTS external_references_issue ON external_references (iss
 
 -- Index for cross-tool recognition by value lookup
 CREATE INDEX IF NOT EXISTS external_references_value ON external_references (namespace, value);
+"#;
+
+    Migration {
+        sql: sql.to_string(),
+    }
+}
+
+/// Migration 7: Conditional dependencies (R017)
+///
+/// This migration adds support for R017's conditional dependencies:
+/// - Condition column in dependencies table for declarative predicates
+/// - Supports all/any/not logical composition
+/// - Supports comparison/set operators over stored fields, labels, issue type, priority, assignee presence, and schema-bound data
+/// - Conditional edges are treated as potentially active during cycle detection
+fn migration_7() -> Migration {
+    let sql = r#"
+-- Add condition column to dependencies table
+-- Stored as JSON TEXT for flexibility
+ALTER TABLE dependencies ADD COLUMN condition TEXT;
+
+-- Create index for conditional dependency queries
+CREATE INDEX IF NOT EXISTS dependencies_condition ON dependencies (condition);
 "#;
 
     Migration {

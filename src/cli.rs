@@ -939,6 +939,9 @@ pub struct DepAddOptions {
     /// Dependency kind (default: blocks)
     #[arg(long, default_value = "blocks")]
     pub kind: String,
+    /// Conditional dependency expression as JSON (optional)
+    #[arg(long)]
+    pub condition: Option<String>,
 }
 
 /// Options for removing a dependency

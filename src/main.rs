@@ -553,20 +553,48 @@ fn cmd_dep_add(opts: cli::DepAddOptions) -> Result<()> {
     // Create store wrapper
     let mut store = store::SqliteStore::from_conn(conn);
 
+    // Parse condition if provided
+    let condition = if let Some(ref condition_json) = opts.condition {
+        let cond = service::ConditionExpr::from_json(condition_json)
+            .map_err(|e| Error::validation(format!("Invalid condition JSON: {}", e)))?;
+        Some(cond)
+    } else {
+        None
+    };
+
     // Add the dependency
-    service::add_dependency(&mut store, &opts.blocked, &opts.blocker, &opts.kind)?;
+    service::add_dependency(
+        &mut store,
+        &opts.blocked,
+        &opts.blocker,
+        &opts.kind,
+        condition.as_ref(),
+    )?;
 
     // Print success message
-    println!(
-        "Added dependency: {} {} {}",
-        opts.blocked,
-        if opts.kind == "blocks" {
-            "blocked by"
-        } else {
-            "related to"
-        },
-        opts.blocker
-    );
+    if opts.condition.is_some() {
+        println!(
+            "Added conditional dependency: {} {} {} (when condition met)",
+            opts.blocked,
+            if opts.kind == "blocks" {
+                "blocked by"
+            } else {
+                "related to"
+            },
+            opts.blocker
+        );
+    } else {
+        println!(
+            "Added dependency: {} {} {}",
+            opts.blocked,
+            if opts.kind == "blocks" {
+                "blocked by"
+            } else {
+                "related to"
+            },
+            opts.blocker
+        );
+    }
 
     Ok(())
 }
@@ -1014,7 +1042,8 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
         eprintln!("Repairs completed. Only operation-owned temporary files are removed.");
     } else {
         // Run diagnostics with specified scopes
-        let diagnostics = if scopes.len() == 1 && scopes[0] == service::doctor::DiagnosticScope::All {
+        let diagnostics = if scopes.len() == 1 && scopes[0] == service::doctor::DiagnosticScope::All
+        {
             service::run_diagnostics(&store::SqliteStore::new())?
         } else {
             service::run_diagnostics_with_scopes(&store::SqliteStore::new(), &scopes)?
@@ -1022,13 +1051,16 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
 
         if opts.json {
             // Output stable JSON diagnostics
-            let json_output = serde_json::to_string_pretty(&diagnostics)
-                .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to serialize diagnostics: {}", e)))?;
+            let json_output = serde_json::to_string_pretty(&diagnostics).map_err(|e| {
+                Error::Internal(anyhow::anyhow!("Failed to serialize diagnostics: {}", e))
+            })?;
             println!("{}", json_output);
         } else {
             // Human-readable output
-            eprintln!("Running diagnostics with scopes: {}",
-                scopes.iter()
+            eprintln!(
+                "Running diagnostics with scopes: {}",
+                scopes
+                    .iter()
                     .map(|s| format!("{:?}", s))
                     .collect::<Vec<_>>()
                     .join(", ")
@@ -1049,7 +1081,14 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
             eprintln!("Timestamp: {}", diagnostics.timestamp);
 
             if diagnostics.has_warnings {
-                eprintln!("Warnings found: {}", diagnostics.checks.iter().filter(|c| c.status == service::DiagnosticStatus::Warning).count());
+                eprintln!(
+                    "Warnings found: {}",
+                    diagnostics
+                        .checks
+                        .iter()
+                        .filter(|c| c.status == service::DiagnosticStatus::Warning)
+                        .count()
+                );
             }
         }
 

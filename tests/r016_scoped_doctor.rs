@@ -8,11 +8,11 @@
 //! - Conditional predicates and latent cycles detection
 //! - Repairs stay narrowly allowlisted and never rewrite user semantic data
 
-use std::fs;
-use tempfile::TempDir;
 use bead_rs::service::doctor::{run_diagnostics_with_scopes, DiagnosticScope, DoctorDiagnostics};
 use bead_rs::store::Store;
 use serial_test::serial;
+use std::fs;
+use tempfile::TempDir;
 
 #[cfg(test)]
 mod tests {
@@ -21,14 +21,32 @@ mod tests {
     /// Test DiagnosticScope parsing
     #[test]
     fn test_diagnostic_scope_parsing() {
-        assert_eq!(DiagnosticScope::from_str("store"), Some(DiagnosticScope::Store));
-        assert_eq!(DiagnosticScope::from_str("backup"), Some(DiagnosticScope::Backup));
-        assert_eq!(DiagnosticScope::from_str("schema"), Some(DiagnosticScope::Schema));
-        assert_eq!(DiagnosticScope::from_str("dependencies"), Some(DiagnosticScope::Dependencies));
-        assert_eq!(DiagnosticScope::from_str("comments"), Some(DiagnosticScope::Comments));
+        assert_eq!(
+            DiagnosticScope::from_str("store"),
+            Some(DiagnosticScope::Store)
+        );
+        assert_eq!(
+            DiagnosticScope::from_str("backup"),
+            Some(DiagnosticScope::Backup)
+        );
+        assert_eq!(
+            DiagnosticScope::from_str("schema"),
+            Some(DiagnosticScope::Schema)
+        );
+        assert_eq!(
+            DiagnosticScope::from_str("dependencies"),
+            Some(DiagnosticScope::Dependencies)
+        );
+        assert_eq!(
+            DiagnosticScope::from_str("comments"),
+            Some(DiagnosticScope::Comments)
+        );
         assert_eq!(DiagnosticScope::from_str("all"), Some(DiagnosticScope::All));
         assert_eq!(DiagnosticScope::from_str("invalid"), None);
-        assert_eq!(DiagnosticScope::from_str("STORE"), Some(DiagnosticScope::Store)); // Case insensitive
+        assert_eq!(
+            DiagnosticScope::from_str("STORE"),
+            Some(DiagnosticScope::Store)
+        ); // Case insensitive
     }
 
     /// Test that all_scopes() returns valid scope names
@@ -70,7 +88,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
 
         // Initialize a workspace
-        std::env::set_current_dir(&temp_dir.path()).unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
         let store = bead_rs::store::SqliteStore::new();
         let config = store.init_workspace("test").unwrap();
         assert!(config.root.exists(), "Workspace should exist");
@@ -80,7 +98,10 @@ mod tests {
         assert!(result.is_ok(), "Should run diagnostics successfully");
         let diagnostics = result.unwrap();
         assert!(diagnostics.scopes_checked.contains(&"store".to_string()));
-        assert!(!diagnostics.has_errors, "Store scope should not have errors in fresh workspace");
+        assert!(
+            !diagnostics.has_errors,
+            "Store scope should not have errors in fresh workspace"
+        );
     }
 
     /// Test running diagnostics with all scopes
@@ -90,7 +111,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
 
         // Initialize a workspace
-        std::env::set_current_dir(&temp_dir.path()).unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
         let store = bead_rs::store::SqliteStore::new();
         let config = store.init_workspace("test").unwrap();
         assert!(config.root.exists(), "Workspace should exist");
@@ -99,11 +120,16 @@ mod tests {
 
         assert!(result.is_ok(), "Should run diagnostics successfully");
         let diagnostics = result.unwrap();
-        assert!(diagnostics.scopes_checked.len() >= 5, "Should check at least 5 scopes");
+        assert!(
+            diagnostics.scopes_checked.len() >= 5,
+            "Should check at least 5 scopes"
+        );
         assert!(diagnostics.scopes_checked.contains(&"store".to_string()));
         assert!(diagnostics.scopes_checked.contains(&"backup".to_string()));
         assert!(diagnostics.scopes_checked.contains(&"schema".to_string()));
-        assert!(diagnostics.scopes_checked.contains(&"dependencies".to_string()));
+        assert!(diagnostics
+            .scopes_checked
+            .contains(&"dependencies".to_string()));
         assert!(diagnostics.scopes_checked.contains(&"comments".to_string()));
     }
 
@@ -114,7 +140,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
 
         // Initialize a workspace
-        std::env::set_current_dir(&temp_dir.path()).unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
         let store = bead_rs::store::SqliteStore::new();
         let _config = store.init_workspace("test").unwrap();
 
@@ -132,7 +158,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
 
         // Initialize a workspace
-        std::env::set_current_dir(&temp_dir.path()).unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
         let store = bead_rs::store::SqliteStore::new();
         let _config = store.init_workspace("test").unwrap();
 
@@ -141,7 +167,10 @@ mod tests {
         assert!(result.is_ok(), "Should run diagnostics successfully");
         let diagnostics = result.unwrap();
         assert!(diagnostics.scopes_checked.contains(&"schema".to_string()));
-        assert!(!diagnostics.has_errors, "Schema scope should not have errors in fresh workspace");
+        assert!(
+            !diagnostics.has_errors,
+            "Schema scope should not have errors in fresh workspace"
+        );
     }
 
     /// Test running diagnostics with dependencies scope specifically
@@ -151,7 +180,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
 
         // Initialize a workspace
-        std::env::set_current_dir(&temp_dir.path()).unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
         let store = bead_rs::store::SqliteStore::new();
         let _config = store.init_workspace("test").unwrap();
 
@@ -159,8 +188,13 @@ mod tests {
 
         assert!(result.is_ok(), "Should run diagnostics successfully");
         let diagnostics = result.unwrap();
-        assert!(diagnostics.scopes_checked.contains(&"dependencies".to_string()));
-        assert!(!diagnostics.has_errors, "Dependencies scope should not have errors in fresh workspace");
+        assert!(diagnostics
+            .scopes_checked
+            .contains(&"dependencies".to_string()));
+        assert!(
+            !diagnostics.has_errors,
+            "Dependencies scope should not have errors in fresh workspace"
+        );
     }
 
     /// Test running diagnostics with comments scope specifically
@@ -170,7 +204,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
 
         // Initialize a workspace
-        std::env::set_current_dir(&temp_dir.path()).unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
         let store = bead_rs::store::SqliteStore::new();
         let _config = store.init_workspace("test").unwrap();
 
@@ -179,7 +213,10 @@ mod tests {
         assert!(result.is_ok(), "Should run diagnostics successfully");
         let diagnostics = result.unwrap();
         assert!(diagnostics.scopes_checked.contains(&"comments".to_string()));
-        assert!(!diagnostics.has_errors, "Comments scope should not have errors in fresh workspace");
+        assert!(
+            !diagnostics.has_errors,
+            "Comments scope should not have errors in fresh workspace"
+        );
     }
 
     /// Test running diagnostics with multiple scopes
@@ -189,20 +226,26 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
 
         // Initialize a workspace
-        std::env::set_current_dir(&temp_dir.path()).unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
         let store = bead_rs::store::SqliteStore::new();
         let _config = store.init_workspace("test").unwrap();
 
         let result = run_diagnostics_with_scopes(
             &store,
-            &[DiagnosticScope::Store, DiagnosticScope::Schema, DiagnosticScope::Dependencies],
+            &[
+                DiagnosticScope::Store,
+                DiagnosticScope::Schema,
+                DiagnosticScope::Dependencies,
+            ],
         );
 
         assert!(result.is_ok(), "Should run diagnostics successfully");
         let diagnostics = result.unwrap();
         assert!(diagnostics.scopes_checked.contains(&"store".to_string()));
         assert!(diagnostics.scopes_checked.contains(&"schema".to_string()));
-        assert!(diagnostics.scopes_checked.contains(&"dependencies".to_string()));
+        assert!(diagnostics
+            .scopes_checked
+            .contains(&"dependencies".to_string()));
         assert!(!diagnostics.scopes_checked.contains(&"comments".to_string())); // Should not check comments
     }
 
@@ -213,7 +256,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
 
         // Initialize a workspace
-        std::env::set_current_dir(&temp_dir.path()).unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
         let store = bead_rs::store::SqliteStore::new();
         let config = store.init_workspace("test").unwrap();
         let db_path = config.database_path();
@@ -240,17 +283,20 @@ mod tests {
         conn.execute(
             "INSERT INTO dependencies (blocked_issue_id, blocker_issue_id, kind) VALUES (?, ?, ?)",
             ["issue-2", "issue-1", "blocks"],
-        ).unwrap();
+        )
+        .unwrap();
 
         conn.execute(
             "INSERT INTO dependencies (blocked_issue_id, blocker_issue_id, kind) VALUES (?, ?, ?)",
             ["issue-3", "issue-2", "blocks"],
-        ).unwrap();
+        )
+        .unwrap();
 
         conn.execute(
             "INSERT INTO dependencies (blocked_issue_id, blocker_issue_id, kind) VALUES (?, ?, ?)",
             ["issue-1", "issue-3", "blocks"],
-        ).unwrap();
+        )
+        .unwrap();
 
         // Run dependency diagnostics
         let store = bead_rs::store::SqliteStore::with_path(&db_path).unwrap();
@@ -259,9 +305,18 @@ mod tests {
         // Should detect the cycle
         assert!(result.is_ok(), "Should run diagnostics successfully");
         let diagnostics = result.unwrap();
-        assert!(diagnostics.has_errors, "Should detect dependency cycles as errors");
-        assert!(diagnostics.checks.iter().any(|c| c.name == "dependency_graph" && c.status == bead_rs::service::doctor::DiagnosticStatus::Error),
-            "Should have dependency_graph check with error status");
+        assert!(
+            diagnostics.has_errors,
+            "Should detect dependency cycles as errors"
+        );
+        assert!(
+            diagnostics
+                .checks
+                .iter()
+                .any(|c| c.name == "dependency_graph"
+                    && c.status == bead_rs::service::doctor::DiagnosticStatus::Error),
+            "Should have dependency_graph check with error status"
+        );
     }
 
     /// Test that self-edges are prevented by database constraints
@@ -271,7 +326,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
 
         // Initialize a workspace
-        std::env::set_current_dir(&temp_dir.path()).unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
         let store = bead_rs::store::SqliteStore::new();
         let config = store.init_workspace("test").unwrap();
         let db_path = config.database_path();
@@ -290,7 +345,10 @@ mod tests {
             ["issue-self", "issue-self", "blocks"],
         );
 
-        assert!(result.is_err(), "Database should prevent self-edges via CHECK constraint");
+        assert!(
+            result.is_err(),
+            "Database should prevent self-edges via CHECK constraint"
+        );
     }
 
     /// Test that repairs maintain narrow allowlist
@@ -300,7 +358,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
 
         // Initialize a workspace
-        std::env::set_current_dir(&temp_dir.path()).unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
         let store = bead_rs::store::SqliteStore::new();
         let config = store.init_workspace("test").unwrap();
         let beads_dir = temp_dir.path().join(".beads");
@@ -317,7 +375,10 @@ mod tests {
         let repairs_list = repairs.unwrap();
         assert!(!temp_file.exists(), "Temporary file should be removed");
         assert!(!repairs_list.is_empty(), "Should report repairs performed");
-        assert!(repairs_list.iter().all(|r| r.name == "removed_temp_file"), "Should only remove temp files");
+        assert!(
+            repairs_list.iter().all(|r| r.name == "removed_temp_file"),
+            "Should only remove temp files"
+        );
     }
 
     /// Test that checkpoint freshness is checked
@@ -327,7 +388,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
 
         // Initialize a workspace
-        std::env::set_current_dir(&temp_dir.path()).unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
         let store = bead_rs::store::SqliteStore::new();
         let config = store.init_workspace("test").unwrap();
         let db_path = config.database_path();
@@ -340,8 +401,14 @@ mod tests {
         assert!(diagnostics.scopes_checked.contains(&"backup".to_string()));
 
         // Should have freshness check
-        let freshness_check = diagnostics.checks.iter().find(|c| c.name == "checkpoint_freshness");
-        assert!(freshness_check.is_some(), "Should have checkpoint_freshness check");
+        let freshness_check = diagnostics
+            .checks
+            .iter()
+            .find(|c| c.name == "checkpoint_freshness");
+        assert!(
+            freshness_check.is_some(),
+            "Should have checkpoint_freshness check"
+        );
     }
 
     /// Test JSON output stability and structure
@@ -351,7 +418,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
 
         // Initialize a workspace
-        std::env::set_current_dir(&temp_dir.path()).unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
         let store = bead_rs::store::SqliteStore::new();
         let config = store.init_workspace("test").unwrap();
 
@@ -370,10 +437,22 @@ mod tests {
 
         // Check required fields
         assert!(parsed.get("checks").is_some(), "Should have checks field");
-        assert!(parsed.get("has_errors").is_some(), "Should have has_errors field");
-        assert!(parsed.get("has_warnings").is_some(), "Should have has_warnings field");
-        assert!(parsed.get("scopes_checked").is_some(), "Should have scopes_checked field");
-        assert!(parsed.get("timestamp").is_some(), "Should have timestamp field");
+        assert!(
+            parsed.get("has_errors").is_some(),
+            "Should have has_errors field"
+        );
+        assert!(
+            parsed.get("has_warnings").is_some(),
+            "Should have has_warnings field"
+        );
+        assert!(
+            parsed.get("scopes_checked").is_some(),
+            "Should have scopes_checked field"
+        );
+        assert!(
+            parsed.get("timestamp").is_some(),
+            "Should have timestamp field"
+        );
 
         // Check that checks is an array
         let checks = parsed["checks"].as_array().unwrap();
@@ -394,7 +473,10 @@ mod tests {
         assert_eq!(DiagnosticScope::from_str(""), None);
 
         // Mixed case
-        assert_eq!(DiagnosticScope::from_str("StOrE"), Some(DiagnosticScope::Store));
+        assert_eq!(
+            DiagnosticScope::from_str("StOrE"),
+            Some(DiagnosticScope::Store)
+        );
 
         // With spaces
         assert_eq!(DiagnosticScope::from_str(" store "), None); // Should fail with spaces

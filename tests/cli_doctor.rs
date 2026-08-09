@@ -40,7 +40,7 @@ fn test_doctor_basic() {
         .stderr(predicates::str::contains("OK"))
         .stderr(predicates::str::contains("workspace_config"))
         .stderr(predicates::str::contains("database_integrity"))
-        .stderr(predicates::str::contains("checkpoint_freshness"))  // R016: checkpoint_state replaced with checkpoint_freshness
+        .stderr(predicates::str::contains("checkpoint_freshness")) // R016: checkpoint_state replaced with checkpoint_freshness
         .stderr(predicates::str::contains("temporary_files"));
 }
 
@@ -70,7 +70,7 @@ fn test_doctor_with_dirty_checkpoint() {
         .args(["doctor"])
         .assert()
         .success()
-        .stderr(predicates::str::contains("checkpoint_freshness"));  // R016: checkpoint_state replaced with checkpoint_freshness
+        .stderr(predicates::str::contains("checkpoint_freshness")); // R016: checkpoint_state replaced with checkpoint_freshness
 }
 
 #[test]

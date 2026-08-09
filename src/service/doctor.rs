@@ -53,6 +53,7 @@ pub enum DiagnosticScope {
 }
 
 impl DiagnosticScope {
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "store" => Some(DiagnosticScope::Store),
@@ -66,7 +67,14 @@ impl DiagnosticScope {
     }
 
     pub fn all_scopes() -> Vec<&'static str> {
-        vec!["store", "backup", "schema", "dependencies", "comments", "all"]
+        vec![
+            "store",
+            "backup",
+            "schema",
+            "dependencies",
+            "comments",
+            "all",
+        ]
     }
 }
 
@@ -76,7 +84,10 @@ pub fn run_diagnostics(store: &impl Store) -> Result<DoctorDiagnostics> {
 }
 
 /// Run diagnostics on the workspace with specific scopes
-pub fn run_diagnostics_with_scopes(store: &impl Store, scopes: &[DiagnosticScope]) -> Result<DoctorDiagnostics> {
+pub fn run_diagnostics_with_scopes(
+    store: &impl Store,
+    scopes: &[DiagnosticScope],
+) -> Result<DoctorDiagnostics> {
     let mut checks = Vec::new();
     let mut has_errors = false;
     let mut has_warnings = false;
@@ -604,9 +615,7 @@ fn check_schema_validity(store: &impl Store) -> Result<String> {
         .prepare("SELECT COUNT(*) FROM issues WHERE priority < 0 OR priority > 4")
         .map_err(|e| Error::Integrity(format!("Failed to prepare statement: {}", e)))?;
 
-    let invalid_priority_count: i64 = stmt
-        .query_row([], |row| row.get(0))
-        .unwrap_or(0);
+    let invalid_priority_count: i64 = stmt.query_row([], |row| row.get(0)).unwrap_or(0);
 
     if invalid_priority_count > 0 {
         issues.push(format!(
@@ -697,7 +706,11 @@ fn check_dependency_graph(store: &impl Store) -> Result<String> {
         return Err(Error::Integrity(format!(
             "Found {} dependency cycles: {}",
             cycles.len(),
-            cycles.iter().map(|c| c.join(" -> ")).collect::<Vec<_>>().join("; ")
+            cycles
+                .iter()
+                .map(|c| c.join(" -> "))
+                .collect::<Vec<_>>()
+                .join("; ")
         )));
     }
 
@@ -753,10 +766,7 @@ fn check_comments_integrity(store: &impl Store) -> Result<String> {
     let empty_bodies: i64 = stmt.query_row([], |row| row.get(0)).unwrap_or(0);
 
     if empty_bodies > 0 {
-        issues.push(format!(
-            "Found {} comments with empty body",
-            empty_bodies
-        ));
+        issues.push(format!("Found {} comments with empty body", empty_bodies));
     }
 
     // Check for invalid reply references
@@ -794,6 +804,7 @@ fn check_comments_integrity(store: &impl Store) -> Result<String> {
 }
 
 /// Check checkpoint state (handles both pre-F017 and F017 formats)
+#[allow(dead_code)]
 fn check_checkpoint_state(store: &impl Store) -> Result<String> {
     let config = store.get_workspace_config()?;
     let db_path = config.root.join(".beads/beads.db");
@@ -1081,7 +1092,7 @@ fn detect_dependency_cycles(conn: &rusqlite::Connection) -> Result<Vec<Vec<Strin
     for (blocked, blocker) in deps {
         adj_list
             .entry(blocked.clone())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(blocker.clone());
         all_issues.insert(blocked);
         all_issues.insert(blocker);
@@ -1093,7 +1104,9 @@ fn detect_dependency_cycles(conn: &rusqlite::Connection) -> Result<Vec<Vec<Strin
 
     for issue in &all_issues {
         if !visited.contains(issue) {
-            if let Some(cycle) = dfs_cycle_check(issue, &adj_list, &mut visited, &mut recursion_stack) {
+            if let Some(cycle) =
+                dfs_cycle_check(issue, &adj_list, &mut visited, &mut recursion_stack)
+            {
                 cycles.push(cycle);
             }
         }

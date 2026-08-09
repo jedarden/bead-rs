@@ -20,7 +20,7 @@ mod tests {
     fn test_recovery_rehearsal_help() {
         // For now, just verify the CLI compiles with the option
         // The actual help text verification can be done manually
-        assert!(true, "CLI has --rehearse option available");
+        // Test placeholder for CLI option availability
     }
 
     /// Test CLI basic compilation
@@ -28,7 +28,7 @@ mod tests {
     fn test_cli_compiles() {
         // This test just verifies that the CLI compiles with the --rehearse option
         // The actual functionality is tested in integration
-        assert!(true, "CLI compiles with --rehearse option");
+        // Test placeholder for CLI compilation
     }
 
     /// Test semantic comparison functionality
@@ -94,14 +94,11 @@ mod tests {
         let file = fs::File::open(&checkpoint_path).unwrap();
         let reader = BufReader::new(file);
 
-        let mut issue_count = 0;
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                if !line.trim().is_empty() {
-                    issue_count += 1;
-                }
-            }
-        }
+        let issue_count = reader
+            .lines()
+            .map_while(Result::ok)
+            .filter(|line| !line.trim().is_empty())
+            .count();
 
         assert_eq!(issue_count, 2);
         assert!(metadata.len() > 0);
@@ -169,14 +166,11 @@ mod tests {
         // Count non-empty lines
         let file = fs::File::open(&checkpoint_path).unwrap();
         let reader = BufReader::new(file);
-        let mut issue_count = 0;
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                if !line.trim().is_empty() {
-                    issue_count += 1;
-                }
-            }
-        }
+        let issue_count = reader
+            .lines()
+            .map_while(Result::ok)
+            .filter(|line| !line.trim().is_empty())
+            .count();
 
         assert_eq!(issue_count, 2); // Should count only the two JSON lines, not the blank lines
     }

@@ -473,7 +473,7 @@ impl GeneratedDataset {
         }
 
         for (blocked, blocker, kind) in &self.dependencies {
-            dependencies::add_dependency(store, blocked, blocker, kind)?;
+            dependencies::add_dependency(store, blocked, blocker, kind, None)?;
         }
 
         Ok(())
@@ -953,7 +953,7 @@ fn execute_dependency_churn(
 
             // Randomly add or remove dependency
             if rng.gen_bool(0.5) {
-                let _ = dependencies::add_dependency(store, &id_a, &id_b, "blocks");
+                let _ = dependencies::add_dependency(store, &id_a, &id_b, "blocks", None);
             } else {
                 let _ = dependencies::remove_dependency(store, &id_a, &id_b, Some("blocks"));
             }

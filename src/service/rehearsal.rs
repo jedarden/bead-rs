@@ -459,7 +459,7 @@ fn import_checkpoint_to_temp_workspace(
         }
 
         // Insert issue into database
-        if let Err(e) = insert_issue_to_connection(&conn, &issue) {
+        if let Err(e) = insert_issue_to_connection(conn, &issue) {
             error_count += 1;
             eprintln!("❌ Failed to insert issue at line {}: {}", line_num + 1, e);
             success = false;
@@ -515,7 +515,7 @@ fn insert_issue_to_connection(conn: &Connection, issue: &Issue) -> Result<()> {
 /// Flush checkpoint to a specific path
 fn flush_checkpoint_to_path(db_path: &Path, export_path: &Path) -> Result<()> {
     // Reopen the database to get a direct connection
-    let conn = Connection::open(&db_path).context("Failed to open database for export")?;
+    let conn = Connection::open(db_path).context("Failed to open database for export")?;
 
     let issues = list_issues_from_connection(&conn)?;
 
@@ -771,6 +771,7 @@ fn read_checkpoint_issues(path: &Path) -> Result<Vec<Issue>> {
 }
 
 /// Test-only function to calculate file hash
+#[allow(dead_code)]
 pub fn calculate_file_hash_for_test(path: &Path) -> String {
     calculate_file_hash(path).unwrap_or_else(|_| "hash-error".to_string())
 }

@@ -1,6 +1,7 @@
 //! Labels and dependency graph operations.
 
 use crate::error::Error;
+use crate::service::conditions::{evaluate_condition, ConditionExpr, IssueContext};
 use crate::store::SqliteStore;
 
 /// Adds a label to an issue.
@@ -64,11 +65,13 @@ pub fn remove_label(store: &mut SqliteStore, issue_id: &str, label: &str) -> Res
 /// * `blocked_id` - The issue that is blocked
 /// * `blocker_id` - The issue that does the blocking
 /// * `kind` - The dependency kind (e.g., "blocks", "relates_to")
+/// * `condition` - Optional conditional dependency expression
 pub fn add_dependency(
     store: &mut SqliteStore,
     blocked_id: &str,
     blocker_id: &str,
     kind: &str,
+    condition: Option<&ConditionExpr>,
 ) -> Result<(), Error> {
     let conn = store.conn();
     let tx = conn.unchecked_transaction()?;
@@ -101,18 +104,36 @@ pub fn add_dependency(
         ));
     }
 
+    // Validate condition fields if provided
+    if let Some(cond) = condition {
+        cond.validate_fields()?;
+    }
+
     // For `blocks` dependencies, detect and reject cycles
+    // IMPORTANT: For conditional dependencies, we must treat them as potentially active
+    // during cycle detection. This means if there's ANY condition (even conditional),
+    // we must check for cycles.
     if kind == "blocks" && creates_cycle(&tx, blocked_id, blocker_id)? {
         return Err(Error::Conflict(
             "Adding this dependency would create a cycle".to_string(),
         ));
     }
 
+    // Serialize condition if present
+    let condition_json = condition.map(|c| c.to_json()).transpose()?;
+
     // Idempotent insert: ignore if already exists
-    tx.execute(
-        "INSERT OR IGNORE INTO dependencies (blocked_issue_id, blocker_issue_id, kind) VALUES (?1, ?2, ?3)",
-        [blocked_id, blocker_id, kind],
-    )?;
+    if let Some(ref cond_json) = condition_json {
+        tx.execute(
+            "INSERT OR IGNORE INTO dependencies (blocked_issue_id, blocker_issue_id, kind, condition) VALUES (?1, ?2, ?3, ?4)",
+            [blocked_id, blocker_id, kind, cond_json.as_str()],
+        )?;
+    } else {
+        tx.execute(
+            "INSERT OR IGNORE INTO dependencies (blocked_issue_id, blocker_issue_id, kind, condition) VALUES (?1, ?2, ?3, NULL)",
+            [blocked_id, blocker_id, kind],
+        )?;
+    }
 
     tx.commit()?;
     Ok(())
@@ -191,6 +212,70 @@ fn dfs_has_path(
     while let Some(row) = rows.next()? {
         let blocker_id: String = row.get(0)?;
         if dfs_has_path(tx, &blocker_id, target, visited)? {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+/// Gets conditional dependencies for a blocked issue
+///
+/// Returns all dependencies that have a condition expression for the given blocked issue.
+#[allow(dead_code)]
+pub fn get_conditional_dependencies(
+    store: &mut SqliteStore,
+    blocked_id: &str,
+) -> Result<Vec<(String, String, ConditionExpr)>, Error> {
+    let conn = store.conn();
+
+    let mut stmt = conn.prepare(
+        "SELECT blocker_issue_id, kind, condition
+         FROM dependencies
+         WHERE blocked_issue_id = ? AND condition IS NOT NULL",
+    )?;
+
+    let mut results = Vec::new();
+    let mut rows = stmt.query([blocked_id])?;
+
+    while let Some(row) = rows.next()? {
+        let blocker_id: String = row.get(0)?;
+        let kind: String = row.get(1)?;
+        let condition_json: String = row.get(2)?;
+
+        let condition = ConditionExpr::from_json(&condition_json)?;
+        results.push((blocker_id, kind, condition));
+    }
+
+    Ok(results)
+}
+
+/// Evaluates whether a conditional dependency is active
+///
+/// Checks if the condition expression evaluates to true for the blocker issue.
+#[allow(dead_code)]
+pub fn is_conditional_dependency_active(
+    store: &mut SqliteStore,
+    blocker_id: &str,
+    condition: &ConditionExpr,
+) -> Result<bool, Error> {
+    let context = IssueContext::from_store(store, blocker_id)?;
+    evaluate_condition(condition, &context)
+}
+
+/// Checks if a blocked issue has any active conditional blockers
+///
+/// Evaluates all conditional dependencies for the blocked issue and returns
+/// true if any of them are currently active.
+#[allow(dead_code)]
+pub fn has_active_conditional_blockers(
+    store: &mut SqliteStore,
+    blocked_id: &str,
+) -> Result<bool, Error> {
+    let conditional_deps = get_conditional_dependencies(store, blocked_id)?;
+
+    for (blocker_id, _kind, condition) in conditional_deps {
+        if is_conditional_dependency_active(store, &blocker_id, &condition)? {
             return Ok(true);
         }
     }
@@ -333,7 +418,7 @@ mod tests {
         create_test_issue(&mut store, "issue-1", "Blocked Issue");
         create_test_issue(&mut store, "issue-2", "Blocker Issue");
 
-        add_dependency(&mut store, "issue-1", "issue-2", "blocks").unwrap();
+        add_dependency(&mut store, "issue-1", "issue-2", "blocks", None).unwrap();
 
         // Verify dependency was added
         let conn = store.conn();
@@ -356,8 +441,8 @@ mod tests {
         create_test_issue(&mut store, "issue-1", "Blocked Issue");
         create_test_issue(&mut store, "issue-2", "Blocker Issue");
 
-        add_dependency(&mut store, "issue-1", "issue-2", "blocks").unwrap();
-        add_dependency(&mut store, "issue-1", "issue-2", "blocks").unwrap(); // Duplicate
+        add_dependency(&mut store, "issue-1", "issue-2", "blocks", None).unwrap();
+        add_dependency(&mut store, "issue-1", "issue-2", "blocks", None).unwrap(); // Duplicate
 
         // Verify only one dependency exists
         let conn = store.conn();
@@ -373,7 +458,7 @@ mod tests {
         let (mut store, _temp) = test_store();
         create_test_issue(&mut store, "issue-1", "Self Issue");
 
-        let result = add_dependency(&mut store, "issue-1", "issue-1", "blocks");
+        let result = add_dependency(&mut store, "issue-1", "issue-1", "blocks", None);
         assert!(matches!(result, Err(Error::Conflict(_))));
     }
 
@@ -385,11 +470,11 @@ mod tests {
         create_test_issue(&mut store, "issue-3", "Issue 3");
 
         // Create chain: issue-1 -> issue-2 -> issue-3
-        add_dependency(&mut store, "issue-2", "issue-3", "blocks").unwrap();
-        add_dependency(&mut store, "issue-1", "issue-2", "blocks").unwrap();
+        add_dependency(&mut store, "issue-2", "issue-3", "blocks", None).unwrap();
+        add_dependency(&mut store, "issue-1", "issue-2", "blocks", None).unwrap();
 
         // Try to create cycle: issue-3 -> issue-1
-        let result = add_dependency(&mut store, "issue-3", "issue-1", "blocks");
+        let result = add_dependency(&mut store, "issue-3", "issue-1", "blocks", None);
         assert!(matches!(result, Err(Error::Conflict(_))));
     }
 
@@ -398,7 +483,7 @@ mod tests {
         let (mut store, _temp) = test_store();
         create_test_issue(&mut store, "issue-2", "Blocker Issue");
 
-        let result = add_dependency(&mut store, "nonexistent", "issue-2", "blocks");
+        let result = add_dependency(&mut store, "nonexistent", "issue-2", "blocks", None);
         assert!(matches!(result, Err(Error::Workspace(_))));
     }
 
@@ -407,7 +492,7 @@ mod tests {
         let (mut store, _temp) = test_store();
         create_test_issue(&mut store, "issue-1", "Blocked Issue");
 
-        let result = add_dependency(&mut store, "issue-1", "nonexistent", "blocks");
+        let result = add_dependency(&mut store, "issue-1", "nonexistent", "blocks", None);
         assert!(matches!(result, Err(Error::Workspace(_))));
     }
 
@@ -417,7 +502,7 @@ mod tests {
         create_test_issue(&mut store, "issue-1", "Blocked Issue");
         create_test_issue(&mut store, "issue-2", "Blocker Issue");
 
-        add_dependency(&mut store, "issue-1", "issue-2", "blocks").unwrap();
+        add_dependency(&mut store, "issue-1", "issue-2", "blocks", None).unwrap();
         remove_dependency(&mut store, "issue-1", "issue-2", Some("blocks")).unwrap();
 
         // Verify dependency was removed
@@ -435,7 +520,7 @@ mod tests {
         create_test_issue(&mut store, "issue-1", "Blocked Issue");
         create_test_issue(&mut store, "issue-2", "Blocker Issue");
 
-        add_dependency(&mut store, "issue-1", "issue-2", "blocks").unwrap();
+        add_dependency(&mut store, "issue-1", "issue-2", "blocks", None).unwrap();
         remove_dependency(&mut store, "issue-1", "issue-2", Some("blocks")).unwrap();
         remove_dependency(&mut store, "issue-1", "issue-2", Some("blocks")).unwrap(); // Duplicate
 
@@ -454,8 +539,8 @@ mod tests {
         create_test_issue(&mut store, "issue-1", "Blocked Issue");
         create_test_issue(&mut store, "issue-2", "Blocker Issue");
 
-        add_dependency(&mut store, "issue-1", "issue-2", "blocks").unwrap();
-        add_dependency(&mut store, "issue-1", "issue-2", "relates_to").unwrap();
+        add_dependency(&mut store, "issue-1", "issue-2", "blocks", None).unwrap();
+        add_dependency(&mut store, "issue-1", "issue-2", "relates_to", None).unwrap();
 
         // Remove all edges between these issues
         remove_dependency(&mut store, "issue-1", "issue-2", None).unwrap();
@@ -476,8 +561,8 @@ mod tests {
         create_test_issue(&mut store, "issue-2", "Issue 2");
 
         // Create cycle with relates_to: issue-1 -> issue-2 -> issue-1
-        add_dependency(&mut store, "issue-1", "issue-2", "relates_to").unwrap();
-        add_dependency(&mut store, "issue-2", "issue-1", "relates_to").unwrap();
+        add_dependency(&mut store, "issue-1", "issue-2", "relates_to", None).unwrap();
+        add_dependency(&mut store, "issue-2", "issue-1", "relates_to", None).unwrap();
 
         // Verify both dependencies exist
         let conn = store.conn();
@@ -565,5 +650,205 @@ mod tests {
         )
         .unwrap();
         assert!(!has_path);
+    }
+
+    #[test]
+    fn test_conditional_dependency_basic() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "issue-1", "Blocked Issue");
+        create_test_issue(&mut store, "issue-2", "Blocker Issue");
+
+        // Create a conditional dependency: issue-1 is blocked by issue-2 only when issue-2 has priority 2
+        let condition = ConditionExpr::Equals {
+            field: "priority".to_string(),
+            value: serde_json::json!(2),
+        };
+
+        add_dependency(&mut store, "issue-1", "issue-2", "blocks", Some(&condition)).unwrap();
+
+        // Verify dependency was stored with condition
+        let conn = store.conn();
+        let stored_condition: Option<String> = conn
+            .query_row(
+                "SELECT condition FROM dependencies WHERE blocked_issue_id = ? AND blocker_issue_id = ?",
+                ["issue-1", "issue-2"],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert!(stored_condition.is_some());
+
+        // Parse and verify the condition
+        let parsed_condition = ConditionExpr::from_json(&stored_condition.unwrap()).unwrap();
+        assert_eq!(parsed_condition, condition);
+    }
+
+    #[test]
+    fn test_conditional_dependency_validation() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "issue-1", "Blocked Issue");
+        create_test_issue(&mut store, "issue-2", "Blocker Issue");
+
+        // Try to create a conditional dependency with an unsupported field
+        let invalid_condition = ConditionExpr::Equals {
+            field: "unsupported_field".to_string(),
+            value: serde_json::json!(2),
+        };
+
+        let result = add_dependency(
+            &mut store,
+            "issue-1",
+            "issue-2",
+            "blocks",
+            Some(&invalid_condition),
+        );
+        assert!(matches!(result, Err(Error::CliUsage(_))));
+    }
+
+    #[test]
+    fn test_conditional_dependency_evaluation() {
+        let (mut store, _temp) = test_store();
+        // Create issues with different priorities
+        create_test_issue(&mut store, "issue-1", "Blocked Issue");
+        create_test_issue(&mut store, "issue-2", "Blocker Issue");
+
+        // Update issue-2 to have priority 2
+        {
+            let conn = store.conn();
+            conn.execute("UPDATE issues SET priority = 2 WHERE id = 'issue-2'", [])
+                .unwrap();
+        } // conn is dropped here, releasing the mutable borrow
+
+        // Create a conditional dependency: issue-1 is blocked by issue-2 when issue-2 has priority 2
+        let condition = ConditionExpr::Equals {
+            field: "priority".to_string(),
+            value: serde_json::json!(2),
+        };
+
+        add_dependency(&mut store, "issue-1", "issue-2", "blocks", Some(&condition)).unwrap();
+
+        // Check if the conditional dependency is active
+        let conditional_deps = get_conditional_dependencies(&mut store, "issue-1").unwrap();
+        assert_eq!(conditional_deps.len(), 1);
+
+        let (blocker_id, _kind, stored_condition) = &conditional_deps[0];
+        assert_eq!(blocker_id, "issue-2");
+
+        // Evaluate the condition - should be true since issue-2 has priority 2
+        let is_active =
+            is_conditional_dependency_active(&mut store, "issue-2", stored_condition).unwrap();
+        assert!(is_active);
+
+        // Check if issue-1 has active conditional blockers
+        let has_active = has_active_conditional_blockers(&mut store, "issue-1").unwrap();
+        assert!(has_active);
+    }
+
+    #[test]
+    fn test_conditional_dependency_inactive() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "issue-1", "Blocked Issue");
+        create_test_issue(&mut store, "issue-2", "Blocker Issue");
+
+        // Create a conditional dependency: issue-1 is blocked by issue-2 when issue-2 has priority 3
+        let condition = ConditionExpr::Equals {
+            field: "priority".to_string(),
+            value: serde_json::json!(3),
+        };
+
+        add_dependency(&mut store, "issue-1", "issue-2", "blocks", Some(&condition)).unwrap();
+
+        // Since issue-2 has priority 2 (default), the condition should be false
+        let conditional_deps = get_conditional_dependencies(&mut store, "issue-1").unwrap();
+        assert_eq!(conditional_deps.len(), 1);
+
+        let (blocker_id, _kind, stored_condition) = &conditional_deps[0];
+        let is_active =
+            is_conditional_dependency_active(&mut store, blocker_id, stored_condition).unwrap();
+        assert!(!is_active);
+
+        // Check if issue-1 has active conditional blockers - should be false
+        let has_active = has_active_conditional_blockers(&mut store, "issue-1").unwrap();
+        assert!(!has_active);
+    }
+
+    #[test]
+    fn test_conditional_dependency_with_logical_operators() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "issue-1", "Blocked Issue");
+        create_test_issue(&mut store, "issue-2", "Blocker Issue");
+
+        // Create a conditional dependency with logical AND
+        let condition = ConditionExpr::All(vec![
+            ConditionExpr::Equals {
+                field: "priority".to_string(),
+                value: serde_json::json!(2),
+            },
+            ConditionExpr::Equals {
+                field: "base_status".to_string(),
+                value: serde_json::json!("open"),
+            },
+        ]);
+
+        add_dependency(&mut store, "issue-1", "issue-2", "blocks", Some(&condition)).unwrap();
+
+        // Both conditions should be true (issue-2 has priority 2 and status "open")
+        let conditional_deps = get_conditional_dependencies(&mut store, "issue-1").unwrap();
+        let (blocker_id, _kind, stored_condition) = &conditional_deps[0];
+        let is_active =
+            is_conditional_dependency_active(&mut store, blocker_id, stored_condition).unwrap();
+        assert!(is_active);
+    }
+
+    #[test]
+    fn test_conditional_dependency_prevents_cycles() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "issue-1", "Issue 1");
+        create_test_issue(&mut store, "issue-2", "Issue 2");
+        create_test_issue(&mut store, "issue-3", "Issue 3");
+
+        // Create chain: issue-1 -> issue-2 -> issue-3
+        add_dependency(&mut store, "issue-2", "issue-3", "blocks", None).unwrap();
+        add_dependency(&mut store, "issue-1", "issue-2", "blocks", None).unwrap();
+
+        // Try to create conditional cycle: issue-3 -> issue-1 (even with a condition)
+        let condition = ConditionExpr::Equals {
+            field: "priority".to_string(),
+            value: serde_json::json!(2),
+        };
+
+        // Should still reject cycle creation even with conditional dependencies
+        let result = add_dependency(&mut store, "issue-3", "issue-1", "blocks", Some(&condition));
+        assert!(matches!(result, Err(Error::Conflict(_))));
+    }
+
+    #[test]
+    fn test_conditional_dependency_with_issue_type() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "issue-1", "Blocked Issue");
+        create_test_issue(&mut store, "issue-2", "Blocker Issue");
+
+        // Update issue-2 to have a specific issue type
+        let conn = store.conn();
+        conn.execute(
+            "UPDATE issues SET issue_type = ? WHERE id = ?",
+            ["bug", "issue-2"],
+        )
+        .unwrap();
+
+        // Create a conditional dependency based on issue type
+        let condition = ConditionExpr::Equals {
+            field: "issue_type".to_string(),
+            value: serde_json::json!("bug"),
+        };
+
+        add_dependency(&mut store, "issue-1", "issue-2", "blocks", Some(&condition)).unwrap();
+
+        // The condition should be active since issue-2 is of type "bug"
+        let conditional_deps = get_conditional_dependencies(&mut store, "issue-1").unwrap();
+        let (blocker_id, _kind, stored_condition) = &conditional_deps[0];
+        let is_active =
+            is_conditional_dependency_active(&mut store, blocker_id, stored_condition).unwrap();
+        assert!(is_active);
     }
 }
