@@ -4,6 +4,7 @@
 //! dependencies, checkpoint management, diagnostics, and capabilities.
 
 pub mod capabilities;
+pub mod changes;
 pub mod checkpoint;
 pub mod claim;
 pub mod dependencies;
@@ -14,6 +15,9 @@ pub mod lifecycle;
 pub mod query;
 
 pub use capabilities::generate_capabilities;
+pub use changes::{
+    get_changes_since, get_gap_info, get_snapshot_identity, validate_cursor, Cursor,
+};
 pub use checkpoint::{flush_checkpoint, import_forensic_checkpoint, publish_forensic_checkpoint};
 pub use claim::{claim_issue_with_lease, claim_issue_with_trace};
 pub use dependencies::{add_dependency, add_label, remove_dependency, remove_label};

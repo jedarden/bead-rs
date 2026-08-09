@@ -853,8 +853,23 @@
         "Consumers resynchronize from JSONL after a gap",
         "Supports incremental local indexes and adapters without daemon, network service, or dependency on private event tables"
       ],
-      "passes": false,
-      "evidence": []
+      "passes": true,
+      "evidence": [
+        "cargo test --test r013_change_feed: 12 tests passed",
+        "cargo fmt --check: passed",
+        "cargo clippy --all-targets -- -D warnings: passed",
+        "Implemented src/service/changes.rs with cursor-based change feed functionality",
+        "Added Cursor, SnapshotIdentity, MutationRecord, ChangeFeed, and GapInfo structures",
+        "Implemented get_snapshot_identity(), get_changes_since(), get_gap_info(), validate_cursor() functions",
+        "Added CLI command: bead changes with --since, --latest, --snapshot, --validate, --json flags",
+        "Cursor-based change feed uses event sequence numbers for deterministic positioning",
+        "Snapshot identity includes workspace UUID, max sequence, checksum, and timestamp",
+        "Gap detection identifies missing sequences and signals consumers to resynchronize",
+        "Supports both human-readable and JSON output formats",
+        "Integration tests cover: empty workspace, incremental updates, cursor validation, serialization, multiple mutations, workspace events, JSON format, and human-readable output",
+        "No daemon or network service required - uses local SQLite event table",
+        "Consumers can build incremental local indexes without polling or external dependencies"
+      ]
     },
     {
       "id": "R014",

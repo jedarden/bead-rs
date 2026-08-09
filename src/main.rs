@@ -47,6 +47,7 @@ fn execute_command(cli: Cli) -> Result<()> {
         Command::Doctor(opts) => cmd_doctor(opts),
         Command::Capabilities(opts) => cmd_capabilities(opts),
         Command::Query(opts) => cmd_query(opts),
+        Command::Changes(opts) => cmd_changes(opts),
         Command::Unimplemented(_) => Err(Error::cli_usage(
             "This command is not yet implemented. See `bead --help` for available commands.",
         )),
@@ -1069,6 +1070,174 @@ fn cmd_save_view(
     let description = format!("Query with {} predicates", query.predicates.len());
 
     service::save_view(conn, view_name, &description, query_json)?;
+
+    Ok(())
+}
+
+fn cmd_changes(opts: cli::ChangesOptions) -> Result<()> {
+    // Discover workspace
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    // Open database connection
+    let db_path = config.database_path();
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    // Handle different modes
+    if opts.latest {
+        // Get latest cursor position
+        let snapshot = service::get_snapshot_identity(&conn)?;
+        if opts.json {
+            let output = serde_json::to_string_pretty(&snapshot).map_err(|e| {
+                Error::Internal(anyhow::anyhow!("Failed to serialize snapshot: {}", e))
+            })?;
+            println!("{}", output);
+        } else {
+            println!("Latest cursor: {}", snapshot.max_sequence);
+            println!("Workspace UUID: {}", snapshot.workspace_uuid);
+            println!("Checksum: {}", snapshot.checksum);
+            println!("Timestamp: {}", snapshot.timestamp);
+        }
+        return Ok(());
+    }
+
+    if opts.snapshot {
+        // Get current snapshot identity
+        let snapshot = service::get_snapshot_identity(&conn)?;
+        if opts.json {
+            let output = serde_json::to_string_pretty(&snapshot).map_err(|e| {
+                Error::Internal(anyhow::anyhow!("Failed to serialize snapshot: {}", e))
+            })?;
+            println!("{}", output);
+        } else {
+            println!("Current snapshot identity:");
+            println!("  Workspace UUID: {}", snapshot.workspace_uuid);
+            println!("  Max sequence: {}", snapshot.max_sequence);
+            println!("  Checksum: {}", snapshot.checksum);
+            println!("  Timestamp: {}", snapshot.timestamp);
+        }
+        return Ok(());
+    }
+
+    if let Some(cursor_str) = opts.validate {
+        // Validate cursor and check for gaps
+        let cursor = service::Cursor::from_string(&cursor_str)?;
+        let is_valid = service::validate_cursor(&conn, &cursor)?;
+
+        if opts.json {
+            let result = serde_json::json!({
+                "cursor": cursor_str,
+                "valid": is_valid,
+            });
+            println!("{}", serde_json::to_string_pretty(&result).unwrap());
+        } else {
+            if is_valid {
+                println!("Cursor '{}' is valid - no gaps detected", cursor_str);
+            } else {
+                println!(
+                    "Cursor '{}' is INVALID - gaps detected, resynchronization required",
+                    cursor_str
+                );
+            }
+
+            // Show gap details if available
+            if let Some(gap_info) = service::get_gap_info(&conn, &cursor)? {
+                println!("  Gap details:");
+                println!("    Expected sequence: {}", gap_info.expected);
+                println!("    Actual first sequence: {}", gap_info.actual);
+                println!("    Gap size: {} events", gap_info.gap_size);
+            }
+        }
+
+        return if is_valid {
+            Ok(())
+        } else {
+            Err(Error::validation("Gap detected in event sequence"))
+        };
+    }
+
+    if opts.since.is_none() {
+        // Default: show current snapshot info
+        let snapshot = service::get_snapshot_identity(&conn)?;
+        if opts.json {
+            let output = serde_json::to_string_pretty(&snapshot).map_err(|e| {
+                Error::Internal(anyhow::anyhow!("Failed to serialize snapshot: {}", e))
+            })?;
+            println!("{}", output);
+        } else {
+            println!("Current workspace state:");
+            println!("  Workspace UUID: {}", snapshot.workspace_uuid);
+            println!("  Max sequence: {}", snapshot.max_sequence);
+            println!("  Checksum: {}", snapshot.checksum);
+            println!("  Timestamp: {}", snapshot.timestamp);
+            println!();
+            println!("Use --since <cursor> to get changes since a specific position");
+            println!("Use --latest to get the latest cursor position");
+            println!("Use --validate <cursor> to check for gaps");
+        }
+        return Ok(());
+    }
+
+    // Get changes since cursor
+    let cursor_str = opts.since.unwrap();
+    let cursor = service::Cursor::from_string(&cursor_str)?;
+    let change_feed = service::get_changes_since(&conn, &cursor)?;
+
+    if opts.json {
+        let output = serde_json::to_string_pretty(&change_feed).map_err(|e| {
+            Error::Internal(anyhow::anyhow!("Failed to serialize change feed: {}", e))
+        })?;
+        println!("{}", output);
+    } else {
+        println!("Change feed since cursor position {}:", cursor.sequence);
+        println!(
+            "  Snapshot: {} (seq: {})",
+            change_feed.snapshot.workspace_uuid, change_feed.snapshot.max_sequence
+        );
+        println!("  Total available: {} events", change_feed.total_available);
+        println!("  Returned: {} events", change_feed.returned_count);
+        println!("  Has gaps: {}", change_feed.has_gaps);
+        println!();
+
+        if change_feed.has_gaps {
+            println!("WARNING: Gaps detected in event sequence!");
+            println!("Consumers should resynchronize from full checkpoint.");
+            println!();
+
+            if let Some(gap_info) = service::get_gap_info(&conn, &cursor)? {
+                println!("Gap details:");
+                println!("  Expected sequence: {}", gap_info.expected);
+                println!("  Actual first sequence: {}", gap_info.actual);
+                println!("  Gap size: {} events", gap_info.gap_size);
+                println!();
+            }
+        }
+
+        if change_feed.mutations.is_empty() {
+            println!("No new mutations since cursor position.");
+        } else {
+            println!("Mutations:");
+            for mutation in &change_feed.mutations {
+                println!(
+                    "  [{}] {} - {}",
+                    mutation.sequence,
+                    mutation.kind,
+                    mutation
+                        .issue_id
+                        .as_ref()
+                        .unwrap_or(&"(workspace)".to_string())
+                );
+                println!("    Time: {}", mutation.time);
+                if let Some(actor) = &mutation.actor {
+                    println!("    Actor: {}", actor);
+                }
+            }
+        }
+
+        println!();
+        println!("Next cursor: {}", change_feed.snapshot.max_sequence);
+    }
 
     Ok(())
 }

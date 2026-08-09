@@ -93,6 +93,9 @@ pub enum Command {
     /// Execute safe query language queries
     Query(QueryOptions),
 
+    /// Access cursor-based change feed for incremental local synchronization
+    Changes(ChangesOptions),
+
     /// Not yet implemented
     #[command(subcommand)]
     #[allow(clippy::enum_variant_names)]
@@ -1115,6 +1118,30 @@ pub struct QueryOptions {
     /// Delete a saved view
     #[arg(long)]
     pub delete_view: Option<String>,
+}
+
+/// Options for the changes command
+#[derive(Parser, Debug)]
+pub struct ChangesOptions {
+    /// Get changes since this cursor position (sequence number or cursor string)
+    #[arg(long)]
+    pub since: Option<String>,
+
+    /// Get the latest cursor position for tracking
+    #[arg(long)]
+    pub latest: bool,
+
+    /// Get the current snapshot identity
+    #[arg(long)]
+    pub snapshot: bool,
+
+    /// Validate a cursor and check for gaps
+    #[arg(long)]
+    pub validate: Option<String>,
+
+    /// Output in JSON format
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Placeholder for unimplemented commands
