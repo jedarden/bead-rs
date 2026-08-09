@@ -49,10 +49,55 @@
   8. ✅ Capabilities/doctor updated
 
 - **F017 Status**: All acceptance criteria are now met. The feature ledger
-  should be updated to set F017 `passes: true` with comprehensive evidence
+  has been updated to set F017 `passes: true` with comprehensive evidence
   documenting all 8 findings and their verification.
 
-- **Next Steps**: Update feature_list.json to mark F017 as passing with complete
-  evidence, then proceed to next unimplemented feature or begin R001-R024
-  roadmap implementation.
+## 2026-08-09 — R001-R024 roadmap items materialized into feature ledger
+
+- **Completed**: Added all R001-R024 roadmap items from plan section 12 to the
+  feature ledger, preserving exact scope and core-incorporated versus extension
+  dispositions.
+
+- **Core Incorporated Items (Verified Passing)**:
+  - **R005** (schemas): Core satisfied by F010 capabilities implementation
+  - **R006** (backup completeness): Core satisfied by F017 forensic checkpoint implementation
+  - **R007** (backup generations): Core satisfied by F017 generation tracking and atomic pointer
+  - **R008** (backup freshness): Core satisfied by F007, F009, F010, and F017 implementation
+  - **R010** (comments): Core import/export satisfied by F002, F003, F007, and F017; mutation operations require separate extension
+  - **R012** (structured data): Core satisfied by F002 data envelope implementation and F010 schema enumeration
+
+- **Extension Items (Ready for Implementation)**:
+  - **R001** (claim decision traces): Unblocked, depends on F004
+  - **R002** (fenced claim leases): Unblocked, depends on F004
+  - **R003** (logical revision guards): Unblocked, no dependencies
+  - **R004** (safe query language): Unblocked, depends on F003
+  - **R009** (schema negotiation): Unblocked, depends on F010
+  - **R011** (namespaced external references): Unblocked, no dependencies
+  - **R013** (cursor-based change feed): Unblocked, depends on F017
+  - **R014** (import diagnostic report): Unblocked, depends on F008
+  - **R015** (recovery rehearsal): Unblocked, depends on F008 and F017
+  - **R016** (scoped doctor mode): Unblocked, depends on F009
+  - **R017** (conditional dependencies): Unblocked, depends on F006
+  - **R018** (structured bead data operations): Unblocked, no dependencies
+  - **R019** (intelligent scheduling): Unblocked, depends on F004 and R001
+  - **R020** (cross-profile comparison): Blocked by F012 (external author requirement)
+  - **R021** (policy lint): Unblocked, depends on R019
+  - **R022** (general mutation dry-run): Unblocked, depends on F005 and R003
+  - **R023** (unified why facade): Unblocked, depends on R001 and R019
+  - **R024** (recurring bead materialization): Unblocked, no dependencies
+
+- **Blocked External Features**:
+  - **F012** (interchange profiles): Requires external authors for br-v1 and bf-v1 specifications
+  - **F013** (migration dry-run): Blocked by F012 dependency
+  - **F014** (release packaging): Blocked by F012 and F013 dependencies
+  - **R020** (cross-profile comparison): Blocked by F012 dependency
+
+- **Feature Ledger Statistics**:
+  - Total features: 42 (18 F-items + 24 R-items)
+  - Passing: 14 (F001-F011, F015-F017, R005, R006, R007, R008, R010, R012)
+  - External blocked: 4 (F012, F013, F014, R020)
+  - Ready for implementation: 20 extension items
+
+- **Next Steps**: Select earliest unblocked extension item (R001, R002, R003, or R004)
+  for implementation, or continue with autonomous work on unblocked roadmap items.
 

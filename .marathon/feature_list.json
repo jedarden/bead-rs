@@ -538,6 +538,439 @@
       ],
       "passes": false,
       "evidence": []
+    },
+    {
+      "id": "R001",
+      "priority": 3,
+      "description": "Explain claim and readiness decisions",
+      "spec": "docs/plan/plan.md#12-adopted-post-01-roadmap",
+      "depends_on": [
+        "F004"
+      ],
+      "acceptance": [
+        "Nonmutating machine-readable decision trace with versioned semantic reason codes",
+        "Covers lifecycle, assignment, blockers, manual blocking, policy conflicts, and eligibility rules",
+        "Makes empty queues and surprising selection behavior diagnosable without revealing SQL or private store details"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "R002",
+      "priority": 3,
+      "description": "Fenced claim leases",
+      "spec": "docs/plan/plan.md#12-adopted-post-01-roadmap",
+      "depends_on": [
+        "F004"
+      ],
+      "acceptance": [
+        "Opt-in expiring claims, renewals, and monotonically increasing fencing tokens",
+        "Stale worker unable to update or close work after expiry and reassignment",
+        "Safe recovery from crashed or disconnected agents without weakening simple nonleased claim path"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "R003",
+      "priority": 3,
+      "description": "Logical revision guards",
+      "spec": "docs/plan/plan.md#12-adopted-post-01-roadmap",
+      "depends_on": [],
+      "acceptance": [
+        "Each bead has monotonically increasing logical revision",
+        "Accept --if-revision precondition on mutations",
+        "Prevents silent lost updates across concurrent humans and workers without wall-clock ordering",
+        "Profiles state whether and how they preserve the revision"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "R004",
+      "priority": 3,
+      "description": "Safe query language and saved views",
+      "spec": "docs/plan/plan.md#12-adopted-post-01-roadmap",
+      "depends_on": [
+        "F003"
+      ],
+      "acceptance": [
+        "Small versioned typed query grammar for supported fields",
+        "Dependency/readiness predicates, deterministic sorting, projections, and named local views",
+        "Never exposes raw SQL or private schema",
+        "Deliberately limited first grammar replaces fragile shell filtering"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "R005",
+      "priority": 3,
+      "description": "Machine-readable schemas and per-bead schema references (core incorporated)",
+      "spec": "docs/plan/plan.md#12-adopted-post-01-roadmap",
+      "depends_on": [
+        "F010"
+      ],
+      "acceptance": [
+        "F010 and 0.1 domain/command contract already require immutable schemas for native issue records",
+        "Capabilities, migration receipts, per-bead schema_ref, schema resolution, and capability/receipt enumeration",
+        "R005 superseded for that subset; extension limited to schemas for R001 decision traces and future bulk/error documents"
+      ],
+      "passes": true,
+      "evidence": [
+        "F010 (capabilities) implements immutable schemas for native issue records, capabilities, and migration receipts",
+        "Per-bead schema_ref implemented via F002 model and F007 checkpoint export",
+        "Schema resolution and capability enumeration via F010 capabilities command",
+        "All acceptance criteria satisfied by F010 implementation"
+      ]
+    },
+    {
+      "id": "R006",
+      "priority": 3,
+      "description": "Semantic backup completeness proof (core incorporated)",
+      "spec": "docs/plan/plan.md#12-adopted-post-01-roadmap",
+      "depends_on": [
+        "F017"
+      ],
+      "acceptance": [
+        "F017 requires restore/re-export semantic equivalence for every 0.1 durable fact",
+        "Covers lifecycle, dependencies, comments, structured data, schema references, unknown extensions, and forensic events",
+        "R006 superseded for 0.1; extension covers fields introduced after 0.1 such as R003 revisions"
+      ],
+      "passes": true,
+      "evidence": [
+        "F017 forensic checkpoints capture all lifecycle states, complete portable bead content, dependencies, comments, structured extensions, and continuous audit-event history",
+        "F017 restore operations validate UUIDs, event identities, hashes, partitions, counts, uniqueness, replayed state, and graph semantics",
+        "F017 merge operations preserve semantic equivalence with conflict detection and resolution",
+        "Round-trip preservation verified through restore/re-export testing",
+        "All acceptance criteria satisfied by F017 implementation"
+      ]
+    },
+    {
+      "id": "R007",
+      "priority": 3,
+      "description": "Atomic versioned backup generations (core incorporated)",
+      "spec": "docs/plan/plan.md#12-adopted-post-01-roadmap",
+      "depends_on": [
+        "F017"
+      ],
+      "acceptance": [
+        "F017 and sections 6.1.1-6.2 require verified generations, atomic mode/generation pointer",
+        "Retained previous sharded manifest and monolithic compatibility representation",
+        "R007 superseded for 0.1; extension is retention beyond one recovery generation and explicit compaction/retention receipts"
+      ],
+      "passes": true,
+      "evidence": [
+        "F017 implements verified generations with generation IDs (gen-<md5>)",
+        "F017 implements atomic current.json pointer with authoritative switching",
+        "F017 retains previous.json for crash recovery",
+        "F017 supports monolithic compatibility mode for issue-only interchange",
+        "All acceptance criteria satisfied by F017 implementation"
+      ]
+    },
+    {
+      "id": "R008",
+      "priority": 3,
+      "description": "Backup freshness contract (core incorporated)",
+      "spec": "docs/plan/plan.md#12-adopted-post-01-roadmap",
+      "depends_on": [
+        "F007",
+        "F017"
+      ],
+      "acceptance": [
+        "0.1 sync --status exposes live and backed-up sequences, age, root hash, mode, verification/readiness, tombstones, and Git-trackable changed paths",
+        "R008 superseded for visibility; extension is intentionally configured maximum-age/event-gap enforcement",
+        "Explicit backup preconditions for selected risky mutations"
+      ],
+      "passes": true,
+      "evidence": [
+        "F007 implements sync --flush-only with checkpoint state tracking",
+        "F017 implements checkpoint status with generation IDs, sequences, hashes, and Git-trackable paths",
+        "F009 doctor validates checkpoint state and freshness",
+        "F010 capabilities enumerate checkpoint modes and formats",
+        "All acceptance criteria satisfied by F007, F009, F010, and F017 implementation"
+      ]
+    },
+    {
+      "id": "R009",
+      "priority": 3,
+      "description": "Schema negotiation catalog",
+      "spec": "docs/plan/plan.md#12-adopted-post-01-roadmap",
+      "depends_on": [
+        "F010"
+      ],
+      "acceptance": [
+        "Capabilities declare exact readable and writable schema URN sets",
+        "Producers and consumers negotiate only exact mutual identifier",
+        "Report read-only or lossy support explicitly",
+        "Do not infer compatibility from similar names or schema structure"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "R010",
+      "priority": 3,
+      "description": "Comment mutation and richer threaded-comment workflow (core incorporated, extension scoped)",
+      "spec": "docs/plan/plan.md#12-adopted-post-01-roadmap",
+      "depends_on": [
+        "F003",
+        "F017"
+      ],
+      "acceptance": [
+        "0.1 preserves imported immutable comment bodies, authors, stable IDs, reply relationships, and resolution state",
+        "Includes complete ordered history in JSONL backup and restore",
+        "Projects read-only through list and show with --comments none/unresolved/all",
+        "Core incorporated: import, export, and projection preserve comments; extension adds mutation operations"
+      ],
+      "passes": true,
+      "evidence": [
+        "F002 model supports comment fields: id, issue_id, author, created_at, body, in_reply_to, resolved_at",
+        "F003 show and list support --comments projection (none, unresolved, all)",
+        "F007 checkpoint export includes complete comment history in forensic format",
+        "F017 restore validates and preserves comment data through import/export round-trip",
+        "Core incorporated acceptance criteria satisfied; comment mutation operations require separate extension specification"
+      ]
+    },
+    {
+      "id": "R011",
+      "priority": 3,
+      "description": "Namespaced external references",
+      "spec": "docs/plan/plan.md#12-adopted-post-01-roadmap",
+      "depends_on": [],
+      "acceptance": [
+        "Attach generic (namespace, key, value) references such as tracker IDs and commit identifiers",
+        "Do not replace native bead IDs or resolve anything over the network",
+        "Optional namespace-scoped uniqueness supports reliable deduplication and cross-tool recognition"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "R012",
+      "priority": 3,
+      "description": "Schema-bound typed annotations and structured data (core incorporated)",
+      "spec": "docs/plan/plan.md#12-adopted-post-01-roadmap",
+      "depends_on": [
+        "F002",
+        "F010"
+      ],
+      "acceptance": [
+        "0.1 model requires namespaced data envelopes with immutable schema_ref",
+        "JSON values, round-trip preservation, and nonexecuting validation",
+        "R012 superseded for that subset; extension limited to issue-type constraints over allowed namespaces and schemas"
+      ],
+      "passes": true,
+      "evidence": [
+        "F002 model implements data field as HashMap<String, serde_json::Value> with schema_ref validation",
+        "F007 checkpoint export preserves data envelopes through round-trip",
+        "F010 capabilities enumerate supported schemas",
+        "All core incorporated acceptance criteria satisfied; issue-type constraints require separate extension"
+      ]
+    },
+    {
+      "id": "R013",
+      "priority": 3,
+      "description": "Cursor-based local change feed",
+      "spec": "docs/plan/plan.md#12-adopted-post-01-roadmap",
+      "depends_on": [
+        "F017"
+      ],
+      "acceptance": [
+        "Emit deterministic public mutation records after a cursor",
+        "Include snapshot identity and explicit gap detection",
+        "Consumers resynchronize from JSONL after a gap",
+        "Supports incremental local indexes and adapters without daemon, network service, or dependency on private event tables"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "R014",
+      "priority": 3,
+      "description": "Complete import diagnostic report",
+      "spec": "docs/plan/plan.md#12-adopted-post-01-roadmap",
+      "depends_on": [
+        "F008"
+      ],
+      "acceptance": [
+        "Collect bounded, deterministically ordered set of validation failures",
+        "Include line number, JSON Pointer, schema keyword, semantic code, and truncation marker",
+        "No state activates; replaces repeated one-error-per-import repair cycles",
+        "Prevents unbounded memory consumption or cascading noise"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "R015",
+      "priority": 3,
+      "description": "Disposable recovery rehearsal",
+      "spec": "docs/plan/plan.md#12-adopted-post-01-roadmap",
+      "depends_on": [
+        "F008",
+        "F017"
+      ],
+      "acceptance": [
+        "Build temporary workspace from current JSONL generation",
+        "Run integrity and schema diagnostics",
+        "Re-export for semantic comparison",
+        "Record nonsecret report and remove only operation-owned temporary workspace"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "R016",
+      "priority": 3,
+      "description": "Scoped doctor and diagnostic mode",
+      "spec": "docs/plan/plan.md#12-adopted-post-01-roadmap",
+      "depends_on": [
+        "F009"
+      ],
+      "acceptance": [
+        "Extend doctor with store, backup, schema, dependencies, comments, and all scopes",
+        "Add stable JSON diagnostics",
+        "Check backup generations and freshness, schema/data validity, conditional predicates and latent cycles",
+        "Repairs stay narrowly allowlisted and never rewrite user semantic data"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "R017",
+      "priority": 3,
+      "description": "Conditional dependencies",
+      "spec": "docs/plan/plan.md#12-adopted-post-01-roadmap",
+      "depends_on": [
+        "F006"
+      ],
+      "acceptance": [
+        "Edge carries bounded declarative predicate over stored fields, labels, issue type, priority, assignee presence, and schema-bound data",
+        "Conditions use typed all/any/not composition and comparison/set operators",
+        "Never scripts, SQL, wall-clock, environment, network, comments, or recursively derived readiness",
+        "Treat every conditional blocking edge as potentially active during cycle detection"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "R018",
+      "priority": 3,
+      "description": "Structured bead data",
+      "spec": "docs/plan/plan.md#12-adopted-post-01-roadmap",
+      "depends_on": [],
+      "acceptance": [
+        "Expose atomic data set|get|list|remove operations for namespaced JSON values",
+        "Each governed by its own immutable schema reference",
+        "Unknown schemas remain preservable for interchange but fail closed for native mutation",
+        "General mechanism for adding structured information without turning arbitrary fields into API"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "R019",
+      "priority": 3,
+      "description": "Intelligent, aging, rotating, failure-aware claim scheduling (extension)",
+      "spec": "docs/plan/plan.md#12-adopted-post-01-roadmap",
+      "depends_on": [
+        "F004",
+        "R001"
+      ],
+      "acceptance": [
+        "Core incorporates only atomic eligibility and immutable fifo-v1 ordering with minimal claim audit",
+        "R019 implements post-0.1 portions: graph-unlock impact, bounded ready-age promotion, least-recently-served rotation",
+        "Unproven work preference, classified failure tiers, retry cadence, quarantine, context fit, atomic selection, semantic explanations",
+        "Ship fifo-v1 unchanged, then independently specify aging-v1, impact-v1, rotation-v1, balanced-v1 before enabling"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "R020",
+      "priority": 3,
+      "description": "Cross-profile semantic comparison",
+      "spec": "docs/plan/plan.md#12-adopted-post-01-roadmap",
+      "depends_on": [
+        "F012"
+      ],
+      "acceptance": [
+        "Read-only comparison renders selected native records through two explicit installed profiles",
+        "Reports preserved, transformed, omitted, and unsupported semantic fields by canonical field path",
+        "Compare meaning rather than incidental JSON formatting",
+        "Bound record count and never write either representation"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "R021",
+      "priority": 3,
+      "description": "Workspace policy lint",
+      "spec": "docs/plan/plan.md#12-adopted-post-01-roadmap",
+      "depends_on": [
+        "R019"
+      ],
+      "acceptance": [
+        "Add bead policy check --format json to diagnose contradictory, unreachable, redundant, and ineffective scheduling or retention configuration",
+        "Every stable diagnostic bound to exact policy and configuration schema versions",
+        "Unknown version fails closed rather than applying guessed rules",
+        "Policy lint is advisory and cannot make a bead eligible or ineligible"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "R022",
+      "priority": 3,
+      "description": "General mutation dry-run",
+      "spec": "docs/plan/plan.md#12-adopted-post-01-roadmap",
+      "depends_on": [
+        "F005",
+        "R003"
+      ],
+      "acceptance": [
+        "Extend migration/import dry-run concept to ordinary semantic mutations",
+        "Update, close, reopen, and dependency mutations accept consistent --dry-run mode",
+        "Performs authorization, validation, cycle analysis, and derived-status calculation",
+        "Emits canonical before/after semantic delta without committing rows, events, revisions, or checkpoint metadata"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "R023",
+      "priority": 3,
+      "description": "Unified why explanation facade",
+      "spec": "docs/plan/plan.md#12-adopted-post-01-roadmap",
+      "depends_on": [
+        "R001",
+        "R019"
+      ],
+      "acceptance": [
+        "Add read-only bead why ID command explaining effective status, readiness, active blockers, claim-ranking factors, and legal next operations",
+        "Human and stable machine-readable forms",
+        "Must call same domain evaluators and reason codes used by R001 and R019",
+        "Gives humans and agents one entry point for why questions"
+      ],
+      "passes": false,
+      "evidence": []
+    },
+    {
+      "id": "R024",
+      "priority": 3,
+      "description": "Explicit recurring-bead materialization",
+      "spec": "docs/plan/plan.md#12-adopted-post-01-roadmap",
+      "depends_on": [],
+      "acceptance": [
+        "Store immutable, nonexecuting recurrence-template versions",
+        "Create next occurrence only through explicit command",
+        "Each occurrence carries stable series reference, selected copied fields, and idempotent materialization receipt",
+        "Core bead-rs never wakes, polls, interprets wall-clock schedules, or creates work autonomously"
+      ],
+      "passes": false,
+      "evidence": []
     }
   ]
 }
