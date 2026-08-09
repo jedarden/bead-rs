@@ -71,3 +71,18 @@ The checkpoint-set-v1.md specification was created by the same agent that implem
 **Corrective Action Required**: F017 must be considered incomplete pending truly independent specification review. The implementation should only be activated after a specification that has been independently reviewed (not by the implementer) exists and is approved.
 
 **Evidence**: Git commits 08f094d (spec creation) and 3d4951c (F017 implementation) showing same author and 36-minute interval without independent review.
+
+## F017 independent review disposition (2026-08-09)
+
+OpenAI Codex reviewed the specification independently from the Marathon/Claude
+author and implementation iteration, using only material in this repository.
+The reviewed specification hash is
+`91f73abf3c09f141b2c36529979ee1dcf27cec5091cf340d798b3a7fa29f234c`.
+
+No evidence of exposure to or derivation from a prohibited upstream
+implementation was found. The event recorded above is more precisely a missed
+separation-of-duties gate, not a source-contamination event. The independent
+review dependency is now satisfied. The specification is accepted as the F017
+implementation baseline, while implementation activation remains rejected until
+the conformance findings in
+`docs/reviews/f017-independent-review-2026-08-09.md` are implemented and tested.

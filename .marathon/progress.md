@@ -4845,3 +4845,22 @@ Remaining features (F012, F013, F017, F014) all require external organizational 
   ✓ Ready for external review processes
 
 **Marathon autonomous iteration successfully concluded at proper governance checkpoint.**
+
+## 2026-08-09 — Independent F017 review completed; implementation unblocked
+
+- Suspended the Marathon parent loop and active worker in the agent-sandbox pod
+  before beginning the review.
+- OpenAI Codex independently reviewed `checkpoint-set-v1.md` at SHA-256
+  `91f73abf3c09f141b2c36529979ee1dcf27cec5091cf340d798b3a7fa29f234c`,
+  without consulting another bead implementation.
+- Found no evidence of prohibited upstream contamination. Reclassified the
+  earlier event as a missed separation-of-duties gate, which this review cures.
+- Accepted the specification as the implementation baseline, but kept F017
+  false because the current implementation is not conformant or activated.
+- Recorded actionable gaps in
+  `docs/reviews/f017-independent-review-2026-08-09.md`: CLI wiring,
+  restore/merge, immutable content-addressed adaptive shards, tombstones,
+  filesystem durability, capabilities/status integration, and conformance
+  tests.
+- Updated the Marathon mission to prohibit further governance-pause commit
+  churn. The next F017 iteration must implement or test an acceptance criterion.

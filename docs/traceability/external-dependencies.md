@@ -67,6 +67,12 @@ F012 may proceed only when:
 
 ## F017: Adaptive Git-trackable sharded checkpoints with forensic history
 
+**2026-08-09 disposition**: The independent specification review is complete.
+See `docs/reviews/f017-independent-review-2026-08-09.md`. No prohibited-source
+contamination was found. F017 is no longer externally blocked; it remains
+incomplete on the concrete implementation and conformance findings in that
+review.
+
 **Status**: ❌ BLOCKED - Clean-room boundary violation requiring independent specification review
 
 **Feature Description**: Implement the full forensic checkpoint-set format with monolithic and sharded modes, immutable generation pointers, content-addressed objects, event provenance, and Git-trackable artifacts.

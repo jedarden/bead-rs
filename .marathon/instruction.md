@@ -63,6 +63,13 @@ NEEDLE. `.marathon/COMPLETE` is the only completion sentinel.
   iteration must not modify the artifact it approves. Never self-assert review.
 - If one feature is waiting for independent review, work on another unblocked
   feature. Do not weaken a gate merely to keep the loop moving.
+- The independent F017 review is complete at
+  `docs/reviews/f017-independent-review-2026-08-09.md`. Treat its conformance
+  findings as implementation work. Do not create more governance-pause or
+  review-preparation documents for F017.
+- A blocked iteration must either implement or test an actionable acceptance
+  criterion, or exit without a commit. Repeating status prose is not a coherent
+  increment.
 - Keep the repository buildable and tested at every commit.
 
 ## End every iteration
