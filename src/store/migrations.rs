@@ -7,7 +7,7 @@ use rusqlite::{Connection, Result as SqliteResult};
 use sha2::{Digest, Sha256};
 
 /// Current migration version
-pub const CURRENT_VERSION: i64 = 5;
+pub const CURRENT_VERSION: i64 = 6;
 
 /// Apply all pending migrations to the database
 pub fn apply_migrations(conn: &Connection) -> SqliteResult<()> {
@@ -72,6 +72,7 @@ fn get_migration(version: i64) -> Migration {
         3 => migration_3(),
         4 => migration_4(),
         5 => migration_5(),
+        6 => migration_6(),
         v => panic!("Unknown migration version: {}", v),
     }
 }
@@ -389,6 +390,40 @@ CREATE INDEX IF NOT EXISTS saved_views_created ON saved_views (created_at);
     }
 }
 
+/// Migration 6: External references (R011) namespaced external references
+///
+/// This migration adds support for R011's namespaced external references:
+/// - Generic (namespace, key, value) references for tracker IDs and commit identifiers
+/// - Does not replace native bead IDs or resolve anything over the network
+/// - Optional namespace-scoped uniqueness supports reliable deduplication
+/// - Cross-tool recognition without title heuristics
+fn migration_6() -> Migration {
+    let sql = r#"
+-- External references table for namespaced external identifiers
+CREATE TABLE IF NOT EXISTS external_references (
+    issue_id TEXT NOT NULL,
+    namespace TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (issue_id, namespace, key),
+    FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE
+);
+
+-- Index for namespace-scoped queries and deduplication
+CREATE INDEX IF NOT EXISTS external_references_namespace ON external_references (namespace, key, value);
+
+-- Index for issue-based lookups
+CREATE INDEX IF NOT EXISTS external_references_issue ON external_references (issue_id);
+
+-- Index for cross-tool recognition by value lookup
+CREATE INDEX IF NOT EXISTS external_references_value ON external_references (namespace, value);
+"#;
+
+    Migration {
+        sql: sql.to_string(),
+    }
+}
+
 /// Calculate SHA-256 checksum of a migration
 fn migration_checksum(sql: &str) -> String {
     let mut hasher = Sha256::new();
@@ -437,6 +472,7 @@ mod tests {
             "checkpoint_state",
             "provenance_receipts",
             "leases",
+            "external_references",
         ];
 
         for table in &tables {

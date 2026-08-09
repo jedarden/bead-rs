@@ -814,8 +814,26 @@
         "Do not replace native bead IDs or resolve anything over the network",
         "Optional namespace-scoped uniqueness supports reliable deduplication and cross-tool recognition"
       ],
-      "passes": false,
-      "evidence": []
+      "passes": true,
+      "evidence": [
+        "cargo test --test r011_external_references: 13 tests passed",
+        "cargo fmt --check: passed",
+        "cargo clippy --all-targets -- -D warnings: passed",
+        "Implemented database Migration 6: external_references table with issue_id, namespace, key, value columns and UNIQUE constraint",
+        "Implemented ExternalReference model with validation functions: validate_reference_namespace (1-64 bytes, lowercase alphanumeric/hyphens/underscores, must start with letter), validate_reference_key (nonempty, ≤128 bytes), validate_reference_value (nonempty, ≤512 bytes)",
+        "Created service layer in src/service/external_refs.rs: add_external_reference, remove_external_reference, list_external_references, find_issues_by_reference",
+        "Added CLI command 'bead ref' with subcommands: add, remove, list, find",
+        "CLI options: ref add --id ISSUE --namespace NS --key KEY --value VALUE, ref remove --id ISSUE --namespace NS --key KEY, ref list --id ISSUE [--json], ref find --namespace NS --value VALUE [--json]",
+        "Idempotent operations: adding same reference multiple times succeeds without duplicates, removing non-existent reference succeeds",
+        "Namespace-scoped uniqueness: INSERT OR REPLACE ensures one reference per (issue_id, namespace, key) tuple",
+        "Cross-tool recognition: find_issues_by_reference finds all issues with same (namespace, value) pair across the workspace",
+        "No network resolution: all operations work with local data only, no external API calls",
+        "Native bead IDs preserved: external_references table stores issue_id as foreign key, never replaces native IDs",
+        "Validation enforces lowercase-only namespaces (first char must be lowercase letter, remaining chars lowercase alphanumeric/hyphens/underscores)",
+        "JSON output support: list outputs line-by-line JSON objects, find outputs JSON array of issue IDs",
+        "13 comprehensive integration tests: add/remove/list/find operations, validation, idempotency, cross-tool recognition, JSON output, error cases",
+        "All acceptance criteria met: generic (namespace, key, value) references, no native ID replacement, no network resolution, namespace-scoped uniqueness for deduplication and cross-tool recognition"
+      ]
     },
     {
       "id": "R012",

@@ -43,6 +43,7 @@ fn execute_command(cli: Cli) -> Result<()> {
         Command::Reopen(opts) => cmd_reopen(opts),
         Command::Label(opts) => cmd_label(opts),
         Command::Dep(opts) => cmd_dep(opts),
+        Command::Ref(opts) => cmd_ref(opts),
         Command::Sync(opts) => cmd_sync(opts),
         Command::Doctor(opts) => cmd_doctor(opts),
         Command::Capabilities(opts) => cmd_capabilities(opts),
@@ -592,6 +593,149 @@ fn cmd_dep_remove(opts: cli::DepRemoveOptions) -> Result<()> {
 
     // Print success message
     println!("Removed dependency: {} <- {}", opts.blocked, opts.blocker);
+
+    Ok(())
+}
+
+fn cmd_ref(cmd: cli::RefCommand) -> Result<()> {
+    match cmd {
+        cli::RefCommand::Add(opts) => cmd_ref_add(opts),
+        cli::RefCommand::Remove(opts) => cmd_ref_remove(opts),
+        cli::RefCommand::List(opts) => cmd_ref_list(opts),
+        cli::RefCommand::Find(opts) => cmd_ref_find(opts),
+    }
+}
+
+fn cmd_ref_add(opts: cli::RefAddOptions) -> Result<()> {
+    // Discover workspace
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    // Open database connection
+    let db_path = config.database_path();
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    // Create store wrapper
+    let mut store = store::SqliteStore::from_conn(conn);
+
+    // Add the external reference
+    service::add_external_reference(
+        &mut store,
+        &opts.id,
+        &opts.namespace,
+        &opts.key,
+        &opts.value,
+    )?;
+
+    // Print success message
+    println!(
+        "Added reference: {} -> {}/{}/{}",
+        opts.id, opts.namespace, opts.key, opts.value
+    );
+
+    Ok(())
+}
+
+fn cmd_ref_remove(opts: cli::RefRemoveOptions) -> Result<()> {
+    // Discover workspace
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    // Open database connection
+    let db_path = config.database_path();
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    // Create store wrapper
+    let mut store = store::SqliteStore::from_conn(conn);
+
+    // Remove the external reference
+    service::remove_external_reference(&mut store, &opts.id, &opts.namespace, &opts.key)?;
+
+    // Print success message
+    println!(
+        "Removed reference: {} -> {}/{}",
+        opts.id, opts.namespace, opts.key
+    );
+
+    Ok(())
+}
+
+fn cmd_ref_list(opts: cli::RefListOptions) -> Result<()> {
+    // Discover workspace
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    // Open database connection
+    let db_path = config.database_path();
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    // Create store wrapper
+    let mut store = store::SqliteStore::from_conn(conn);
+
+    // List external references
+    let references = service::list_external_references(&mut store, &opts.id)?;
+
+    if opts.json {
+        // Output JSON format
+        for reference in references {
+            let json = serde_json::to_string(&reference).unwrap();
+            println!("{}", json);
+        }
+    } else {
+        // Output human-readable format
+        if references.is_empty() {
+            println!("No external references found for {}", opts.id);
+        } else {
+            println!("External references for {}:", opts.id);
+            for reference in references {
+                println!(
+                    "  {}/{}: {}",
+                    reference.namespace, reference.key, reference.value
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_ref_find(opts: cli::RefFindOptions) -> Result<()> {
+    // Discover workspace
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    // Open database connection
+    let db_path = config.database_path();
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    // Create store wrapper
+    let mut store = store::SqliteStore::from_conn(conn);
+
+    // Find issues by reference
+    let issue_ids = service::find_issues_by_reference(&mut store, &opts.namespace, &opts.value)?;
+
+    if opts.json {
+        // Output JSON format
+        let json = serde_json::to_string(&issue_ids).unwrap();
+        println!("{}", json);
+    } else {
+        // Output human-readable format
+        if issue_ids.is_empty() {
+            println!(
+                "No issues found with reference {}/{}",
+                opts.namespace, opts.value
+            );
+        } else {
+            println!("Issues with reference {}/{}:", opts.namespace, opts.value);
+            for issue_id in issue_ids {
+                println!("  {}", issue_id);
+            }
+        }
+    }
 
     Ok(())
 }

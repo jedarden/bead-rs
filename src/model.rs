@@ -325,6 +325,120 @@ impl Issue {
     }
 }
 
+/// External reference for linking issues to external systems
+///
+/// Represents a generic (namespace, key, value) reference such as tracker IDs
+/// and commit identifiers without replacing native bead IDs or resolving
+/// anything over the network.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalReference {
+    /// Associated issue ID
+    pub issue_id: String,
+
+    /// Namespace for grouping references (e.g., "github", "jira", "gitlab")
+    pub namespace: String,
+
+    /// Key within the namespace (e.g., "issue-number", "commit-hash", "ticket-id")
+    pub key: String,
+
+    /// Reference value (e.g., "12345", "abc123def", "PROJ-001")
+    pub value: String,
+}
+
+/// Validate external reference namespace
+///
+/// Namespaces must be nonempty, lowercase alphanumeric with hyphens/underscores,
+/// and must not exceed 64 bytes.
+pub fn validate_reference_namespace(namespace: &str) -> Result<(), Error> {
+    if namespace.is_empty() {
+        return Err(Error::validation("Namespace cannot be empty"));
+    }
+
+    if namespace.len() > 64 {
+        return Err(Error::validation("Namespace cannot exceed 64 bytes"));
+    }
+
+    // Only lowercase alphanumeric, hyphens, and underscores
+    if !namespace
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+    {
+        return Err(Error::validation(
+            "Namespace can only contain lowercase letters, numbers, hyphens, and underscores",
+        ));
+    }
+
+    // Must start with a lowercase letter
+    if !namespace.chars().next().unwrap().is_ascii_lowercase() {
+        return Err(Error::validation("Namespace must start with a lowercase letter"));
+    }
+
+    Ok(())
+}
+
+/// Validate external reference key
+///
+/// Keys must be nonempty and must not exceed 128 bytes.
+pub fn validate_reference_key(key: &str) -> Result<(), Error> {
+    if key.is_empty() {
+        return Err(Error::validation("Reference key cannot be empty"));
+    }
+
+    if key.len() > 128 {
+        return Err(Error::validation("Reference key cannot exceed 128 bytes"));
+    }
+
+    // No control characters
+    if key.chars().any(|c| c.is_control()) {
+        return Err(Error::validation(
+            "Reference key cannot contain control characters",
+        ));
+    }
+
+    Ok(())
+}
+
+/// Validate external reference value
+///
+/// Values must be nonempty and must not exceed 512 bytes.
+pub fn validate_reference_value(value: &str) -> Result<(), Error> {
+    if value.is_empty() {
+        return Err(Error::validation("Reference value cannot be empty"));
+    }
+
+    if value.len() > 512 {
+        return Err(Error::validation("Reference value cannot exceed 512 bytes"));
+    }
+
+    // No control characters
+    if value.chars().any(|c| c.is_control()) {
+        return Err(Error::validation(
+            "Reference value cannot contain control characters",
+        ));
+    }
+
+    Ok(())
+}
+
+impl ExternalReference {
+    /// Validate an external reference
+    pub fn validate(&self) -> Result<(), Error> {
+        // Validate issue ID
+        validate_issue_id(&self.issue_id)?;
+
+        // Validate namespace
+        validate_reference_namespace(&self.namespace)?;
+
+        // Validate key
+        validate_reference_key(&self.key)?;
+
+        // Validate value
+        validate_reference_value(&self.value)?;
+
+        Ok(())
+    }
+}
+
 /// Error type for model validation
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum Error {

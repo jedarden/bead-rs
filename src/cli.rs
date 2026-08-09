@@ -80,6 +80,10 @@ pub enum Command {
     #[command(subcommand)]
     Dep(DepCommand),
 
+    /// Manage external references
+    #[command(subcommand)]
+    Ref(RefCommand),
+
     /// Synchronize checkpoint operations
     #[command(subcommand)]
     Sync(SyncCommand),
@@ -1138,6 +1142,178 @@ pub struct ChangesOptions {
     /// Validate a cursor and check for gaps
     #[arg(long)]
     pub validate: Option<String>,
+
+    /// Output in JSON format
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// External reference management commands (R011)
+#[derive(Subcommand, Debug)]
+pub enum RefCommand {
+    /// Add an external reference to an issue
+    #[command(
+        about = "Add an external reference to an issue",
+        long_about = "Add a namespaced external reference to an issue (idempotent).
+
+Adds a generic (namespace, key, value) reference such as tracker IDs or
+commit identifiers. Does not replace native bead IDs or resolve anything
+over the network. Namespace-scoped uniqueness supports reliable deduplication
+and cross-tool recognition.
+
+EXAMPLES:
+  bead ref add bead-123abc456789def --namespace github --key issue-number --value 12345
+  bead ref add ID --namespace gitlab --key mr-iid --value 42
+  bead ref add ID --namespace jira --key ticket --value PROJ-001
+
+NAMING RULES:
+  - Namespace: 1-64 chars, lowercase letters/numbers/hyphens/underscores, must start with letter
+  - Key: 1-128 chars, no control characters
+  - Value: 1-512 chars, no control characters
+
+COMMON NAMESPACES:
+  - github: GitHub issues, PRs, commits
+  - gitlab: GitLab merge requests, issues
+  - jira: JIRA tickets
+  - tracker: Generic issue trackers
+  - vcs: Version control systems
+
+USE CASES:
+  - Link issues to external tracker tickets
+  - Reference commit hashes or PR numbers
+  - Cross-tool issue correlation and deduplication
+  - External system integration without network dependencies
+
+The command validates all inputs and creates the reference atomically."
+    )]
+    Add(RefAddOptions),
+
+    /// Remove an external reference from an issue
+    #[command(
+        about = "Remove an external reference from an issue",
+        long_about = "Remove a namespaced external reference from an issue (idempotent).
+
+Removes the specified external reference from the issue. If the reference
+does not exist, the command succeeds without making changes.
+
+EXAMPLES:
+  bead ref remove bead-123abc456789def --namespace github --key issue-number
+  bead ref remove ID --namespace gitlab --key mr-id
+
+IDEMPOTENCY:
+  Removing a non-existent reference succeeds without error.
+  This makes external reference management safe and declarative.
+
+NAMESPACE-SCOPED:
+  References are identified by (issue_id, namespace, key) combination.
+  The same namespace can have different keys for the same issue."
+    )]
+    Remove(RefRemoveOptions),
+
+    /// List external references for an issue
+    #[command(
+        about = "List external references for an issue",
+        long_about = "List all external references for an issue.
+
+Shows all namespaced external references attached to the issue, sorted
+by namespace and key for consistent output.
+
+EXAMPLES:
+  bead ref list bead-123abc456789def
+  bead ref list ID --json
+
+OUTPUT FORMAT:
+  Human-readable format shows namespace, key, and value for each reference.
+  JSON format provides structured data for automation.
+
+  --json: Output in compact JSON format"
+    )]
+    List(RefListOptions),
+
+    /// Find issues by external reference
+    #[command(
+        about = "Find issues by external reference",
+        long_about = "Find issues that have a specific external reference value.
+
+Supports cross-tool recognition by finding all issues that reference the
+same external identifier. This enables deduplication and correlation across
+different tools and namespaces.
+
+EXAMPLES:
+  bead ref find --namespace github --value 12345
+  bead ref find --namespace jira --value PROJ-001 --json
+
+CROSS-TOOL RECOGNITION:
+  - Multiple issues can reference the same external identifier
+  - Enables detection of duplicate work across systems
+  - Supports correlation without network access
+  - Namespace-scoped to avoid false matches
+
+OUTPUT:
+  Returns a list of issue IDs that have the specified reference.
+  Empty list if no matching issues are found."
+    )]
+    Find(RefFindOptions),
+}
+
+/// Options for adding an external reference
+#[derive(Parser, Debug)]
+pub struct RefAddOptions {
+    /// Issue ID
+    #[arg(long)]
+    pub id: String,
+
+    /// Reference namespace (e.g., github, gitlab, jira)
+    #[arg(long)]
+    pub namespace: String,
+
+    /// Reference key (e.g., issue-number, mr-id, ticket)
+    #[arg(long)]
+    pub key: String,
+
+    /// Reference value (e.g., 12345, abc123, PROJ-001)
+    #[arg(long)]
+    pub value: String,
+}
+
+/// Options for removing an external reference
+#[derive(Parser, Debug)]
+pub struct RefRemoveOptions {
+    /// Issue ID
+    #[arg(long)]
+    pub id: String,
+
+    /// Reference namespace
+    #[arg(long)]
+    pub namespace: String,
+
+    /// Reference key
+    #[arg(long)]
+    pub key: String,
+}
+
+/// Options for listing external references
+#[derive(Parser, Debug)]
+pub struct RefListOptions {
+    /// Issue ID
+    #[arg(long)]
+    pub id: String,
+
+    /// Output in JSON format
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Options for finding issues by external reference
+#[derive(Parser, Debug)]
+pub struct RefFindOptions {
+    /// Reference namespace
+    #[arg(long)]
+    pub namespace: String,
+
+    /// Reference value
+    #[arg(long)]
+    pub value: String,
 
     /// Output in JSON format
     #[arg(long)]
