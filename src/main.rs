@@ -970,8 +970,28 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
         return Ok(());
     }
 
+    // Parse scopes
+    let scopes = if let Some(scope_values) = opts.scope {
+        let mut parsed_scopes = Vec::new();
+        for scope_str in scope_values {
+            match service::doctor::DiagnosticScope::from_str(&scope_str) {
+                Some(scope) => parsed_scopes.push(scope),
+                None => {
+                    return Err(Error::validation(format!(
+                        "Invalid scope: {}. Valid scopes: {}",
+                        scope_str,
+                        service::doctor::DiagnosticScope::all_scopes().join(", ")
+                    )))
+                }
+            }
+        }
+        parsed_scopes
+    } else {
+        vec![service::doctor::DiagnosticScope::All] // Default to all scopes
+    };
+
     if opts.repair {
-        // Run repairs
+        // Run repairs - maintain narrow allowlist (only temp files)
         eprintln!("Attempting repairs...");
         let mut store_wrapper = store::SqliteStore::new();
 
@@ -989,17 +1009,48 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
                 eprintln!("{} {}: {}", prefix, repair.name, repair.message);
             }
         }
-    } else {
-        // Run diagnostics
-        let diagnostics = service::run_diagnostics(&store::SqliteStore::new())?;
 
-        for check in diagnostics.checks {
-            let prefix = match check.status {
-                service::DiagnosticStatus::Ok => "OK",
-                service::DiagnosticStatus::Warning => "WARN",
-                service::DiagnosticStatus::Error => "ERROR",
-            };
-            eprintln!("{} {}: {}", prefix, check.name, check.message);
+        // Note: Repairs stay narrowly allowlisted and never rewrite user semantic data
+        eprintln!("Repairs completed. Only operation-owned temporary files are removed.");
+    } else {
+        // Run diagnostics with specified scopes
+        let diagnostics = if scopes.len() == 1 && scopes[0] == service::doctor::DiagnosticScope::All {
+            service::run_diagnostics(&store::SqliteStore::new())?
+        } else {
+            service::run_diagnostics_with_scopes(&store::SqliteStore::new(), &scopes)?
+        };
+
+        if opts.json {
+            // Output stable JSON diagnostics
+            let json_output = serde_json::to_string_pretty(&diagnostics)
+                .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to serialize diagnostics: {}", e)))?;
+            println!("{}", json_output);
+        } else {
+            // Human-readable output
+            eprintln!("Running diagnostics with scopes: {}",
+                scopes.iter()
+                    .map(|s| format!("{:?}", s))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            eprintln!();
+
+            for check in &diagnostics.checks {
+                let prefix = match check.status {
+                    service::DiagnosticStatus::Ok => "OK",
+                    service::DiagnosticStatus::Warning => "WARN",
+                    service::DiagnosticStatus::Error => "ERROR",
+                };
+                eprintln!("{} {}: {}", prefix, check.name, check.message);
+            }
+
+            eprintln!();
+            eprintln!("Scopes checked: {}", diagnostics.scopes_checked.join(", "));
+            eprintln!("Timestamp: {}", diagnostics.timestamp);
+
+            if diagnostics.has_warnings {
+                eprintln!("Warnings found: {}", diagnostics.checks.iter().filter(|c| c.status == service::DiagnosticStatus::Warning).count());
+            }
         }
 
         // Exit with error code if there are errors

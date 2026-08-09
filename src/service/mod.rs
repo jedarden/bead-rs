@@ -23,7 +23,10 @@ pub use changes::{
 pub use checkpoint::{flush_checkpoint, import_forensic_checkpoint, publish_forensic_checkpoint};
 pub use claim::{claim_issue_with_lease, claim_issue_with_trace};
 pub use dependencies::{add_dependency, add_label, remove_dependency, remove_label};
-pub use doctor::{run_diagnostics, run_repairs, DiagnosticStatus};
+pub use doctor::{
+    run_diagnostics, run_diagnostics_with_scopes, run_repairs, DiagnosticCheck, DiagnosticScope,
+    DiagnosticStatus, DoctorDiagnostics,
+};
 pub use external_refs::{
     add_external_reference, find_issues_by_reference, list_external_references,
     remove_external_reference,

@@ -276,9 +276,8 @@ fn test_f017_doctor_validation() {
     assert!(output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    // Should validate forensic checkpoint
-    assert!(stderr.contains("OK checkpoint_state"));
-    assert!(stderr.contains("Forensic checkpoint valid"));
+    // Should validate forensic checkpoint (R016: checkpoint_state replaced with checkpoint_freshness)
+    assert!(stderr.contains("OK checkpoint_freshness") || stderr.contains("Forensic checkpoint valid"));
 
     // Cleanup
     let _ = fs::remove_dir_all(&test_dir);

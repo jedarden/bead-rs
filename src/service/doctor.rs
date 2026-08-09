@@ -5,18 +5,25 @@
 
 use crate::error::{Error, Result};
 use crate::store::Store;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 /// Doctor diagnostic result
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiagnosticCheck {
     pub name: String,
     pub status: DiagnosticStatus,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
 }
 
 /// Status of a diagnostic check
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum DiagnosticStatus {
     Ok,
     Warning,
@@ -24,84 +31,287 @@ pub enum DiagnosticStatus {
 }
 
 /// Doctor diagnostic result
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DoctorDiagnostics {
     pub checks: Vec<DiagnosticCheck>,
     pub has_errors: bool,
     #[allow(dead_code)]
     pub has_warnings: bool,
+    pub scopes_checked: Vec<String>,
+    pub timestamp: String,
+}
+
+/// Diagnostic scope options
+#[derive(Debug, Clone, PartialEq)]
+pub enum DiagnosticScope {
+    Store,
+    Backup,
+    Schema,
+    Dependencies,
+    Comments,
+    All,
+}
+
+impl DiagnosticScope {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "store" => Some(DiagnosticScope::Store),
+            "backup" => Some(DiagnosticScope::Backup),
+            "schema" => Some(DiagnosticScope::Schema),
+            "dependencies" => Some(DiagnosticScope::Dependencies),
+            "comments" => Some(DiagnosticScope::Comments),
+            "all" => Some(DiagnosticScope::All),
+            _ => None,
+        }
+    }
+
+    pub fn all_scopes() -> Vec<&'static str> {
+        vec!["store", "backup", "schema", "dependencies", "comments", "all"]
+    }
 }
 
 /// Run diagnostics on the workspace
 pub fn run_diagnostics(store: &impl Store) -> Result<DoctorDiagnostics> {
+    run_diagnostics_with_scopes(store, &[DiagnosticScope::All])
+}
+
+/// Run diagnostics on the workspace with specific scopes
+pub fn run_diagnostics_with_scopes(store: &impl Store, scopes: &[DiagnosticScope]) -> Result<DoctorDiagnostics> {
     let mut checks = Vec::new();
     let mut has_errors = false;
     let mut has_warnings = false;
+    let mut scopes_checked = Vec::new();
 
-    // 1. Workspace/config parsing and permissions
-    match check_workspace_config(store) {
-        Ok(msg) => {
-            checks.push(DiagnosticCheck {
-                name: "workspace_config".to_string(),
-                status: DiagnosticStatus::Ok,
-                message: msg,
-            });
+    let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+
+    // Determine which scopes to run
+    let run_all = scopes.contains(&DiagnosticScope::All);
+
+    // Store scope checks (workspace, database integrity)
+    if run_all || scopes.contains(&DiagnosticScope::Store) {
+        scopes_checked.push("store".to_string());
+
+        // 1. Workspace/config parsing and permissions
+        match check_workspace_config(store) {
+            Ok(msg) => {
+                checks.push(DiagnosticCheck {
+                    name: "workspace_config".to_string(),
+                    status: DiagnosticStatus::Ok,
+                    message: msg.clone(),
+                    scope: Some("store".to_string()),
+                    details: Some(serde_json::json!({
+                        "message": msg
+                    })),
+                });
+            }
+            Err(e) => {
+                has_errors = true;
+                checks.push(DiagnosticCheck {
+                    name: "workspace_config".to_string(),
+                    status: DiagnosticStatus::Error,
+                    message: format!("Workspace config error: {}", e),
+                    scope: Some("store".to_string()),
+                    details: Some(serde_json::json!({
+                        "error": e.to_string()
+                    })),
+                });
+            }
         }
-        Err(e) => {
-            has_errors = true;
-            checks.push(DiagnosticCheck {
-                name: "workspace_config".to_string(),
-                status: DiagnosticStatus::Error,
-                message: format!("Workspace config error: {}", e),
-            });
+
+        // 2. Database open and schema checks
+        match check_database_integrity(store) {
+            Ok(msg) => {
+                checks.push(DiagnosticCheck {
+                    name: "database_integrity".to_string(),
+                    status: DiagnosticStatus::Ok,
+                    message: msg.clone(),
+                    scope: Some("store".to_string()),
+                    details: Some(serde_json::json!({
+                        "message": msg
+                    })),
+                });
+            }
+            Err(e) => {
+                has_errors = true;
+                checks.push(DiagnosticCheck {
+                    name: "database_integrity".to_string(),
+                    status: DiagnosticStatus::Error,
+                    message: format!("Database integrity error: {}", e),
+                    scope: Some("store".to_string()),
+                    details: Some(serde_json::json!({
+                        "error": e.to_string()
+                    })),
+                });
+            }
         }
     }
 
-    // 2. Database open and schema checks
-    match check_database_integrity(store) {
-        Ok(msg) => {
-            checks.push(DiagnosticCheck {
-                name: "database_integrity".to_string(),
-                status: DiagnosticStatus::Ok,
-                message: msg,
-            });
+    // Backup scope checks (checkpoint state, generations, freshness)
+    if run_all || scopes.contains(&DiagnosticScope::Backup) {
+        scopes_checked.push("backup".to_string());
+
+        // 3. Checkpoint state validation and freshness
+        match check_checkpoint_state_with_freshness(store) {
+            Ok(msg) => {
+                checks.push(DiagnosticCheck {
+                    name: "checkpoint_freshness".to_string(),
+                    status: DiagnosticStatus::Ok,
+                    message: msg.clone(),
+                    scope: Some("backup".to_string()),
+                    details: Some(serde_json::json!({
+                        "message": msg
+                    })),
+                });
+            }
+            Err(e) => {
+                has_warnings = true;
+                checks.push(DiagnosticCheck {
+                    name: "checkpoint_freshness".to_string(),
+                    status: DiagnosticStatus::Warning,
+                    message: format!("Checkpoint freshness warning: {}", e),
+                    scope: Some("backup".to_string()),
+                    details: Some(serde_json::json!({
+                        "warning": e.to_string()
+                    })),
+                });
+            }
         }
-        Err(e) => {
-            has_errors = true;
-            checks.push(DiagnosticCheck {
-                name: "database_integrity".to_string(),
-                status: DiagnosticStatus::Error,
-                message: format!("Database integrity error: {}", e),
-            });
+
+        // 4. Backup generations check
+        match check_backup_generations(store) {
+            Ok(msg) => {
+                checks.push(DiagnosticCheck {
+                    name: "backup_generations".to_string(),
+                    status: DiagnosticStatus::Ok,
+                    message: msg.clone(),
+                    scope: Some("backup".to_string()),
+                    details: Some(serde_json::json!({
+                        "message": msg
+                    })),
+                });
+            }
+            Err(e) => {
+                has_warnings = true;
+                checks.push(DiagnosticCheck {
+                    name: "backup_generations".to_string(),
+                    status: DiagnosticStatus::Warning,
+                    message: format!("Backup generations warning: {}", e),
+                    scope: Some("backup".to_string()),
+                    details: Some(serde_json::json!({
+                        "warning": e.to_string()
+                    })),
+                });
+            }
         }
     }
 
-    // 3. Checkpoint state validation
-    match check_checkpoint_state(store) {
-        Ok(msg) => {
-            checks.push(DiagnosticCheck {
-                name: "checkpoint_state".to_string(),
-                status: DiagnosticStatus::Ok,
-                message: msg,
-            });
-        }
-        Err(e) => {
-            has_warnings = true;
-            checks.push(DiagnosticCheck {
-                name: "checkpoint_state".to_string(),
-                status: DiagnosticStatus::Warning,
-                message: format!("Checkpoint state warning: {}", e),
-            });
+    // Schema scope checks (data validity)
+    if run_all || scopes.contains(&DiagnosticScope::Schema) {
+        scopes_checked.push("schema".to_string());
+
+        // 5. Schema and data validity checks
+        match check_schema_validity(store) {
+            Ok(msg) => {
+                checks.push(DiagnosticCheck {
+                    name: "schema_validity".to_string(),
+                    status: DiagnosticStatus::Ok,
+                    message: msg.clone(),
+                    scope: Some("schema".to_string()),
+                    details: Some(serde_json::json!({
+                        "message": msg
+                    })),
+                });
+            }
+            Err(e) => {
+                has_errors = true;
+                checks.push(DiagnosticCheck {
+                    name: "schema_validity".to_string(),
+                    status: DiagnosticStatus::Error,
+                    message: format!("Schema validity error: {}", e),
+                    scope: Some("schema".to_string()),
+                    details: Some(serde_json::json!({
+                        "error": e.to_string()
+                    })),
+                });
+            }
         }
     }
 
-    // 4. Orphaned temporary files
+    // Dependencies scope checks (cycles, conditional predicates)
+    if run_all || scopes.contains(&DiagnosticScope::Dependencies) {
+        scopes_checked.push("dependencies".to_string());
+
+        // 6. Dependency graph checks
+        match check_dependency_graph(store) {
+            Ok(msg) => {
+                checks.push(DiagnosticCheck {
+                    name: "dependency_graph".to_string(),
+                    status: DiagnosticStatus::Ok,
+                    message: msg.clone(),
+                    scope: Some("dependencies".to_string()),
+                    details: Some(serde_json::json!({
+                        "message": msg
+                    })),
+                });
+            }
+            Err(e) => {
+                has_errors = true;
+                checks.push(DiagnosticCheck {
+                    name: "dependency_graph".to_string(),
+                    status: DiagnosticStatus::Error,
+                    message: format!("Dependency graph error: {}", e),
+                    scope: Some("dependencies".to_string()),
+                    details: Some(serde_json::json!({
+                        "error": e.to_string()
+                    })),
+                });
+            }
+        }
+    }
+
+    // Comments scope checks
+    if run_all || scopes.contains(&DiagnosticScope::Comments) {
+        scopes_checked.push("comments".to_string());
+
+        // 7. Comment data integrity
+        match check_comments_integrity(store) {
+            Ok(msg) => {
+                checks.push(DiagnosticCheck {
+                    name: "comments_integrity".to_string(),
+                    status: DiagnosticStatus::Ok,
+                    message: msg.clone(),
+                    scope: Some("comments".to_string()),
+                    details: Some(serde_json::json!({
+                        "message": msg
+                    })),
+                });
+            }
+            Err(e) => {
+                has_warnings = true;
+                checks.push(DiagnosticCheck {
+                    name: "comments_integrity".to_string(),
+                    status: DiagnosticStatus::Warning,
+                    message: format!("Comments integrity warning: {}", e),
+                    scope: Some("comments".to_string()),
+                    details: Some(serde_json::json!({
+                        "warning": e.to_string()
+                    })),
+                });
+            }
+        }
+    }
+
+    // Always check temporary files (part of store scope but run separately for safety)
     match check_temporary_files(store) {
         Ok(msg) => {
             checks.push(DiagnosticCheck {
                 name: "temporary_files".to_string(),
                 status: DiagnosticStatus::Ok,
-                message: msg,
+                message: msg.clone(),
+                scope: Some("store".to_string()),
+                details: Some(serde_json::json!({
+                    "message": msg
+                })),
             });
         }
         Err(e) => {
@@ -110,6 +320,10 @@ pub fn run_diagnostics(store: &impl Store) -> Result<DoctorDiagnostics> {
                 name: "temporary_files".to_string(),
                 status: DiagnosticStatus::Warning,
                 message: format!("Temporary files warning: {}", e),
+                scope: Some("store".to_string()),
+                details: Some(serde_json::json!({
+                    "warning": e.to_string()
+                })),
             });
         }
     }
@@ -118,6 +332,8 @@ pub fn run_diagnostics(store: &impl Store) -> Result<DoctorDiagnostics> {
         checks,
         has_errors,
         has_warnings,
+        scopes_checked,
+        timestamp,
     })
 }
 
@@ -140,6 +356,10 @@ pub fn run_repairs(store: &mut impl Store) -> Result<Vec<DiagnosticCheck>> {
                         name: "removed_temp_file".to_string(),
                         status: DiagnosticStatus::Ok,
                         message: format!("Removed temporary file: {}", path.display()),
+                        scope: Some("store".to_string()),
+                        details: Some(serde_json::json!({
+                            "removed_path": path.display().to_string()
+                        })),
                     });
                 }
             }
@@ -226,6 +446,350 @@ fn check_database_integrity(store: &impl Store) -> Result<String> {
         None => Err(Error::Integrity(
             "Integrity check returned no result".to_string(),
         )),
+    }
+}
+
+/// Check checkpoint state with freshness analysis (handles both pre-F017 and F017 formats)
+fn check_checkpoint_state_with_freshness(store: &impl Store) -> Result<String> {
+    let config = store.get_workspace_config()?;
+    let db_path = config.root.join(".beads/beads.db");
+
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| Error::Integrity(format!("Failed to open database: {}", e)))?;
+
+    // Get current event sequence
+    let current_sequence: i64 = conn
+        .query_row("SELECT COALESCE(MAX(sequence), 0) FROM events", [], |row| {
+            row.get(0)
+        })
+        .unwrap_or(0);
+
+    // Get checkpoint export time
+    let export_time: Option<String> = conn
+        .query_row(
+            "SELECT export_time FROM checkpoint_state WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+
+    // Calculate freshness age in seconds
+    let freshness_age = if let Some(export_time_str) = export_time {
+        if let Ok(export_datetime) = chrono::DateTime::parse_from_rfc3339(&export_time_str) {
+            let now = chrono::Utc::now();
+            let duration = now.signed_duration_since(export_datetime);
+            Some(duration.num_seconds())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Check for F017 forensic checkpoint first
+    let current_json_path = config.root.join(".beads/checkpoint/current.json");
+    if current_json_path.exists() {
+        let result = check_forensic_checkpoint(&config, &conn, current_sequence)?;
+        let freshness_info = if let Some(age_secs) = freshness_age {
+            format!(" ({} seconds old)", age_secs)
+        } else {
+            String::from(" (age unknown)")
+        };
+        return Ok(format!("{}{}", result, freshness_info));
+    }
+
+    // Fall back to pre-F017 issues.jsonl check with freshness
+    let result = check_pre_f017_checkpoint(&config, &conn, current_sequence)?;
+    let freshness_info = if let Some(age_secs) = freshness_age {
+        if age_secs > 3600 {
+            format!(" ({} hours old, stale)", age_secs / 3600)
+        } else {
+            format!(" ({} seconds old)", age_secs)
+        }
+    } else {
+        String::from(" (age unknown)")
+    };
+    Ok(format!("{}{}", result, freshness_info))
+}
+
+/// Check backup generations
+fn check_backup_generations(store: &impl Store) -> Result<String> {
+    let config = store.get_workspace_config()?;
+    let checkpoint_dir = config.root.join(".beads/checkpoint");
+
+    if !checkpoint_dir.exists() {
+        return Ok("No checkpoint directory found".to_string());
+    }
+
+    let mut generation_count = 0;
+    let mut latest_gen = String::from("none");
+    let mut previous_gen = String::from("none");
+
+    // Check for forensic checkpoint generations
+    let current_json = checkpoint_dir.join("current.json");
+    let previous_json = checkpoint_dir.join("previous.json");
+
+    if current_json.exists() {
+        if let Ok(content) = std::fs::read_to_string(&current_json) {
+            if let Ok(pointer) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(gen_id) = pointer.get("generation_id").and_then(|v| v.as_str()) {
+                    latest_gen = gen_id.to_string();
+                    generation_count += 1;
+                }
+            }
+        }
+    }
+
+    if previous_json.exists() {
+        if let Ok(content) = std::fs::read_to_string(&previous_json) {
+            if let Ok(pointer) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(gen_id) = pointer.get("generation_id").and_then(|v| v.as_str()) {
+                    previous_gen = gen_id.to_string();
+                    generation_count += 1;
+                }
+            }
+        }
+    }
+
+    // Check for objects directory with sharded content
+    let objects_dir = checkpoint_dir.join("objects");
+    if objects_dir.exists() {
+        if let Ok(entries) = std::fs::read_dir(&objects_dir) {
+            let object_count = entries.filter_map(|e| e.ok()).count();
+            if object_count > 0 {
+                return Ok(format!(
+                    "Sharded backup: {} generations (latest: {}, previous: {}), {} objects",
+                    generation_count, latest_gen, previous_gen, object_count
+                ));
+            }
+        }
+    }
+
+    Ok(format!(
+        "Backup generations: {} (latest: {}, previous: {})",
+        generation_count, latest_gen, previous_gen
+    ))
+}
+
+/// Check schema and data validity
+fn check_schema_validity(store: &impl Store) -> Result<String> {
+    let config = store.get_workspace_config()?;
+    let db_path = config.root.join(".beads/beads.db");
+
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| Error::Integrity(format!("Failed to open database: {}", e)))?;
+
+    let mut issues = Vec::new();
+
+    // Check for issues with invalid data
+    let mut stmt = conn
+        .prepare("SELECT id, title FROM issues WHERE title IS NULL OR title = ''")
+        .map_err(|e| Error::Integrity(format!("Failed to prepare statement: {}", e)))?;
+
+    let invalid_titles: Vec<(String, Option<String>)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|e| Error::Integrity(format!("Failed to query issues: {}", e)))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    if !invalid_titles.is_empty() {
+        issues.push(format!(
+            "Found {} issues with invalid titles",
+            invalid_titles.len()
+        ));
+    }
+
+    // Check for priority values out of range
+    let mut stmt = conn
+        .prepare("SELECT COUNT(*) FROM issues WHERE priority < 0 OR priority > 4")
+        .map_err(|e| Error::Integrity(format!("Failed to prepare statement: {}", e)))?;
+
+    let invalid_priority_count: i64 = stmt
+        .query_row([], |row| row.get(0))
+        .unwrap_or(0);
+
+    if invalid_priority_count > 0 {
+        issues.push(format!(
+            "Found {} issues with invalid priority values",
+            invalid_priority_count
+        ));
+    }
+
+    // Check for foreign key violations in dependencies
+    let mut stmt = conn
+        .prepare(
+            "SELECT COUNT(*) FROM dependencies d
+             LEFT JOIN issues i1 ON d.blocked_issue_id = i1.id
+             LEFT JOIN issues i2 ON d.blocker_issue_id = i2.id
+             WHERE i1.id IS NULL OR i2.id IS NULL",
+        )
+        .map_err(|e| Error::Integrity(format!("Failed to prepare statement: {}", e)))?;
+
+    let dangling_deps: i64 = stmt.query_row([], |row| row.get(0)).unwrap_or(0);
+
+    if dangling_deps > 0 {
+        issues.push(format!(
+            "Found {} dependencies with dangling issue references",
+            dangling_deps
+        ));
+    }
+
+    // Check for orphaned comments
+    let mut stmt = conn
+        .prepare(
+            "SELECT COUNT(*) FROM comments c
+             LEFT JOIN issues i ON c.issue_id = i.id
+             WHERE i.id IS NULL",
+        )
+        .map_err(|e| Error::Integrity(format!("Failed to prepare statement: {}", e)))?;
+
+    let orphaned_comments: i64 = stmt.query_row([], |row| row.get(0)).unwrap_or(0);
+
+    if orphaned_comments > 0 {
+        issues.push(format!(
+            "Found {} orphaned comments referencing non-existent issues",
+            orphaned_comments
+        ));
+    }
+
+    if issues.is_empty() {
+        let issue_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM issues", [], |row| row.get(0))
+            .unwrap_or(0);
+        Ok(format!(
+            "Schema validity OK: {} issues validated",
+            issue_count
+        ))
+    } else {
+        Err(Error::Integrity(format!(
+            "Schema validity issues: {}",
+            issues.join("; ")
+        )))
+    }
+}
+
+/// Check dependency graph for cycles and structural issues
+fn check_dependency_graph(store: &impl Store) -> Result<String> {
+    let config = store.get_workspace_config()?;
+    let db_path = config.root.join(".beads/beads.db");
+
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| Error::Integrity(format!("Failed to open database: {}", e)))?;
+
+    // Check for self-edges
+    let mut stmt = conn
+        .prepare("SELECT COUNT(*) FROM dependencies WHERE blocked_issue_id = blocker_issue_id")
+        .map_err(|e| Error::Integrity(format!("Failed to prepare statement: {}", e)))?;
+
+    let self_edges: i64 = stmt.query_row([], |row| row.get(0)).unwrap_or(0);
+
+    if self_edges > 0 {
+        return Err(Error::Integrity(format!(
+            "Found {} self-edge dependencies",
+            self_edges
+        )));
+    }
+
+    // Check for cycles using DFS
+    let cycles = detect_dependency_cycles(&conn)?;
+
+    if !cycles.is_empty() {
+        return Err(Error::Integrity(format!(
+            "Found {} dependency cycles: {}",
+            cycles.len(),
+            cycles.iter().map(|c| c.join(" -> ")).collect::<Vec<_>>().join("; ")
+        )));
+    }
+
+    // Get dependency statistics
+    let dep_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM dependencies", [], |row| row.get(0))
+        .unwrap_or(0);
+
+    let blocked_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(DISTINCT blocked_id) FROM dependencies",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    Ok(format!(
+        "Dependency graph OK: {} dependencies, {} blocked issues, no cycles",
+        dep_count, blocked_count
+    ))
+}
+
+/// Check comments data integrity
+fn check_comments_integrity(store: &impl Store) -> Result<String> {
+    let config = store.get_workspace_config()?;
+    let db_path = config.root.join(".beads/beads.db");
+
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| Error::Integrity(format!("Failed to open database: {}", e)))?;
+
+    // Check for comments with invalid structure
+    let mut issues = Vec::new();
+
+    // Check for comments without issue_id
+    let mut stmt = conn
+        .prepare("SELECT COUNT(*) FROM comments WHERE issue_id IS NULL")
+        .map_err(|e| Error::Integrity(format!("Failed to prepare statement: {}", e)))?;
+
+    let null_issue_ids: i64 = stmt.query_row([], |row| row.get(0)).unwrap_or(0);
+
+    if null_issue_ids > 0 {
+        issues.push(format!(
+            "Found {} comments with null issue_id",
+            null_issue_ids
+        ));
+    }
+
+    // Check for comments with empty body
+    let mut stmt = conn
+        .prepare("SELECT COUNT(*) FROM comments WHERE body IS NULL OR body = ''")
+        .map_err(|e| Error::Integrity(format!("Failed to prepare statement: {}", e)))?;
+
+    let empty_bodies: i64 = stmt.query_row([], |row| row.get(0)).unwrap_or(0);
+
+    if empty_bodies > 0 {
+        issues.push(format!(
+            "Found {} comments with empty body",
+            empty_bodies
+        ));
+    }
+
+    // Check for invalid reply references
+    let mut stmt = conn
+        .prepare(
+            "SELECT COUNT(*) FROM comments c1
+             LEFT JOIN comments c2 ON c1.reply_to_id = c2.id
+             WHERE c1.reply_to_id IS NOT NULL AND c2.id IS NULL",
+        )
+        .map_err(|e| Error::Integrity(format!("Failed to prepare statement: {}", e)))?;
+
+    let invalid_replies: i64 = stmt.query_row([], |row| row.get(0)).unwrap_or(0);
+
+    if invalid_replies > 0 {
+        issues.push(format!(
+            "Found {} comments with invalid reply_to references",
+            invalid_replies
+        ));
+    }
+
+    if issues.is_empty() {
+        let comment_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM comments", [], |row| row.get(0))
+            .unwrap_or(0);
+        Ok(format!(
+            "Comments integrity OK: {} comments validated",
+            comment_count
+        ))
+    } else {
+        Err(Error::Integrity(format!(
+            "Comments integrity issues: {}",
+            issues.join("; ")
+        )))
     }
 }
 
@@ -494,4 +1058,75 @@ fn calculate_file_hash(path: &Path) -> Result<String> {
     let result = hasher.finalize();
 
     Ok(format!("{:x}", result))
+}
+
+/// Detect cycles in the dependency graph using DFS
+fn detect_dependency_cycles(conn: &rusqlite::Connection) -> Result<Vec<Vec<String>>> {
+    use std::collections::{HashMap, HashSet};
+
+    // Build adjacency list
+    let mut adj_list: HashMap<String, Vec<String>> = HashMap::new();
+    let mut all_issues: HashSet<String> = HashSet::new();
+
+    let mut stmt = conn
+        .prepare("SELECT blocked_issue_id, blocker_issue_id FROM dependencies")
+        .map_err(|e| Error::Integrity(format!("Failed to prepare dependencies query: {}", e)))?;
+
+    let deps: Vec<(String, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|e| Error::Integrity(format!("Failed to query dependencies: {}", e)))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    for (blocked, blocker) in deps {
+        adj_list
+            .entry(blocked.clone())
+            .or_insert_with(Vec::new)
+            .push(blocker.clone());
+        all_issues.insert(blocked);
+        all_issues.insert(blocker);
+    }
+
+    let mut cycles = Vec::new();
+    let mut visited = HashSet::new();
+    let mut recursion_stack = HashSet::new();
+
+    for issue in &all_issues {
+        if !visited.contains(issue) {
+            if let Some(cycle) = dfs_cycle_check(issue, &adj_list, &mut visited, &mut recursion_stack) {
+                cycles.push(cycle);
+            }
+        }
+    }
+
+    Ok(cycles)
+}
+
+/// DFS helper for cycle detection
+fn dfs_cycle_check(
+    issue: &str,
+    adj_list: &HashMap<String, Vec<String>>,
+    visited: &mut HashSet<String>,
+    recursion_stack: &mut HashSet<String>,
+) -> Option<Vec<String>> {
+    visited.insert(issue.to_string());
+    recursion_stack.insert(issue.to_string());
+
+    if let Some(neighbors) = adj_list.get(issue) {
+        for neighbor in neighbors {
+            if !visited.contains(neighbor) {
+                if let Some(cycle) = dfs_cycle_check(neighbor, adj_list, visited, recursion_stack) {
+                    return Some(cycle);
+                }
+            } else if recursion_stack.contains(neighbor) {
+                // Found a cycle
+                let mut cycle = vec![neighbor.clone()];
+                cycle.push(issue.to_string());
+                return Some(cycle);
+            }
+        }
+    }
+
+    recursion_stack.remove(issue);
+    None
 }

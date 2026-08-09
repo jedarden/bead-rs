@@ -1014,6 +1014,14 @@ pub struct DoctorOptions {
     /// Run disposable recovery rehearsal: create temp workspace, run diagnostics, re-export, compare semantic equivalence
     #[arg(long)]
     pub rehearse: bool,
+
+    /// Diagnostic scopes: store, backup, schema, dependencies, comments, all (default: all)
+    #[arg(long, value_delimiter = ',')]
+    pub scope: Option<Vec<String>>,
+
+    /// Output diagnostics in JSON format
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Options for capabilities command

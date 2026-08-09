@@ -1,5 +1,85 @@
 # bead-rs Marathon progress log
 
+## 2026-08-09 — R016 scoped doctor and diagnostic mode implemented and completed
+
+- **Completed**: Implemented R016 scoped doctor and diagnostic mode with comprehensive scope-based diagnostics.
+
+- **Implementation Details**:
+  - Added DiagnosticScope enum: Store, Backup, Schema, Dependencies, Comments, All
+  - Enhanced DoctorDiagnostics structure with scopes_checked, timestamp, and JSON serialization
+  - Enhanced DiagnosticCheck with scope and details fields for comprehensive JSON output
+  - Implemented run_diagnostics_with_scopes() for targeted scope checking
+  - Added --scope flag supporting multiple scopes and --json flag for stable JSON diagnostics
+  - CLI integration with proper scope validation and human-readable output
+
+- **New Diagnostic Checks** (src/service/doctor.rs):
+  - check_checkpoint_state_with_freshness(): Enhanced checkpoint checking with age calculation and freshness reporting
+  - check_backup_generations(): Analyzes forensic checkpoint generations, monolithic vs sharded modes
+  - check_schema_validity(): Comprehensive data integrity (invalid titles, priorities, dangling dependencies, orphaned comments)
+  - check_dependency_graph(): Cycle detection using DFS algorithm, self-edge detection, graph statistics
+  - check_comments_integrity(): Comment validation (null issue_ids, empty bodies, invalid reply references)
+  - detect_dependency_cycles(): DFS-based cycle detection with proper backtracking
+  - dfs_cycle_check(): Recursive helper for dependency cycle detection
+
+- **Model Changes**:
+  - DiagnosticScope: Enum for scope selection with from_str() parsing (case-insensitive)
+  - DoctorDiagnostics: Added scopes_checked (Vec<String>), timestamp (String) for tracking
+  - DiagnosticCheck: Added scope (Option<String>), details (Option<serde_json::Value>) for enhanced reporting
+  - Enhanced JSON serialization support with #[serde(rename_all = "lowercase")] for status enum
+
+- **Service Layer** (src/service/doctor.rs):
+  - run_diagnostics_with_scopes(): Targeted scope execution with proper scope routing
+  - Individual scope functions for store, backup, schema, dependencies, comments
+  - Comprehensive error collection with bounded, deterministic reporting
+  - Enhanced repair functionality maintaining narrow allowlist (temp file cleanup only)
+
+- **CLI Integration** (src/cli.rs, src/main.rs):
+  - Added --scope flag with Vec<String> support for multiple scopes
+  - Added --json flag for stable machine-readable diagnostic output
+  - Enhanced cmd_doctor() with scope validation and JSON/human-readable output modes
+  - Proper error handling and scope validation with helpful error messages
+  - Backward compatibility maintained (default to all scopes)
+
+- **Test Coverage** (16 comprehensive integration tests):
+  - test_diagnostic_scope_parsing: Verifies scope parsing and case-insensitive handling
+  - test_all_scopes: Verifies all_scopes() returns valid scope names
+  - test_doctor_diagnostics_json_serialization: Tests JSON output structure and stability
+  - test_run_diagnostics_with_store_scope: Tests store scope diagnostics
+  - test_run_diagnostics_with_all_scopes: Tests comprehensive all-scope diagnostics
+  - test_run_diagnostics_with_backup_scope: Tests backup scope with generation tracking
+  - test_run_diagnostics_with_schema_scope: Tests schema validity checks
+  - test_run_diagnostics_with_dependencies_scope: Tests dependency graph analysis
+  - test_run_diagnostics_with_comments_scope: Tests comment integrity validation
+  - test_run_diagnostics_with_multiple_scopes: Tests targeted multi-scope execution
+  - test_dependency_cycle_detection: Tests DFS-based cycle detection with real cycles
+  - test_self_edge_prevention: Tests database CHECK constraint for self-edges
+  - test_repairs_narrow_allowlist: Verifies repairs only remove operation-owned temp files
+  - test_checkpoint_freshness_check: Tests backup freshness tracking
+  - test_json_output_structure: Validates stable JSON diagnostic structure
+  - test_scope_edge_cases: Tests edge cases in scope parsing
+
+- **Acceptance Criteria Met**:
+  - ✅ Extended doctor with store, backup, schema, dependencies, comments, and all scopes
+  - ✅ Added stable JSON diagnostics with proper serialization and structure
+  - ✅ Check backup generations and freshness (monolithic/sharded detection, age calculation)
+  - ✅ Check schema/data validity (invalid data detection, dangling references, orphaned records)
+  - ✅ Check conditional predicates and latent cycles (DFS cycle detection, self-edge prevention)
+  - ✅ Repairs stay narrowly allowlisted and never rewrite user semantic data (only temp file cleanup)
+  - ✅ All scopes work independently and in combination
+  - ✅ JSON output is stable and machine-readable with required fields
+
+- **Code Quality**:
+  - cargo test --test r016_scoped_doctor: 16/16 tests passed in 0.55s
+  - cargo test: All 319 tests passed (303 existing + 16 new R016 tests)
+  - cargo fmt --check: passed
+  - cargo clippy --all-targets -- -D warnings: passed
+  - Clean compilation with comprehensive scope-based diagnostics
+  - Proper serial test execution with #[serial] attribute to prevent race conditions
+  - Enhanced error reporting with detailed JSON output options
+  - Backward compatibility maintained with existing doctor functionality
+
+- **Feature Status**: R016 now marked as passing in feature ledger with comprehensive evidence
+
 ## 2026-08-09 — R015 disposable recovery rehearsal implemented and completed
 
 - **Completed**: Implemented R015 disposable recovery rehearsal for disaster recovery testing without risking live data.

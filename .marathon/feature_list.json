@@ -973,8 +973,28 @@
         "Check backup generations and freshness, schema/data validity, conditional predicates and latent cycles",
         "Repairs stay narrowly allowlisted and never rewrite user semantic data"
       ],
-      "passes": false,
-      "evidence": []
+      "passes": true,
+      "evidence": [
+        "cargo test --test r016_scoped_doctor: 16 tests passed",
+        "cargo test: All 319 tests passed (303 existing + 16 new R016 tests)",
+        "cargo fmt --check: passed",
+        "cargo clippy --all-targets -- -D warnings: passed",
+        "Implemented src/service/doctor.rs with comprehensive scoped diagnostics functionality",
+        "Created DiagnosticScope enum: Store, Backup, Schema, Dependencies, Comments, All",
+        "Enhanced DoctorDiagnostics structure with scopes_checked, timestamp, and JSON serialization",
+        "Enhanced DiagnosticCheck with scope, details fields for JSON output",
+        "Implemented run_diagnostics_with_scopes() for targeted scope checking",
+        "Added check_checkpoint_state_with_freshness() for backup freshness tracking with age calculation",
+        "Added check_backup_generations() for forensic checkpoint generation analysis",
+        "Added check_schema_validity() for comprehensive data integrity checks (invalid titles, priorities, dangling dependencies, orphaned comments)",
+        "Added check_dependency_graph() with cycle detection using DFS algorithm and self-edge detection",
+        "Added check_comments_integrity() for comment data validation (null issue_ids, empty bodies, invalid reply references)",
+        "CLI integration: --scope flag supports multiple scopes, --json flag for stable JSON diagnostics",
+        "Cycle detection using DFS algorithm with proper detection of circular dependencies",
+        "Repairs maintain narrow allowlist: only removes operation-owned temporary files",
+        "16 comprehensive integration tests: scope parsing, JSON serialization, all scopes, individual scopes, multiple scopes, cycle detection, self-edge prevention, repairs, checkpoint freshness, JSON structure, edge cases",
+        "All acceptance criteria met: extended doctor with all scopes, stable JSON diagnostics, backup generations and freshness checking, schema/data validity, conditional predicates and latent cycles, repairs stay narrowly allowlisted"
+      ]
     },
     {
       "id": "R017",
