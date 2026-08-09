@@ -3589,6 +3589,7 @@ fn read_all_issues(tx: &Transaction) -> Result<Vec<Issue>> {
             source_repo,
             profile: profile.or(Some(String::from("native-v1"))),
             schema_ref: schema_ref.or(Some(String::from("urn:bead-rs:schema:issue:native-v1"))),
+            revision: Some(1), // Imported issues start at revision 1
             data: None,
             extensions,
         };

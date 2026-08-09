@@ -27,6 +27,9 @@ pub struct Capabilities {
     pub checkpoint_modes: Vec<String>,
     /// Supported checkpoint formats
     pub checkpoint_formats: Vec<String>,
+    /// Whether logical revision guards are supported
+    #[serde(rename = "logical_revision")]
+    pub logical_revision: bool,
     /// Schema reference for this capabilities document
     #[serde(rename = "schema_ref")]
     pub schema_ref: String,
@@ -95,6 +98,7 @@ pub fn generate_capabilities(profile: &str) -> Result<Capabilities> {
             default: 2,
             p4_claimable_by_fifo: true,
         },
+        logical_revision: true,
         statuses: vec![
             "blocked".to_string(),
             "closed".to_string(),

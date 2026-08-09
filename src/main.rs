@@ -212,6 +212,7 @@ fn cmd_list(opts: cli::ListOptions) -> Result<()> {
                 println!("  Title: {}", issue.title);
                 println!("  Status: {:?}", issue.base_status);
                 println!("  Priority: P{}", issue.priority);
+                println!("  Revision: {}", issue.revision.unwrap_or(1));
                 if let Some(assignee) = &issue.assignee {
                     println!("  Assignee: {}", assignee);
                 }
@@ -264,6 +265,7 @@ fn cmd_show(opts: cli::ShowOptions) -> Result<()> {
         println!("Title: {}", issue.title);
         println!("Status: {:?}", issue.base_status);
         println!("Priority: P{}", issue.priority);
+        println!("Revision: {}", issue.revision.unwrap_or(1));
         println!("Created: {}", issue.created_at);
         println!("Updated: {}", issue.updated_at);
 
@@ -301,6 +303,7 @@ fn cmd_update(opts: cli::UpdateOptions) -> Result<()> {
         opts.assignee.as_deref(),
         opts.clear_assignee,
         opts.notes.as_deref(),
+        opts.if_revision,
     )?;
 
     // Print only the ID on success
@@ -320,7 +323,7 @@ fn cmd_release(opts: cli::ReleaseOptions) -> Result<()> {
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Release the issue
-    let id = service::release_issue(&conn, &opts.id)?;
+    let id = service::release_issue(&conn, &opts.id, opts.if_revision)?;
 
     // Print only the ID on success
     println!("{}", id);
@@ -339,7 +342,7 @@ fn cmd_close(opts: cli::CloseOptions) -> Result<()> {
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Close the issue
-    let id = service::close_issue(&conn, &opts.id, &opts.reason)?;
+    let id = service::close_issue(&conn, &opts.id, &opts.reason, opts.if_revision)?;
 
     // Print only the ID on success
     println!("{}", id);
@@ -358,7 +361,7 @@ fn cmd_reopen(opts: cli::ReopenOptions) -> Result<()> {
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Reopen the issue
-    let id = service::reopen_issue(&conn, &opts.id)?;
+    let id = service::reopen_issue(&conn, &opts.id, opts.if_revision)?;
 
     // Print only the ID on success
     println!("{}", id);
@@ -755,7 +758,8 @@ fn to_needle_json(
         "dependencies": dependencies,
         "created_at": issue.created_at,
         "updated_at": issue.updated_at,
-        "labels": labels
+        "labels": labels,
+        "revision": issue.revision.unwrap_or(1)
     })
 }
 

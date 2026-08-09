@@ -195,6 +195,7 @@ fn create_base_issue(id: String, title: String, priority: i64) -> Issue {
         source_repo: None,
         profile: Some("native-v1".to_string()),
         schema_ref: Some("urn:bead-rs:schema:issue:native-v1".to_string()),
+        revision: Some(1),
         data: None,
         extensions: HashMap::new(),
     }
@@ -659,7 +660,7 @@ fn run_warmup(config: &BenchmarkConfig, store: &mut SqliteStore) -> Result<()> {
 
                         // Immediately release for warmup
                         let release_tx = store.conn().unchecked_transaction()?;
-                        lifecycle::release_issue(&release_tx, bead_id)?;
+                        lifecycle::release_issue(&release_tx, bead_id, None)?;
                         release_tx.commit()?;
                     } else {
                         tx.commit()?;
@@ -750,7 +751,12 @@ fn execute_claim_close(
                         // Close the claimed issue
                         if let Some(bead_id) = &result.bead_id {
                             let close_tx = store.conn().unchecked_transaction()?;
-                            lifecycle::close_issue(&close_tx, bead_id, "benchmark completed")?;
+                            lifecycle::close_issue(
+                                &close_tx,
+                                bead_id,
+                                "benchmark completed",
+                                None,
+                            )?;
                             close_tx.commit()?;
                             metrics.closes += 1;
                         }
@@ -803,7 +809,7 @@ fn execute_claim_release(
                         // Release the claimed issue
                         if let Some(bead_id) = &result.bead_id {
                             let release_tx = store.conn().unchecked_transaction()?;
-                            lifecycle::release_issue(&release_tx, bead_id)?;
+                            lifecycle::release_issue(&release_tx, bead_id, None)?;
                             release_tx.commit()?;
                             metrics.releases += 1;
                         }
@@ -875,7 +881,7 @@ fn execute_mixed_workload(
                         if let Some(bead_id) = &claimed.bead_id {
                             tx.commit()?;
                             let release_tx = store.conn().unchecked_transaction()?;
-                            lifecycle::release_issue(&release_tx, bead_id)?;
+                            lifecycle::release_issue(&release_tx, bead_id, None)?;
                             release_tx.commit()?;
                             metrics.releases += 1;
                         } else {
@@ -893,12 +899,12 @@ fn execute_mixed_workload(
                             tx.commit()?;
 
                             let close_tx = store.conn().unchecked_transaction()?;
-                            lifecycle::close_issue(&close_tx, bead_id, "benchmark cycle")?;
+                            lifecycle::close_issue(&close_tx, bead_id, "benchmark cycle", None)?;
                             close_tx.commit()?;
                             metrics.closes += 1;
 
                             let reopen_tx = store.conn().unchecked_transaction()?;
-                            lifecycle::reopen_issue(&reopen_tx, bead_id)?;
+                            lifecycle::reopen_issue(&reopen_tx, bead_id, None)?;
                             reopen_tx.commit()?;
                             metrics.reopens += 1;
                         } else {
@@ -963,7 +969,7 @@ fn execute_dependency_churn(
 
                         if let Some(bead_id) = &result.bead_id {
                             let release_tx = store.conn().unchecked_transaction()?;
-                            lifecycle::release_issue(&release_tx, bead_id)?;
+                            lifecycle::release_issue(&release_tx, bead_id, None)?;
                             release_tx.commit()?;
                             metrics.releases += 1;
                         }

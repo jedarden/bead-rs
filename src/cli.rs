@@ -342,6 +342,7 @@ EXAMPLES:
   bead update ID --assignee alice                    # Assign to alice
   bead update ID --notes \"Investigated root cause\"   # Add investigation notes
   bead update ID --clear-assignee                    # Clear assignment (open only)
+  bead update ID --status in_progress --if-revision 3 # With revision guard
 
 STATUS TRANSITIONS:
   Valid transitions depend on the current base status:
@@ -359,6 +360,12 @@ BLOCKED STATUS:
   Setting --status blocked sets manual_blocked=true and retains base status.
   Setting --status open clears manual blocking and sets base status to open.
   Closed issues cannot use --status open (use 'reopen' instead).
+
+REVISION GUARDS:
+  --if-revision N provides optimistic concurrency control.
+  If the issue's current revision doesn't match N, the update fails with
+  exit code 4 and a conflict message. This prevents silent lost updates
+  when multiple agents or humans modify the same issue concurrently.
 
 All updates are atomic. Invalid transitions or conflicts exit with code 4
 without changing any fields or timestamps."
@@ -382,6 +389,10 @@ pub struct UpdateOptions {
     /// New notes
     #[arg(long)]
     pub notes: Option<String>,
+
+    /// Expected revision for optimistic concurrency control
+    #[arg(long)]
+    pub if_revision: Option<i64>,
 }
 
 /// Options for releasing an issue
@@ -397,11 +408,18 @@ For open assigned issues, use 'update --clear-assignee' instead.
 EXAMPLES:
   bead release bead-123abc456789def    # Release claimed issue
   bead release ID                       # Release by issue ID
+  bead release ID --if-revision 4       # With revision guard
 
 SEMANTICS:
   - in_progress → open, unassigned (semantic release)
   - open/unassigned → no-op, idempotent
   - Other states → conflict (exit 4)
+
+REVISION GUARDS:
+  --if-revision N provides optimistic concurrency control.
+  If the issue's current revision doesn't match N, the release fails with
+  exit code 4 and a conflict message. This prevents silent lost updates
+  when multiple agents or humans modify the same issue concurrently.
 
 Release is atomic with proper audit event recording. The prior assignee
 and resulting state are recorded in the 'released' audit event.
@@ -420,6 +438,10 @@ Use close when:
 pub struct ReleaseOptions {
     /// Issue ID
     pub id: String,
+
+    /// Expected revision for optimistic concurrency control
+    #[arg(long)]
+    pub if_revision: Option<i64>,
 }
 
 /// Options for closing an issue
@@ -436,6 +458,7 @@ EXAMPLES:
   bead close bead-123abc456789def --reason \"Completed successfully\"
   bead close ID --reason \"Fixed authentication bug\"
   bead close ID --reason \"Duplicate of ID-456\"
+  bead close ID --reason \"Done\" --if-revision 3    # With revision guard
 
 SEMANTICS:
   - All non-closed states → closed (semantic close)
@@ -451,7 +474,14 @@ EFFECTS:
   - Sets closed_at to current time
   - Stores close_reason
   - Advances updated_at
+  - Increments revision
   - Appends 'closed' audit event
+
+REVISION GUARDS:
+  --if-revision N provides optimistic concurrency control.
+  If the issue's current revision doesn't match N, the close fails with
+  exit code 4 and a conflict message. This prevents silent lost updates
+  when multiple agents or humans modify the same issue concurrently.
 
 IDEMPOTENCY:
   Repeating the same close command with the same reason is idempotent
@@ -467,6 +497,10 @@ pub struct CloseOptions {
     /// Close reason (required)
     #[arg(long)]
     pub reason: String,
+
+    /// Expected revision for optimistic concurrency control
+    #[arg(long)]
+    pub if_revision: Option<i64>,
 }
 
 /// Options for reopening an issue
@@ -482,6 +516,7 @@ from closed to open status (generic update cannot do this).
 EXAMPLES:
   bead reopen bead-123abc456789def     # Reopen closed issue
   bead reopen ID                        # Reopen by issue ID
+  bead reopen ID --if-revision 5        # With revision guard
 
 SEMANTICS:
   - closed → open (semantic reopen)
@@ -494,7 +529,14 @@ EFFECTS:
   - Clears manual_blocked flag
   - Preserves existing assignee
   - Advances updated_at
+  - Increments revision
   - Appends 'reopened' audit event
+
+REVISION GUARDS:
+  --if-revision N provides optimistic concurrency control.
+  If the issue's current revision doesn't match N, the reopen fails with
+  exit code 4 and a conflict message. This prevents silent lost updates
+  when multiple agents or humans modify the same issue concurrently.
 
 IDEMPOTENCY:
   Repeating reopen on an open issue succeeds without changing timestamps
@@ -511,6 +553,10 @@ For unassigned closed issues, reopen makes them ready frontier candidates
 pub struct ReopenOptions {
     /// Issue ID
     pub id: String,
+
+    /// Expected revision for optimistic concurrency control
+    #[arg(long)]
+    pub if_revision: Option<i64>,
 }
 
 /// Sync commands

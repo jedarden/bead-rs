@@ -54,7 +54,7 @@ pub fn claim_issue(
         .unwrap_or_else(|_| "unknown".to_string());
 
     tx.execute(
-        "UPDATE issues SET base_status = 'in_progress', assignee = ?1, updated_at = ?2 WHERE id = ?3",
+        "UPDATE issues SET base_status = 'in_progress', assignee = ?1, updated_at = ?2, revision = revision + 1 WHERE id = ?3",
         [assignee, &now, &issue_id],
     )?;
 

@@ -64,11 +64,12 @@ pub fn create_issue(
         .unwrap_or_else(|_| "unknown".to_string());
 
     // Begin transaction
-    let mut stmt = conn.prepare_cached("INSERT INTO issues (id, title, description, priority, base_status, assignee, issue_type, created_at, updated_at, schema_ref) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)")?;
+    let mut stmt = conn.prepare_cached("INSERT INTO issues (id, title, description, priority, base_status, assignee, issue_type, created_at, updated_at, revision, schema_ref) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)")?;
 
     let schema_ref = "urn:bead-rs:schema:issue:native-v1";
     let base_status = "open";
     let issue_type_value = issue_type.as_deref().unwrap_or("task");
+    let initial_revision = 1i64;
 
     stmt.execute((
         &id,
@@ -80,6 +81,7 @@ pub fn create_issue(
         &issue_type_value,
         &now,
         &now,
+        &initial_revision,
         &schema_ref,
     ))?;
 
@@ -112,7 +114,7 @@ pub fn list_issues(
     let mut query = String::from(
         "SELECT id, title, description, priority, base_status, assignee, issue_type,
          created_at, updated_at, closed_at, close_reason, manual_blocked, source_repo,
-         profile, schema_ref, notes
+         profile, schema_ref, notes, revision
          FROM issues WHERE 1=1",
     );
 
@@ -179,6 +181,7 @@ pub fn list_issues(
                 profile: row.get(13)?,
                 schema_ref: row.get(14)?,
                 notes: row.get(15)?,
+                revision: row.get(16)?,
                 data: None,                 // Will be loaded separately if needed
                 extensions: HashMap::new(), // Will be loaded separately if needed
             })
@@ -199,7 +202,7 @@ pub fn get_issue_by_id(conn: &Connection, id: &str) -> Result<Option<Issue>> {
     let mut stmt = conn.prepare_cached(
         "SELECT id, title, description, priority, base_status, assignee, issue_type,
          created_at, updated_at, closed_at, close_reason, manual_blocked, source_repo,
-         profile, schema_ref, notes
+         profile, schema_ref, notes, revision
          FROM issues WHERE id = ?",
     )?;
 
@@ -222,6 +225,7 @@ pub fn get_issue_by_id(conn: &Connection, id: &str) -> Result<Option<Issue>> {
                 profile: row.get(13)?,
                 schema_ref: row.get(14)?,
                 notes: row.get(15)?,
+                revision: row.get(16)?,
                 data: None,
                 extensions: HashMap::new(),
             })

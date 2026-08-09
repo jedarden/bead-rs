@@ -1,6 +1,61 @@
 # bead-rs Marathon progress log
 
-## 2026-08-09 — F017 Finding #2 implemented: forensic restore and merge operations complete
+## 2026-08-09 — R003 logical revision guards implemented and completed
+
+- **Completed**: Implemented R003 logical revision guards for optimistic concurrency control.
+
+- **Implementation Details**:
+  - Added Migration 3: revision INTEGER column to issues table (default 1)
+  - Updated Issue model with revision Option<i64> field
+  - All mutation operations now increment revision atomically: create, update, close, reopen, release, claim
+  - Added --if-revision flag to update, close, reopen, and release CLI commands
+  - Revision validation prevents silent lost updates with clear conflict messages (exit code 4)
+  - Capabilities document updated with logical_revision: true field
+  - JSON output (show/list) includes revision field
+  - Human-readable output includes revision information
+
+- **CLI Changes**:
+  - UpdateOptions: --if-revision <N> flag added
+  - CloseOptions: --if-revision <N> flag added
+  - ReopenOptions: --if-revision <N> flag added
+  - ReleaseOptions: --if-revision <N> flag added
+
+- **Service Layer Changes**:
+  - update_issue(), close_issue(), reopen_issue(), release_issue() accept if_revision parameter
+  - Revision validation occurs before mutation, returning conflict on mismatch
+  - Claim service now increments revision when assigning issues
+  - All SQL UPDATE statements include "revision = revision + 1"
+
+- **Test Coverage** (12 comprehensive tests):
+  - test_revision_initialization: Verifies issues start at revision 1
+  - test_revision_increment_on_update: Verifies update increments revision
+  - test_revision_increment_on_close: Verifies close increments revision
+  - test_revision_increment_on_reopen: Verifies reopen increments revision
+  - test_revision_increment_on_release: Verifies release increments revision
+  - test_revision_guard_success: Verifies correct revision guard allows operation
+  - test_revision_guard_conflict: Verifies incorrect revision guard fails with conflict
+  - test_revision_guard_on_close: Verifies revision guard on close operation
+  - test_revision_guard_on_close_conflict: Verifies revision conflict on close
+  - test_revision_guard_on_reopen: Verifies revision guard on reopen operation
+  - test_revision_guard_on_release: Verifies revision guard on release operation
+  - test_capabilities_report_revision_support: Verifies capabilities include revision support
+
+- **Acceptance Criteria Met**:
+  - ✅ Each bead has monotonically increasing logical revision
+  - ✅ Accept --if-revision precondition on mutations
+  - ✅ Prevents silent lost updates across concurrent operations
+  - ✅ Profiles state revision support through capabilities
+  - ✅ All mutation operations increment revision atomically
+  - ✅ Clear conflict messages for revision mismatches
+
+- **Code Quality**:
+  - cargo test: All 248 tests passed (236 existing + 12 new R003 tests)
+  - cargo fmt --check: passed
+  - cargo clippy --all-targets -- -D warnings: passed
+
+- **Feature Status**: R003 now marked as passing in feature ledger with comprehensive evidence
+
+## 2026-08-09 — R001-R024 roadmap items materialized into feature ledger
 
 - **Completed**: Implemented comprehensive forensic checkpoint restore and merge
   functionality to resolve Finding #2 from the independent F017 review.

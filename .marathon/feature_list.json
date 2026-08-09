@@ -583,8 +583,20 @@
         "Prevents silent lost updates across concurrent humans and workers without wall-clock ordering",
         "Profiles state whether and how they preserve the revision"
       ],
-      "passes": false,
-      "evidence": []
+      "passes": true,
+      "evidence": [
+        "cargo test --test r003_revision_guards: 12 tests passed",
+        "cargo fmt --check: passed",
+        "cargo clippy --all-targets -- -D warnings: passed",
+        "Migration 3 adds revision INTEGER column to issues table with default value 1",
+        "Issue model updated with revision Option<i64> field",
+        "All mutation operations increment revision: create (init to 1), update, close, reopen, release, claim",
+        "CLI supports --if-revision flag on update, close, reopen, and release commands",
+        "Revision validation prevents silent lost updates with clear conflict messages",
+        "Capabilities document includes logical_revision: true field",
+        "JSON output includes revision field in show and list commands",
+        "Comprehensive test coverage: initialization, increment, conflict detection, and all lifecycle operations"
+      ]
     },
     {
       "id": "R004",

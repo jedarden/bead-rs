@@ -196,6 +196,10 @@ pub struct Issue {
     /// Human-readable summary (required)
     pub title: String,
 
+    /// Monotonically increasing logical revision
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<i64>,
+
     /// Detailed description (optional, defaults to empty)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -443,6 +447,7 @@ mod tests {
             source_repo: None,
             profile: None,
             schema_ref: Some("urn:bead-rs:schema:issue:native-v1".to_string()),
+            revision: Some(1),
             data: None,
             extensions: HashMap::new(),
         };
@@ -486,6 +491,7 @@ mod tests {
             source_repo: None,
             profile: None,
             schema_ref: None,
+            revision: Some(1),
             data: None,
             extensions: HashMap::new(),
         };

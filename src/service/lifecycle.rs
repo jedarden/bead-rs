@@ -17,6 +17,7 @@ pub fn update_issue(
     assignee: Option<&str>,
     clear_assignee: bool,
     notes: Option<&str>,
+    if_revision: Option<i64>,
 ) -> Result<String> {
     // Validate that assignee and clear_assignee are not both specified
     if assignee.is_some() && clear_assignee {
@@ -27,6 +28,17 @@ pub fn update_issue(
 
     // Get current issue state
     let issue = get_issue_for_update(conn, id)?.ok_or_else(|| Error::not_found(id))?;
+
+    // Validate revision precondition if provided
+    if let Some(expected_revision) = if_revision {
+        let current_revision = issue.revision.unwrap_or(1);
+        if current_revision != expected_revision {
+            return Err(Error::conflict(format!(
+                "Revision mismatch: expected {}, found {}. The issue has been modified since you retrieved it.",
+                expected_revision, current_revision
+            )));
+        }
+    }
 
     // Validate assignee value if present
     if let Some(assignee_value) = assignee {
@@ -58,9 +70,20 @@ pub fn update_issue(
 }
 
 /// Release an issue
-pub fn release_issue(conn: &Connection, id: &str) -> Result<String> {
+pub fn release_issue(conn: &Connection, id: &str, if_revision: Option<i64>) -> Result<String> {
     // Get current issue state
     let issue = get_issue_for_update(conn, id)?.ok_or_else(|| Error::not_found(id))?;
+
+    // Validate revision precondition if provided
+    if let Some(expected_revision) = if_revision {
+        let current_revision = issue.revision.unwrap_or(1);
+        if current_revision != expected_revision {
+            return Err(Error::conflict(format!(
+                "Revision mismatch: expected {}, found {}. The issue has been modified since you retrieved it.",
+                expected_revision, current_revision
+            )));
+        }
+    }
 
     // Process in a write transaction
     let mut tx = conn.unchecked_transaction()?;
@@ -71,7 +94,12 @@ pub fn release_issue(conn: &Connection, id: &str) -> Result<String> {
 }
 
 /// Close an issue
-pub fn close_issue(conn: &Connection, id: &str, reason: &str) -> Result<String> {
+pub fn close_issue(
+    conn: &Connection,
+    id: &str,
+    reason: &str,
+    if_revision: Option<i64>,
+) -> Result<String> {
     // Validate reason
     if reason.trim().is_empty() {
         return Err(Error::validation("Close reason cannot be empty"));
@@ -79,6 +107,17 @@ pub fn close_issue(conn: &Connection, id: &str, reason: &str) -> Result<String> 
 
     // Get current issue state
     let issue = get_issue_for_update(conn, id)?.ok_or_else(|| Error::not_found(id))?;
+
+    // Validate revision precondition if provided
+    if let Some(expected_revision) = if_revision {
+        let current_revision = issue.revision.unwrap_or(1);
+        if current_revision != expected_revision {
+            return Err(Error::conflict(format!(
+                "Revision mismatch: expected {}, found {}. The issue has been modified since you retrieved it.",
+                expected_revision, current_revision
+            )));
+        }
+    }
 
     // Process in a write transaction
     let mut tx = conn.unchecked_transaction()?;
@@ -89,9 +128,20 @@ pub fn close_issue(conn: &Connection, id: &str, reason: &str) -> Result<String> 
 }
 
 /// Reopen an issue
-pub fn reopen_issue(conn: &Connection, id: &str) -> Result<String> {
+pub fn reopen_issue(conn: &Connection, id: &str, if_revision: Option<i64>) -> Result<String> {
     // Get current issue state
     let issue = get_issue_for_update(conn, id)?.ok_or_else(|| Error::not_found(id))?;
+
+    // Validate revision precondition if provided
+    if let Some(expected_revision) = if_revision {
+        let current_revision = issue.revision.unwrap_or(1);
+        if current_revision != expected_revision {
+            return Err(Error::conflict(format!(
+                "Revision mismatch: expected {}, found {}. The issue has been modified since you retrieved it.",
+                expected_revision, current_revision
+            )));
+        }
+    }
 
     // Process in a write transaction
     let mut tx = conn.unchecked_transaction()?;
@@ -211,9 +261,10 @@ fn update_issue_impl(
         return Ok(issue.id.clone());
     }
 
-    // Add updated_at timestamp
+    // Add updated_at timestamp and increment revision
     sql_parts.push("updated_at = ?");
     params.push(now.clone());
+    sql_parts.push("revision = revision + 1");
 
     // Build the SQL and execute
     let sql = format!("UPDATE issues SET {} WHERE id = ?", sql_parts.join(", "));
@@ -251,7 +302,7 @@ fn release_issue_impl(tx: &mut Transaction, issue: &Issue) -> Result<String> {
             // Semantic release: transition to open and clear assignee
             {
                 let mut stmt = tx.prepare_cached(
-                    "UPDATE issues SET base_status = 'open', assignee = NULL, updated_at = ? WHERE id = ?"
+                    "UPDATE issues SET base_status = 'open', assignee = NULL, updated_at = ?, revision = revision + 1 WHERE id = ?"
                 )?;
                 stmt.execute((&now, &issue.id))?;
             }
@@ -313,7 +364,7 @@ fn close_issue_impl(tx: &mut Transaction, issue: &Issue, reason: &str) -> Result
             {
                 let mut stmt = tx.prepare_cached(
                     "UPDATE issues SET base_status = 'closed', closed_at = ?, close_reason = ?,
-                     manual_blocked = 0, updated_at = ? WHERE id = ?",
+                     manual_blocked = 0, updated_at = ?, revision = revision + 1 WHERE id = ?",
                 )?;
                 stmt.execute((&now, &normalized_reason, &now, &issue.id))?;
             }
@@ -347,7 +398,7 @@ fn reopen_issue_impl(tx: &mut Transaction, issue: &Issue) -> Result<String> {
             {
                 let mut stmt = tx.prepare_cached(
                     "UPDATE issues SET base_status = 'open', closed_at = NULL, close_reason = NULL,
-                     manual_blocked = 0, updated_at = ? WHERE id = ?",
+                     manual_blocked = 0, updated_at = ?, revision = revision + 1 WHERE id = ?",
                 )?;
                 stmt.execute((&now, &issue.id))?;
             }
@@ -384,7 +435,7 @@ fn get_issue_for_update(conn: &Connection, id: &str) -> Result<Option<Issue>> {
     let mut stmt = conn.prepare_cached(
         "SELECT id, title, description, priority, base_status, assignee, issue_type,
          created_at, updated_at, closed_at, close_reason, manual_blocked, source_repo,
-         profile, schema_ref, notes
+         profile, schema_ref, notes, revision
          FROM issues WHERE id = ?",
     )?;
 
@@ -407,6 +458,7 @@ fn get_issue_for_update(conn: &Connection, id: &str) -> Result<Option<Issue>> {
                 profile: row.get(13)?,
                 schema_ref: row.get(14)?,
                 notes: row.get(15)?,
+                revision: row.get(16)?,
                 data: None,
                 extensions: Default::default(),
             })

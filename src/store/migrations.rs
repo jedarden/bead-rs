@@ -7,7 +7,7 @@ use rusqlite::{Connection, Result as SqliteResult};
 use sha2::{Digest, Sha256};
 
 /// Current migration version
-pub const CURRENT_VERSION: i64 = 2;
+pub const CURRENT_VERSION: i64 = 3;
 
 /// Apply all pending migrations to the database
 pub fn apply_migrations(conn: &Connection) -> SqliteResult<()> {
@@ -69,6 +69,7 @@ fn get_migration(version: i64) -> Migration {
     match version {
         1 => migration_1(),
         2 => migration_2(),
+        3 => migration_3(),
         v => panic!("Unknown migration version: {}", v),
     }
 }
@@ -299,6 +300,26 @@ ALTER TABLE checkpoint_state_v2 RENAME TO checkpoint_state;
 
 -- Index for checkpoint state queries
 CREATE INDEX IF NOT EXISTS checkpoint_state_generation ON checkpoint_state (current_generation_id);
+"#;
+
+    Migration {
+        sql: sql.to_string(),
+    }
+}
+
+/// Migration 3: Logical revision guards (R003)
+///
+/// This migration adds support for R003's logical revision guards:
+/// - Monotonically increasing revision field for each issue
+/// - Supports --if-revision precondition on mutations
+/// - Prevents silent lost updates across concurrent operations
+fn migration_3() -> Migration {
+    let sql = r#"
+-- Add revision column to issues table
+ALTER TABLE issues ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+
+-- Create index for revision-based queries
+CREATE INDEX IF NOT EXISTS issues_revision ON issues (id, revision);
 "#;
 
     Migration {
