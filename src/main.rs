@@ -403,6 +403,23 @@ fn cmd_update(opts: cli::UpdateOptions) -> Result<()> {
     let conn = rusqlite::Connection::open(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
+    // Handle dry-run mode
+    if opts.dry_run {
+        let result = service::update_issue_dryrun(
+            &conn,
+            &opts.id,
+            opts.status.as_deref(),
+            opts.assignee.as_deref(),
+            opts.clear_assignee,
+            opts.notes.as_deref(),
+        )?;
+
+        // Output JSON result
+        let json = serde_json::to_string_pretty(&result)?;
+        println!("{}", json);
+        return Ok(());
+    }
+
     // Update the issue
     let id = service::update_issue(
         &conn,
@@ -431,6 +448,16 @@ fn cmd_release(opts: cli::ReleaseOptions) -> Result<()> {
     let conn = rusqlite::Connection::open(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
+    // Handle dry-run mode
+    if opts.dry_run {
+        let result = service::release_issue_dryrun(&conn, &opts.id)?;
+
+        // Output JSON result
+        let json = serde_json::to_string_pretty(&result)?;
+        println!("{}", json);
+        return Ok(());
+    }
+
     // Release the issue
     let id = service::release_issue(&conn, &opts.id, opts.if_revision, opts.fencing_token)?;
 
@@ -449,6 +476,16 @@ fn cmd_close(opts: cli::CloseOptions) -> Result<()> {
     let db_path = config.database_path();
     let conn = rusqlite::Connection::open(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    // Handle dry-run mode
+    if opts.dry_run {
+        let result = service::close_issue_dryrun(&conn, &opts.id, &opts.reason)?;
+
+        // Output JSON result
+        let json = serde_json::to_string_pretty(&result)?;
+        println!("{}", json);
+        return Ok(());
+    }
 
     // Close the issue
     let id = service::close_issue(
@@ -474,6 +511,16 @@ fn cmd_reopen(opts: cli::ReopenOptions) -> Result<()> {
     let db_path = config.database_path();
     let conn = rusqlite::Connection::open(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    // Handle dry-run mode
+    if opts.dry_run {
+        let result = service::reopen_issue_dryrun(&conn, &opts.id)?;
+
+        // Output JSON result
+        let json = serde_json::to_string_pretty(&result)?;
+        println!("{}", json);
+        return Ok(());
+    }
 
     // Reopen the issue
     let id = service::reopen_issue(&conn, &opts.id, opts.if_revision, opts.fencing_token)?;
@@ -552,6 +599,22 @@ fn cmd_dep_add(opts: cli::DepAddOptions) -> Result<()> {
     let conn = rusqlite::Connection::open(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
+    // Handle dry-run mode
+    if opts.dry_run {
+        let result = service::add_dependency_dryrun(
+            &conn,
+            &opts.blocked,
+            &opts.blocker,
+            &opts.kind,
+            opts.condition.as_deref(),
+        )?;
+
+        // Output JSON result
+        let json = serde_json::to_string_pretty(&result)?;
+        println!("{}", json);
+        return Ok(());
+    }
+
     // Create store wrapper
     let mut store = store::SqliteStore::from_conn(conn);
 
@@ -610,6 +673,21 @@ fn cmd_dep_remove(opts: cli::DepRemoveOptions) -> Result<()> {
     let db_path = config.database_path();
     let conn = rusqlite::Connection::open(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    // Handle dry-run mode
+    if opts.dry_run {
+        let result = service::remove_dependency_dryrun(
+            &conn,
+            &opts.blocked,
+            &opts.blocker,
+            opts.kind.as_deref(),
+        )?;
+
+        // Output JSON result
+        let json = serde_json::to_string_pretty(&result)?;
+        println!("{}", json);
+        return Ok(());
+    }
 
     // Create store wrapper
     let mut store = store::SqliteStore::from_conn(conn);

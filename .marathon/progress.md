@@ -1,5 +1,74 @@
 # bead-rs Marathon progress log
 
+## 2026-08-09 — R022 general mutation dry-run implemented and completed
+
+- **Completed**: Implemented R022 general mutation dry-run functionality extending dry-run concepts from migration/import operations to ordinary semantic mutations.
+
+- **Implementation Scope**:
+  - All mutation operations support --dry-run flag: update, close, reopen, release, dep add, dep remove
+  - Dry-run operations perform authorization, validation, cycle analysis, and derived-status calculation without committing changes
+  - Canonical before/after semantic delta output via stable JSON format
+  - Observes current revision and workspace sequence without modification
+
+- **Core Service Layer** (src/service/dryrun.rs - new module):
+  - update_issue_dryrun(): Projects update changes (status, assignee, notes) with semantic delta calculation
+  - close_issue_dryrun(): Projects close operation with validation and reason matching for idempotency
+  - reopen_issue_dryrun(): Projects reopen from closed to open status
+  - release_issue_dryrun(): Projects release from in_progress to open/unassigned
+  - add_dependency_dryrun(): Projects dependency addition with cycle detection
+  - remove_dependency_dryrun(): Projects dependency removal with existence checking
+  - IssueDryRunState: Simplified issue state format for dry-run output
+  - DryRunResult: Complete before/after semantic delta with advisory message
+  - DependencyDryRunResult: Dependency-specific dry-run result format
+
+- **CLI Integration** (src/cli.rs, src/main.rs):
+  - Added --dry-run field to UpdateOptions, ReleaseOptions, CloseOptions, ReopenOptions
+  - Added --dry-run field to DepAddOptions, DepRemoveOptions
+  - Each mutation command checks --dry-run flag and outputs JSON result instead of executing
+  - Stable JSON output format for machine-readable semantic deltas
+
+- **Supporting Changes** (src/service/dependencies.rs):
+  - Added would_create_cycle() function for dry-run cycle detection without modification
+  - Read-transaction-based cycle detection with proper cleanup
+
+- **Test Coverage** (14 comprehensive integration tests in tests/r022_dryrun.rs):
+  - test_dryrun_update_basic: Verifies basic dry-run update with JSON structure
+  - test_dryrun_update_multiple_fields: Tests multiple field changes in single dry-run
+  - test_dryrun_update_idempotent: Tests idempotent behavior when no changes would occur
+  - test_dryrun_close_basic: Verifies close operation dry-run with reason
+  - test_dryrun_close_idempotent: Tests idempotent close with matching reason
+  - test_dryrun_reopen_basic: Tests reopen operation from closed to open
+  - test_dryrun_release_basic: Tests release from in_progress to open/unassigned
+  - test_dryrun_add_dependency_basic: Tests dependency addition dry-run
+  - test_dryrun_add_dependency_cycle_detection: Tests cycle detection in dry-run mode
+  - test_dryrun_remove_dependency_basic: Tests dependency removal dry-run
+  - test_dryrun_remove_dependency_idempotent: Tests removal of non-existent dependency
+  - test_dryrun_json_structure: Validates complete JSON structure and required fields
+  - test_dryrun_no_workspace: Tests error handling without workspace context
+  - test_dryrun_nonexistent_issue: Tests error handling for missing issues
+
+- **Acceptance Criteria Met**:
+  - ✅ All semantic mutations support --dry-run flag (update, close, reopen, release, dep operations)
+  - ✅ Dry-run performs authorization, validation, cycle analysis, derived-status calculation
+  - ✅ No rows, events, revisions, or checkpoint metadata committed during dry-run
+  - ✅ Canonical before/after semantic delta output via stable JSON format
+  - ✅ Observed revision and workspace sequence in output
+  - ✅ Advisory JSON output explains what would happen
+  - ✅ Idempotent operations return semantic_change: false
+  - ✅ Error cases properly handled (not found, cycles, validation errors)
+
+- **Code Quality**:
+  - cargo test --test r022_dryrun: 14/14 tests passed in 5.19s
+  - cargo test: All 296 tests passed (282 existing + 14 new R022 tests)
+  - cargo fmt --check: passed
+  - cargo clippy --quiet: passed (minor warnings for unused public exports are acceptable)
+  - Clean compilation with comprehensive error handling
+  - Proper JSON serialization with serde for stable output format
+  - Safe database operations with read transactions for cycle detection
+  - Integration testing with temporary workspaces and cleanup
+
+- **Feature Status**: R022 now marked as passing in feature ledger with comprehensive evidence
+
 ## 2026-08-09 — R024 explicit recurring-bead materialization implemented and completed
 
 - **Completed**: Implemented R024 explicit recurring-bead materialization with immutable recurrence templates and explicit occurrence creation.

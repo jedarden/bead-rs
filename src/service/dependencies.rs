@@ -3,6 +3,7 @@
 use crate::error::Error;
 use crate::service::conditions::{evaluate_condition, ConditionExpr, IssueContext};
 use crate::store::SqliteStore;
+use rusqlite::Connection;
 
 /// Adds a label to an issue.
 ///
@@ -217,6 +218,19 @@ fn dfs_has_path(
     }
 
     Ok(false)
+}
+
+/// Check if adding a dependency would create a cycle
+///
+/// This is used by dry-run operations to validate potential dependencies before committing them.
+pub fn would_create_cycle(conn: &Connection, blocked: &str, blocker: &str) -> Result<bool, Error> {
+    // Use a read transaction for validation
+    let tx = conn.unchecked_transaction()?;
+    let mut visited = std::collections::HashSet::new();
+    let result = dfs_has_path(&tx, blocker, blocked, &mut visited);
+    // Don't commit the read transaction, just drop it
+    drop(tx);
+    result
 }
 
 /// Gets conditional dependencies for a blocked issue

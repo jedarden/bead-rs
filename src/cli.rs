@@ -451,6 +451,10 @@ pub struct UpdateOptions {
     /// Fencing token for lease validation (advanced usage)
     #[arg(long)]
     pub fencing_token: Option<i64>,
+
+    /// Dry run: show what would happen without making changes
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 /// Options for releasing an issue
@@ -504,6 +508,10 @@ pub struct ReleaseOptions {
     /// Fencing token for lease validation (advanced usage)
     #[arg(long)]
     pub fencing_token: Option<i64>,
+
+    /// Dry run: show what would happen without making changes
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 /// Options for closing an issue
@@ -567,6 +575,10 @@ pub struct CloseOptions {
     /// Fencing token for lease validation (advanced usage)
     #[arg(long)]
     pub fencing_token: Option<i64>,
+
+    /// Dry run: show what would happen without making changes
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 /// Options for reopening an issue
@@ -627,6 +639,10 @@ pub struct ReopenOptions {
     /// Fencing token for lease validation (advanced usage)
     #[arg(long)]
     pub fencing_token: Option<i64>,
+
+    /// Dry run: show what would happen without making changes
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 /// Sync commands
@@ -950,6 +966,9 @@ pub struct DepAddOptions {
     /// Conditional dependency expression as JSON (optional)
     #[arg(long)]
     pub condition: Option<String>,
+    /// Dry run: show what would happen without making changes
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 /// Options for removing a dependency
@@ -962,6 +981,9 @@ pub struct DepRemoveOptions {
     /// Dependency kind (optional, removes all kinds if not specified)
     #[arg(long)]
     pub kind: Option<String>,
+    /// Dry run: show what would happen without making changes
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 /// Options for doctor command

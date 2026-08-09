@@ -11,6 +11,7 @@ pub mod conditions;
 pub mod data;
 pub mod dependencies;
 pub mod doctor;
+pub mod dryrun;
 pub mod external_refs;
 pub mod issues;
 pub mod leases;
@@ -29,6 +30,10 @@ pub use conditions::ConditionExpr;
 pub use data::{get_data, list_data, remove_data, set_data};
 pub use dependencies::{add_dependency, add_label, remove_dependency, remove_label};
 pub use doctor::{run_diagnostics, run_diagnostics_with_scopes, run_repairs, DiagnosticStatus};
+pub use dryrun::{
+    add_dependency_dryrun, close_issue_dryrun, release_issue_dryrun, remove_dependency_dryrun,
+    reopen_issue_dryrun, update_issue_dryrun,
+};
 pub use external_refs::{
     add_external_reference, find_issues_by_reference, list_external_references,
     remove_external_reference,
