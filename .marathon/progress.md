@@ -1,5 +1,101 @@
 # bead-rs Marathon progress log
 
+## 2026-08-09 — R017 conditional dependencies implemented and completed
+
+- **Completed**: Implemented R017 conditional dependencies with complete support for declarative predicates over issue state.
+
+- **Implementation Details**:
+  - Added src/service/conditions.rs with comprehensive conditional dependency expression system
+  - ConditionExpr enum with typed operators: comparison, logical, string, null, and set operators
+  - All comparison operators: equals, not_equals, less_than, greater_than, less_than_or_equal, greater_than_or_equal
+  - String operators: contains, starts_with, ends_with
+  - Null operators: is_null, is_not_null
+  - Set operators: in, not_in
+  - Logical composition: all, any, not
+  - IssueContext structure for evaluating conditions against issue state
+  - Field validation supporting: priority, base_status, issue_type, assignee, manual_blocked, labels, data.*
+  - JSON serialization/deserialization with serde tag-based variant representation
+  - Database migration 7 adding condition column to dependencies table
+  - CLI integration via --condition flag with JSON validation
+
+- **Model Changes** (src/service/conditions.rs):
+  - ConditionExpr: Comprehensive enum with #[serde(tag = "type", content = "value")] for JSON serialization
+  - IssueContext: Issue state context with id, priority, base_status, issue_type, assignee, manual_blocked, labels, data_fields
+  - Supported fields: core fields (priority, base_status, issue_type, assignee, manual_blocked), labels, and schema-bound data (data.*)
+  - Field validation with is_supported_field() function
+  - Condition evaluation with type-safe operators
+
+- **Service Layer** (src/service/conditions.rs):
+  - ConditionExpr::from_json(): Parse condition from JSON string with validation
+  - ConditionExpr::to_json(): Serialize condition to JSON string
+  - ConditionExpr::validate_fields(): Validate field names against supported fields
+  - evaluate_condition(): Main evaluation function matching all operator types
+  - get_field_value(): Extract field values from IssueContext
+  - evaluate_comparison(): Generic comparison evaluation
+  - evaluate_numeric_comparison(): Numeric comparison with type checking
+  - evaluate_string_op(): String operation evaluation
+  - IssueContext::from_store(): Build context by querying SQLite store
+
+- **Service Layer** (src/service/dependencies.rs):
+  - Updated add_dependency() signature: added Option<&ConditionExpr> parameter
+  - Conditional dependency storage: serializes condition to JSON for database storage
+  - Cycle detection treats conditional edges as potentially active (conservative approach)
+  - get_conditional_dependencies(): Query dependencies with conditions
+  - is_conditional_dependency_active(): Evaluate condition for blocker issue
+  - has_active_conditional_blockers(): Check if blocked issue has active conditional blockers
+
+- **CLI Integration** (src/cli.rs, src/main.rs):
+  - Added --condition flag to DepAddOptions for conditional dependency specification
+  - JSON parsing and validation in cmd_dep_add()
+  - Enhanced success messages for conditional dependencies
+  - Clear error messages for invalid JSON syntax
+
+- **Database Schema Changes** (src/store/migrations.rs):
+  - Migration 7: ALTER TABLE dependencies ADD COLUMN condition TEXT
+  - Updated CURRENT_VERSION from 6 to 7
+  - Backward compatible: existing dependencies have NULL condition (unconditional)
+
+- **Test Coverage** (9 comprehensive integration tests):
+  - test_condition_serialization: Verifies JSON serialization/deserialization roundtrip
+  - test_validate_supported_fields: Tests field validation against supported field list
+  - test_evaluate_equals_condition: Tests equality comparison operator
+  - test_evaluate_string_condition: Tests string equality and starts_with operators
+  - test_evaluate_logical_operators: Tests all, any, not logical composition
+  - test_evaluate_labels_condition: Tests labels field with contains operator
+  - test_evaluate_data_field_condition: Tests schema-bound data field access
+  - test_evaluate_in_set_condition: Tests in/not_in set operators
+  - test_evaluate_numeric_comparison: Tests numeric comparison operators
+
+- **Acceptance Criteria Met**:
+  - ✅ Declarative predicates over stored fields (priority, base_status, issue_type, assignee, manual_blocked)
+  - ✅ Label-based conditions using contains operator
+  - ✅ Schema-bound data fields via data.* namespace
+  - ✅ All comparison operators with type-safe evaluation
+  - ✅ String operators: contains, starts_with, ends_with
+  - ✅ Null operators: is_null, is_not_null
+  - ✅ Set operators: in, not_in with array support
+  - ✅ Logical composition: all, any, not for complex predicates
+  - ✅ JSON serialization with serde tag-based variants
+  - ✅ CLI integration via --condition flag
+  - ✅ Cycle detection treats conditional edges as potentially active
+  - ✅ Field validation against supported field list
+  - ✅ Type-safe numeric comparison with error handling
+  - ✅ Database migration with backward compatibility
+
+- **Code Quality**:
+  - cargo test: All 85 unit tests passed (including 9 new conditional dependency tests)
+  - cargo test (integration): All integration tests passed
+  - cargo fmt --check: passed
+  - cargo clippy --all-targets -- -D warnings: passed
+  - Clean compilation with comprehensive conditional dependency system
+  - Type-safe operators with proper error handling
+  - JSON validation with helpful error messages
+  - Conservative cycle detection approach (conditional edges potentially active)
+  - Proper SQLite integration with parameterized queries
+  - Backward compatible with existing unconditional dependencies
+
+- **Feature Status**: R017 implementation complete and ready for feature ledger update
+
 ## 2026-08-09 — R016 scoped doctor and diagnostic mode implemented and completed
 
 - **Completed**: Implemented R016 scoped doctor and diagnostic mode with comprehensive scope-based diagnostics.
