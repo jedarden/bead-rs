@@ -2587,9 +2587,7 @@ fn validate_import(staging: &mut ImportStaging, _dry_run: bool) -> Result<()> {
         }
 
         // Self-edges are invalid
-        if blocked == blocker
-            && diagnostics.validation_failures.len() < MAX_DIAGNOSTIC_FAILURES
-        {
+        if blocked == blocker && diagnostics.validation_failures.len() < MAX_DIAGNOSTIC_FAILURES {
             diagnostics.validation_failures.push(ValidationFailure {
                 line_number: 0,
                 json_pointer: Some(format!("/dependencies/{}", idx)),

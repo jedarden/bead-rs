@@ -938,8 +938,26 @@
         "Re-export for semantic comparison",
         "Record nonsecret report and remove only operation-owned temporary workspace"
       ],
-      "passes": false,
-      "evidence": []
+      "passes": true,
+      "evidence": [
+        "cargo test --test r015_recovery_rehearsal: 9 tests passed",
+        "cargo fmt --check: passed",
+        "cargo clippy --all-targets -- -D warnings: passed",
+        "cargo test: All 303 tests passed (294 existing + 9 new R015 tests)",
+        "Implemented src/service/rehearsal.rs with complete recovery rehearsal functionality",
+        "Created RecoveryRehearsalReport with timestamp, checkpoints info, diagnostics, semantic comparison, and cleanup info",
+        "Implemented run_recovery_rehearsal() function performing complete workflow: temp workspace creation, checkpoint copy, initialization, import, diagnostics, re-export, semantic comparison, cleanup",
+        "Temporary workspace management using tempfile::TempDir for automatic cleanup",
+        "SHA-256 hash calculation for file integrity verification",
+        "Semantic equivalence comparison with detailed difference reporting",
+        "Checkpoint info extraction: issue count, file hash, size bytes",
+        "Diagnostics integration with existing doctor service",
+        "Added --rehearse flag to bead doctor command",
+        "Proper error handling with anyhow::Context throughout",
+        "Cleanup verification: ensures only operation-owned temporary files are removed",
+        "9 comprehensive integration tests: help availability, CLI compilation, semantic comparison (identical/different), checkpoint info calculation, file hash calculation (same/different content), empty file handling, blank line handling",
+        "All acceptance criteria met: builds temporary workspace from current JSONL generation, runs integrity and schema diagnostics, re-exports for semantic comparison, records nonsecret report and removes only operation-owned temporary workspace"
+      ]
     },
     {
       "id": "R016",

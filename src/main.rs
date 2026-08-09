@@ -10,6 +10,7 @@ use crate::cli::{Cli, Command};
 use crate::error::{Error, Result};
 use crate::service::checkpoint::CheckpointMode;
 use crate::store::Store;
+use anyhow::Context;
 use clap::Parser;
 use std::process::ExitCode;
 
@@ -947,6 +948,27 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
     // Discover workspace
     let _config = store::WorkspaceConfig::discover()?
         .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    if opts.rehearse {
+        // Run disposable recovery rehearsal
+        eprintln!("Running disposable recovery rehearsal (R015)...");
+        eprintln!(
+            "This will create a temporary workspace, run diagnostics, and verify recovery.\n"
+        );
+
+        let report = service::run_recovery_rehearsal().context("Recovery rehearsal failed")?;
+
+        // Determine overall success
+        let success = report.diagnostics.overall_status != "FAILED"
+            && report.semantic_comparison.overall_equivalence;
+
+        if !success {
+            return Err(Error::integrity("Recovery rehearsal found issues"));
+        }
+
+        eprintln!("\n✅ Recovery rehearsal completed successfully!");
+        return Ok(());
+    }
 
     if opts.repair {
         // Run repairs

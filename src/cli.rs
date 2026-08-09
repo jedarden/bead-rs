@@ -961,11 +961,13 @@ pub struct DepRemoveOptions {
 
 Doctor validates workspace configuration, database integrity, checkpoint
 state, and filesystem without modifying data. With --repair, performs
-safe automatic repairs for diagnosed issues.
+safe automatic repairs for diagnosed issues. With --rehearse, performs
+a disposable recovery rehearsal to verify disaster recovery procedures.
 
 EXAMPLES:
   bead doctor                           # Read-only diagnostics
   bead doctor --repair                  # Diagnose and attempt repairs
+  bead doctor --rehearse                # Test disaster recovery with temporary workspace
 
 CHECKS PERFORMED:
   - Workspace configuration and permissions
@@ -981,6 +983,14 @@ REPAIRS PERFORMED (with --repair):
   - Rebuild checkpoint views from authoritative database state
   - Create missing safe indexes
   - Repair checkpoint state through atomic flush
+
+RECOVERY REHEARSAL (with --rehearse):
+  - Create temporary workspace from current checkpoint
+  - Run full diagnostics on temporary workspace
+  - Re-export checkpoint from temporary workspace
+  - Compare semantic equivalence between original and re-exported content
+  - Generate comprehensive report with comparison results
+  - Clean up only operation-owned temporary files
 
 DOCTOR OUTPUT:
   OK  - Check passed
@@ -1000,6 +1010,10 @@ pub struct DoctorOptions {
     /// Attempt automatic repairs
     #[arg(long)]
     pub repair: bool,
+
+    /// Run disposable recovery rehearsal: create temp workspace, run diagnostics, re-export, compare semantic equivalence
+    #[arg(long)]
+    pub rehearse: bool,
 }
 
 /// Options for capabilities command

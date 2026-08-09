@@ -14,6 +14,7 @@ pub mod issues;
 pub mod leases;
 pub mod lifecycle;
 pub mod query;
+pub mod rehearsal;
 
 pub use capabilities::generate_capabilities;
 pub use changes::{
@@ -35,6 +36,7 @@ pub use lifecycle::{close_issue, release_issue, reopen_issue, update_issue};
 pub use query::{
     delete_view, execute_query, get_view, list_views, parse_query, project_issue, save_view, Query,
 };
+pub use rehearsal::run_recovery_rehearsal;
 
 // Placeholder modules for future implementation
 // pub mod migrate;
