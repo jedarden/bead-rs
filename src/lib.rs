@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod cli;
+pub mod docs;
 pub mod error;
 pub mod model;
 pub mod service;

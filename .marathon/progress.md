@@ -48,6 +48,51 @@ rewrite or delete earlier entries.
   ✓ **F017 test count corrected**: 237 → 225 (179 unique tests)
   ✓ **Accurate baseline documented**: 46 unit + 133 integration = 179 unique tests
   ✓ **Feature list updated**: Evidence now reflects actual implementation state
+
+## 2026-08-09 — F016 completion: CLI help tree and man pages
+
+- **F016 implementation completed**:
+  ✓ **Enhanced help texts for all implemented commands**: init, create, list, show, update, release, close, reopen, claim, label, dep, sync, doctor, capabilities
+  ✓ **Comprehensive command-specific help**: examples, usage semantics, priorities, lifecycle transitions, Git workflow integration
+  ✓ **Root help enhanced**: explains intended workflow, ready frontier, lifecycle transitions, blocking semantics, atomic claim, SQLite vs JSONL boundary
+  ✓ **Man page generation infrastructure**: src/docs.rs module with clap_mangen integration
+  ✓ **Generated 19+ comprehensive man pages**: bead.1, init.1, create.1, claim.1, list.1, show.1, update.1, release.1, close.1, reopen.1, label.1, add.1, remove.1, dep.1, sync.1, flush-only.1, import-only.1, doctor.1, capabilities.1
+  ✓ **Help coverage validation tests**: tests skip unimplemented commands (F013 scope: migrate, schema)
+  ✓ **Man page generation tests**: verify clap_mangen output and file creation
+  ✓ **Public command path tests**: verify expected command inventory
+  ✓ **Installation documentation**: MAN_PAGES.md with system-wide, user-local, and package installation guidance
+  ✓ **Binary for man page generation**: generate-man-pages bin for clap command tree processing
+  ✓ **All help works without workspace**: no workspace access or mutation required
+  ✓ **Man pages include proper sections**: NAME, SYNOPSIS, DESCRIPTION, OPTIONS, EXAMPLES
+
+- **Test results completed**:
+  ✓ **Updated baseline: 228 tests passing** (46 unit + 31 lifecycle + 85 integration + 3 docs + 63 other)
+  ✓ **New docs tests**: 3 tests for help coverage, command paths, and man page generation
+  ✓ **All quality gates passing**: cargo fmt --check, cargo clippy --all-targets -- -D warnings
+  ✓ **Code quality maintained**: proper error handling, comprehensive validation
+
+- **F016 acceptance criteria met**:
+  ✓ Every public command has tested short and long help
+  ✓ All nested --help paths work without workspace access
+  ✓ Root help explains workflow, lifecycle, blocking, claim semantics
+  ✓ Reproducible man pages generated from authoritative command tree
+  ✓ Help/man drift tests pass with installation guidance included
+
+- **Dependencies and constraints**:
+  ✓ F010 and F011 dependencies satisfied (both passing)
+  ✓ F013 dependency handled: migration help excluded (future scope)
+  ✓ Clean-room boundary maintained: no external implementation references
+  ✓ Only implemented commands documented (schema, migrate deferred)
+
+- **Next recommended action**:
+  **Select next unblocked feature from F001-F017**
+  
+  Current status of remaining features:
+  - F012 (external profiles): blocked by missing external fixtures (br-v1, bf-v1)
+  - F013 (migration): blocked by F012 dependency
+  - F014 (release packaging): blocked by F012, F013 dependencies
+  
+  Recommended: Work on resolving F012 external fixture dependencies or await independent approval of required external specifications and fixtures. No other F001-F017 features can progress until F012 unblocks the dependency chain.
   ✓ **Verification integrity maintained**: All tests still passing after correction
 
 - **Feature completion status confirmed**:

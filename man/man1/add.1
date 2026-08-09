@@ -1,0 +1,55 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH add 1  "add " 
+.SH NAME
+add \- Add a dependency edge
+.SH SYNOPSIS
+\fBadd\fR [\fB\-\-kind\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIBLOCKED\fR> <\fIBLOCKER\fR> 
+.SH DESCRIPTION
+Add a dependency relationship between two issues.
+.PP
+Creates a directional dependency edge from blocked issue to blocker issue.
+The \*(Aqblocks\*(Aq kind affects readiness; \*(Aqrelates_to\*(Aq does not affect readiness
+but allows tracking related work.
+.PP
+EXAMPLES:
+  bead dep add BLOCKED BLOCKER                       # Add blocks dependency
+  bead dep add task\-1 task\-2 \-\-kind blocks            # Explicit blocks
+  bead dep add feature\-a bug\-fix \-\-kind relates_to     # Non\-blocking relationship
+.PP
+DEPENDENCY KINDS:
+  \- blocks: BLOCKED is blocked until BLOCKER is closed (affects readiness)
+  \- relates_to: Related issues without blocking semantics (cycles allowed)
+.PP
+CYCLE DETECTION:
+  \*(Aqblocks\*(Aq dependencies cannot create cycles.
+  Adding an edge that creates a directed cycle will fail with exit code 4.
+  \*(Aqrelates_to\*(Aq edges can form cycles (no restriction).
+.PP
+READINESS IMPACT:
+  Only \*(Aqblocks\*(Aq dependencies affect ready frontier:
+  \- Issue is ready when: open, unassigned, not manually blocked, no unfinished blockers
+  \- Blocker is unfinished when: not in closed state
+  \- Finishing a blocker may expose dependent issues to ready frontier
+.PP
+IDEMPOTENCY:
+  Adding an existing dependency succeeds without error.
+  Self\-edges (blocked == blocker) are rejected (exit code 4).
+.PP
+ORIENTATION:
+  Syntax is: bead dep add <BLOCKED> <BLOCKER>
+  BLOCKED depends on BLOCKER completing first
+  BLOCKER must finish before BLOCKED can be ready
+.SH OPTIONS
+.TP
+\fB\-\-kind\fR \fI<KIND>\fR [default: blocks]
+Dependency kind (default: blocks)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIBLOCKED\fR>
+Blocked issue ID
+.TP
+<\fIBLOCKER\fR>
+Blocker issue ID

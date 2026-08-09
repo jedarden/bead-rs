@@ -1,0 +1,28 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH update 1  "update " 
+.SH NAME
+update \- Update an issue
+.SH SYNOPSIS
+\fBupdate\fR [\fB\-\-status\fR] [\fB\-\-assignee\fR] [\fB\-\-clear\-assignee\fR] [\fB\-\-notes\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIID\fR> 
+.SH DESCRIPTION
+Update an issue
+.SH OPTIONS
+.TP
+\fB\-\-status\fR \fI<STATUS>\fR
+New status
+.TP
+\fB\-\-assignee\fR \fI<ASSIGNEE>\fR
+New assignee
+.TP
+\fB\-\-clear\-assignee\fR
+Clear assignee (only for open assigned issues)
+.TP
+\fB\-\-notes\fR \fI<NOTES>\fR
+New notes
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+<\fIID\fR>
+Issue ID

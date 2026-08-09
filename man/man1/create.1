@@ -1,0 +1,31 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH create 1  "create " 
+.SH NAME
+create \- Create a new issue
+.SH SYNOPSIS
+\fBcreate\fR <\fB\-\-title\fR> [\fB\-\-description\fR] [\fB\-\-priority\fR] [\fB\-\-issue\-type\fR] [\fB\-\-assignee\fR] [\fB\-\-label\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Create a new issue
+.SH OPTIONS
+.TP
+\fB\-\-title\fR \fI<TITLE>\fR
+Issue title (required)
+.TP
+\fB\-\-description\fR \fI<DESCRIPTION>\fR
+Issue description (optional, defaults to empty)
+.TP
+\fB\-\-priority\fR \fI<PRIORITY>\fR [default: 2]
+Issue priority (0\-4, default: 2)
+.TP
+\fB\-\-issue\-type\fR \fI<ISSUE_TYPE>\fR
+Issue type (default: task)
+.TP
+\fB\-\-assignee\fR \fI<ASSIGNEE>\fR
+Assignee (optional)
+.TP
+\fB\-\-label\fR \fI<LABEL>\fR
+Labels to add (can be specified multiple times)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help

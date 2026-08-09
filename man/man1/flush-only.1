@@ -1,0 +1,56 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH flush-only 1  "flush-only " 
+.SH NAME
+flush\-only \- Flush checkpoint to JSONL file
+.SH SYNOPSIS
+\fBflush\-only\fR [\fB\-\-profile\fR] [\fB\-\-output\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Atomically publish checkpoint from current database state.
+.PP
+Captures one committed snapshot and writes deterministically ordered JSONL.
+Pre\-F017: writes issue\-only checkpoint to .beads/issues.jsonl.
+Post\-F017: writes forensic checkpoint set with events and history.
+.PP
+The operation is crash\-safe: writes to temporary file, verifies, then
+atomically renames. Updates checkpoint state only after successful flush.
+.PP
+EXAMPLES:
+  bead sync \-\-flush\-only                                    # Flush to default location
+  bead sync \-\-flush\-only \-\-output /path/to/backup.jsonl     # Export to specific path
+  bead sync \-\-flush\-only \-\-profile native\-v1                # Explicit profile
+.PP
+CHECKPOINT FRESHNESS:
+  The checkpoint represents the database state at flush time, not current time.
+  Any commits after flush make the checkpoint stale.
+  Use \*(Aqbead sync \-\-status \-\-format json\*(Aq to check freshness.
+.PP
+OUTPUT:
+  Without \-\-output: writes to .beads/issues.jsonl (pre\-F017) or forensic checkpoint
+  With \-\-output: exports to specified path (must not exist, must be outside .beads/)
+.PP
+PROFILES:
+  \- native\-v1: Full native checkpoint (default before F017)
+  \- needle\-v1: Issue\-only compatibility checkpoint
+  \- Other profiles: External compatibility formats (post\-F012)
+.PP
+ATOMICITY:
+  \- Read transaction captures snapshot
+  \- Temporary file written and verified
+  \- Atomic rename replaces old checkpoint
+  \- Database state updated in same transaction
+.PP
+Git Integration:
+  Checkpoint files are designed to be Git\-tracked.
+  Run \*(Aqbead sync \-\-flush\-only\*(Aq before committing the repository.
+  bead\-rs never runs Git commands automatically.
+.SH OPTIONS
+.TP
+\fB\-\-profile\fR \fI<PROFILE>\fR [default: native\-v1]
+Profile for export (default: native\-v1)
+.TP
+\fB\-\-output\fR \fI<OUTPUT>\fR
+Output path (default: .beads/issues.jsonl)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

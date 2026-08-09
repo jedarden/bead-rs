@@ -1,0 +1,91 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH bead 1  "bead 0.1.0" 
+.SH NAME
+bead \- Clean\-room task coordination for agent fleets
+.SH SYNOPSIS
+\fBbead\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+bead\-rs is an independent Rust task\-coordination system.
+.PP
+The intended workflow is:
+  init workspace \-> create/import beads \-> add blocking relationships
+  \-> inspect ready work \-> claim \-> update/release \-> close \-> flush JSONL backup
+.PP
+The ready frontier can be inspected with `bead list \-\-ready \-\-json \-\-limit N`,
+which uses claim order but does not reserve the displayed beads. Use `bead claim`
+to atomically assign work.
+.PP
+SQLite is the authoritative live state between flushes. The JSONL checkpoint is
+the portable backup and should be flushed with `bead sync \-\-flush\-only` before
+committing the repository.
+.PP
+Lifecycle transitions:
+  \- open beads may be ready if unassigned and not manually blocked
+  \- unfinished `blocks` edges remove beads from the ready frontier
+  \- claim atomically assigns one ready bead and moves it to in_progress
+  \- release returns claimed work to open/unassigned
+  \- close requires a reason and may expose dependents
+  \- reopen restores a closed bead to open
+.PP
+Use `bead \-\-help` to see all available commands.
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.SH SUBCOMMANDS
+.TP
+bead\-init(1)
+Initialize a new workspace
+.TP
+bead\-create(1)
+Create a new issue
+.TP
+bead\-list(1)
+List issues
+.TP
+bead\-show(1)
+Show a single issue
+.TP
+bead\-update(1)
+Update an issue
+.TP
+bead\-release(1)
+Release a claimed issue
+.TP
+bead\-close(1)
+Close an issue
+.TP
+bead\-reopen(1)
+Reopen a closed issue
+.TP
+bead\-claim(1)
+Claim an issue from the ready frontier
+.TP
+bead\-label(1)
+Manage labels
+.TP
+bead\-dep(1)
+Manage dependencies
+.TP
+bead\-sync(1)
+Synchronize checkpoint operations
+.TP
+bead\-doctor(1)
+Diagnose workspace integrity and optionally perform repairs
+.TP
+bead\-capabilities(1)
+Show capabilities and supported features
+.TP
+bead\-unimplemented(1)
+Not yet implemented
+.TP
+bead\-help(1)
+Print this message or the help of the given subcommand(s)
+.SH VERSION
+v0.1.0
+.SH AUTHORS
+Jed Arden <github@jedarden.com>

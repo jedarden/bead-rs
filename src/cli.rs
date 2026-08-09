@@ -98,6 +98,22 @@ pub enum Command {
 
 /// Options for workspace initialization
 #[derive(Parser, Debug)]
+#[command(
+    about = "Initialize a new workspace",
+    long_about = "Initialize a new bead workspace in the current directory.
+
+Creates a .beads directory with SQLite database and configuration.
+Repeated initialization with the same prefix is safe and deterministic.
+The workspace prefix is used as the default prefix for generated bead IDs.
+
+EXAMPLES:
+  bead init                          # Use default prefix 'bead'
+  bead init --prefix myteam          # Use custom prefix 'myteam'
+  bead init --prefix taskforce       # Use custom prefix 'taskforce'
+
+The workspace must be initialized before creating or managing issues.
+Once initialized, all bead commands will operate on this workspace."
+)]
 pub struct InitOptions {
     /// Custom prefix for bead IDs (default: bead)
     #[arg(long, default_value = "bead")]
@@ -106,6 +122,31 @@ pub struct InitOptions {
 
 /// Options for creating a new issue
 #[derive(Parser, Debug)]
+#[command(
+    about = "Create a new issue",
+    long_about = "Create a new issue in the workspace.
+
+Creates a new issue with the specified title and optional metadata.
+The issue ID is automatically generated and printed on success.
+Prints only the issue ID followed by a newline on success.
+
+PRIORITIES:
+  0 = urgent (immediate incident, safety, or release-blocking)
+  1 = critical (essential work preceding ordinary delivery)
+  2 = high (important planned work, default)
+  3 = normal (ordinary work with no elevated urgency)
+  4 = aspirational/backlog (speculative or low-urgency work)
+
+EXAMPLES:
+  bead create --title \"Fix authentication bug\" --priority 0
+  bead create --title \"Update documentation\" --priority 2 --label docs
+  bead create --title \"Add search feature\" --assignee alice --label feature --label backend
+  bead create --title \"Code review PR-123\" --description \"Review changes for user auth\"
+
+ISSUE TYPES:
+  Common types include: task, bug, feature, improvement, documentation
+  Custom types can be specified as needed (no validation is performed)."
+)]
 pub struct CreateOptions {
     /// Issue title (required)
     #[arg(long)]
@@ -134,6 +175,38 @@ pub struct CreateOptions {
 
 /// Options for listing issues
 #[derive(Parser, Debug)]
+#[command(
+    about = "List issues",
+    long_about = "List issues with optional filtering and comment projection.
+
+Supports filtering by status, assignee, and ready frontier. Uses claim
+ordering (priority ASC, created_at ASC, id ASC) for deterministic results.
+Ready frontier uses the same ordering as 'bead claim' but is read-only and
+does not reserve work.
+
+EXAMPLES:
+  bead list --json --limit 10                      # First 10 issues as JSON
+  bead list --status open --assignee alice        # Open issues assigned to alice
+  bead list --ready --limit 5                      # Next 5 ready candidates
+  bead list --comments unresolved --json --limit 20  # Issues with unresolved comments
+
+FILTERS:
+  --status VALUE    Filter by base status: open, in_progress, deferred, closed
+  --assignee NAME   Filter by assignee (exact match)
+  --ready           Show only ready frontier issues (open, unassigned, not blocked)
+  --limit N         Maximum results (0-999999, default: 100)
+
+COMMENT PROJECTION:
+  --comments none         Show only counts and resolution metadata (default)
+  --comments unresolved   Include bodies for unresolved comments only
+  --comments all          Include all comment bodies in canonical order
+
+OUTPUT:
+  Without --json: human-readable table format
+  With --json: one compact JSON object per line (compact JSONL format)
+  JSON output includes: id, title, priority, status, assignee, dependencies,
+  created_at, updated_at, and labels based on comment projection."
+)]
 pub struct ListOptions {
     /// Output in JSON format
     #[arg(long)]
@@ -162,6 +235,41 @@ pub struct ListOptions {
 
 /// Options for showing a single issue
 #[derive(Parser, Debug)]
+#[command(
+    about = "Show a single issue",
+    long_about = "Display detailed information about a single issue.
+
+Shows complete issue details including dependencies, labels, and optionally
+comments. Output format depends on --json flag.
+
+EXAMPLES:
+  bead show bead-123abc456789def                    # Human-readable output
+  bead show ID --json                                # JSON output for NEEDLE
+  bead show ID --comments unresolved                 # With unresolved comments
+  bead show ID --comments all --json                 # Full issue with all comments
+
+OUTPUT FORMAT:
+  Without --json: Human-readable detailed view
+  With --json: One-element JSON array for NEEDLE v1 compatibility
+
+COMMENT PROJECTION:
+  --comments none         Show only counts and resolution metadata (default)
+  --comments unresolved   Include bodies for unresolved comments only
+  --comments all          Include all comment bodies in canonical order
+
+NEEDLE COMPATIBILITY:
+  JSON output format is a one-element array containing the issue object.
+  This matches NEEDLE v1 expectations for subprocess output.
+
+ISSUE DETAILS INCLUDE:
+  - Basic fields: id, title, description, priority, status
+  - Assignment: assignee (if any)
+  - Timestamps: created_at, updated_at, closed_at (if closed)
+  - Dependencies: blocked_by (blocking issues), blocking (issues this blocks)
+  - Labels: all assigned labels
+  - Comments: based on --comments projection
+  - Metadata: issue_type, manual_blocked flag, close_reason (if closed)"
+)]
 pub struct ShowOptions {
     /// Issue ID
     pub id: String,
@@ -177,6 +285,37 @@ pub struct ShowOptions {
 
 /// Options for claiming an issue
 #[derive(Parser, Debug)]
+#[command(
+    about = "Claim an issue from the ready frontier",
+    long_about = "Atomically claim and assign one issue from the ready frontier.
+
+Claim performs server-side selection from ready issues (open, unassigned,
+not manually blocked, no unfinished blockers) using fifo-v1 policy:
+priority ASC, created_at ASC, id ASC.
+
+Selection and assignment occur in one atomic transaction. With no eligible
+issues, returns exit code 0 and an empty result ({} in JSON mode).
+
+Twenty competing claimants must never receive the same successful issue ID.
+
+EXAMPLES:
+  bead claim --assignee alice --json          # Claim with JSON output
+  bead claim --assignee \"Team Backend\"       # Claim with team assignee
+  bead claim --assignee worker-1              # Claim for automated worker
+
+READY FRONTIER:
+  Issues are ready when: base status is open, no assignee, not manually blocked,
+  and no unfinished 'blocks' dependency edges exist.
+
+  Use 'bead list --ready --json --limit N' to inspect ready candidates without
+  reserving them. List uses the same ordering as claim but is read-only.
+
+CLAIM SEMANTICS:
+  - Atomic: selection, assignment, and audit record are one transaction
+  - Deterministic: same state always produces same result (fifo-v1)
+  - Safe: concurrent claimants never receive duplicate successful IDs
+  - Empty queue: returns {} with exit 0, not an error"
+)]
 pub struct ClaimOptions {
     /// Assignee name (required)
     #[arg(long)]
@@ -189,6 +328,41 @@ pub struct ClaimOptions {
 
 /// Options for updating an issue
 #[derive(Parser, Debug)]
+#[command(
+    about = "Update an issue",
+    long_about = "Update issue fields atomically.
+
+Updates one or more issue fields in a single atomic transaction.
+All validations and mutations occur together; any failure leaves the
+issue unchanged. Changing status to 'closed' requires the 'close' command
+instead. Use 'reopen' to transition from closed to open.
+
+EXAMPLES:
+  bead update ID --status in_progress                # Start working on an issue
+  bead update ID --assignee alice                    # Assign to alice
+  bead update ID --notes \"Investigated root cause\"   # Add investigation notes
+  bead update ID --clear-assignee                    # Clear assignment (open only)
+
+STATUS TRANSITIONS:
+  Valid transitions depend on the current base status:
+  - open can transition to: in_progress, deferred
+  - in_progress can transition to: open, deferred, closed (via 'close' command)
+  - deferred can transition to: open, closed (via 'close' command)
+  - closed can only transition to: open (via 'reopen' command)
+
+ASSIGNMENT:
+  --assignee and --clear-assignee are mutually exclusive.
+  --clear-assignee only works for open assigned issues.
+  For in_progress issues, use 'bead release' to return to open/unassigned.
+
+BLOCKED STATUS:
+  Setting --status blocked sets manual_blocked=true and retains base status.
+  Setting --status open clears manual blocking and sets base status to open.
+  Closed issues cannot use --status open (use 'reopen' instead).
+
+All updates are atomic. Invalid transitions or conflicts exit with code 4
+without changing any fields or timestamps."
+)]
 pub struct UpdateOptions {
     /// Issue ID
     pub id: String,
@@ -212,6 +386,37 @@ pub struct UpdateOptions {
 
 /// Options for releasing an issue
 #[derive(Parser, Debug)]
+#[command(
+    about = "Release a claimed issue",
+    long_about = "Atomically release a claimed issue back to open/unassigned status.
+
+The release command returns an in_progress issue to open and unassigned state.
+This is the proper way to stop working on an issue without closing it.
+For open assigned issues, use 'update --clear-assignee' instead.
+
+EXAMPLES:
+  bead release bead-123abc456789def    # Release claimed issue
+  bead release ID                       # Release by issue ID
+
+SEMANTICS:
+  - in_progress → open, unassigned (semantic release)
+  - open/unassigned → no-op, idempotent
+  - Other states → conflict (exit 4)
+
+Release is atomic with proper audit event recording. The prior assignee
+and resulting state are recorded in the 'released' audit event.
+The issue's updated_at timestamp advances on semantic release.
+
+Use release when:
+  - You need to return a claimed issue to the ready frontier
+  - Work was started but won't continue (not completed)
+  - You want another agent/worker to be able to claim the issue
+
+Use close when:
+  - The work is complete and verified
+  - The issue should be removed from the active frontier
+  - Dependent issues can now become unblocked"
+)]
 pub struct ReleaseOptions {
     /// Issue ID
     pub id: String,
@@ -219,6 +424,42 @@ pub struct ReleaseOptions {
 
 /// Options for closing an issue
 #[derive(Parser, Debug)]
+#[command(
+    about = "Close an issue",
+    long_about = "Close an issue with a required reason.
+
+Close transitions an issue to closed status and records the close reason.
+The reason must be non-empty and is preserved for audit and debugging.
+Closing clears manual blocking and may expose dependent issues.
+
+EXAMPLES:
+  bead close bead-123abc456789def --reason \"Completed successfully\"
+  bead close ID --reason \"Fixed authentication bug\"
+  bead close ID --reason \"Duplicate of ID-456\"
+
+SEMANTICS:
+  - All non-closed states → closed (semantic close)
+  - closed with matching reason → no-op, idempotent
+  - closed with different reason → conflict (exit 4)
+
+REQUIREMENTS:
+  --reason TEXT must be non-empty after trimming whitespace
+
+EFFECTS:
+  - Sets base_status to closed
+  - Clears manual_blocked flag
+  - Sets closed_at to current time
+  - Stores close_reason
+  - Advances updated_at
+  - Appends 'closed' audit event
+
+IDEMPOTENCY:
+  Repeating the same close command with the same reason is idempotent
+  and does not change timestamps or append duplicate events.
+  Changing the reason is a conflict (use update with new reason if needed).
+
+Dependent issues may become ready when their last blocker is closed."
+)]
 pub struct CloseOptions {
     /// Issue ID
     pub id: String,
@@ -230,6 +471,43 @@ pub struct CloseOptions {
 
 /// Options for reopening an issue
 #[derive(Parser, Debug)]
+#[command(
+    about = "Reopen a closed issue",
+    long_about = "Restore a closed issue to open lifecycle status.
+
+Reopen transitions a closed issue back to open status while preserving
+its assignment and other metadata. This is the only valid way to cross
+from closed to open status (generic update cannot do this).
+
+EXAMPLES:
+  bead reopen bead-123abc456789def     # Reopen closed issue
+  bead reopen ID                        # Reopen by issue ID
+
+SEMANTICS:
+  - closed → open (semantic reopen)
+  - open → no-op, idempotent
+  - in_progress/deferred → conflict (exit 4)
+
+EFFECTS:
+  - Sets base_status to open
+  - Clears closed_at and close_reason
+  - Clears manual_blocked flag
+  - Preserves existing assignee
+  - Advances updated_at
+  - Appends 'reopened' audit event
+
+IDEMPOTENCY:
+  Repeating reopen on an open issue succeeds without changing timestamps
+  or appending duplicate events.
+
+USE CASES:
+  - Issue was closed prematurely and needs more work
+  - New information suggests the issue should be revisited
+  - Closed issue was determined to not be actually complete
+
+For unassigned closed issues, reopen makes them ready frontier candidates
+(if they have no unfinished blockers)."
+)]
 pub struct ReopenOptions {
     /// Issue ID
     pub id: String,
@@ -239,11 +517,94 @@ pub struct ReopenOptions {
 #[derive(Subcommand, Debug)]
 pub enum SyncCommand {
     /// Flush checkpoint to JSONL file
-    #[command(name = "flush-only")]
+    #[command(
+        name = "flush-only",
+        about = "Flush checkpoint to JSONL file",
+        long_about = "Atomically publish checkpoint from current database state.
+
+Captures one committed snapshot and writes deterministically ordered JSONL.
+Pre-F017: writes issue-only checkpoint to .beads/issues.jsonl.
+Post-F017: writes forensic checkpoint set with events and history.
+
+The operation is crash-safe: writes to temporary file, verifies, then
+atomically renames. Updates checkpoint state only after successful flush.
+
+EXAMPLES:
+  bead sync --flush-only                                    # Flush to default location
+  bead sync --flush-only --output /path/to/backup.jsonl     # Export to specific path
+  bead sync --flush-only --profile native-v1                # Explicit profile
+
+CHECKPOINT FRESHNESS:
+  The checkpoint represents the database state at flush time, not current time.
+  Any commits after flush make the checkpoint stale.
+  Use 'bead sync --status --format json' to check freshness.
+
+OUTPUT:
+  Without --output: writes to .beads/issues.jsonl (pre-F017) or forensic checkpoint
+  With --output: exports to specified path (must not exist, must be outside .beads/)
+
+PROFILES:
+  - native-v1: Full native checkpoint (default before F017)
+  - needle-v1: Issue-only compatibility checkpoint
+  - Other profiles: External compatibility formats (post-F012)
+
+ATOMICITY:
+  - Read transaction captures snapshot
+  - Temporary file written and verified
+  - Atomic rename replaces old checkpoint
+  - Database state updated in same transaction
+
+Git Integration:
+  Checkpoint files are designed to be Git-tracked.
+  Run 'bead sync --flush-only' before committing the repository.
+  bead-rs never runs Git commands automatically."
+    )]
     FlushOnly(SyncFlushOptions),
 
     /// Import checkpoint from JSONL file
-    #[command(name = "import-only")]
+    #[command(
+        name = "import-only",
+        about = "Import checkpoint from JSONL file",
+        long_about = "Import and validate checkpoint from JSONL file.
+
+Stages and validates checkpoint input before activating any state.
+Performs complete validation of JSONL format, issue data, dependencies,
+labels, and schema. Rejects malformed input with specific line numbers.
+
+EXAMPLES:
+  bead sync --import-only --input backup.jsonl                                    # Import with validation
+  bead sync --import-only --input backup.jsonl --dry-run                         # Validate only
+  bead sync --import-only --input backup.jsonl --profile native-v1               # Explicit profile
+
+VALIDATION PERFORMED:
+  - JSONL format and line-by-line parsing
+  - Duplicate issue ID detection
+  - Malformed JSON or missing required fields
+  - Dangling dependency references
+  - Dependency cycle detection
+  - Label validation
+  - Unknown field preservation
+
+DRY RUN:
+  With --dry-run: performs complete validation without activating state.
+  Reports prospective counts and sequences without any durable mutation.
+  Useful for validating backup files before import.
+
+PRE-F017 BEHAVIOR:
+  - Accepts only empty initialized target database
+  - Activates fully validated checkpoint in one transaction
+  - Appends exactly one 'checkpoint_imported' audit event
+  - Unknown fields preserved for round-trip compatibility
+
+EXIT CODES:
+  0 - Successful import (or successful dry-run validation)
+  2 - CLI usage or validation error
+  3 - Workspace or file not found
+  4 - Validation conflict (cycles, duplicates, etc.)
+  5 - Malformed input or integrity failure
+
+Use --dry-run to validate backups before risking database mutation."
+    )]
     ImportOnly(SyncImportOptions),
 }
 
@@ -279,8 +640,47 @@ pub struct SyncImportOptions {
 #[derive(Subcommand, Debug)]
 pub enum LabelCommand {
     /// Add a label to an issue
+    #[command(
+        about = "Add a label to an issue",
+        long_about = "Add a label to an issue (idempotent).
+
+Adds the specified label to the issue. If the label already exists,
+the command succeeds without making changes. Labels are optional
+metadata used for categorization and filtering.
+
+EXAMPLES:
+  bead label add bead-123abc456789def --label bug
+  bead label add ID --label urgent --label feature
+  bead label add ID --label \"needs-review\"
+
+LABELS:
+  - Any non-empty string is valid
+  - Labels are case-sensitive
+  - Multiple labels can be added in one command
+  - Adding an existing label is idempotent (no-op)
+  - Use with list filtering: --label flag
+
+Common labels: bug, feature, improvement, documentation, urgent,
+help-wanted, work-in-progress, needs-review, blocked, etc."
+    )]
     Add(LabelAddOptions),
+
     /// Remove a label from an issue
+    #[command(
+        about = "Remove a label from an issue",
+        long_about = "Remove a label from an issue (idempotent).
+
+Removes the specified label from the issue. If the label does not exist,
+the command succeeds without making changes.
+
+EXAMPLES:
+  bead label remove bead-123abc456789def --label bug
+  bead label remove ID --label urgent
+
+IDEMPOTENCY:
+  Removing a non-existent label succeeds without error.
+  This makes label management safe and declarative."
+    )]
     Remove(LabelRemoveOptions),
 }
 
@@ -308,8 +708,68 @@ pub struct LabelRemoveOptions {
 #[derive(Subcommand, Debug)]
 pub enum DepCommand {
     /// Add a dependency edge
+    #[command(
+        about = "Add a dependency edge",
+        long_about = "Add a dependency relationship between two issues.
+
+Creates a directional dependency edge from blocked issue to blocker issue.
+The 'blocks' kind affects readiness; 'relates_to' does not affect readiness
+but allows tracking related work.
+
+EXAMPLES:
+  bead dep add BLOCKED BLOCKER                       # Add blocks dependency
+  bead dep add task-1 task-2 --kind blocks            # Explicit blocks
+  bead dep add feature-a bug-fix --kind relates_to     # Non-blocking relationship
+
+DEPENDENCY KINDS:
+  - blocks: BLOCKED is blocked until BLOCKER is closed (affects readiness)
+  - relates_to: Related issues without blocking semantics (cycles allowed)
+
+CYCLE DETECTION:
+  'blocks' dependencies cannot create cycles.
+  Adding an edge that creates a directed cycle will fail with exit code 4.
+  'relates_to' edges can form cycles (no restriction).
+
+READINESS IMPACT:
+  Only 'blocks' dependencies affect ready frontier:
+  - Issue is ready when: open, unassigned, not manually blocked, no unfinished blockers
+  - Blocker is unfinished when: not in closed state
+  - Finishing a blocker may expose dependent issues to ready frontier
+
+IDEMPOTENCY:
+  Adding an existing dependency succeeds without error.
+  Self-edges (blocked == blocker) are rejected (exit code 4).
+
+ORIENTATION:
+  Syntax is: bead dep add <BLOCKED> <BLOCKER>
+  BLOCKED depends on BLOCKER completing first
+  BLOCKER must finish before BLOCKED can be ready"
+    )]
     Add(DepAddOptions),
+
     /// Remove a dependency edge
+    #[command(
+        about = "Remove a dependency edge",
+        long_about = "Remove a dependency relationship between two issues.
+
+Removes dependency edge(s) matching the given blocked, blocker, and kind.
+Without --kind, removes all dependency kinds between the two issues.
+
+EXAMPLES:
+  bead dep remove BLOCKED BLOCKER                    # Remove all dependencies
+  bead dep remove task-1 task-2 --kind blocks        # Remove specific kind
+  bead dep remove feature-a bug-fix --kind relates_to # Remove relates_to edge
+
+IDEMPOTENCY:
+  Removing a non-existent dependency succeeds without error.
+  Removing multiple edges succeeds as long as at least one matched.
+
+USE CASES:
+  - Dependency was determined to be incorrect
+  - Work relationship changed
+  - Issue relationship is being tracked differently
+  - Cleaning up after issue completion"
+    )]
     Remove(DepRemoveOptions),
 }
 
@@ -339,6 +799,47 @@ pub struct DepRemoveOptions {
 
 /// Options for doctor command
 #[derive(Parser, Debug)]
+#[command(
+    about = "Diagnose workspace integrity and optionally perform repairs",
+    long_about = "Perform read-only integrity checks on the workspace.
+
+Doctor validates workspace configuration, database integrity, checkpoint
+state, and filesystem without modifying data. With --repair, performs
+safe automatic repairs for diagnosed issues.
+
+EXAMPLES:
+  bead doctor                           # Read-only diagnostics
+  bead doctor --repair                  # Diagnose and attempt repairs
+
+CHECKS PERFORMED:
+  - Workspace configuration and permissions
+  - Database integrity (SQLite PRAGMA checks)
+  - Schema version and migration checksums
+  - Checkpoint state and file consistency
+  - Lifecycle and timestamp invariants
+  - Dependency graph (no cycles or dangling references)
+  - Orphaned temporary files
+
+REPAIRS PERFORMED (with --repair):
+  - Remove proven-stale operation-owned temporary files
+  - Rebuild checkpoint views from authoritative database state
+  - Create missing safe indexes
+  - Repair checkpoint state through atomic flush
+
+DOCTOR OUTPUT:
+  OK  - Check passed
+  WARN - Non-critical issue detected
+  FIXED - Issue was repaired (with --repair)
+
+EXIT CODES:
+  0 - All checks passed (or repairs successful)
+  1 - Internal failure
+  3 - Workspace not found or inaccessible
+  5 - Integrity failure detected
+
+Doctor never rewrites user data, drops tables, or performs speculative repairs.
+For serious integrity issues, recommendations are provided for explicit recovery."
+)]
 pub struct DoctorOptions {
     /// Attempt automatic repairs
     #[arg(long)]
@@ -347,6 +848,43 @@ pub struct DoctorOptions {
 
 /// Options for capabilities command
 #[derive(Parser, Debug)]
+#[command(
+    about = "Show capabilities and supported features",
+    long_about = "Display versioned capabilities and supported feature sets.
+
+Outputs machine-readable capabilities document describing contract version,
+implementation, store layout, supported commands, priorities, statuses,
+checkpoint modes and formats, and schema catalog.
+
+EXAMPLES:
+  bead capabilities --format json              # Native capabilities
+  bead capabilities --profile needle-v1       # NEEDLE v1 capabilities
+  bead capabilities --format json --profile native-v1  # Explicit profile
+
+CAPABILITY INFORMATION:
+  - Contract version and implementation identifier
+  - Store layout version
+  - Atomic claim support
+  - Priority range and P4 claimability
+  - Supported statuses and transitions
+  - Checkpoint modes and formats
+  - Schema catalog with validation and operation support
+  - Complete command inventory
+
+PROFILES:
+  - native-v1: Full native capabilities (default)
+  - needle-v1: NEEDLE subprocess compatibility contract
+
+SCHEMA CATALOG:
+  Each schema entry shows:
+  - schema_ref: Immutable schema identifier
+  - document_kind: Type of document
+  - validate: Schema available for 'bead schema show'
+  - consume: Operations accepting this document type
+  - emit: Operations producing this document type
+
+Use this command for capability negotiation and feature detection."
+)]
 pub struct CapabilitiesOptions {
     /// Profile for capabilities output
     #[arg(long, default_value = "native-v1")]

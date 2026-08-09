@@ -1,0 +1,40 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH remove 1  "remove " 
+.SH NAME
+remove \- Remove a dependency edge
+.SH SYNOPSIS
+\fBremove\fR [\fB\-\-kind\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIBLOCKED\fR> <\fIBLOCKER\fR> 
+.SH DESCRIPTION
+Remove a dependency relationship between two issues.
+.PP
+Removes dependency edge(s) matching the given blocked, blocker, and kind.
+Without \-\-kind, removes all dependency kinds between the two issues.
+.PP
+EXAMPLES:
+  bead dep remove BLOCKED BLOCKER                    # Remove all dependencies
+  bead dep remove task\-1 task\-2 \-\-kind blocks        # Remove specific kind
+  bead dep remove feature\-a bug\-fix \-\-kind relates_to # Remove relates_to edge
+.PP
+IDEMPOTENCY:
+  Removing a non\-existent dependency succeeds without error.
+  Removing multiple edges succeeds as long as at least one matched.
+.PP
+USE CASES:
+  \- Dependency was determined to be incorrect
+  \- Work relationship changed
+  \- Issue relationship is being tracked differently
+  \- Cleaning up after issue completion
+.SH OPTIONS
+.TP
+\fB\-\-kind\fR \fI<KIND>\fR
+Dependency kind (optional, removes all kinds if not specified)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIBLOCKED\fR>
+Blocked issue ID
+.TP
+<\fIBLOCKER\fR>
+Blocker issue ID
