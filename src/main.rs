@@ -50,6 +50,7 @@ fn execute_command(cli: Cli) -> Result<()> {
         Command::Capabilities(opts) => cmd_capabilities(opts),
         Command::Query(opts) => cmd_query(opts),
         Command::Changes(opts) => cmd_changes(opts),
+        Command::Data(opts) => cmd_data(opts),
         Command::Unimplemented(_) => Err(Error::cli_usage(
             "This command is not yet implemented. See `bead --help` for available commands.",
         )),
@@ -1494,6 +1495,135 @@ fn cmd_changes(opts: cli::ChangesOptions) -> Result<()> {
         println!();
         println!("Next cursor: {}", change_feed.snapshot.max_sequence);
     }
+
+    Ok(())
+}
+
+fn cmd_data(opts: cli::DataCommand) -> Result<()> {
+    match opts {
+        cli::DataCommand::Set(data_opts) => cmd_data_set(data_opts),
+        cli::DataCommand::Get(data_opts) => cmd_data_get(data_opts),
+        cli::DataCommand::List(data_opts) => cmd_data_list(data_opts),
+        cli::DataCommand::Remove(data_opts) => cmd_data_remove(data_opts),
+    }
+}
+
+fn cmd_data_set(opts: cli::DataSetOptions) -> Result<()> {
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    let db_path = config.database_path();
+    let mut store = store::SqliteStore::with_path(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    // Parse JSON value
+    let value: serde_json::Value = serde_json::from_str(&opts.value)
+        .map_err(|e| Error::validation(format!("Invalid JSON value: {}", e)))?;
+
+    // Set the data
+    service::set_data(
+        &mut store,
+        &opts.id,
+        &opts.namespace,
+        &opts.schema_ref,
+        &value,
+    )?;
+
+    eprintln!("Set structured data:");
+    eprintln!("  Issue: {}", opts.id);
+    eprintln!("  Namespace: {}", opts.namespace);
+    eprintln!("  Schema: {}", opts.schema_ref);
+
+    Ok(())
+}
+
+fn cmd_data_get(opts: cli::DataGetOptions) -> Result<()> {
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    let db_path = config.database_path();
+    let mut store = store::SqliteStore::with_path(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    let result = service::get_data(&mut store, &opts.id, &opts.namespace)?;
+
+    match result {
+        Some((schema_ref, value)) => {
+            if opts.json {
+                let output = serde_json::json!({
+                    "issue_id": opts.id,
+                    "namespace": opts.namespace,
+                    "schema_ref": schema_ref,
+                    "value": value
+                });
+                println!("{}", serde_json::to_string(&output).unwrap());
+            } else {
+                eprintln!("Structured data:");
+                eprintln!("  Issue: {}", opts.id);
+                eprintln!("  Namespace: {}", opts.namespace);
+                eprintln!("  Schema: {}", schema_ref);
+                eprintln!("  Value: {}", serde_json::to_string_pretty(&value).unwrap());
+            }
+        }
+        None => {
+            return Err(Error::not_found(format!(
+                "No structured data found for namespace '{}' on issue '{}'",
+                opts.namespace, opts.id
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_data_list(opts: cli::DataListOptions) -> Result<()> {
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    let db_path = config.database_path();
+    let mut store = store::SqliteStore::with_path(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    let namespaces = service::list_data(&mut store, &opts.id)?;
+
+    if opts.json {
+        let output: Vec<serde_json::Value> = namespaces
+            .into_iter()
+            .map(|(namespace, schema_ref)| {
+                serde_json::json!({
+                    "namespace": namespace,
+                    "schema_ref": schema_ref
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string(&output).unwrap());
+    } else {
+        if namespaces.is_empty() {
+            eprintln!("No structured data found for issue '{}'", opts.id);
+        } else {
+            eprintln!("Structured data for issue '{}':", opts.id);
+            for (namespace, schema_ref) in namespaces {
+                eprintln!("  {} (schema: {})", namespace, schema_ref);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_data_remove(opts: cli::DataRemoveOptions) -> Result<()> {
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    let db_path = config.database_path();
+    let mut store = store::SqliteStore::with_path(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    service::remove_data(&mut store, &opts.id, &opts.namespace)?;
+
+    eprintln!("Removed structured data:");
+    eprintln!("  Issue: {}", opts.id);
+    eprintln!("  Namespace: {}", opts.namespace);
 
     Ok(())
 }

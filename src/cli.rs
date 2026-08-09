@@ -100,6 +100,10 @@ pub enum Command {
     /// Access cursor-based change feed for incremental local synchronization
     Changes(ChangesOptions),
 
+    /// Manage structured bead data
+    #[command(subcommand)]
+    Data(DataCommand),
+
     /// Not yet implemented
     #[command(subcommand)]
     #[allow(clippy::enum_variant_names)]
@@ -1347,6 +1351,165 @@ pub struct RefFindOptions {
     /// Output in JSON format
     #[arg(long)]
     pub json: bool,
+}
+
+/// Structured data commands
+#[derive(Subcommand, Debug)]
+pub enum DataCommand {
+    /// Set a structured data value for an issue
+    Set(DataSetOptions),
+
+    /// Get a structured data value from an issue
+    Get(DataGetOptions),
+
+    /// List all structured data namespaces for an issue
+    List(DataListOptions),
+
+    /// Remove a structured data value from an issue
+    Remove(DataRemoveOptions),
+}
+
+/// Options for setting structured data
+#[derive(Parser, Debug)]
+#[command(
+    about = "Set a structured data value for an issue",
+    long_about = "Set or replace a JSON value for a specific namespace with schema governance.
+
+Sets or replaces the structured data value for the specified namespace and issue.
+Each namespace is governed by its own immutable schema reference, enabling controlled
+extension of issue data without arbitrary field proliferation.
+
+EXAMPLES:
+  bead data set bead-123abc456789def --namespace config --schema-ref schema:v1 --value '{\"setting\": \"value\"}'
+  bead data set ID --namespace metrics --schema-ref schema:metrics --value '{\"count\": 42}'
+
+SCHEMA GOVERNANCE:
+  - Each namespace has an immutable schema reference identifier
+  - Unknown schemas are preserved for interchange but fail closed for mutation
+  - Schema references enable validation and consumer negotiation
+
+NAMING RULES:
+  - Namespace: 1-64 chars, lowercase letters/numbers/hyphens/underscores, must start with letter
+  - Schema reference: 1-512 chars, non-empty
+
+ATOMICITY:
+  - Set operations are atomic and crash-safe
+  - Replaces existing values for the same namespace
+  - Validates that the issue exists before setting data
+
+USE CASES:
+  - Add structured configuration data to issues
+  - Store metrics and measurements
+  - Attach schema-governed metadata
+  - Extend issue data without API changes"
+)]
+pub struct DataSetOptions {
+    /// Issue ID
+    #[arg(long)]
+    pub id: String,
+
+    /// Data namespace (e.g., config, metrics, state)
+    #[arg(long)]
+    pub namespace: String,
+
+    /// Schema reference (immutable identifier for the data schema)
+    #[arg(long)]
+    pub schema_ref: String,
+
+    /// JSON value to set
+    #[arg(long)]
+    pub value: String,
+}
+
+/// Options for getting structured data
+#[derive(Parser, Debug)]
+#[command(
+    about = "Get a structured data value from an issue",
+    long_about = "Retrieve the JSON value and schema reference for a specific namespace.
+
+Returns both the schema reference and the JSON value for the specified namespace.
+If the namespace does not exist for the issue, returns a not-found error.
+
+EXAMPLES:
+  bead data get bead-123abc456789def --namespace config
+  bead data get ID --namespace metrics --json
+
+OUTPUT FORMAT:
+  Human-readable format shows the schema reference and formatted JSON value.
+  JSON format provides structured data with schema_ref and value fields."
+)]
+pub struct DataGetOptions {
+    /// Issue ID
+    #[arg(long)]
+    pub id: String,
+
+    /// Data namespace
+    #[arg(long)]
+    pub namespace: String,
+
+    /// Output in JSON format
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Options for listing structured data
+#[derive(Parser, Debug)]
+#[command(
+    about = "List all structured data namespaces for an issue",
+    long_about = "List all namespaces and their schema references for an issue.
+
+Shows all structured data namespaces attached to the issue, sorted alphabetically
+by namespace for consistent output. Each entry includes the namespace and its
+governing schema reference.
+
+EXAMPLES:
+  bead data list bead-123abc456789def
+  bead data list ID --json
+
+OUTPUT FORMAT:
+  Human-readable format shows namespace and schema reference for each entry.
+  JSON format provides structured array of objects with namespace and schema_ref."
+)]
+pub struct DataListOptions {
+    /// Issue ID
+    #[arg(long)]
+    pub id: String,
+
+    /// Output in JSON format
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Options for removing structured data
+#[derive(Parser, Debug)]
+#[command(
+    about = "Remove a structured data value from an issue",
+    long_about = "Remove a structured data value from an issue (idempotent).
+
+Removes the structured data value for the specified namespace and issue.
+If the namespace does not exist, the command succeeds without making changes.
+
+EXAMPLES:
+  bead data remove bead-123abc456789def --namespace config
+  bead data remove ID --namespace metrics
+
+IDEMPOTENCY:
+  Removing a non-existent namespace succeeds without error.
+  This makes structured data management safe and declarative.
+
+ATOMICITY:
+  - Remove operations are atomic and crash-safe
+  - Only affects the specified namespace
+  - Validates that the issue exists before removal"
+)]
+pub struct DataRemoveOptions {
+    /// Issue ID
+    #[arg(long)]
+    pub id: String,
+
+    /// Data namespace
+    #[arg(long)]
+    pub namespace: String,
 }
 
 /// Placeholder for unimplemented commands

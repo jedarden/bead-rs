@@ -8,6 +8,7 @@ pub mod changes;
 pub mod checkpoint;
 pub mod claim;
 pub mod conditions;
+pub mod data;
 pub mod dependencies;
 pub mod doctor;
 pub mod external_refs;
@@ -24,6 +25,7 @@ pub use changes::{
 pub use checkpoint::{flush_checkpoint, import_forensic_checkpoint, publish_forensic_checkpoint};
 pub use claim::{claim_issue_with_lease, claim_issue_with_trace};
 pub use conditions::ConditionExpr;
+pub use data::{get_data, list_data, remove_data, set_data};
 pub use dependencies::{add_dependency, add_label, remove_dependency, remove_label};
 pub use doctor::{run_diagnostics, run_diagnostics_with_scopes, run_repairs, DiagnosticStatus};
 pub use external_refs::{

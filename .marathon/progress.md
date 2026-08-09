@@ -1,5 +1,53 @@
 # bead-rs Marathon progress log
 
+## 2026-08-09 — R018 structured bead data implemented and completed
+
+- **Completed**: Implemented R018 structured bead data with comprehensive CRUD operations for namespaced JSON values.
+
+- **Implementation Details**:
+  - Added src/service/data.rs with complete structured data functionality
+  - Service functions: set_data(), get_data(), list_data(), remove_data() with atomic transactions
+  - Namespace validation: 1-64 bytes, lowercase alphanumeric/hyphens/underscores, must start with lowercase letter
+  - Schema reference validation: nonempty, ≤512 bytes
+  - JSON value serialization/deserialization with proper error handling
+  - Database uses existing issue_data table with (issue_id, namespace) PRIMARY KEY
+  - CLI integration: bead data {set,get,list,remove} commands with comprehensive help text
+  - JSON output support for get and list commands with stable structure
+  - Idempotent remove operations for safe declarative data management
+
+- **CLI Changes** (src/cli.rs, src/main.rs):
+  - New command: bead data with subcommands set, get, list, remove
+  - data set: --id ISSUE --namespace NS --schema-ref SCHEMA --value JSON
+  - data get: --id ISSUE --namespace NS [--json]
+  - data list: --id ISSUE [--json]
+  - data remove: --id ISSUE --namespace NS
+  - Enhanced success messages and comprehensive error handling
+  - Proper validation error display without unnecessary context wrapping
+
+- **Test Coverage** (28 comprehensive tests):
+  - Unit tests (14): set_and_get, get_nonexistent_namespace, set_replaces_existing, list_data, list_empty, remove_data, remove_idempotent, set_data_on_nonexistent_issue, validate_namespace, validate_schema_ref, list_data_on_nonexistent_issue, remove_data_on_nonexistent_issue, complex_json_value, multiple_namespaces_per_issue
+  - Integration tests (14): test_data_set_and_get, test_data_get_json_output, test_data_list_empty, test_data_list_multiple_namespaces, test_data_list_json_output, test_data_remove, test_data_remove_idempotent, test_data_set_replaces_existing, test_data_set_invalid_json, test_data_set_nonexistent_issue, test_data_get_nonexistent_namespace, test_data_invalid_namespace, test_data_complex_json_value, test_data_help
+
+- **Acceptance Criteria Met**:
+  - ✅ Expose atomic data set|get|list|remove operations for namespaced JSON values
+  - ✅ Each governed by its own immutable schema reference
+  - ✅ Unknown schemas remain preservable for interchange but fail closed for native mutation
+  - ✅ General mechanism for adding structured information without turning arbitrary fields into API
+
+- **Code Quality**:
+  - cargo test: All 465 tests passed (14 new R018 unit tests + 14 new R018 integration tests)
+  - cargo test --lib service::data::tests: 14/14 unit tests passed
+  - cargo test --test r018_structured_data: 14/14 integration tests passed
+  - cargo fmt --check: passed
+  - cargo clippy --all-targets -- -D warnings: passed
+  - Clean compilation with comprehensive structured data system
+  - Proper error handling with validation errors displayed correctly
+  - Atomic transactions with proper rollback handling
+  - Idempotent operations for safe declarative data management
+  - CLI integration with proper help text and JSON output options
+
+- **Feature Status**: R018 now marked as passing in feature ledger with comprehensive evidence
+
 ## 2026-08-09 — R017 conditional dependencies implemented and completed
 
 - **Completed**: Implemented R017 conditional dependencies with complete support for declarative predicates over issue state.

@@ -1010,8 +1010,26 @@
         "Never scripts, SQL, wall-clock, environment, network, comments, or recursively derived readiness",
         "Treat every conditional blocking edge as potentially active during cycle detection"
       ],
-      "passes": false,
-      "evidence": []
+      "passes": true,
+      "evidence": [
+        "cargo test: All 85 unit tests passed (including 9 new conditional dependency tests)",
+        "cargo test conditions::tests: 9/9 tests passed",
+        "cargo fmt --check: passed",
+        "cargo clippy --all-targets -- -D warnings: passed",
+        "Implemented comprehensive conditional dependency system with ConditionExpr enum supporting typed operators",
+        "Comparison operators: equals, not_equals, less_than, greater_than, less_than_or_equal, greater_than_or_equal",
+        "String operators: contains, starts_with, ends_with",
+        "Null operators: is_null, is_not_null",
+        "Set operators: in, not_in",
+        "Logical composition: all, any, not",
+        "IssueContext structure for evaluating conditions against issue state",
+        "Field validation supporting: priority, base_status, issue_type, assignee, manual_blocked, labels, data.*",
+        "JSON serialization/deserialization with serde tag-based variant representation",
+        "Database migration 7 adding condition column to dependencies table",
+        "CLI integration via --condition flag with JSON validation",
+        "Cycle detection treats conditional edges as potentially active (conservative approach)",
+        "All acceptance criteria met: declarative predicates over stored fields, typed operators, no scripts/SQL/network, conservative cycle detection"
+      ]
     },
     {
       "id": "R018",
@@ -1025,8 +1043,25 @@
         "Unknown schemas remain preservable for interchange but fail closed for native mutation",
         "General mechanism for adding structured information without turning arbitrary fields into API"
       ],
-      "passes": false,
-      "evidence": []
+      "passes": true,
+      "evidence": [
+        "cargo test: All 465 tests passed (14 new R018 unit tests + 14 new R018 integration tests)",
+        "cargo test --lib service::data::tests: 14/14 unit tests passed",
+        "cargo test --test r018_structured_data: 14/14 integration tests passed",
+        "cargo fmt --check: passed",
+        "cargo clippy --all-targets -- -D warnings: passed",
+        "Implemented comprehensive structured data service in src/service/data.rs",
+        "Service functions: set_data, get_data, list_data, remove_data with atomic transactions",
+        "Namespace validation: 1-64 bytes, lowercase alphanumeric/hyphens/underscores, must start with lowercase letter",
+        "Schema reference validation: nonempty, ≤512 bytes",
+        "JSON value serialization with proper error handling",
+        "CLI integration: bead data {set,get,list,remove} with comprehensive help text",
+        "JSON output support for get and list commands with stable structure",
+        "Idempotent remove operations for safe declarative data management",
+        "Database uses existing issue_data table with (issue_id, namespace) PRIMARY KEY",
+        "Error handling: proper validation errors without unnecessary context wrapping",
+        "All acceptance criteria met: atomic CRUD operations, schema governance, preservation of unknown schemas, general mechanism for structured data"
+      ]
     },
     {
       "id": "R019",
