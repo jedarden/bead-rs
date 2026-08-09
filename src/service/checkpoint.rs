@@ -187,6 +187,27 @@ pub struct ImportResult {
     pub dry_run: bool,
     pub prospective: bool,
     pub receipt_preview: Option<ReceiptPreview>,
+    pub diagnostics: Option<ImportDiagnostics>,
+}
+
+/// Import diagnostic report for R014
+#[derive(Debug, Clone, Serialize)]
+pub struct ImportDiagnostics {
+    pub validation_failures: Vec<ValidationFailure>,
+    pub total_lines: usize,
+    pub processed_lines: usize,
+    pub truncated: bool,
+}
+
+/// Validation failure record for import diagnostic report
+#[derive(Debug, Clone, Serialize)]
+pub struct ValidationFailure {
+    pub line_number: usize,
+    pub json_pointer: Option<String>,
+    pub schema_keyword: Option<String>,
+    pub semantic_code: String,
+    pub message: String,
+    pub context: Option<String>,
 }
 
 /// Receipt preview for dry-run operations
@@ -210,7 +231,11 @@ pub struct ImportStaging {
     pub labels: Vec<(String, String)>,               // (issue_id, label)
     pub input_hash: String,
     pub issue_count: usize,
+    pub diagnostics: Option<ImportDiagnostics>,
 }
+
+/// Maximum number of validation failures to collect (R014 bounded collection)
+const MAX_DIAGNOSTIC_FAILURES: usize = 100;
 
 /// Forensic checkpoint staging result (F017)
 #[derive(Debug, Clone)]
@@ -393,6 +418,17 @@ pub fn import_checkpoint(
     profile: &str,
     dry_run: bool,
 ) -> Result<ImportResult> {
+    import_checkpoint_with_diagnostics(store, input_path, profile, dry_run, false)
+}
+
+/// Import checkpoint with diagnostic mode (R014)
+pub fn import_checkpoint_with_diagnostics(
+    store: &mut SqliteStore,
+    input_path: &Path,
+    profile: &str,
+    dry_run: bool,
+    diagnostics_mode: bool,
+) -> Result<ImportResult> {
     // Validate profile (only native-v1 allowed before F017)
     if profile != "native-v1" {
         bail!(
@@ -401,11 +437,62 @@ pub fn import_checkpoint(
         );
     }
 
-    // Stage the input file
-    let staging = stage_import(input_path, profile)?;
+    // Use diagnostic staging if requested
+    let mut staging = if diagnostics_mode {
+        stage_import_with_diagnostics(input_path, profile)
+    } else {
+        match stage_import(input_path, profile) {
+            Ok(s) => s,
+            Err(e) => {
+                // Convert single error to diagnostic format
+                let mut staging = ImportStaging {
+                    issues: Vec::new(),
+                    dependencies: Vec::new(),
+                    labels: Vec::new(),
+                    input_hash: String::new(),
+                    issue_count: 0,
+                    diagnostics: None,
+                };
 
-    // Validate the staged data
-    validate_import(&staging, dry_run)?;
+                staging.diagnostics = Some(ImportDiagnostics {
+                    validation_failures: vec![ValidationFailure {
+                        line_number: 0,
+                        json_pointer: None,
+                        schema_keyword: Some("staging".to_string()),
+                        semantic_code: "staging_error".to_string(),
+                        message: format!("Staging failed: {}", e),
+                        context: None,
+                    }],
+                    total_lines: 0,
+                    processed_lines: 0,
+                    truncated: false,
+                });
+                staging
+            }
+        }
+    };
+
+    // Validate the staged data (collects additional diagnostics)
+    validate_import(&mut staging, dry_run)?;
+
+    // Check if we should fail due to validation errors
+    let has_diagnostics = staging
+        .diagnostics
+        .as_ref()
+        .map(|d| !d.validation_failures.is_empty())
+        .unwrap_or(false);
+
+    if has_diagnostics && !diagnostics_mode {
+        // In non-diagnostics mode, fail on first error for backward compatibility
+        let first_error = staging
+            .diagnostics
+            .as_ref()
+            .unwrap()
+            .validation_failures
+            .first()
+            .unwrap();
+        bail!("Import validation failed: {}", first_error.message);
+    }
 
     if dry_run {
         // Get current sequence for prospective report
@@ -430,11 +517,30 @@ pub fn import_checkpoint(
             dry_run: true,
             prospective: true,
             receipt_preview: None,
+            diagnostics: staging.diagnostics,
         });
     }
 
-    // Real activation: verify target is empty
+    // Real activation: verify target is empty and no validation errors
     verify_empty_target(store)?;
+
+    if has_diagnostics {
+        // Don't activate if there are validation errors
+        return Ok(ImportResult {
+            profile: profile.to_string(),
+            input_hash: staging.input_hash,
+            inserted: 0,
+            updated: 0,
+            retained: 0,
+            conflicted: 0,
+            activation_sequence: 0,
+            covered_sequence: 0,
+            dry_run: false,
+            prospective: false,
+            receipt_preview: None,
+            diagnostics: staging.diagnostics,
+        });
+    }
 
     // Activate the staged data in a single transaction
     let (inserted, activation_sequence) = activate_import(store, &staging)?;
@@ -451,6 +557,7 @@ pub fn import_checkpoint(
         dry_run: false,
         prospective: false,
         receipt_preview: None,
+        diagnostics: staging.diagnostics,
     })
 }
 
@@ -2177,42 +2284,371 @@ fn stage_import(input_path: &Path, _profile: &str) -> Result<ImportStaging> {
         labels,
         input_hash: hash,
         issue_count: seen_ids.len(),
+        diagnostics: None,
     })
+}
+
+/// Enhanced staging with diagnostic collection (R014)
+fn stage_import_with_diagnostics(input_path: &Path, _profile: &str) -> ImportStaging {
+    let file = match File::open(input_path) {
+        Ok(f) => f,
+        Err(e) => {
+            return ImportStaging {
+                issues: Vec::new(),
+                dependencies: Vec::new(),
+                labels: Vec::new(),
+                input_hash: String::new(),
+                issue_count: 0,
+                diagnostics: Some(ImportDiagnostics {
+                    validation_failures: vec![ValidationFailure {
+                        line_number: 0,
+                        json_pointer: None,
+                        schema_keyword: Some("file".to_string()),
+                        semantic_code: "file_open_error".to_string(),
+                        message: format!("Cannot open input file: {}", e),
+                        context: None,
+                    }],
+                    total_lines: 0,
+                    processed_lines: 0,
+                    truncated: false,
+                }),
+            }
+        }
+    };
+
+    let reader = BufReader::new(file);
+    let mut issues = Vec::new();
+    let mut dependencies = Vec::new();
+    let mut labels = Vec::new();
+    let mut seen_ids = HashSet::new();
+    let mut validation_failures = Vec::new();
+    let mut total_lines = 0;
+    let mut processed_lines = 0;
+
+    // Calculate hash while reading
+    let mut hasher = Sha256::new();
+
+    for (line_num, line_result) in reader.lines().enumerate() {
+        total_lines += 1;
+        let line_num = line_num + 1; // 1-based for error messages
+
+        let line = match line_result {
+            Ok(l) => l,
+            Err(e) => {
+                if validation_failures.len() < MAX_DIAGNOSTIC_FAILURES {
+                    validation_failures.push(ValidationFailure {
+                        line_number: line_num,
+                        json_pointer: None,
+                        schema_keyword: Some("line_read".to_string()),
+                        semantic_code: "line_read_error".to_string(),
+                        message: format!("Cannot read line: {}", e),
+                        context: None,
+                    });
+                }
+                continue;
+            }
+        };
+
+        if line.trim().is_empty() {
+            continue; // Skip blank lines
+        }
+
+        processed_lines += 1;
+
+        // Update hash
+        hasher.update(line.as_bytes());
+        hasher.update(b"\n");
+
+        // Parse JSON line
+        let json: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(j) => j,
+            Err(e) => {
+                if validation_failures.len() < MAX_DIAGNOSTIC_FAILURES {
+                    validation_failures.push(ValidationFailure {
+                        line_number: line_num,
+                        json_pointer: None,
+                        schema_keyword: Some("parse".to_string()),
+                        semantic_code: "malformed_json".to_string(),
+                        message: format!("Malformed JSON: {}", e),
+                        context: Some(line.trim().to_string()),
+                    });
+                }
+                continue;
+            }
+        };
+
+        // Must be an object
+        let obj = match json.as_object() {
+            Some(o) => o,
+            None => {
+                if validation_failures.len() < MAX_DIAGNOSTIC_FAILURES {
+                    validation_failures.push(ValidationFailure {
+                        line_number: line_num,
+                        json_pointer: None,
+                        schema_keyword: Some("type".to_string()),
+                        semantic_code: "invalid_field_type".to_string(),
+                        message: "Record is not a JSON object".to_string(),
+                        context: None,
+                    });
+                }
+                continue;
+            }
+        };
+
+        // Extract required ID field
+        let id = match obj.get("id").and_then(|v| v.as_str()) {
+            Some(i) => i,
+            None => {
+                if validation_failures.len() < MAX_DIAGNOSTIC_FAILURES {
+                    validation_failures.push(ValidationFailure {
+                        line_number: line_num,
+                        json_pointer: Some("/id".to_string()),
+                        schema_keyword: Some("required".to_string()),
+                        semantic_code: "missing_required_field".to_string(),
+                        message: "Missing or invalid 'id' field".to_string(),
+                        context: None,
+                    });
+                }
+                continue;
+            }
+        };
+
+        // Check for duplicate IDs
+        if !seen_ids.insert(id.to_string()) {
+            if validation_failures.len() < MAX_DIAGNOSTIC_FAILURES {
+                validation_failures.push(ValidationFailure {
+                    line_number: line_num,
+                    json_pointer: Some("/id".to_string()),
+                    schema_keyword: Some("unique".to_string()),
+                    semantic_code: "duplicate_issue_id".to_string(),
+                    message: format!("Duplicate issue ID '{}'", id),
+                    context: None,
+                });
+            }
+            continue;
+        }
+
+        // Parse full Issue (extensions preserved via flatten)
+        let issue: Issue = match serde_json::from_str(&line) {
+            Ok(i) => i,
+            Err(e) => {
+                if validation_failures.len() < MAX_DIAGNOSTIC_FAILURES {
+                    validation_failures.push(ValidationFailure {
+                        line_number: line_num,
+                        json_pointer: None,
+                        schema_keyword: Some("validation".to_string()),
+                        semantic_code: "invalid_field_type".to_string(),
+                        message: format!("Invalid issue structure: {}", e),
+                        context: None,
+                    });
+                }
+                continue;
+            }
+        };
+
+        // Validate the issue
+        match issue.validate() {
+            Ok(_) => {}
+            Err(e) => {
+                if validation_failures.len() < MAX_DIAGNOSTIC_FAILURES {
+                    validation_failures.push(ValidationFailure {
+                        line_number: line_num,
+                        json_pointer: None,
+                        schema_keyword: Some("validation".to_string()),
+                        semantic_code: "invalid_field_type".to_string(),
+                        message: format!("Issue validation failed: {}", e),
+                        context: Some(format!("id: {}", id)),
+                    });
+                }
+                continue;
+            }
+        }
+
+        issues.push(issue.clone());
+
+        // Extract dependencies if present
+        if let Some(deps) = obj.get("dependencies").and_then(|v| v.as_array()) {
+            for dep in deps {
+                let dep_obj = match dep.as_object() {
+                    Some(o) => o,
+                    None => {
+                        if validation_failures.len() < MAX_DIAGNOSTIC_FAILURES {
+                            validation_failures.push(ValidationFailure {
+                                line_number: line_num,
+                                json_pointer: Some("/dependencies".to_string()),
+                                schema_keyword: Some("type".to_string()),
+                                semantic_code: "invalid_field_type".to_string(),
+                                message: "Dependency is not a JSON object".to_string(),
+                                context: Some(format!("id: {}", id)),
+                            });
+                        }
+                        continue;
+                    }
+                };
+
+                let blocker = match dep_obj.get("blocker").and_then(|v| v.as_str()) {
+                    Some(b) => b,
+                    None => {
+                        if validation_failures.len() < MAX_DIAGNOSTIC_FAILURES {
+                            validation_failures.push(ValidationFailure {
+                                line_number: line_num,
+                                json_pointer: Some("/dependencies/[]/blocker".to_string()),
+                                schema_keyword: Some("required".to_string()),
+                                semantic_code: "missing_required_field".to_string(),
+                                message: "Dependency missing 'blocker' field".to_string(),
+                                context: Some(format!("id: {}", id)),
+                            });
+                        }
+                        continue;
+                    }
+                };
+
+                let kind = dep_obj
+                    .get("kind")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("blocks");
+
+                dependencies.push((id.to_string(), blocker.to_string(), kind.to_string()));
+            }
+        }
+
+        // Extract labels if present
+        if let Some(label_array) = obj.get("labels").and_then(|v| v.as_array()) {
+            for label_item in label_array {
+                if let Some(label) = label_item.as_str() {
+                    labels.push((id.to_string(), label.to_string()));
+                }
+            }
+        }
+    }
+
+    let hash = format!("{:x}", hasher.finalize());
+    let truncated = validation_failures.len() >= MAX_DIAGNOSTIC_FAILURES;
+
+    ImportStaging {
+        issues,
+        dependencies,
+        labels,
+        input_hash: hash,
+        issue_count: seen_ids.len(),
+        diagnostics: Some(ImportDiagnostics {
+            validation_failures,
+            total_lines,
+            processed_lines,
+            truncated,
+        }),
+    }
 }
 
 /// Validate staged import data
 #[allow(dead_code)]
-fn validate_import(staging: &ImportStaging, _dry_run: bool) -> Result<()> {
+fn validate_import(staging: &mut ImportStaging, _dry_run: bool) -> Result<()> {
     let issue_ids: HashSet<_> = staging.issues.iter().map(|i| i.id.clone()).collect();
 
+    // Check for cycles first (before we take mutable reference to diagnostics)
+    let cycle_result = has_any_cycle(staging);
+
+    // Now we can safely take mutable reference to diagnostics
+    let diagnostics = staging
+        .diagnostics
+        .get_or_insert_with(|| ImportDiagnostics {
+            validation_failures: Vec::new(),
+            total_lines: 0,
+            processed_lines: 0,
+            truncated: false,
+        });
+
     // Validate dependencies
-    for (blocked, blocker, _kind) in &staging.dependencies {
+    for (idx, (blocked, blocker, _kind)) in staging.dependencies.iter().enumerate() {
         // Both endpoints must exist
-        if !issue_ids.contains(blocked) {
-            bail!("Dependency references unknown blocked issue '{}'", blocked);
+        if !issue_ids.contains(blocked)
+            && diagnostics.validation_failures.len() < MAX_DIAGNOSTIC_FAILURES
+        {
+            diagnostics.validation_failures.push(ValidationFailure {
+                line_number: 0, // Dependencies don't have line numbers in staging
+                json_pointer: Some(format!("/dependencies/{}", idx)),
+                schema_keyword: Some("reference".to_string()),
+                semantic_code: "unknown_blocked_issue".to_string(),
+                message: format!("Dependency references unknown blocked issue '{}'", blocked),
+                context: Some(format!("blocked: {}, blocker: {}", blocked, blocker)),
+            });
         }
-        if !issue_ids.contains(blocker) {
-            bail!("Dependency references unknown blocker issue '{}'", blocker);
+        if !issue_ids.contains(blocker)
+            && diagnostics.validation_failures.len() < MAX_DIAGNOSTIC_FAILURES
+        {
+            diagnostics.validation_failures.push(ValidationFailure {
+                line_number: 0,
+                json_pointer: Some(format!("/dependencies/{}", idx)),
+                schema_keyword: Some("reference".to_string()),
+                semantic_code: "unknown_blocker_issue".to_string(),
+                message: format!("Dependency references unknown blocker issue '{}'", blocker),
+                context: Some(format!("blocked: {}, blocker: {}", blocked, blocker)),
+            });
         }
 
         // Self-edges are invalid
-        if blocked == blocker {
-            bail!("Self-edge detected: '{}'", blocked);
+        if blocked == blocker
+            && diagnostics.validation_failures.len() < MAX_DIAGNOSTIC_FAILURES
+        {
+            diagnostics.validation_failures.push(ValidationFailure {
+                line_number: 0,
+                json_pointer: Some(format!("/dependencies/{}", idx)),
+                schema_keyword: Some("constraint".to_string()),
+                semantic_code: "self_edge_dependency".to_string(),
+                message: format!("Self-edge detected: '{}'", blocked),
+                context: None,
+            });
         }
     }
 
     // Check for cycles in blocks dependencies (after all individual validations)
-    if has_any_cycle(staging)? {
-        bail!("Cycle detected in blocks dependencies");
-    }
-
-    // Validate labels
-    for (issue_id, _) in &staging.labels {
-        if !issue_ids.contains(issue_id) {
-            bail!("Label references unknown issue '{}'", issue_id);
+    match cycle_result {
+        Ok(has_cycle) => {
+            if has_cycle && diagnostics.validation_failures.len() < MAX_DIAGNOSTIC_FAILURES {
+                diagnostics.validation_failures.push(ValidationFailure {
+                    line_number: 0,
+                    json_pointer: Some("/dependencies".to_string()),
+                    schema_keyword: Some("acyclic".to_string()),
+                    semantic_code: "cycle_in_dependencies".to_string(),
+                    message: "Cycle detected in blocks dependencies".to_string(),
+                    context: None,
+                });
+            }
+        }
+        Err(e) => {
+            if diagnostics.validation_failures.len() < MAX_DIAGNOSTIC_FAILURES {
+                diagnostics.validation_failures.push(ValidationFailure {
+                    line_number: 0,
+                    json_pointer: Some("/dependencies".to_string()),
+                    schema_keyword: Some("analysis".to_string()),
+                    semantic_code: "cycle_detection_error".to_string(),
+                    message: format!("Error during cycle detection: {}", e),
+                    context: None,
+                });
+            }
         }
     }
 
+    // Validate labels
+    for (idx, (issue_id, label)) in staging.labels.iter().enumerate() {
+        if !issue_ids.contains(issue_id)
+            && diagnostics.validation_failures.len() < MAX_DIAGNOSTIC_FAILURES
+        {
+            diagnostics.validation_failures.push(ValidationFailure {
+                line_number: 0,
+                json_pointer: Some(format!("/labels/{}", idx)),
+                schema_keyword: Some("reference".to_string()),
+                semantic_code: "unknown_issue_label".to_string(),
+                message: format!("Label references unknown issue '{}'", issue_id),
+                context: Some(format!("issue_id: {}, label: {}", issue_id, label)),
+            });
+        }
+    }
+
+    // Update truncated status
+    diagnostics.truncated = diagnostics.validation_failures.len() >= MAX_DIAGNOSTIC_FAILURES;
+
+    // Always return Ok - errors are collected in diagnostics
     Ok(())
 }
 

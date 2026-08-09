@@ -786,6 +786,10 @@ pub struct SyncImportOptions {
     /// Perform dry-run without activating state
     #[arg(long)]
     pub dry_run: bool,
+
+    /// Generate complete diagnostic report (R014)
+    #[arg(long)]
+    pub diagnostics: bool,
 }
 
 /// Label management commands

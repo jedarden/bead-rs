@@ -370,7 +370,9 @@ pub fn validate_reference_namespace(namespace: &str) -> Result<(), Error> {
 
     // Must start with a lowercase letter
     if !namespace.chars().next().unwrap().is_ascii_lowercase() {
-        return Err(Error::validation("Namespace must start with a lowercase letter"));
+        return Err(Error::validation(
+            "Namespace must start with a lowercase letter",
+        ));
     }
 
     Ok(())

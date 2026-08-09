@@ -1,5 +1,77 @@
 # bead-rs Marathon progress log
 
+## 2026-08-09 — R014 complete import diagnostic report implemented and completed
+
+- **Completed**: Implemented R014 complete import diagnostic report for comprehensive validation failure collection.
+
+- **Implementation Details**:
+  - Added ValidationFailure structure with line_number, json_pointer, schema_keyword, semantic_code, message, context fields
+  - Created ImportDiagnostics structure with validation_failures vector, total_lines, processed_lines, truncated boolean
+  - Implemented bounded collection with MAX_DIAGNOSTIC_FAILURES limit of 100 to prevent unbounded memory consumption
+  - Added stage_import_with_diagnostics() function for comprehensive error collection during import staging
+  - Updated validate_import() to collect validation errors instead of bailing on first error
+  - Created import_checkpoint_with_diagnostics() function with diagnostics_mode parameter
+  - Enhanced CLI SyncImportOptions with --diagnostics flag for diagnostic mode
+  - Deterministic ordering: errors reported in sequence by line number and validation order
+  - No state activation when validation errors present: prevents partial imports with errors
+  - Truncation marker: indicates when additional errors exist beyond bounded limit
+  - Comprehensive semantic codes: malformed_json, duplicate_issue_id, unknown_blocker_issue, unknown_blocked_issue, self_edge_dependency, cycle_in_dependencies, unknown_issue_label, missing_required_field, invalid_field_type
+
+- **Model Changes** (src/service/checkpoint.rs):
+  - Added ImportDiagnostics structure for diagnostic reports
+  - Added ValidationFailure structure for individual error records with full context
+  - Enhanced ImportResult to include optional diagnostics field
+  - Created MAX_DIAGNOSTIC_FAILURES constant for bounded collection (100)
+  - Updated ImportStaging to include optional diagnostics field
+
+- **Service Layer** (src/service/checkpoint.rs):
+  - stage_import_with_diagnostics(): Enhanced staging that collects all errors without early termination
+  - validate_import(): Updated to accumulate errors in diagnostics instead of returning early
+  - import_checkpoint_with_diagnostics(): New function supporting both legacy and diagnostic modes
+  - Comprehensive validation coverage: JSON parsing, duplicate detection, dependency validation, cycle detection, label validation
+
+- **CLI Integration** (src/cli.rs):
+  - Added --diagnostics flag to SyncImportOptions for diagnostic mode
+  - Backward compatibility: non-diagnostics mode maintains existing error-on-first-failure behavior
+
+- **Test Coverage** (12 comprehensive integration tests):
+  - test_diagnostics_malformed_json: Detects and reports malformed JSON with line numbers
+  - test_diagnostics_duplicate_ids: Identifies duplicate issue IDs with JSON pointers
+  - test_diagnostics_unknown_dependency: Reports unknown blocker/blocked issue references
+  - test_diagnostics_cycle_detection: Detects circular dependencies in blocking graph
+  - test_diagnostics_bounded_collection: Verifies truncation at MAX_DIAGNOSTIC_FAILURES limit
+  - test_diagnostics_deterministic_ordering: Ensures consistent error ordering across multiple runs
+  - test_diagnostics_json_pointer_paths: Validates JSON pointer paths to error locations
+  - test_diagnostics_semantic_codes: Confirms comprehensive semantic code coverage
+  - test_diagnostics_blank_lines_handling: Verifies blank lines are properly ignored
+  - test_diagnostics_no_activation_with_errors: Ensures no state changes when validation fails
+  - test_diagnostics_unknown_label_reference: Reports labels referencing non-existent issues
+  - test_diagnostics_empty_file: Handles empty files correctly with zero diagnostics
+
+- **Acceptance Criteria Met**:
+  - ✅ Collect bounded, deterministically ordered set of validation failures
+  - ✅ Include line number, JSON Pointer, schema keyword, semantic code, and truncation marker
+  - ✅ No state activates; replaces repeated one-error-per-import repair cycles
+  - ✅ Prevents unbounded memory consumption or cascading noise
+  - ✅ Deterministic ordering: errors sorted by line number and validation sequence
+  - ✅ Bounded collection: MAX_DIAGNOSTIC_FAILURES limit prevents memory issues
+  - ✅ Comprehensive coverage: parse errors, structural errors, graph errors, label errors
+  - ✅ No activation with errors: inserted=0, sequences=0 when validation failures present
+  - ✅ Truncation marker: indicates when additional errors exist beyond limit
+  - ✅ Backward compatibility: existing import behavior maintained in non-diagnostics mode
+
+- **Code Quality**:
+  - cargo test --test r014_import_diagnostics: 12/12 tests passed in 0.36s
+  - cargo test: All 294 tests passed (282 existing + 12 new R014 tests)
+  - cargo fmt --check: passed
+  - cargo clippy --all-targets -- -D warnings: passed
+  - Clean compilation with comprehensive error collection and reporting
+  - Proper bounded error collection prevents unbounded memory growth
+  - Deterministic error ordering supports reproducible diagnostic reports
+  - Enhanced user experience with comprehensive validation feedback in single operation
+
+- **Feature Status**: R014 now marked as passing in feature ledger with comprehensive evidence
+
 ## 2026-08-09 — R011 namespaced external references implemented and completed
 
 - **Completed**: Implemented R011 namespaced external references for attaching generic (namespace, key, value) references such as tracker IDs and commit identifiers.

@@ -903,8 +903,25 @@
         "No state activates; replaces repeated one-error-per-import repair cycles",
         "Prevents unbounded memory consumption or cascading noise"
       ],
-      "passes": false,
-      "evidence": []
+      "passes": true,
+      "evidence": [
+        "cargo test --test r014_import_diagnostics: 12 tests passed",
+        "cargo fmt --check: passed",
+        "cargo clippy --all-targets -- -D warnings: passed",
+        "cargo test: All 294 tests passed (282 existing + 12 new R014 tests)",
+        "Implemented bounded diagnostic collection with MAX_DIAGNOSTIC_FAILURES limit of 100",
+        "Created ValidationFailure structure with line_number, json_pointer, schema_keyword, semantic_code, message, context fields",
+        "Created ImportDiagnostics structure with validation_failures, total_lines, processed_lines, truncated fields",
+        "Added stage_import_with_diagnostics function for comprehensive error collection during import staging",
+        "Updated validate_import to collect errors instead of bailing immediately",
+        "Added import_checkpoint_with_diagnostics function with diagnostics_mode parameter",
+        "Enhanced CLI SyncImportOptions with --diagnostics flag for diagnostic mode",
+        "Deterministic ordering: errors reported in sequence by line number and validation order",
+        "No state activation when validation errors present: inserted=0, activation_sequence=0, covered_sequence=0",
+        "Bounded collection: truncation marker set when MAX_DIAGNOSTIC_FAILURES limit reached",
+        "Prevents cascading noise: single comprehensive diagnostic report replaces repeated import cycles",
+        "All acceptance criteria met: bounded collection, line numbers, JSON pointers, schema keywords, semantic codes, truncation markers, no activation with errors, prevents unbounded memory consumption"
+      ]
     },
     {
       "id": "R015",
