@@ -64,6 +64,12 @@ pub struct SchemaEntry {
     pub document_kind: String,
     /// Whether validation is supported
     pub validate: bool,
+    /// Whether this schema can be read (deserialized/parsed)
+    pub readable: bool,
+    /// Whether this schema can be written (serialized/emitted)
+    pub writable: bool,
+    /// Optional description of lossy support or read-only limitations
+    pub lossy: Option<String>,
     /// Operations that consume this document
     pub consume: Vec<String>,
     /// Operations that emit this document
@@ -117,6 +123,9 @@ pub fn generate_capabilities(profile: &str) -> Result<Capabilities> {
                 schema_ref: "urn:bead-rs:schema:event:native-v1".to_string(),
                 document_kind: "audit_event".to_string(),
                 validate: true,
+                readable: true,
+                writable: true,
+                lossy: None,
                 consume: vec![],
                 emit: vec!["checkpoint-set-v1".to_string()],
             },
@@ -124,6 +133,9 @@ pub fn generate_capabilities(profile: &str) -> Result<Capabilities> {
                 schema_ref: "urn:bead-rs:schema:issue:native-v1".to_string(),
                 document_kind: "issue".to_string(),
                 validate: true,
+                readable: true,
+                writable: true,
+                lossy: None,
                 consume: vec!["sync.import-only".to_string()],
                 emit: vec![
                     "sync.flush-only".to_string(),
@@ -134,6 +146,9 @@ pub fn generate_capabilities(profile: &str) -> Result<Capabilities> {
                 schema_ref: "urn:bead-rs:schema:migration-receipt:native-v1".to_string(),
                 document_kind: "migration_receipt".to_string(),
                 validate: true,
+                readable: true,
+                writable: true,
+                lossy: None,
                 consume: vec![],
                 emit: vec!["migrate".to_string(), "checkpoint-set-v1".to_string()],
             },
@@ -141,6 +156,9 @@ pub fn generate_capabilities(profile: &str) -> Result<Capabilities> {
                 schema_ref: "urn:bead-rs:schema:provenance-receipt:native-v1".to_string(),
                 document_kind: "provenance_receipt".to_string(),
                 validate: true,
+                readable: true,
+                writable: true,
+                lossy: None,
                 consume: vec!["checkpoint-set-v1".to_string()],
                 emit: vec!["checkpoint-set-v1".to_string()],
             },
@@ -148,6 +166,9 @@ pub fn generate_capabilities(profile: &str) -> Result<Capabilities> {
                 schema_ref: "urn:bead-rs:schema:checkpoint-pointer:native-v1".to_string(),
                 document_kind: "checkpoint_pointer".to_string(),
                 validate: true,
+                readable: true,
+                writable: true,
+                lossy: None,
                 consume: vec!["checkpoint-set-v1".to_string()],
                 emit: vec!["checkpoint-set-v1".to_string()],
             },
@@ -155,6 +176,9 @@ pub fn generate_capabilities(profile: &str) -> Result<Capabilities> {
                 schema_ref: "urn:bead-rs:schema:checkpoint-manifest:native-v1".to_string(),
                 document_kind: "checkpoint_manifest".to_string(),
                 validate: true,
+                readable: true,
+                writable: true,
+                lossy: None,
                 consume: vec!["checkpoint-set-v1".to_string()],
                 emit: vec!["checkpoint-set-v1".to_string()],
             },

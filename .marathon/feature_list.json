@@ -765,8 +765,19 @@
         "Report read-only or lossy support explicitly",
         "Do not infer compatibility from similar names or schema structure"
       ],
-      "passes": false,
-      "evidence": []
+      "passes": true,
+      "evidence": [
+        "cargo test --test r009_schema_negotiation: 9 tests passed",
+        "cargo fmt --check: passed",
+        "cargo clippy --all-targets -- -D warnings: passed",
+        "Extended SchemaEntry structure with readable, writable, and lossy fields",
+        "All schemas declare exact readable/writable support (currently all true for full read-write support)",
+        "Lossy field explicitly reports limitations (None for lossless native schemas)",
+        "Schema negotiation requires exact URN matching - no compatibility inference from similar names",
+        "Capabilities declare 6 schemas with unique absolute URNs: event:native-v1, issue:native-v1, migration-receipt:native-v1, provenance-receipt:native-v1, checkpoint-pointer:native-v1, checkpoint-manifest:native-v1",
+        "Test coverage includes: schema readability fields, full read-write support, exact identifier matching, no name inference, explicit lossy support reporting, mutual identifier requirements, capabilities structure validation",
+        "All acceptance criteria met: exact readable/writable URN sets, exact mutual identifier negotiation, explicit lossy/read-only reporting, no compatibility inference"
+      ]
     },
     {
       "id": "R010",

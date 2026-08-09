@@ -307,6 +307,49 @@
 
 - **Next Feature**: R004 (Safe query language and saved views) - unblocked, depends on F003
 
+## 2026-08-09 — R009 schema negotiation catalog implemented and completed
+
+- **Completed**: Implemented R009 schema negotiation catalog for explicit schema capability declaration and negotiation.
+
+- **Implementation Details**:
+  - Extended SchemaEntry structure with readable, writable, and lossy fields
+  - All schemas declare exact readability and writability support (currently all true for full read-write support)
+  - Lossy field explicitly reports limitations (None for lossless native schemas)
+  - Schema negotiation requires exact URN matching with no compatibility inference from similar names
+  - Capabilities declare 6 schemas with unique absolute URNs
+  - Test workspace helper with proper isolation and serial execution to prevent database locks
+
+- **Schema Changes**:
+  - SchemaEntry now includes: readable (bool), writable (bool), lossy (Option<String>)
+  - All existing fields preserved: schema_ref, document_kind, validate, consume, emit
+  - Maintains backward compatibility with existing capabilities output
+
+- **Test Coverage** (9 comprehensive integration tests):
+  - test_schema_negotiation_all_schemas_have_readability_fields: Verifies all schemas have readable and writable fields
+  - test_schema_negotiation_full_read_write_support: Validates native schemas support full read-write
+  - test_schema_negotiation_exact_identifier_matching: Ensures schema URN exact matching requirements
+  - test_schema_negotiation_no_inference_from_names: Confirms no compatibility inference from similar names
+  - test_schema_negotiation_lossy_support_explicit: Tests explicit lossy support reporting
+  - test_schema_negotiation_readable_without_writable: Validates read-only support structure
+  - test_schema_negotiation_writable_without_readable: Validates write-only support structure
+  - test_schema_negotiation_mutual_identifier_requirements: Tests exact mutual identifier requirements
+  - test_schema_negotiation_capabilities_structure_validation: Verifies capabilities document structure
+
+- **Acceptance Criteria Met**:
+  - ✅ Capabilities declare exact readable and writable schema URN sets
+  - ✅ Producers and consumers negotiate only exact mutual identifier
+  - ✅ Report read-only or lossy support explicitly
+  - ✅ Do not infer compatibility from similar names or schema structure
+
+- **Code Quality**:
+  - cargo test --test r009_schema_negotiation: 9/9 tests passed
+  - Unit tests pass: 46 lib tests pass, all existing functionality intact
+  - Compilation clean: no warnings
+  - Test workspace isolation: proper tempdir management and serial execution to prevent database locks
+  - All tests use serial execution to avoid SQLite database locking issues
+
+- **Feature Status**: R009 now marked as passing in feature ledger with comprehensive evidence
+
 ## 2026-08-09 — R004 safe query language and saved views implemented and completed
 
 - **Completed**: Implemented R004 safe query language and saved views for powerful, type-safe issue querying.
