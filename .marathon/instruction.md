@@ -1,9 +1,9 @@
 # bead-rs clean-room implementation mission
 
-You are building the governed bootstrap MVP of `bead-rs`, an independent Rust
-task-coordination system. Marathon owns execution only through the final G4
-handoff described in `docs/plan/plan.md`; it must not implement Phase 5 work.
-Work autonomously in small, verified increments.
+You are completing `bead-rs`, an independent Rust task-coordination system.
+Marathon owns implementation of the full reviewed project: F001-F017 followed
+by every adopted R001-R024 roadmap item. Work autonomously on `main` in small,
+verified increments until full-project completion.
 
 ## Mandatory clean-room boundary
 
@@ -22,19 +22,23 @@ Work autonomously in small, verified increments.
 
 ## Start every iteration
 
-1. Run `pwd` and confirm it is the `bead-rs` repository.
+1. Run `pwd`; if the launcher starts in `.marathon/`, change to its parent,
+   then confirm the working directory is the `bead-rs` repository root.
 2. Read `AGENTS.md`, `PROVENANCE.md`, `docs/plan/plan.md`,
    `.marathon/progress.md`, and `.marathon/feature_list.json`.
 3. Read `git status --short` and the recent Git log. Preserve unfinished work.
 4. Run `cargo test` to establish the current baseline.
 5. If Gate G0 artifacts or synchronized controls are incomplete, perform one
    coherent Phase 0 governance increment before feature implementation.
-6. Otherwise select the earliest highest-priority feature from F001-F011 whose
+6. Otherwise select the earliest highest-priority feature from F001-F017 whose
    dependencies pass and whose `passes` value is false.
+7. After F001-F017 pass, materialize R001-R024 into the feature ledger from
+   plan section 12, preserving their exact scope and core-incorporated versus
+   extension dispositions, then implement the earliest unblocked extension.
 
-If `.marathon/BOOTSTRAP_HANDOFF` has `state: final`, report it and exit without
-changing source. `.marathon/COMPLETE` remains reserved for the later full 0.1
-release and must never be created by this Marathon session.
+The final `BOOTSTRAP_HANDOFF` is historical evidence from the abandoned early
+cutover and is not a stop condition. Do not start or delegate implementation to
+NEEDLE. `.marathon/COMPLETE` is the only completion sentinel.
 
 ## Work rules
 
@@ -48,10 +52,17 @@ release and must never be created by this Marathon session.
 - Treat malformed machine input as an error, never as an empty result.
 - Create all tests and fixtures independently.
 - Do not weaken, delete, skip, or rewrite a test to manufacture a pass.
-- Do not change feature requirements. You may change only `passes` and
-  `evidence` after verification.
-- Do not select F012-F017 or F014 under Marathon. After F011, follow Phases
-  2-4 and Gates G2-G4 in the plan rather than continuing the feature list.
+- Do not change existing feature requirements. You may change only `passes`
+  and `evidence` after verification. The one permitted ledger expansion is to
+  add R001-R024 verbatim from plan section 12 after F001-F017 pass.
+- Implement F012-F017 and F014 under Marathon, then R001-R024. For roadmap
+  items marked core-incorporated, record exact evidence from the owning F-item;
+  do not duplicate implementation.
+- Treat external authorship and independent review as separate iterations and
+  record author, reviewer, artifact hash, and review result. A reviewing
+  iteration must not modify the artifact it approves. Never self-assert review.
+- If one feature is waiting for independent review, work on another unblocked
+  feature. Do not weaken a gate merely to keep the loop moving.
 - Keep the repository buildable and tested at every commit.
 
 ## End every iteration
@@ -68,27 +79,24 @@ release and must never be created by this Marathon session.
 8. Commit the coherent increment with a descriptive message and push only to
    the configured Forgejo `origin` on `main`. Never force-push.
 
-## Bootstrap handoff
+## Full-project completion
 
-Only after F001-F011 pass:
+Only after F001-F017 and R001-R024 have verified dispositions:
 
 1. Run `cargo fmt --check`.
 2. Run `cargo clippy --all-targets -- -D warnings`.
 3. Run `cargo test`.
-4. Complete the G2 installed-artifact, provider, consumer, checkpoint, and
-   provenance gates without claiming version 0.1.
-5. Materialize and independently reconcile the remaining reviewed work in a
-   fresh native workspace exactly as Phase 3 and G3 require.
-6. Run the disposable canary, stop/fence Marathon, and commit
-   `.marathon/BOOTSTRAP_HANDOFF` with `state: pending` before any canonical
-   NEEDLE mutation.
-7. Run the canonical canary under provisional native authority and commit the
-   same record with `state: final` only after all G4 evidence passes.
-
-The handoff record includes the bootstrap commit, artifact hash, checkpoint
-hash, mapping hash, NEEDLE configuration revision, UTC transition time, and
-evidence locators. Native beads become the sole work-state authority at the
-pending record. Never resume feature implementation under Marathon afterward.
+4. Run every final release gate in plan section 13, including installed-package,
+   checkpoint restore, profile conformance, stress, help/man-page, provenance,
+   and consumer-side NEEDLE compatibility verification. The compatibility
+   canary is verification only; it does not transfer execution authority.
+5. Generate and verify the final release-evidence report against the exact
+   commit and artifact hashes.
+6. Confirm the working tree is clean, every coherent increment is committed and
+   pushed to Forgejo `origin/main`, and the ledger contains no false feature.
+7. Create `.marathon/COMPLETE` containing `state: complete`, the final commit,
+   artifact hash, evidence-report hash, verification commands/results, and UTC
+   completion time. Do not commit this ignored runtime sentinel.
 
 Do not run `cargo publish`. Publication is a separate human-authorized release
-operation. If anything remains incomplete, do not finalize the handoff.
+operation. If anything remains incomplete, do not create `.marathon/COMPLETE`.

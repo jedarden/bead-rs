@@ -3,10 +3,10 @@
   "release": "0.1.0",
   "rules": {
     "selection": "Choose the lowest priority number, then listed order, whose dependencies pass.",
-    "mutation": "Only passes and evidence may be changed by implementation iterations.",
-    "completion": "Every feature must pass before the later full-release .marathon/COMPLETE is created.",
-    "marathon_scope": "Marathon may implement only F001-F011, then must complete plan Gates G2-G4 and stop after BOOTSTRAP_HANDOFF reaches final.",
-    "post_handoff_authority": "After the pending handoff record, native bead state and generated release evidence are authoritative; this ledger is frozen audit input."
+    "mutation": "Existing requirements are immutable; only passes and evidence may change. After F001-F017 pass, add R001-R024 verbatim from plan section 12 exactly once.",
+    "completion": "Every F001-F017 feature and every adopted R001-R024 roadmap item must pass or have a verified core-incorporated disposition before .marathon/COMPLETE is created.",
+    "marathon_scope": "Marathon owns full-project implementation on main through F001-F017 and R001-R024. The earlier BOOTSTRAP_HANDOFF is historical evidence and does not stop execution.",
+    "post_handoff_authority": "For this resumed completion run, this ledger and the plan are authoritative. Native beads are an optional derived execution aid; NEEDLE must not become the sole authority before .marathon/COMPLETE."
   },
   "features": [
     {

@@ -1667,20 +1667,19 @@ artifact and public CLI in disposable paths. It must prove:
 
 ## 10. Marathon execution order
 
-Phases 0-4 and Gates G0-G4 are complete and retained below as the immutable
-bootstrap and handoff history. Active execution begins at Phase 5 under NEEDLE
-and native bead authority. Do not relaunch Marathon or mutate its frozen
-feature ledger to track post-handoff completion; generate release evidence
-from the native bead mapping and final artifact instead.
+Phases 0-4 and Gates G0-G4 are complete and retained below as bootstrap and
+handoff history. By owner decision on 2026-08-08, the attempted early cutover
+is superseded: Marathon resumes on `main` as execution authority for Phase 5,
+Phase 6, and full-project completion. The historical handoff record remains
+evidence but is no longer a stop condition. NEEDLE may be used only as a
+consumer-side compatibility canary until `.marathon/COMPLETE` exists.
 
-Marathon is the bootstrap mechanism, not the permanent coordinator. The
-feature ledger remains execution authority through Gate G3. Gate G4 transfers
-that authority once, explicitly, to the native bead workspace. The source plan,
-handoff-time Marathon ledger snapshot, reviewed mapping, and checkpoint remain
-immutable audit inputs after handoff; they are not independently mutable
-competing ledgers. Subsequent feature evidence lives on the mapped native beads
-and in a generated release-evidence report; it is never hand-maintained in both
-stores.
+The earlier design treated Marathon only as a bootstrap mechanism and Gate G4
+as a one-way transfer to the native bead workspace. The 2026-08-08 owner
+decision supersedes that execution boundary because the cutover was premature.
+For the resumed run, the source plan and Marathon ledger are authoritative;
+native bead state is derived implementation evidence and must not compete with
+or stop the Marathon loop.
 
 Before the bootstrap implementation began, synchronize `.marathon/feature_list.json`,
 `.marathon/instruction.md`, the Marathon runner/watcher, and documentation with
@@ -1844,7 +1843,7 @@ returns authority to the frozen Marathon snapshot through a reviewed ADR and
 committed reversal record. Never run Marathon and NEEDLE as concurrent writers
 or merge their divergent work-state claims.
 
-### Phase 5: complete version 0.1 under NEEDLE
+### Phase 5: complete version 0.1 under Marathon
 
 1. **F012:** external profile matrices, independent fixtures, loss reports.
 2. **F013:** dry-run, path safety, atomic migration output, receipts.
@@ -1873,20 +1872,17 @@ sub-gates.
 **Gate G5 — version 0.1:** every F001-F017 feature has concrete passing
 evidence, every traceability row is satisfied or explicitly out of scope, and
 no post-0.1 R-extension bead is ready. All section 13 final release gates pass.
-Only G5 permits `.marathon/COMPLETE`.
+G5 permits the version 0.1 milestone but not full-project
+`.marathon/COMPLETE`, which additionally requires Phase 6.
 
-### Phase 6: post-0.1 roadmap under NEEDLE
+### Phase 6: complete the adopted post-0.1 roadmap under Marathon
 
-R001-R024 do not become executable merely because they appear in section 12.
-Phase 3 may materialize adopted R-items early so the entire reviewed plan has a
-durable mapping, but every independently executable R-extension bead is created
-in native `deferred` state through version 0.1; the bootstrap has no implicit
-milestone-blocking feature. G3 and G5 assert that no such bead is ready.
-After 0.1, an R-item becomes eligible only when its normative specification and
-required ADRs exist, dependencies are explicit, and a release owner assigns it
-to an active milestone and records an explicit `deferred`-to-`open` activation.
-NEEDLE then executes eligible native beads using the same evidence, checkpoint,
-and clean-room rules.
+R001-R024 become executable after G5 in their listed order subject to explicit
+dependencies and required specifications/ADRs. Core-incorporated items receive
+verified dispositions tied to their owning F-feature rather than duplicate
+implementations. Marathon records each roadmap item in the release ledger,
+implements every remaining extension, and continues until full-project gates
+permit `.marathon/COMPLETE`.
 
 ### Decision records and change governance
 
@@ -2275,7 +2271,7 @@ claims `br-v1`/`bf-v1` compatibility.
 
 ### Final version 0.1 gates
 
-Before `.marathon/COMPLETE`:
+Before declaring version 0.1 complete:
 
 - F001-F017 have concrete passing evidence;
 - the schema-valid generated release-evidence report maps every F-item to
@@ -2311,6 +2307,23 @@ Before `.marathon/COMPLETE`:
 - no `br` shim, upstream-derived artifact, credential, real workspace, or
   disposable research database is packaged;
 - compatibility claims name exact profiles and known losses;
+- publication remains separately human-authorized.
+
+### Full-project Marathon gates
+
+Before `.marathon/COMPLETE`:
+
+- every R001-R024 item has a ledger entry with either verified
+  core-incorporated evidence or a passing extension implementation;
+- every roadmap specification, ADR, migration, conformance scenario, and
+  documentation requirement is satisfied at the final commit;
+- formatting, Clippy, the complete test suite, package installation, recovery,
+  stress/capacity, recursive help/man-page, provenance, and consumer-side
+  NEEDLE compatibility gates are rerun against the final artifact;
+- the release-evidence report covers F001-F017 and R001-R024 and passes the
+  noninteractive verifier with exact commit and artifact hashes;
+- the working tree is clean and every coherent increment is pushed to
+  Forgejo `origin/main`; and
 - publication remains separately human-authorized.
 
 ## 14. Deferred feature notes
