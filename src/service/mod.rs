@@ -28,8 +28,7 @@ pub use changes::{
 };
 pub use checkpoint::{flush_checkpoint, import_forensic_checkpoint, publish_forensic_checkpoint};
 pub use claim::{
-    claim_issue_with_lease, claim_issue_with_policy, claim_issue_with_trace, ClaimResult,
-    EnhancedClaimResult,
+    claim_issue_with_lease, claim_issue_with_policy, claim_issue_with_trace, EnhancedClaimResult,
 };
 pub use conditions::ConditionExpr;
 pub use data::{get_data, list_data, remove_data, set_data};
@@ -59,10 +58,10 @@ pub use rehearsal::run_recovery_rehearsal;
 // Scheduling types are part of R019 public API but may show as unused during compilation
 #[allow(unused_imports)]
 pub use scheduling::{AttemptTier, GraphMetrics, SchedulingPolicy, SchedulingState};
-pub use why::{
-    explain_why, BlockerAnalysis, BlockerDetail, GraphImpact, LegalOperation, RankingFactors,
-    WhyExplanation,
-};
+pub use why::{explain_why, WhyExplanation};
+
+pub mod policy;
+pub use policy::{FindingCategory, FindingSeverity, PolicyDiagnosticStatus, PolicyDiagnostics};
 
 // Placeholder modules for future implementation
 // pub mod migrate;

@@ -111,6 +111,10 @@ pub enum Command {
     #[command(subcommand)]
     Recurrence(RecurrenceCommand),
 
+    /// Validate workspace policy and scheduling configuration
+    #[command(subcommand)]
+    Policy(PolicyCommand),
+
     /// Not yet implemented
     #[command(subcommand)]
     #[allow(clippy::enum_variant_names)]
@@ -1606,6 +1610,48 @@ pub enum RecurrenceCommand {
 
     /// Show materialization history for a template
     History(RecurrenceHistoryOptions),
+}
+
+/// Policy validation subcommands
+#[derive(Subcommand, Debug)]
+pub enum PolicyCommand {
+    /// Validate workspace policy and scheduling configuration
+    #[command(
+        name = "check",
+        about = "Validate workspace policy and scheduling configuration",
+        long_about = "Diagnose contradictory, unreachable, redundant, and ineffective scheduling
+or retention configuration without making any changes to the workspace.
+
+This command performs comprehensive validation of:
+  - Scheduling policy configuration and parameters
+  - Retention and aging settings
+  - Dependency and readiness rules
+  - Version compatibility issues
+
+Policy lint is purely advisory and will never make a bead eligible or ineligible.
+It only identifies potential configuration issues that may affect behavior.
+
+EXAMPLES:
+  bead policy check
+  bead policy check --format json"
+    )]
+    Check(PolicyCheckOptions),
+}
+
+/// Options for policy check command
+#[derive(Parser, Debug)]
+pub struct PolicyCheckOptions {
+    /// Output format (text or json)
+    #[arg(long, default_value = "text")]
+    pub format: String,
+
+    /// Scheduling policy to validate (defaults to current workspace policy)
+    #[arg(long)]
+    pub policy: Option<String>,
+
+    /// Policy version to validate (defaults to current workspace version)
+    #[arg(long)]
+    pub policy_version: Option<String>,
 }
 
 /// Options for creating a recurrence template

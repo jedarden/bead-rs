@@ -482,7 +482,7 @@ fn get_legal_operations(
                     operation: op.to_string(),
                     is_valid: false,
                     invalid_reason: Some("issue is closed".to_string()),
-                    command_example: Some(format!("bead {} {}", op.to_string(), issue.id)),
+                    command_example: Some(format!("bead {op} {}", issue.id)),
                 });
             }
         }
@@ -602,15 +602,4 @@ fn get_dependencies(
     }
 
     Ok(dependencies)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_blocker_analysis_empty() {
-        // Test blocker analysis with no blockers
-        assert!(true); // Placeholder test
-    }
 }

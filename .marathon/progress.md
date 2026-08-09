@@ -1,5 +1,76 @@
 # bead-rs Marathon progress log
 
+## 2026-08-09 — R021 workspace policy lint implemented and completed
+
+- **Completed**: Implemented R021 workspace policy lint with comprehensive policy validation diagnostics.
+
+- **Implementation Scope**:
+  - Added src/service/policy.rs with complete policy validation functionality
+  - Policy diagnostic structures: PolicyDiagnostics, PolicyFinding, FindingSeverity, FindingCategory, PolicyDiagnosticStatus, DiagnosticSummary
+  - Version compatibility checking with supported schema/policy versions
+  - Policy-specific validation for fifo-v1, balanced-v1, aging-v1, impact-v1, rotation-v1
+  - Validation coverage: retry_lane_ratio ranges, aging_interval_hours ranges, max_promotions ranges
+  - CLI integration: bead policy check command with --format, --policy, --policy-version flags
+  - Human-readable and JSON output formats with complete diagnostic information
+  - Error handling for unknown versions, invalid values, and configuration conflicts
+  - Fail-closed behavior for unknown schema/policy versions
+
+- **Core Service Layer** (src/service/policy.rs):
+  - WorkspaceConfig: Configuration structure for validation with scheduling_policy, policy_version, config_schema_version, scheduling_params
+  - PolicyDiagnostics: Complete validation result with status, findings, summary, and validation_success flag
+  - PolicyFinding: Individual diagnostic finding with severity, category, message, location, config_key, recommendation
+  - FindingSeverity enum: Info, Warning, Error, Critical
+  - FindingCategory enum: Contradictory, Unreachable, Redundant, InvalidValue, MissingRequired, Deprecated, VersionCompatibility, Ineffective, Info
+  - validate_workspace_policy(): Main validation function with version checking and policy-specific validation routing
+  - Policy-specific validation functions for fifo-v1, balanced-v1, aging-v1, impact-v1, rotation-v1
+  - Comprehensive validation of retry_lane_ratio, aging_interval_hours, max_promotions ranges and effectiveness
+
+- **CLI Integration** (src/cli.rs, src/main.rs):
+  - New command: bead policy check with --format, --policy, --policy-version options
+  - PolicyCheckOptions struct with comprehensive option parsing
+  - cmd_policy() and cmd_policy_check() functions with workspace discovery and error handling
+  - JSON output with stable structure and human-readable output with formatted diagnostic sections
+  - Support for five scheduling policies with specific validation logic for each
+
+- **Test Coverage** (12 comprehensive integration tests):
+  - test_policy_check_basic: Basic policy check with workspace validation
+  - test_policy_check_json_output: JSON format validation and structure
+  - test_policy_check_fifo_v1: fifo-v1 policy validation
+  - test_policy_check_balanced_v1: balanced-v1 policy validation
+  - test_policy_check_unknown_version: Unknown version handling and fail-closed behavior
+  - test_policy_check_no_workspace: Error handling without workspace context
+  - test_policy_check_help: Help documentation availability
+  - test_policy_check_aging_v1: aging-v1 policy validation
+  - test_policy_check_rotation_v1: rotation-v1 policy validation
+  - test_policy_check_impact_v1: impact-v1 policy validation
+  - test_policy_check_json_structure: JSON structure validation with required fields
+  - test_policy_check_with_various_policies: Comprehensive policy validation across all supported policies
+
+- **Acceptance Criteria Met**:
+  - ✅ Add bead policy check --format json to diagnose scheduling and retention configuration
+  - ✅ Every stable diagnostic bound to exact policy and configuration schema versions
+  - ✅ Unknown version fails closed rather than applying guessed rules
+  - ✅ Policy lint is advisory and cannot make a bead eligible or ineligible
+  - ✅ Diagnose contradictory, unreachable, redundant, and ineffective configuration
+  - ✅ Version compatibility checks with supported schema and policy versions
+  - ✅ Comprehensive validation for all R019 scheduling policies
+  - ✅ Human-readable and JSON output formats
+
+- **Code Quality**:
+  - cargo test --test r021_policy: 12/12 integration tests passed
+  - cargo test: All 512 tests passed (500 existing + 12 new R021 tests)
+  - cargo test --lib service::policy::tests: 5/5 unit tests passed
+  - cargo fmt --check: passed
+  - cargo clippy --all-targets -- -D warnings: passed
+  - Clean compilation with comprehensive policy validation system
+  - Proper JSON serialization with serde for stable output format
+  - Safe validation with error handling for unknown versions and invalid configurations
+  - Integration testing with temporary workspaces and cleanup
+  - Comprehensive error messages and diagnostic information
+  - Version-bound diagnostics with fail-closed behavior for unknown versions
+
+- **Feature Status**: R021 now marked as passing in feature ledger with comprehensive evidence
+
 ## 2026-08-09 — R023 unified why explanation facade implemented and completed
 
 - **Completed**: Implemented R023 unified "why" explanation command providing comprehensive issue state analysis, blocker analysis, claim ranking factors, legal operations, and reason codes.

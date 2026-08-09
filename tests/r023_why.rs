@@ -149,7 +149,10 @@ fn test_why_explanation_assigned_issue() {
     let issue_id = create_test_issue(workspace_path, "Assigned Issue");
 
     // Assign the issue
-    run_bead_command(&["update", &issue_id, "--assignee", "worker1"], workspace_path);
+    run_bead_command(
+        &["update", &issue_id, "--assignee", "worker1"],
+        workspace_path,
+    );
 
     // Get why explanation
     let output = run_bead_command(&["why", "--id", &issue_id], workspace_path);
@@ -173,7 +176,10 @@ fn test_why_explanation_closed_issue() {
     let issue_id = create_test_issue(workspace_path, "Closed Issue");
 
     // Close the issue
-    run_bead_command(&["close", &issue_id, "--reason", "Completed"], workspace_path);
+    run_bead_command(
+        &["close", &issue_id, "--reason", "Completed"],
+        workspace_path,
+    );
 
     // Get why explanation
     let output = run_bead_command(&["why", "--id", &issue_id], workspace_path);
@@ -228,7 +234,14 @@ fn test_why_explanation_in_progress_issue() {
 
     // Update to in_progress with assignment
     run_bead_command(
-        &["update", &issue_id, "--status", "in_progress", "--assignee", "worker1"],
+        &[
+            "update",
+            &issue_id,
+            "--status",
+            "in_progress",
+            "--assignee",
+            "worker1",
+        ],
         workspace_path,
     );
 
@@ -300,7 +313,10 @@ fn test_why_explanation_deferred_status() {
     let issue_id = create_test_issue(workspace_path, "Deferred Issue");
 
     // Defer the issue
-    run_bead_command(&["update", &issue_id, "--status", "deferred"], workspace_path);
+    run_bead_command(
+        &["update", &issue_id, "--status", "deferred"],
+        workspace_path,
+    );
 
     // Get why explanation
     let output = run_bead_command(&["why", "--id", &issue_id], workspace_path);

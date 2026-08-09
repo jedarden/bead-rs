@@ -8,6 +8,8 @@
 //! - Multiple versioned scheduling policies
 //! - Graph metrics caching for performance
 
+#![allow(dead_code)] // Public API methods not all used in current tests
+
 use crate::error::{Error, Result};
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -29,6 +31,7 @@ pub enum AttemptTier {
 
 impl AttemptTier {
     /// Convert from database integer
+    #[allow(dead_code)] // Public API method for future use
     pub fn from_i64(value: i64) -> Result<Self> {
         match value {
             0 => Ok(AttemptTier::Unproven),
@@ -43,8 +46,9 @@ impl AttemptTier {
     }
 
     /// Convert to database integer
-    pub fn to_i64(&self) -> i64 {
-        *self as i64
+    #[allow(dead_code)] // Public API method for future use
+    pub fn to_i64(self) -> i64 {
+        self as i64
     }
 }
 

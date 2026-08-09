@@ -9,7 +9,8 @@ mod store;
 use crate::cli::{Cli, Command};
 use crate::error::{Error, Result};
 use crate::service::checkpoint::CheckpointMode;
-use crate::service::claim::{ClaimResult, EnhancedClaimResult};
+use crate::service::claim::ClaimResult;
+use crate::service::policy::{validate_workspace_policy, WorkspaceConfig};
 use crate::service::scheduling::SchedulingPolicy;
 use crate::store::Store;
 use anyhow::Context;
@@ -55,6 +56,7 @@ fn execute_command(cli: Cli) -> Result<()> {
         Command::Data(opts) => cmd_data(opts),
         Command::Why(opts) => cmd_why(opts),
         Command::Recurrence(opts) => cmd_recurrence(opts),
+        Command::Policy(opts) => cmd_policy(opts),
         Command::Unimplemented(_) => Err(Error::cli_usage(
             "This command is not yet implemented. See `bead --help` for available commands.",
         )),
@@ -2073,8 +2075,157 @@ fn print_human_readable_why(why: &service::WhyExplanation) {
     if !why.reasons.is_empty() {
         println!("\n=== Reason Codes ===");
         for reason in &why.reasons {
-            println!("  - {}", format!("{:?}", reason));
+            println!("  - {:?}", reason);
         }
+    }
+}
+
+fn cmd_policy(opts: cli::PolicyCommand) -> Result<()> {
+    match opts {
+        cli::PolicyCommand::Check(check_opts) => cmd_policy_check(check_opts),
+    }
+}
+
+fn cmd_policy_check(opts: cli::PolicyCheckOptions) -> Result<()> {
+    // Discover workspace
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    let db_path = config.database_path();
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    // Build workspace configuration for validation
+    let workspace_config = build_workspace_config(&conn, &config, &opts)?;
+
+    // Run policy validation
+    let diagnostics = validate_workspace_policy(&workspace_config)?;
+
+    // Output results
+    if opts.format == "json" {
+        let output = serde_json::to_string_pretty(&diagnostics).map_err(|e| {
+            Error::Internal(anyhow::anyhow!(
+                "Failed to serialize policy diagnostics: {}",
+                e
+            ))
+        })?;
+        println!("{}", output);
+    } else {
+        print_human_readable_policy_diagnostics(&diagnostics);
+    }
+
+    Ok(())
+}
+
+/// Build workspace configuration for policy validation
+fn build_workspace_config(
+    _conn: &rusqlite::Connection,
+    _config: &store::WorkspaceConfig,
+    opts: &cli::PolicyCheckOptions,
+) -> Result<WorkspaceConfig> {
+    // Use provided policy or default to fifo-v1
+    let scheduling_policy = opts.policy.clone().unwrap_or_else(|| "fifo-v1".to_string());
+
+    // Use provided version or default to v1
+    let scheduling_policy_version = opts
+        .policy_version
+        .clone()
+        .unwrap_or_else(|| "v1".to_string());
+
+    let config_schema_version = "v1".to_string();
+
+    // Build empty parameters map (could be populated from database in future)
+    let scheduling_params = std::collections::HashMap::new();
+
+    Ok(WorkspaceConfig {
+        scheduling_policy,
+        scheduling_policy_version,
+        config_schema_version,
+        scheduling_params,
+    })
+}
+
+/// Print human-readable policy diagnostics
+fn print_human_readable_policy_diagnostics(diagnostics: &service::PolicyDiagnostics) {
+    println!("Workspace Policy Validation");
+    println!("\nConfiguration:");
+    println!("  Schema Version: {}", diagnostics.config_schema_version);
+    println!("  Policy Version: {}", diagnostics.policy_version);
+
+    println!("\nOverall Status: {}", format_status(&diagnostics.status));
+
+    if !diagnostics.validation_success {
+        println!("\n⚠️  Validation failed: Unknown configuration version");
+        println!("The workspace configuration uses schema or policy versions that are not");
+        println!("recognized by this version of bead-rs. Policy validation cannot continue.");
+        return;
+    }
+
+    if diagnostics.findings.is_empty() {
+        println!("\n✅ No policy issues found");
+        return;
+    }
+
+    println!("\nFindings ({} total):", diagnostics.summary.total_findings);
+    println!(
+        "  Critical: {} | Error: {} | Warning: {} | Info: {}",
+        diagnostics.summary.critical_count,
+        diagnostics.summary.error_count,
+        diagnostics.summary.warning_count,
+        diagnostics.summary.info_count
+    );
+
+    for finding in &diagnostics.findings {
+        println!("\n{}", format_severity(&finding.severity));
+        println!("  Category: {}", format_category(&finding.category));
+        println!("  {}", finding.message);
+
+        if let Some(ref location) = finding.location {
+            println!("  Location: {}", location);
+        }
+
+        if let Some(ref key) = finding.config_key {
+            println!("  Config Key: {}", key);
+        }
+
+        if let Some(ref recommendation) = finding.recommendation {
+            println!("  Recommendation: {}", recommendation);
+        }
+    }
+}
+
+/// Format diagnostic status
+fn format_status(status: &service::PolicyDiagnosticStatus) -> String {
+    match status {
+        service::PolicyDiagnosticStatus::Healthy => "✅ Healthy".to_string(),
+        service::PolicyDiagnosticStatus::Warning => "⚠️  Warning".to_string(),
+        service::PolicyDiagnosticStatus::Error => "❌ Error".to_string(),
+        service::PolicyDiagnosticStatus::UnknownVersion => "❓ Unknown Version".to_string(),
+    }
+}
+
+/// Format finding severity
+fn format_severity(severity: &service::FindingSeverity) -> String {
+    match severity {
+        service::FindingSeverity::Critical => "🔴 CRITICAL".to_string(),
+        service::FindingSeverity::Error => "❌ ERROR".to_string(),
+        service::FindingSeverity::Warning => "⚠️  WARNING".to_string(),
+        service::FindingSeverity::Info => "ℹ️  INFO".to_string(),
+    }
+}
+
+/// Format finding category
+fn format_category(category: &service::FindingCategory) -> String {
+    match category {
+        service::FindingCategory::Contradictory => "Contradictory".to_string(),
+        service::FindingCategory::Unreachable => "Unreachable".to_string(),
+        service::FindingCategory::Redundant => "Redundant".to_string(),
+        service::FindingCategory::InvalidValue => "Invalid Value".to_string(),
+        service::FindingCategory::MissingRequired => "Missing Required".to_string(),
+        service::FindingCategory::Deprecated => "Deprecated".to_string(),
+        service::FindingCategory::VersionCompatibility => "Version Compatibility".to_string(),
+        service::FindingCategory::Ineffective => "Ineffective".to_string(),
+        service::FindingCategory::Info => "Info".to_string(),
     }
 }
 

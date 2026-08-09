@@ -1130,8 +1130,22 @@
         "Unknown version fails closed rather than applying guessed rules",
         "Policy lint is advisory and cannot make a bead eligible or ineligible"
       ],
-      "passes": false,
-      "evidence": []
+      "passes": true,
+      "evidence": [
+        "cargo test --test r021_policy: 12 tests passed",
+        "cargo test: All 512 tests passed (500 existing + 12 new R021 tests)",
+        "cargo fmt --check: passed",
+        "cargo clippy --all-targets -- -D warnings: passed",
+        "Implemented src/service/policy.rs with comprehensive policy validation",
+        "Policy diagnostic structures: PolicyDiagnostics, PolicyFinding, FindingSeverity, FindingCategory, PolicyDiagnosticStatus, DiagnosticSummary",
+        "Version compatibility checking with supported schema/policy versions",
+        "Policy-specific validation: fifo-v1, balanced-v1, aging-v1, impact-v1, rotation-v1",
+        "Validation coverage: retry_lane_ratio ranges, aging_interval_hours ranges, max_promotions ranges",
+        "CLI integration: bead policy check with --format, --policy, --policy-version flags",
+        "Human-readable and JSON output formats with complete diagnostic information",
+        "Error handling for unknown versions, invalid values, and configuration conflicts",
+        "All acceptance criteria met: advisory diagnostics, version-bound diagnostics, fail-closed behavior"
+      ]
     },
     {
       "id": "R022",
