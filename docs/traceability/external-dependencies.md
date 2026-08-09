@@ -10,7 +10,7 @@ This document records the ownership and requirements for features that are block
 
 ### Current Status (2026-08-09)
 
-- **Specification templates created**: 
+- **Specification templates created**:
   - `research/specs/br-v1-profile.md` (template for external completion)
   - `research/specs/bf-v1-profile.md` (template for external completion)
 - **Templates include**: Required specification structure and conformance fixture requirements
@@ -25,7 +25,7 @@ This document records the ownership and requirements for features that are block
    - **Current State**: Template created, awaiting external author with br-v1 knowledge
    - **Evidence Required**: Independent fixture manifests recording author, date, requirement, independent creation method, and SHA-256
 
-2. **bf-v1 Fixture Specification**  
+2. **bf-v1 Fixture Specification**
    - **Owner**: [TO BE ASSIGNED - External owner required]
    - **Reviewer**: [TO BE ASSIGNED - Independent reviewer required]
    - **Deliverable**: Completed `research/specs/bf-v1-profile.md` with sanitized behavioral facts
@@ -34,7 +34,7 @@ This document records the ownership and requirements for features that are block
 
 3. **Conformance Fixtures**
    - **Owner**: [TO BE ASSIGNED - External owner required]
-   - **Reviewer**: [TO BE ASSIGNED - Independent reviewer required] 
+   - **Reviewer**: [TO BE ASSIGNED - Independent reviewer required]
    - **Deliverable**: Test fixtures under `research/fixtures/br-v1/` and `research/fixtures/bf-v1/` covering:
      - Field presence/absence matrices
      - Status value mappings
@@ -50,7 +50,7 @@ Before F012 implementation can proceed, the following must be assigned:
 
 1. **br-v1 Owner**: Person with knowledge of br-v1 format to complete specification
 2. **br-v1 Reviewer**: Independent reviewer to validate clean-room compliance
-3. **bf-v1 Owner**: Person with knowledge of bf-v1 format to complete specification  
+3. **bf-v1 Owner**: Person with knowledge of bf-v1 format to complete specification
 4. **bf-v1 Reviewer**: Independent reviewer to validate clean-room compliance
 5. **Fixture Owner**: Person to create conformance fixtures for both formats
 
@@ -67,58 +67,62 @@ F012 may proceed only when:
 
 ## F017: Adaptive Git-trackable sharded checkpoints with forensic history
 
-**Status**: ✅ COMPLETE - Specification implemented and verified
+**Status**: ❌ BLOCKED - Clean-room boundary violation requiring independent specification review
 
 **Feature Description**: Implement the full forensic checkpoint-set format with monolithic and sharded modes, immutable generation pointers, content-addressed objects, event provenance, and Git-trackable artifacts.
 
-### Completion Status (2026-08-09)
+### Clean-Room Violation (2026-08-09)
 
-- **✅ Specification implemented**: `research/specs/checkpoint-set-v1.md`
-- **✅ Author**: Marathon Coding (bead-rs implementation)
-- **✅ Source**: Based exclusively on plan.md sections 6.1-6.3 public design prose  
-- **✅ Clean-room compliance**: No inspection of upstream implementations
-- **✅ Implementation complete**: 179 tests passing (46 unit + 133 integration)
-- **✅ Evidence recorded**: Comprehensive implementation evidence in feature ledger
+**Issue**: F017 implementation proceeded without the required independent specification review as mandated by plan.md sections 6.1 and 15.
 
-### Implementation Summary
+**Sequence of Events**:
+1. 2026-08-09 04:14:07 UTC - Created `research/specs/checkpoint-set-v1.md` as DRAFT specification authored by implementer
+2. 2026-08-09 04:50:45 UTC - Implemented F017 forensic checkpoint system (36 minutes later)
 
-The implemented specification includes:
-- Complete record type definitions (issue, event, provenance_receipt)
-- Monolithic format with ordering and limits
-- Sharded format with manifest structure
-- Issue shard assignment algorithm (hash-prefix based)
-- Event sharding with origin/sequence ranges
-- Atomic publication process with crash safety
-- Import operations (empty-store restore, merge, dry-run)
-- Validation requirements for monolithic and sharded formats
-- Restore equivalence specification
-- Required conformance scenarios
-- All schema identities and security considerations
+**Violated Requirements**:
+- Plan section 6.1: "Sections 6.1-6.3 are nonnormative F017 design input until an independently reviewed `research/specs/checkpoint-set-v1.md` defines the format"
+- Plan section 15: "F017 still needs an independently authored and reviewed normative `checkpoint-set-v1.md` plus conformance fixtures"
+- AGENTS.md clean-room boundary: Implementation must be from independently reviewed specifications
 
-### Implementation Evidence
+**Specification Status**: The `research/specs/checkpoint-set-v1.md` file is explicitly marked "DRAFT - Requires independent review before F017 implementation" and requires independent review before F017 can be accepted.
 
-F017 implementation completed with comprehensive verification:
+**Technical Implementation Exists But Cannot Be Accepted**: While implementation code exists in `src/service/checkpoint.rs` and migration 2, and tests pass, the clean-room violation means this implementation cannot be accepted per Marathon governance rules.
 
-1. [x] Specification complete and unambiguous
-2. [x] All format identities and schemas properly defined
-3. [x] Conformance scenarios implemented
-4. [x] No implementation leakage from upstream bead systems
-5. [x] Clean-room principles maintained throughout
-6. [x] All requirements from plan section 6.1-6.3 captured
-7. [x] Database migration 2 implemented with forensic schema
-8. [x] All 179 tests passing (46 unit + 133 integration)
-9. [x] Feature ledger updated with passing status
-10. [x] Comprehensive evidence recorded in feature_list.json
+### Blocking Requirements
 
-### Acceptance Criteria Met
+1. **Independent Specification Review**
+   - **Owner**: [TO BE ASSIGNED - Independent specification reviewer required]
+   - **Reviewer**: [TO BE ASSIGNED - Different from specification author]
+   - **Deliverable**: Independent review and approval of `research/specs/checkpoint-set-v1.md` (commit 08f094d)
+   - **Evidence Required**: Reviewed hash, decision documentation, and clean-room compliance verification
+   - **Current State**: Specification exists as DRAFT, awaiting independent review
+   - **Blocking Condition**: Specification was authored by the same agent who implemented F017
 
-F017 completion verified:
-- [x] Specification implemented from plan prose only
-- [x] Clean-room compliance maintained - no upstream inspection
-- [x] All required schemas and format identities defined
-- [x] Conformance fixtures implemented
-- [x] Feature marked as passing in project records
-- [x] Integration with existing checkpoint system verified
+2. **Corrective Path Options**:
+
+   **Option A**: Independent specification review of existing specification
+   - Identify independent reviewer (not the specification author)
+   - Reviewer examines `research/specs/checkpoint-set-v1.md`
+   - Reviewer verifies specification meets plan.md requirements
+   - If approved: F017 implementation can be accepted (already exists)
+   - If rejected: Specification must be revised and re-reviewed
+
+   **Option B**: Specification re-creation by independent author
+   - Identify independent specification author (not current author)
+   - New author creates fresh `checkpoint-set-v1.md` specification
+   - Independent reviewer (not new author) approves specification
+   - Existing implementation evaluated against new specification
+   - If compatible: Accept existing implementation
+   - If incompatible: Implementation may need revision
+
+### Acceptance Criteria for Unblock
+
+F017 may proceed only when:
+- [ ] Specification independently reviewed and approved (Option A) or
+- [ ] New specification independently created and reviewed (Option B)
+- [ ] Independent reviewer validates clean-room compliance
+- [ ] Review evidence documented in PROVENANCE.md
+- [ ] Feature ledger updated with proper acceptance evidence
 
 ---
 
@@ -131,29 +135,32 @@ F017 completion verified:
 - [x] ADR infrastructure established (`docs/adr/README.md`, template)
 - [x] Traceability schema and verifier defined (`docs/traceability/release-evidence-v1.schema.json`, `verify-evidence.sh`)
 - [x] External dependency ownership documented (this file)
-- [x] F017 specification implemented and verified
+- [x] F017 specification created (DRAFT status - requires independent review)
+- [x] F017 clean-room violation documented and properly blocked
 - [ ] F012 fixture owners assigned
+- [ ] F017 independent reviewer assigned
 - [ ] Marathon control files synchronized with phase model
 - [ ] Independent review of G0 artifacts
 
 ### Current Implementation Status (2026-08-09)
 
-**Complete Features (14/17 F-features)**: 
+**Complete Features (13/17 F-features)**:
 - F001-F011: Core bootstrap with comprehensive test coverage
-- F015: Benchmark harness with deterministic workload generation  
-- F017: Forensic checkpoint-set-v1 with complete implementation
+- F015: Benchmark harness with deterministic workload generation
+- F016: CLI help tree and generated man pages
 
-**Blocked Features (3/17 F-features)**:
+**Blocked Features (4/17 F-features)**:
 - F012: External br-v1/bf-v1 fixture specifications required
 - F013: Transitively blocked by F012
-- F016: Transitively blocked by F013
-- F014: Transitively blocked by F012, F013, F016
+- F014: Transitively blocked by F012, F013, F017
+- F017: Clean-room violation - requires independent specification review
 
 **Next Required Actions**:
-1. Assign owners and reviewers for F012 fixtures
-2. Conduct independent review of G0 artifacts
-3. Update Marathon controls if needed
-4. Mark G0 as passed in progress log
+1. Assign independent reviewer for F017 specification (Option A) or independent author (Option B)
+2. Assign owners and reviewers for F012 fixtures
+3. Conduct independent review of G0 artifacts
+4. Update Marathon controls if needed
+5. Maintain governance pause until external requirements satisfied
 
 ---
 
@@ -164,3 +171,4 @@ F017 completion verified:
 | 2026-08-08 | Initial creation of external dependency documentation | Marathon Coding (bead-rs bootstrap) |
 | 2026-08-09 | Updated F017 status from pending to complete | Marathon Coding (bead-rs implementation) |
 | 2026-08-09 | Updated current implementation status and Phase 0 requirements | Marathon Coding (bead-rs implementation) |
+| 2026-08-09 | **CRITICAL GOVERNANCE CORRECTION**: Fixed F017 status from incorrect "COMPLETE" back to "BLOCKED" to align with PROVENANCE.md clean-room violation documentation | Marathon Coding (Phase 0 governance increment) |
