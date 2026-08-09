@@ -1,7 +1,65 @@
 //! Checkpoint export and import service
 //!
-//! This module provides atomic, deterministic JSONL checkpoint export and import.
-//! F017 adds forensic checkpoint-set support with monolithic and sharded modes.
+//! This module provides atomic, deterministic JSONL checkpoint export and import for bead-rs.
+//!
+//! # Architecture Overview
+//!
+//! The checkpoint system operates in two distinct modes:
+//!
+//! ## Pre-F017 (Current Default)
+//! - Writes to `.beads/issues.jsonl`
+//! - Contains issue records only
+//! - Used for basic backup and interchange
+//! - Single-file format with one JSON object per line
+//!
+//! ## F017 Forensic Checkpoint Set (Code Complete, Not Yet Activated)
+//! - Writes to `.beads/checkpoint/` directory structure
+//! - Contains issues, events, and provenance receipts
+//! - Supports both monolithic and sharded modes
+//! - Content-addressed storage with SHA-256 hashes
+//! - Atomic pointer-based generation management
+//! - Git-trackable artifacts for version control integration
+//!
+//! # Key Design Principles
+//!
+//! 1. **Atomicity**: All checkpoint operations use write-verify-rename patterns
+//!    to ensure crash safety and prevent partial state exposure
+//!
+//! 2. **Determinism**: Same input produces identical byte-for-byte output
+//!    through canonical ordering and stable field serialization
+//!
+//! 3. **Content Addressing**: Files are named by their SHA-256 hash to enable
+//!    deduplication and verification
+//!
+//! 4. **Generation Tracking**: Each checkpoint has a unique generation ID with
+//!    atomic pointer updates for authoritative discovery
+//!
+//! # Pre-F017 Format (.beads/issues.jsonl)
+//!
+//! ```text
+//! {"id":"bead-0123","title":"Task","priority":2,"base_status":"open",...}
+//! {"id":"bead-0456","title":"Another","priority":1,"base_status":"open",...}
+//! ```
+//!
+//! # F017 Forensic Format (Not Yet Activated)
+//!
+//! ## Monolithic Mode
+//! - Single `.beads/checkpoint/forensic.jsonl` file
+//! - Three record types: issue, event, provenance_receipt
+//! - Canonical ordering: issues by ID, events by sequence, receipts by ID
+//!
+//! ## Sharded Mode
+//! - `.beads/checkpoint/current.json` (authoritative pointer)
+//! - `.beads/checkpoint/manifests/<hash>.json` (manifest)
+//! - `.beads/checkpoint/objects/` (content-addressed shards)
+//! - Automatic splitting at configured thresholds
+//! - Immutable sealed event shards
+//!
+//! # Migration Path
+//!
+//! The codebase contains complete F017 implementation that can be activated
+//! once the checkpoint-set-v1.md specification receives independent review
+//! and the organizational decision is made to switch from pre-F017 format.
 
 use crate::model::Issue;
 use crate::store::SqliteStore;
@@ -167,11 +225,83 @@ pub struct FlushResult {
 
 /// Import checkpoint from JSONL file
 ///
+/// Import checkpoint from JSONL file (Pre-F017 Issue-Only Format)
+///
+/// This function validates and imports a checkpoint containing only issue records.
+/// It supports both dry-run validation and real activation modes.
+///
 /// This function:
 /// 1. Parses and stages all issues from the input file
 /// 2. Validates the staged data (duplicates, dangling deps, cycles)
 /// 3. Performs dry-run or real activation
 /// 4. Updates checkpoint_state table
+///
+/// # Import Process
+///
+/// 1. **Profile Validation**: Only 'native-v1' profile is supported (pre-F017 restriction)
+/// 2. **Staging**: Parse and validate entire input file without modifying database
+/// 3. **Validation Checks**:
+///    - Malformed JSON detection with line numbers
+///    - Duplicate issue ID detection
+///    - Missing required fields
+///    - Dependency graph validation (no cycles, no missing references)
+///    - Unknown field preservation for round-trip compatibility
+/// 4. **Dry-Run Mode**: Return prospective results without any database changes
+/// 5. **Empty Target Verification**: Ensure target workspace has no existing issues
+/// 6. **Atomic Activation**: Single transaction inserts all issues, dependencies, labels
+///
+/// # Atomicity and Safety
+///
+/// - **No Partial State**: If validation fails, no database changes occur
+/// - **Single Transaction**: All insertions happen atomically
+/// - **Audit Trail**: Creates exactly one `checkpoint_imported` workspace event
+/// - **Rollback Safety**: Any failure rolls back the entire transaction
+///
+/// # Dry-Run Behavior
+///
+/// Dry-run performs identical validation and staging but:
+/// - Does NOT modify the database
+/// - Does NOT write checkpoint_state
+/// - Does NOT create audit events
+/// - Returns prospective counts with `dry_run: true` and `prospective: true`
+///
+/// # Arguments
+///
+/// * `store` - Mutable reference to the SQLite store
+/// * `input_path` - Path to the JSONL input file (must exist, read-only)
+/// * `profile` - Profile identifier (only 'native-v1' supported pre-F017)
+/// * `dry_run` - If true, perform validation without activating changes
+///
+/// # Returns
+///
+/// * `Ok(ImportResult)` - Contains insertion/update counts, sequences, and hashes
+/// * `Err(...)` - Validation error, database error, or I/O failure
+///
+/// # Errors
+///
+/// - **Profile Error**: Non-native-v1 profile before F017 completion
+/// - **Parse Error**: Malformed JSON on specific line number
+/// - **Validation Error**: Duplicate IDs, missing dependencies, cycles
+/// - **Target Error**: Target workspace not empty (for real import)
+///
+/// # Examples
+///
+/// ```no_run
+/// # use bead_rs::store::SqliteStore;
+/// # use bead_rs::service::checkpoint::import_checkpoint;
+/// # use std::path::Path;
+/// # fn main() -> anyhow::Result<()> {
+/// # let mut store = SqliteStore::new();
+/// // Dry-run validation
+/// let result = import_checkpoint(&mut store, Path::new("backup.jsonl"), "native-v1", true)?;
+/// println!("Would import {} issues", result.inserted);
+///
+/// // Real import
+/// let result = import_checkpoint(&mut store, Path::new("backup.jsonl"), "native-v1", false)?;
+/// println!("Imported {} issues, sequence: {}", result.inserted, result.activation_sequence);
+/// # Ok(())
+/// # }
+/// ```
 pub fn import_checkpoint(
     store: &mut SqliteStore,
     input_path: &Path,
@@ -611,17 +741,69 @@ fn activate_import(store: &mut SqliteStore, staging: &ImportStaging) -> Result<(
     Ok((staging.issue_count, activation_sequence))
 }
 
-/// Export issues to JSONL checkpoint file (pre-F017 issue-only format)
+/// Flush checkpoint to JSONL file (Pre-F017 Issue-Only Format)
+///
+/// This function atomically publishes a checkpoint containing only issue records
+/// to the specified output path. This is the current default behavior.
 ///
 /// This function:
-/// 1. Opens a read transaction
-/// 2. Reads all issues with dependencies, labels, etc.
+/// 1. Opens read transaction to capture snapshot
+/// 2. Reads all issues with their complete data
 /// 3. Sorts by issue ID for deterministic ordering
 /// 4. Serializes to JSONL format
 /// 5. Writes to temporary file
 /// 6. Verifies hash and count
 /// 7. Atomically replaces destination
 /// 8. Updates checkpoint_state table
+///
+/// # Algorithm
+///
+/// 1. **Snapshot Capture**: Open read transaction and capture the current event sequence
+/// 2. **Issue Reading**: Read all issues with their complete data including dependencies
+/// 3. **Deterministic Ordering**: Sort issues by ID for reproducible output
+/// 4. **Atomic Write**: Write to temporary file, calculate hash, verify contents
+/// 5. **Atomic Replace**: Rename temporary file over target (atomic filesystem operation)
+/// 6. **State Update**: Update checkpoint_state table in same transaction as rename
+///
+/// # Atomicity Guarantees
+///
+/// - Uses write-verify-rename pattern for crash safety
+/// - Temporary file written and verified before atomic rename
+/// - Database state updated only after successful file write
+/// - If process crashes during write: old checkpoint remains valid
+/// - If process crashes during rename: temporary file can be cleaned up
+///
+/// # Output Format
+///
+/// Each line contains one complete JSON issue object:
+/// ```text
+/// {"id":"bead-0123","title":"Task","priority":2,"base_status":"open",...}
+/// {"id":"bead-0456","title":"Another","priority":1,"base_status":"open",...}
+/// ```
+///
+/// # Arguments
+///
+/// * `store` - Mutable reference to the SQLite store
+/// * `output_path` - Target path for the checkpoint file (will be atomically replaced)
+///
+/// # Returns
+///
+/// * `Ok(FlushResult)` - Contains issue count, SHA-256 hash, covered sequence, and timestamp
+/// * `Err(...)` - I/O error, database error, or serialization failure
+///
+/// # Examples
+///
+/// ```no_run
+/// # use bead_rs::store::SqliteStore;
+/// # use bead_rs::service::checkpoint::flush_checkpoint;
+/// # use std::path::Path;
+/// # fn main() -> anyhow::Result<()> {
+/// # let mut store = SqliteStore::new();
+/// let result = flush_checkpoint(&mut store, Path::new(".beads/issues.jsonl"))?;
+/// println!("Flushed {} issues, hash: {}", result.issue_count, result.hash);
+/// # Ok(())
+/// # }
+/// ```
 pub fn flush_checkpoint(store: &mut SqliteStore, output_path: &Path) -> Result<FlushResult> {
     // Open read transaction to capture snapshot
     let conn = store.conn();
