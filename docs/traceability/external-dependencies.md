@@ -77,7 +77,7 @@ F012 may proceed only when:
 - **✅ Author**: Marathon Coding (bead-rs implementation)
 - **✅ Source**: Based exclusively on plan.md sections 6.1-6.3 public design prose  
 - **✅ Clean-room compliance**: No inspection of upstream implementations
-- **✅ Implementation complete**: 225 tests passing (46 unit + 179 integration)
+- **✅ Implementation complete**: 179 tests passing (46 unit + 133 integration)
 - **✅ Evidence recorded**: Comprehensive implementation evidence in feature ledger
 
 ### Implementation Summary
@@ -106,7 +106,7 @@ F017 implementation completed with comprehensive verification:
 5. [x] Clean-room principles maintained throughout
 6. [x] All requirements from plan section 6.1-6.3 captured
 7. [x] Database migration 2 implemented with forensic schema
-8. [x] All 237 tests passing (46 unit + 191 integration)
+8. [x] All 179 tests passing (46 unit + 133 integration)
 9. [x] Feature ledger updated with passing status
 10. [x] Comprehensive evidence recorded in feature_list.json
 
