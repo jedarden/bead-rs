@@ -8,6 +8,7 @@ mod store;
 
 use crate::cli::{Cli, Command};
 use crate::error::{Error, Result};
+use crate::service::checkpoint::CheckpointMode;
 use crate::store::Store;
 use clap::Parser;
 use std::process::ExitCode;
@@ -489,34 +490,9 @@ fn cmd_sync(cmd: cli::SyncCommand) -> Result<()> {
 }
 
 fn cmd_sync_flush_only(opts: cli::SyncFlushOptions) -> Result<()> {
-    // Validate profile (only native-v1 allowed before F017)
-    if opts.profile != "native-v1" {
-        return Err(Error::validation(format!(
-            "Profile '{}' is not supported. Only 'native-v1' is available before F017.",
-            opts.profile
-        )));
-    }
-
     // Discover workspace
     let config = store::WorkspaceConfig::discover()?
         .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
-
-    // Determine output path
-    let output_path = if let Some(ref output) = opts.output {
-        // Explicit output path provided
-        config.root.join(output)
-    } else {
-        // Default to .beads/issues.jsonl
-        config.root.join(".beads").join("issues.jsonl")
-    };
-
-    // Validate output path doesn't point into .beads/checkpoint (reserved for F017)
-    let checkpoint_dir = config.root.join(".beads").join("checkpoint");
-    if output_path.starts_with(&checkpoint_dir) {
-        return Err(Error::validation(
-            "Output path cannot be in .beads/checkpoint (reserved for F017 forensic checkpoints)",
-        ));
-    }
 
     // Open database connection
     let db_path = config.database_path();
@@ -526,16 +502,62 @@ fn cmd_sync_flush_only(opts: cli::SyncFlushOptions) -> Result<()> {
     // Create store wrapper
     let mut store = store::SqliteStore::from_conn(conn);
 
-    // Flush checkpoint
-    let result = service::flush_checkpoint(&mut store, &output_path)?;
+    // If explicit output path provided, use pre-F017 issue-only export
+    if let Some(ref output) = opts.output {
+        let output_path = config.root.join(output);
 
-    // Print success message
-    eprintln!("Flushed checkpoint:");
-    eprintln!("  Path: {}", output_path.display());
-    eprintln!("  Issues: {}", result.issue_count);
-    eprintln!("  Hash: {}", result.hash);
-    eprintln!("  Covered sequence: {}", result.covered_sequence);
-    eprintln!("  Export time: {}", result.export_time);
+        // Validate output path doesn't point into .beads/checkpoint
+        let checkpoint_dir = config.root.join(".beads").join("checkpoint");
+        if output_path.starts_with(&checkpoint_dir) {
+            return Err(Error::validation(
+                "Explicit output path cannot be in .beads/checkpoint (use default for forensic checkpoints)",
+            ));
+        }
+
+        // Validate profile for export
+        if opts.profile != "native-v1" {
+            return Err(Error::validation(format!(
+                "Profile '{}' is not supported for export. Only 'native-v1' is available.",
+                opts.profile
+            )));
+        }
+
+        // Flush issue-only checkpoint for export
+        let result = service::flush_checkpoint(&mut store, &output_path)?;
+
+        // Print success message
+        eprintln!("Exported issue-only checkpoint:");
+        eprintln!("  Path: {}", output_path.display());
+        eprintln!("  Issues: {}", result.issue_count);
+        eprintln!("  Hash: {}", result.hash);
+        eprintln!("  Covered sequence: {}", result.covered_sequence);
+        eprintln!("  Export time: {}", result.export_time);
+    } else {
+        // No explicit output - use F017 forensic checkpoint
+        let checkpoint_base = config.root.join(".beads");
+
+        // Determine checkpoint mode (default to monolithic for now)
+        let mode = CheckpointMode::Monolithic;
+
+        // Publish forensic checkpoint
+        let result = service::publish_forensic_checkpoint(&mut store, mode, &checkpoint_base)?;
+
+        // Print success message
+        eprintln!("Flushed forensic checkpoint:");
+        eprintln!("  Mode: {}", mode.as_str());
+        eprintln!("  Generation: {}", result.generation_id);
+        eprintln!("  Issues: {}", result.issue_count);
+        eprintln!("  Events: {}", result.event_count);
+        eprintln!("  Receipts: {}", result.receipt_count);
+        eprintln!("  Total records: {}", result.total_record_count);
+        eprintln!("  Root hash: {}", result.root_hash);
+        eprintln!("  Covered sequence: {}", result.covered_sequence);
+        eprintln!("  Changed paths: {}", result.changed_paths.len());
+
+        for path in &result.changed_paths {
+            eprintln!("    {}", path);
+        }
+    }
 
     Ok(())
 }

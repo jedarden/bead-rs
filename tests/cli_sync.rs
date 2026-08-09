@@ -35,26 +35,41 @@ fn test_sync_flush_only_basic() {
         .success()
         .stdout(predicate::str::is_match("bead-[a-f0-9]{16}").unwrap());
 
-    // Flush checkpoint
+    // Flush forensic checkpoint
     Command::cargo_bin("bead")
         .unwrap()
         .args(["sync", "flush-only"])
         .current_dir(temp_dir.path())
         .assert()
         .success()
-        .stderr(predicate::str::contains("Flushed checkpoint:"));
+        .stderr(predicate::str::contains("Flushed forensic checkpoint:"))
+        .stderr(predicate::str::contains("Mode: monolithic"))
+        .stderr(predicate::str::contains("Issues: 1"))
+        .stderr(predicate::str::contains("Root hash:"));
 
-    // Verify checkpoint file exists
-    let checkpoint_path = temp_dir.path().join(".beads/issues.jsonl");
-    assert!(checkpoint_path.exists());
+    // Verify forensic checkpoint structure exists
+    let checkpoint_base = temp_dir.path().join(".beads/checkpoint");
+    assert!(checkpoint_base.exists());
+
+    let current_pointer = checkpoint_base.join("current.json");
+    assert!(current_pointer.exists());
+
+    let objects_dir = checkpoint_base.join("objects");
+    assert!(objects_dir.exists());
+
+    // Verify forensic view exists
+    let forensic_view = checkpoint_base.join("forensic.jsonl");
+    assert!(forensic_view.exists());
 
     // Verify checkpoint contains one issue
-    let content = fs::read_to_string(&checkpoint_path).unwrap();
+    let content = fs::read_to_string(&forensic_view).unwrap();
     let lines: Vec<&str> = content.lines().collect();
     assert_eq!(lines.len(), 1);
 
-    // Verify issue JSON structure
-    let issue: Value = serde_json::from_str(lines[0]).unwrap();
+    // Verify issue JSON structure (wrapped in record_type envelope)
+    let record: Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(record["record_type"], "issue");
+    let issue = &record["issue"];
     assert!(issue["id"].is_string());
     assert_eq!(issue["title"], "Test Issue");
     assert!(issue["priority"].is_number());
@@ -65,20 +80,28 @@ fn test_sync_flush_only_basic() {
 fn test_sync_flush_only_empty_workspace() {
     let temp_dir = create_workspace();
 
-    // Flush empty checkpoint
+    // Flush empty forensic checkpoint
     Command::cargo_bin("bead")
         .unwrap()
         .args(["sync", "flush-only"])
         .current_dir(temp_dir.path())
         .assert()
         .success()
+        .stderr(predicate::str::contains("Flushed forensic checkpoint:"))
         .stderr(predicate::str::contains("Issues: 0"));
 
-    // Verify checkpoint file exists and is empty
-    let checkpoint_path = temp_dir.path().join(".beads/issues.jsonl");
-    assert!(checkpoint_path.exists());
+    // Verify forensic checkpoint structure exists
+    let checkpoint_base = temp_dir.path().join(".beads/checkpoint");
+    assert!(checkpoint_base.exists());
 
-    let content = fs::read_to_string(&checkpoint_path).unwrap();
+    let current_pointer = checkpoint_base.join("current.json");
+    assert!(current_pointer.exists());
+
+    let forensic_view = checkpoint_base.join("forensic.jsonl");
+    assert!(forensic_view.exists());
+
+    // Verify forensic view is empty (zero bytes for empty workspace)
+    let content = fs::read_to_string(&forensic_view).unwrap();
     assert!(content.is_empty());
 }
 
@@ -121,10 +144,18 @@ fn test_sync_flush_only_with_custom_output() {
 fn test_sync_flush_only_rejects_invalid_profile() {
     let temp_dir = create_workspace();
 
-    // Try with invalid profile
+    // Try with invalid profile for export (should fail when using explicit output)
+    let custom_output = temp_dir.path().join("custom.jsonl");
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["sync", "flush-only", "--profile", "needle-v1"])
+        .args([
+            "sync",
+            "flush-only",
+            "--profile",
+            "needle-v1",
+            "--output",
+            custom_output.to_str().unwrap(),
+        ])
         .current_dir(temp_dir.path())
         .assert()
         .failure()
@@ -147,7 +178,9 @@ fn test_sync_flush_only_rejects_checkpoint_path() {
         .current_dir(temp_dir.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("reserved for F017"));
+        .stderr(predicate::str::contains(
+            "use default for forensic checkpoints",
+        ));
 }
 
 #[test]
@@ -164,7 +197,7 @@ fn test_sync_flush_only_deterministic_ordering() {
             .success();
     }
 
-    // Flush checkpoint
+    // Flush forensic checkpoint
     Command::cargo_bin("bead")
         .unwrap()
         .args(["sync", "flush-only"])
@@ -173,13 +206,15 @@ fn test_sync_flush_only_deterministic_ordering() {
         .success();
 
     // Verify issues are in deterministic order (by ID)
-    let checkpoint_path = temp_dir.path().join(".beads/issues.jsonl");
-    let content = fs::read_to_string(&checkpoint_path).unwrap();
+    let forensic_view = temp_dir.path().join(".beads/checkpoint/forensic.jsonl");
+    let content = fs::read_to_string(&forensic_view).unwrap();
     let lines: Vec<&str> = content.lines().collect();
 
     let mut prev_id = String::new();
     for line in lines {
-        let issue: Value = serde_json::from_str(line).unwrap();
+        let record: Value = serde_json::from_str(line).unwrap();
+        assert_eq!(record["record_type"], "issue");
+        let issue = &record["issue"];
         let id = issue["id"].as_str().unwrap().to_string();
         if !prev_id.is_empty() {
             assert!(id > prev_id, "Issues should be sorted by ID");

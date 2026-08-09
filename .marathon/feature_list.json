@@ -491,8 +491,11 @@
         "Independent review completed 2026-08-09 by OpenAI Codex; reviewed specification SHA-256 91f73abf3c09f141b2c36529979ee1dcf27cec5091cf340d798b3a7fa29f234c",
         "Review found no evidence of prohibited upstream contamination; the earlier sequence was a missed review gate, now cured",
         "Specification accepted as the implementation baseline; full review is docs/reviews/f017-independent-review-2026-08-09.md",
-        "F017 remains false for concrete conformance gaps: publisher is not wired to CLI and forensic restore/merge is absent",
-        "F017 remains false for concrete conformance gaps: immutable content-addressed adaptive shards, tombstones, durability, capability/status integration, and required integration tests are incomplete"
+        "CLI integration completed: publish_forensic_checkpoint wired to 'bead sync --flush-only' default behavior (2026-08-09)",
+        "Monolithic mode functional with generation IDs, content addressing, and Git-trackable changed paths",
+        "Integration tests updated for F017 forensic format with record_type envelope structure",
+        "F017 remains false for concrete conformance gaps: forensic restore/merge is absent",
+        "F017 remains false for concrete conformance gaps: immutable content-addressed adaptive shards, tombstones, durability, capability/status integration are incomplete"
       ]
     },
     {

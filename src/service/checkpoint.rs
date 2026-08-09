@@ -74,15 +74,13 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Checkpoint mode
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckpointMode {
     Monolithic,
     Sharded,
 }
 
 impl CheckpointMode {
-    #[allow(dead_code)]
     pub fn as_str(&self) -> &'static str {
         match self {
             CheckpointMode::Monolithic => "monolithic",
@@ -106,7 +104,6 @@ impl std::str::FromStr for CheckpointMode {
 /// Forensic checkpoint record types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "record_type")]
-#[allow(dead_code)]
 pub enum CheckpointRecord {
     #[serde(rename = "issue")]
     Issue { issue: Issue },
@@ -120,7 +117,6 @@ pub enum CheckpointRecord {
 
 /// Event record for forensic checkpoints
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub struct EventRecord {
     #[serde(rename = "$schema")]
     pub schema_ref: String,
@@ -136,7 +132,6 @@ pub struct EventRecord {
 
 /// Provenance receipt for restore/merge operations
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub struct ProvenanceReceipt {
     #[serde(rename = "$schema")]
     pub schema_ref: String,
@@ -163,8 +158,8 @@ pub struct ReceiptCounts {
 
 /// Forensic flush result
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ForensicFlushResult {
+    #[allow(dead_code)]
     pub mode: CheckpointMode,
     pub generation_id: String,
     pub issue_count: usize,
@@ -875,7 +870,6 @@ pub fn flush_checkpoint(store: &mut SqliteStore, output_path: &Path) -> Result<F
 /// - Sharded mode: Manifest with content-addressed shards
 /// - Atomic pointer replacement
 /// - Git-trackable changed paths
-#[allow(dead_code)]
 pub fn publish_forensic_checkpoint(
     store: &mut SqliteStore,
     mode: CheckpointMode,
@@ -983,7 +977,7 @@ pub fn publish_forensic_checkpoint(
     // Write new current.json pointer
     let pointer_config = PointerConfig {
         generation_id: generation_id.clone(),
-        mode: mode.clone(),
+        mode,
         store_uuid: store_uuid.clone(),
         snapshot_sequence: current_sequence,
         root_path: root_path.clone(),
@@ -999,7 +993,7 @@ pub fn publish_forensic_checkpoint(
     // Update checkpoint_state table
     let state_config = CheckpointStateConfig {
         generation_id: generation_id.clone(),
-        mode: mode.clone(),
+        mode,
         root_path: root_path.clone(),
         root_hash: root_hash.clone(),
         covered_sequence: current_sequence,
@@ -1024,7 +1018,6 @@ pub fn publish_forensic_checkpoint(
 }
 
 /// Publish monolithic forensic checkpoint
-#[allow(dead_code)]
 fn publish_monolithic_checkpoint(
     issues: &[Issue],
     events: &[EventRecord],
@@ -1088,7 +1081,6 @@ fn publish_monolithic_checkpoint(
 }
 
 /// Publish sharded forensic checkpoint
-#[allow(dead_code)]
 fn publish_sharded_checkpoint(
     issues: &[Issue],
     events: &[EventRecord],
@@ -1297,7 +1289,6 @@ fn publish_sharded_checkpoint(
 }
 
 /// Write event shard and return hash
-#[allow(dead_code)]
 fn write_event_shard(events: &[EventRecord], shard_path: &Path) -> Result<String> {
     let temp_path = shard_path.with_extension("tmp");
     let temp_file = File::create(&temp_path)?;
@@ -1321,7 +1312,6 @@ fn write_event_shard(events: &[EventRecord], shard_path: &Path) -> Result<String
 }
 
 /// Write current.json pointer
-#[allow(dead_code)]
 fn write_current_pointer(pointer_path: &Path, config: &PointerConfig) -> Result<()> {
     let pointer = serde_json::json!({
         "schema_version": 1,
@@ -1351,7 +1341,6 @@ fn write_current_pointer(pointer_path: &Path, config: &PointerConfig) -> Result<
 }
 
 /// Update checkpoint_state for forensic checkpoint
-#[allow(dead_code)]
 fn update_forensic_checkpoint_state(
     tx: &Transaction,
     config: &CheckpointStateConfig,
@@ -1394,7 +1383,6 @@ fn update_forensic_checkpoint_state(
 }
 
 /// Read all events from database
-#[allow(dead_code)]
 fn read_all_events(tx: &Transaction) -> Result<Vec<EventRecord>> {
     let mut events = Vec::new();
 
@@ -1455,7 +1443,6 @@ fn read_all_events(tx: &Transaction) -> Result<Vec<EventRecord>> {
 }
 
 /// Read all provenance receipts from database
-#[allow(dead_code)]
 fn read_all_provenance_receipts(tx: &Transaction) -> Result<Vec<ProvenanceReceipt>> {
     let mut receipts = Vec::new();
 
@@ -1523,7 +1510,6 @@ fn read_all_provenance_receipts(tx: &Transaction) -> Result<Vec<ProvenanceReceip
 
 /// Configuration for sharded checkpoint publishing
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 struct ShardedConfig {
     #[allow(dead_code)]
     generation_id: String,
@@ -1533,7 +1519,6 @@ struct ShardedConfig {
 
 /// Configuration for writing current pointer
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 struct PointerConfig {
     generation_id: String,
     mode: CheckpointMode,
@@ -1549,7 +1534,6 @@ struct PointerConfig {
 
 /// Configuration for forensic checkpoint state update
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 struct CheckpointStateConfig {
     generation_id: String,
     mode: CheckpointMode,
@@ -1561,7 +1545,6 @@ struct CheckpointStateConfig {
 }
 
 /// Simple MD5 hash for generation IDs
-#[allow(dead_code)]
 fn md5_compute(data: &str) -> String {
     let md5_hash = md5::compute(data);
     format!("{:x}", md5_hash)

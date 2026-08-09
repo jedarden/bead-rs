@@ -4864,3 +4864,22 @@ Remaining features (F012, F013, F017, F014) all require external organizational 
   tests.
 - Updated the Marathon mission to prohibit further governance-pause commit
   churn. The next F017 iteration must implement or test an acceptance criterion.
+
+## 2026-08-09 — F017 CLI integration activated, monolithic mode functional
+
+- **Completed**: Removed `#[allow(dead_code)]` markers from F013 implementation,
+  wired `publish_forensic_checkpoint` to CLI `bead sync --flush-only` default
+  behavior (no explicit output path).
+- **Monolithic mode**: Functional with generation IDs (`gen-<md5>`), SHA-256
+  content addressing, authoritative `current.json` pointer, and Git-trackable
+  changed paths.
+- **Integration tests**: Updated 7/7 sync tests and 11/11 NEEDLE compatibility
+  tests to expect F017 forensic output with `record_type` envelope and verify
+  `.beads/checkpoint/` structure.
+- **Backward compatibility**: Explicit `--output PATH` still publishes
+  pre-F017 issue-only JSONL for interchange exports.
+- **Test results**: All 179 tests pass, `cargo fmt --check`, `cargo clippy
+  --all-targets -- -D warnings` clean.
+- **Next recommended feature**: F017 conformance gaps remain — forensic
+  restore/merge operations, content-addressed adaptive shards, tombstone
+  calculation, atomic file syncing, and capability reporting.

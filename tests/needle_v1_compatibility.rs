@@ -334,26 +334,35 @@ fn needle_v1_checkpoint_commands() {
         .assert()
         .success();
 
-    // Test flush command as subprocess
+    // Test flush command as subprocess (now uses F017 forensic checkpoint)
     Command::cargo_bin("bead")
         .unwrap()
         .args(["sync", "flush-only"])
         .assert()
         .success()
-        .stderr(predicates::str::contains("Flushed checkpoint"));
+        .stderr(predicates::str::contains("Flushed forensic checkpoint"))
+        .stderr(predicates::str::contains("Mode: monolithic"))
+        .stderr(predicates::str::contains("Issues: 1"));
 
-    // Verify issues.jsonl was created
-    let jsonl_path = workspace.root().join(".beads/issues.jsonl");
-    assert!(jsonl_path.exists());
+    // Verify F017 forensic checkpoint structure was created
+    let checkpoint_base = workspace.root().join(".beads/checkpoint");
+    assert!(checkpoint_base.exists());
 
-    // Verify JSONL format
-    let content = std::fs::read_to_string(&jsonl_path).unwrap();
+    let current_pointer = checkpoint_base.join("current.json");
+    assert!(current_pointer.exists());
+
+    let forensic_view = checkpoint_base.join("forensic.jsonl");
+    assert!(forensic_view.exists());
+
+    // Verify JSONL format (forensic format uses record_type envelope)
+    let content = std::fs::read_to_string(&forensic_view).unwrap();
     assert!(!content.is_empty());
 
     // Parse each line as JSON
     for line in content.lines() {
         if !line.trim().is_empty() {
-            serde_json::from_str::<serde_json::Value>(line).unwrap();
+            let record: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert!(record["record_type"].is_string());
         }
     }
 
