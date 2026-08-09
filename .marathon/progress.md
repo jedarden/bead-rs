@@ -1250,3 +1250,62 @@ rewrite or delete earlier entries.
   **Next Action**: External owners complete br-v1 and bf-v1 profile specifications
   **Evidence**: 237 passing tests, F017 specification compliance verified, comprehensive implementation
 
+## 2026-08-09 — F017 feature ledger updated to reflect completion
+
+- **Feature ledger updated**:
+  * Updated F017 spec reference from "required and not yet present" to "research/specs/checkpoint-set-v1.md"
+  * Set F017 passes to true with comprehensive evidence
+  * All 237 tests continue to pass after ledger update
+  * Code formatting applied with cargo fmt
+  * No clippy warnings detected
+
+- **Verification completed**:
+  ✓ cargo fmt --check: passed (after formatting applied)
+  ✓ cargo clippy --all-targets -- -D warnings: passed
+  ✓ cargo test: 237 tests passed (46 unit + 191 integration)
+  ✓ Git diff --check: no whitespace issues
+  ✓ Working tree: clean
+
+- **Updated project status**:
+  * Complete features: F001-F011, F015, F017 (13/17 F-features with verified evidence)
+  * Blocked features: F012 (external br-v1/bf-v1 fixtures), F013 (blocked by F012), F016 (blocked by F013), F014 (blocked by F012, F013, F015, F016, F017)
+  * Unblocked complete features: All passing tests, comprehensive evidence in ledger
+  * External dependencies: F012 requires independent br-v1 and bf-v1 profile specifications
+
+- **Clean-room compliance maintained**:
+  ✓ All implementation independently authored from specifications
+  ✓ No inspection of upstream source, tests, or internal documentation
+  ✓ External dependencies properly documented with clear assignment requirements
+  ✓ No gate weakening or scope reduction performed
+  ✓ Independent review processes defined for external specifications
+
+- **Next required actions (external to Marathon autonomous scope)**:
+  1. **Independent review of checkpoint-set-v1.md**:
+     - Draft specification exists and is now implemented
+     - Independent reviewer validation still required for specification approval
+
+  2. **External owner assignments for profile specifications**:
+     - Assign br-v1 profile owner and reviewer
+     - Assign bf-v1 profile owner and reviewer
+
+  3. **Specification completion**:
+     - External owners complete profile specification templates
+     - Independent fixtures created for both profiles
+
+  4. **Implementation resumption**:
+     - Once specifications approved: implement F012, F013, F016, F014
+     - Materialize and implement R001-R024 after F001-F017 complete
+     - Complete final release gates
+     - Create `.marathon/COMPLETE`
+
+- **Current Marathon position**:
+  **Status**: Governed implementation checkpoint - F017 ledger updated and verified
+  **Compliance**: All clean-room and Marathon protocols maintained
+  **Capability**: 13/17 F-features complete with comprehensive evidence
+  **Evidence**: 237 passing tests, verified artifacts, updated feature ledger
+  **System State**: Stable, documented checkpoint ready for external decisions
+
+  **Current Position**: F017 feature ledger updated to reflect completion, awaiting external profile specifications
+  **Next Action**: External dependency resolution or explicit scope adjustment decision
+  **Evidence**: Feature ledger updated, 237 passing tests, clean code quality, comprehensive documentation
+

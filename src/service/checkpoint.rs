@@ -811,10 +811,7 @@ pub fn publish_forensic_checkpoint(
         receipt_count,
         total_record_count,
     };
-    write_current_pointer(
-        &current_pointer_path,
-        &pointer_config,
-    )?;
+    write_current_pointer(&current_pointer_path, &pointer_config)?;
     changed_paths.push("current.json".to_string());
 
     // Update checkpoint_state table
@@ -827,10 +824,7 @@ pub fn publish_forensic_checkpoint(
         changed_paths: changed_paths.clone(),
         store_uuid: store_uuid.clone(),
     };
-    update_forensic_checkpoint_state(
-        &tx,
-        &state_config,
-    )?;
+    update_forensic_checkpoint_state(&tx, &state_config)?;
 
     tx.commit()?;
 
@@ -1011,7 +1005,8 @@ fn publish_sharded_checkpoint(
 
     // Write remaining events
     if !current_shard_events.is_empty() {
-        let shard_path = objects_dir.join(format!("event-{}-{}.jsonl", config.store_uuid, shard_index));
+        let shard_path =
+            objects_dir.join(format!("event-{}-{}.jsonl", config.store_uuid, shard_index));
         let hash = write_event_shard(&current_shard_events, &shard_path)?;
 
         let metadata = serde_json::json!({
@@ -1145,10 +1140,7 @@ fn write_event_shard(events: &[EventRecord], shard_path: &Path) -> Result<String
 
 /// Write current.json pointer
 #[allow(dead_code)]
-fn write_current_pointer(
-    pointer_path: &Path,
-    config: &PointerConfig,
-) -> Result<()> {
+fn write_current_pointer(pointer_path: &Path, config: &PointerConfig) -> Result<()> {
     let pointer = serde_json::json!({
         "schema_version": 1,
         "generation_id": config.generation_id,
