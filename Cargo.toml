@@ -33,4 +33,9 @@ tempfile = "3.12"
 assert_cmd = "2.0"
 predicates = "3.1"
 serial_test = "3.1"
+num_cpus = "1.16"
+
+[[bench]]
+name = "lifecycle"
+harness = false
 

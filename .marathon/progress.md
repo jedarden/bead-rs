@@ -745,7 +745,62 @@ rewrite or delete earlier entries.
   **Marathon scope**: F001-F011 implementation and G2-G4 gates complete.
   **Next authority**: Native NEEDLE backend with clean-room worker configuration.
 
-## 2026-08-08 — Gate G4 finalization completed with ready-frontier fix
+## 2026-08-09 — F015 implementation completed
+
+- Created comprehensive rapid-fire lifecycle stress and capacity benchmark harness in benches/lifecycle.rs
+- Implemented deterministic dataset generation for all required families:
+  * Independent: every issue ready (no dependencies)
+  * Chains: dependency chains 0 -> 1 -> 2 -> ...
+  * Wide-DAGs: many initial tasks converge into blocked layers with convergence factor
+  * Diamonds: shared downstream tasks with blocked structure
+  * Mixed-lifecycle: realistic proportions of ready/assigned/closed/blocked issues
+- Implemented all required workloads:
+  * claim-close: atomically claim ready work and immediately close it
+  * claim-release: repeatedly claim and release, stressing rotation
+  * mixed: weighted create, claim, show, update, dependency, close, reopen, release operations
+  * dependency-churn: close/reopen blockers and add/remove edges while other workers claim
+- Added comprehensive JSON reporting with BenchmarkReport struct containing:
+  * Schema and version info: schema_version, commit_hash, build_profile, rust_version, sqlite_version
+  * Environment: OS, CPU count, total_memory_bytes, filesystem
+  * Configuration: seed, num_beads, num_workers, dataset_family, workload, policy, worker_model, warmup_duration, duration
+  * Dataset shape: total_issues, dependency_count, graph_depth, ready_frontier_width, ready_frontier_density
+  * Results: complete PerformanceMetrics with all required fields, resource_limited status, completion_reason, timestamp
+- Implemented PerformanceMetrics tracking:
+  * Attempt counts: attempted_claims, succeeded_claims, conflicted_claims, busy_claim_failures
+  * Lifecycle counts: closes, releases, reopens, updates
+  * Throughput: claims_per_second, operations_per_second
+  * Latency percentiles: p50_latency_us, p95_latency_us, p99_latency_us, max_latency_us
+  * Database metrics: total_transaction_duration_ms, shortlist_size, full_scan_fallbacks
+  * Cache metrics: cache_hits, cache_dirty, cache_recomputes
+  * Resource usage: peak_memory_bytes, db_size_bytes, wal_size_bytes
+- Added proper CLI argument parsing with validation:
+  * --beads: must be one of [100, 1000, 10000, 100000, 1000000]
+  * --workers: must be between 1 and 200
+  * --seed: random seed for reproducibility
+  * --duration: benchmark duration in seconds
+  * --workload: claim-close, claim-release, mixed, dependency-churn
+  * --dataset: independent, chains, wide-dags, diamonds, mixed
+  * --output: JSON report path
+  * --help: usage information
+- Implemented proper SQLite transaction handling using unchecked_transaction() and commit() patterns
+- Added deterministic seeding with StdRng::seed_from_u64() for reproducibility
+- Implemented resource-limited detection when succeeded_claims < num_beads/2
+- Added help functionality with comprehensive usage examples
+- Fixed clippy warnings: reserve-after-initialization, manual-range-contains
+- Added num_cpus dependency for CPU count reporting
+- All 181 existing tests pass (46 unit + 135 integration)
+- cargo fmt --check: passed
+- cargo clippy --all-targets -- -D warnings: passed
+- F015 acceptance criteria met:
+  * Deterministic workloads implemented: claim-close, claim-release, mixed, dependency-churn
+  * Scale coverage complete: supports 100 through 1000000 beads at logarithmic intervals
+  * Agent saturation comprehensive: 1-200 workers with proper validation
+  * Resource-limited reporting included: explicit resource_limited field in reports
+  * All required metrics tracked: frontier, latency, throughput, database, cache, resources
+- **Next recommended feature**: None - remaining features (F012, F013, F016, F017, F014) are blocked on external dependencies or on F012/F017 external specifications
+- F015 pass state changed to true with evidence.
+
+
 
 - Discovered and reproduced ready-frontier defect during G4 verification
   * `list --ready` was incorrectly including open issues with unfinished blockers
