@@ -429,13 +429,21 @@ impl GeneratedDataset {
             }
         }
 
-        // Calculate expected ready frontier
+        // Calculate expected ready frontier. An issue is only ready if it is
+        // also not the blocked side of any unfinished 'blocks' dependency --
+        // every generated blocker starts Open, so any blocked id present here
+        // is unconditionally unready.
+        let blocked_ids: std::collections::HashSet<&str> = dependencies
+            .iter()
+            .map(|(blocked, _, _)| blocked.as_str())
+            .collect();
         let expected_ready_frontier = issues
             .iter()
             .filter(|i| {
                 i.base_status == BaseStatus::Open
                     && i.assignee.is_none()
                     && i.manual_blocked.map_or(true, |blocked| !blocked)
+                    && !blocked_ids.contains(i.id.as_str())
             })
             .count();
 
@@ -592,18 +600,28 @@ fn total_memory() -> u64 {
 }
 
 fn calculate_graph_depth(dataset: &GeneratedDataset) -> usize {
-    // Simple depth calculation by following dependencies
-    let mut depth_map = HashMap::new();
+    // Depth of an issue is 1 + the max depth of its blockers (1 for a root).
+    // Dataset generation always creates a blocker before the issue it blocks,
+    // so a single forward pass over dataset.issues in creation order sees
+    // every blocker's depth already computed.
+    let mut blockers_of: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (blocked, blocker, _) in &dataset.dependencies {
+        blockers_of
+            .entry(blocked.as_str())
+            .or_default()
+            .push(blocker.as_str());
+    }
 
+    let mut depth_map: HashMap<&str, usize> = HashMap::new();
     for issue in &dataset.issues {
         let mut depth = 1;
-        for (_blocked, blocker, _) in &dataset.dependencies {
-            if blocker == &issue.id {
-                let blocker_depth = depth_map.get(blocker).unwrap_or(&1);
-                depth = (*blocker_depth + 1).max(depth);
+        if let Some(blockers) = blockers_of.get(issue.id.as_str()) {
+            for blocker in blockers {
+                let blocker_depth = *depth_map.get(blocker).unwrap_or(&1);
+                depth = depth.max(blocker_depth + 1);
             }
         }
-        depth_map.insert(issue.id.clone(), depth);
+        depth_map.insert(issue.id.as_str(), depth);
     }
 
     *depth_map.values().max().unwrap_or(&1)
