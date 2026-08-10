@@ -44,8 +44,8 @@ mod f012_integration_tests {
         assert!(!records.is_empty(), "br-v1 fixture should contain records");
         assert_eq!(
             records.len(),
-            8,
-            "br-v1 fixture should contain 8 records, got {}",
+            10,
+            "br-v1 fixture should contain 10 records, got {}",
             records.len()
         );
     }
