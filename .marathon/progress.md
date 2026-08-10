@@ -1291,3 +1291,25 @@ The mission remains **ACTIVE BLOCKED** awaiting external dependency resolution. 
   16 F012 adapter tests, 8 sync export tests, and 17 sync import tests.
 - F012 remains false pending deeper fixture-case conformance, independent
   implementation review, and final evidence audit.
+
+[2026-08-10] F012 independent implementation review rejection
+
+- Independently reviewed exact implementation commit `67a4bfa` against the
+  accepted round-four profile/specification/fixture hashes without changing
+  implementation, specifications, fixtures, or the feature ledger.
+- Rejected conformance. The accepted bf-v1 observed corpus fails import on its
+  valid empty `close_reason`; br-v1 observed-corpus round trip changes `closed`
+  to `finished`, changes absence to empty description, drops `owner` and
+  `closed_at`, and strips dependency metadata; bf-v1 uses the same lossy edge
+  projection.
+- Loss reports are not exact: import marks changed/dropped occurrences as
+  preserved, export counts synthesized output fields as preserved input, and
+  adapter losses are collapsed to incorrect reasons. Current tests do not
+  assert accepted expected reports or operational observed-corpus round trips.
+- Passed: all 50 invalid-case accept/reject outcomes, dangling/self/cycle
+  rejection, unknown-status reporting, merge-only enforcement, dry-run file
+  immutability, external-export checkpoint-state nonmutation, formatting,
+  clippy, targeted suites (16 + 8 + 17), and full `cargo test`.
+- Rust 1.75 was unavailable locally, so MSRV remains unverified. Full review:
+  `docs/reviews/f012-implementation-review-2026-08-10.md`. F012 remains false;
+  correct the four findings and obtain a fresh independent review.

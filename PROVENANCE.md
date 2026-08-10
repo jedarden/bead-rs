@@ -372,3 +372,16 @@ relationship projection, exact same-profile extension/null/order retention,
 structured loss reports, and operational external export/merge paths. This is
 implementation evidence, not self-approval; F012 remains false pending
 independent code/conformance review.
+
+## F012 independent implementation review rejection (2026-08-10)
+
+OpenAI Codex independently reviewed implementation commit
+`67a4bfae41dcd8df2a256a54fe0afd3f2a9c4716` against the accepted round-four
+artifact baseline without consulting prohibited producer material or modifying
+implementation, specifications, or fixtures. The review rejected conformance:
+the accepted bf-v1 observed corpus cannot be imported; operational br-v1
+round trips alter status and field presence and drop fields and edge metadata;
+and loss reports classify those losses, plus synthesized export fields, as
+preserved. Full findings are in
+`docs/reviews/f012-implementation-review-2026-08-10.md`. F012 remains
+`passes: false` pending correction and fresh independent review.
