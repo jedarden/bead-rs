@@ -324,3 +324,20 @@ The overall candidate is rejected because bf-v1's status table still
 conditions reverse `blocked` export on an unfinished dependency, contradicting
 its own prose, fixture, and fresh explicit-blocked observation. F012 remains
 `passes: false`; implementation approval and conformance remain separate gates.
+
+## F012 round-four narrow authoring correction (2026-08-10)
+
+OpenAI Codex, acting only in the clean-room specification-author role, changed
+the bf-v1 `blocked` status-table reverse-export cell to cover both explicitly
+stored blocked and target-materialized blocked. This is the sole semantic
+correction requested by the round-three independent review. No fixture,
+manifest, producer observation, loss-report rule, implementation, or test was
+inspected or changed.
+
+The corrected bf-v1 profile hash is
+`e321eea25ffb72f3afff6465ed1dfd4bc3121cf274323d8d7eef7e727de2af00`.
+The independent review request is
+`docs/reviews/f012-independent-review-request-2026-08-10-round4.md`. Because
+the prior binary-exception approval was hash-bound, the round-four reviewer is
+asked to explicitly carry it forward or reject it for this corrected hash.
+This entry is not self-approval and F012 remains `passes: false`.

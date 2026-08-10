@@ -1223,3 +1223,16 @@ The mission remains **ACTIVE BLOCKED** awaiting external dependency resolution. 
   profile prose and explicit-blocked fixture/observation. Correct that row and
   obtain another independent artifact review. F012 remains `passes: false`;
   implementation review and full conformance remain outstanding.
+
+## 2026-08-10 — F012 round-four narrow authoring correction
+
+- Corrected only bf-v1's reverse-export table cell for `blocked`: explicitly
+  stored blocked and target-materialized blocked both export as `blocked`.
+- Left all fixtures, manifests, loss-report semantics, other profile rules,
+  implementation, and tests unchanged under the strict clean-room author role.
+- Recorded corrected profile SHA-256
+  `e321eea25ffb72f3afff6465ed1dfd4bc3121cf274323d8d7eef7e727de2af00`
+  and requested a round-four independent review, including explicit carry-
+  forward or rejection of the previously hash-bound binary exception approval.
+- F012 remains `passes: false`; no self-approval or implementation approval is
+  asserted.

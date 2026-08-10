@@ -1,6 +1,6 @@
 # bf-v1 compatibility profile
 
-Status: round-three corrected normative candidate; independent review pending.
+Status: round-four corrected normative candidate; independent review pending.
 
 - Profile identifier: `bf-v1`
 - Observed producer: `bf 0.4.0`
@@ -10,6 +10,8 @@ Status: round-three corrected normative candidate; independent review pending.
   `docs/reviews/f012-independent-review-2026-08-10.md`
 - Round-three author: OpenAI Codex, 2026-08-10, correcting findings 1-6 from
   `docs/reviews/f012-independent-review-round2-2026-08-10.md`
+- Round-four author: OpenAI Codex, 2026-08-10, correcting the sole finding from
+  `docs/reviews/f012-independent-review-round3-2026-08-10.md`
 - Reviewer: unassigned; must be independent of both authors above
 
 ## Provenance and scope
@@ -69,7 +71,7 @@ Numeric zero is a value.
 | --- | --- | --- |
 | `open` | `open` | `open` |
 | `in_progress` | `in_progress` | `in_progress` |
-| `blocked` | `blocked` | `blocked` while required blocker is unfinished |
+| `blocked` | `blocked` | `blocked` (whether explicitly stored or materialized by the target) |
 | `closed` | `finished` | `closed` |
 
 `blocked` is observed both as an accepted explicit value and as the materialized
