@@ -421,6 +421,15 @@ all-target check on Rust 1.75. This is correction evidence, not self-approval;
 F012 remains false until a fresh independent implementation review accepts the
 committed result.
 
+## F012 narrow namespace correction (2026-08-10)
+
+The independent final review accepted all prior gates but rejected the blanket
+reservation of `__profile_*`, since the accepted profiles preserve unknown
+other fields. The correction rejects only keys the applicable adapter actually
+interprets as private state and adds positive preservation coverage for
+noncolliding profile-prefixed extensions. This entry is not self-approval;
+F012 remains false pending independent confirmation.
+
 ## F012 final implementation review rejection (2026-08-10)
 
 OpenAI Codex independently reviewed exact commit

@@ -270,7 +270,14 @@ impl ProfileAdapter for BrV1Adapter {
         let obj = data
             .as_object()
             .ok_or_else(|| anyhow!("br-v1 data must be an object"))?;
-        if let Some(field) = obj.keys().find(|field| field.starts_with("__profile_")) {
+        if let Some(field) = obj.keys().find(|field| {
+            matches!(
+                field.as_str(),
+                "__profile_status__" | "__profile_dependencies__"
+            ) || field.starts_with("__profile_null__:")
+                || field.starts_with("__profile_empty_array__:")
+                || field.starts_with("__profile_absent__:")
+        }) {
             bail!("known_extension_collision: {}", field);
         }
 

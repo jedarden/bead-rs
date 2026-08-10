@@ -1384,3 +1384,15 @@ The mission remains **ACTIVE BLOCKED** awaiting external dependency resolution. 
   while accepted profiles require noncolliding “other fields” to round trip.
   Narrow collision matching plus regression coverage and final confirmation
   remain. F012 stays false; no implementation/spec/fixture/ledger edits.
+
+[2026-08-10] F012 final-review narrow correction
+
+- Narrowed collision rejection to the adapter state actually consumed on
+  export: the two exact sentinel names and the applicable null, empty-array,
+  and absence marker prefixes.
+- Added positive same-profile cases proving noncolliding `__profile_custom__`
+  extensions survive in both profiles, including a bf-v1 key in the br-only
+  absence namespace. Existing collision and atomicity coverage remains green.
+- Formatting, targeted F012/import suites, all-target clippy, locked Rust 1.75
+  all-target check, and diff checks pass. F012 remains false pending the final
+  independent confirmation of the committed correction.

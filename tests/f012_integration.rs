@@ -517,11 +517,6 @@ mod f012_integration_tests {
                 "__profile_empty_array__:labels",
                 serde_json::json!(true),
             ),
-            (
-                "bf-v1",
-                "__profile_absent__:description",
-                serde_json::json!(true),
-            ),
         ] {
             let mut record = serde_json::json!({
                 "id": "collision",
@@ -548,6 +543,42 @@ mod f012_integration_tests {
                 .profile_to_native(&record)
                 .unwrap_err();
             assert!(error.to_string().contains("known_extension_collision"));
+        }
+    }
+
+    #[test]
+    fn noncolliding_profile_prefixed_extensions_round_trip() {
+        for (profile, field) in [
+            ("br-v1", "__profile_custom__"),
+            ("bf-v1", "__profile_custom__"),
+            ("bf-v1", "__profile_absent__:description"),
+        ] {
+            let mut record = serde_json::json!({
+                "id": "extension",
+                "title": "Extension",
+                "status": "open",
+                "priority": 2,
+                "issue_type": "task",
+                "created_at": "2030-01-01T00:00:00Z",
+                "updated_at": "2030-01-01T00:00:00Z"
+            });
+            record
+                .as_object_mut()
+                .unwrap()
+                .insert(field.to_string(), serde_json::json!({"kept": true}));
+            if profile == "bf-v1" {
+                let object = record.as_object_mut().unwrap();
+                for content in ["description", "design", "acceptance_criteria", "notes"] {
+                    object.insert(content.to_string(), serde_json::json!(""));
+                }
+                object.insert("events".to_string(), serde_json::json!([]));
+            }
+            let (output, report) = same_profile_round_trip(profile, &record).unwrap();
+            assert_eq!(output, record);
+            assert!(report
+                .entries
+                .iter()
+                .any(|entry| entry.field == field && entry.reason == "extension_preserved"));
         }
     }
 }
