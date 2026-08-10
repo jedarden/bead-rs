@@ -1236,3 +1236,20 @@ The mission remains **ACTIVE BLOCKED** awaiting external dependency resolution. 
   forward or rejection of the previously hash-bound binary exception approval.
 - F012 remains `passes: false`; no self-approval or implementation approval is
   asserted.
+
+## 2026-08-10 — F012 round-four independent artifact acceptance
+
+- Independently verified requested commit
+  `487ab0e5ce8c46e6668f59ea6abe8b8ddbbe0dbd` and all declared hashes without
+  inspecting profile implementation/tests or producer-private material.
+- Confirmed the only normative profile change is the requested unconditional
+  reverse representation of explicit or target-materialized bf-v1 `blocked`.
+  It agrees with the unchanged prose and explicit-blocked fixture and introduces
+  no new inconsistency.
+- Carried the round-three narrow bf binary governance-exception approval forward
+  to corrected bf-v1 profile hash
+  `e321eea25ffb72f3afff6465ed1dfd4bc3121cf274323d8d7eef7e727de2af00`;
+  its attested-artifact expiration condition remains in force.
+- Accepted the complete F012 br-v1/bf-v1 specification and fixture artifact
+  baseline. F012 remains `passes: false`; separate implementation review and
+  complete profile conformance verification are still required.

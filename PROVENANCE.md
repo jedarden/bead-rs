@@ -341,3 +341,23 @@ The independent review request is
 the prior binary-exception approval was hash-bound, the round-four reviewer is
 asked to explicitly carry it forward or reject it for this corrected hash.
 This entry is not self-approval and F012 remains `passes: false`.
+
+## F012 round-four independent review acceptance (2026-08-10)
+
+OpenAI Codex, in an independent reviewer session, verified commit
+`487ab0e5ce8c46e6668f59ea6abe8b8ddbbe0dbd` and accepted the narrow bf-v1
+status-table correction. The only normative change from round three makes
+reverse `blocked` unconditional for explicitly stored or target-materialized
+blocked, matching the unchanged prose, fixture, and independently reproduced
+observation. No reviewed specification or fixture was modified by the reviewer,
+and no implementation or producer-private material was inspected.
+
+The complete F012 br-v1/bf-v1 specification and fixture artifact baseline is
+accepted at the exact hashes recorded in
+`docs/reviews/f012-independent-review-round4-2026-08-10.md`. The previously
+approved narrow bf-v1 binary governance exception carries forward to corrected
+profile hash
+`e321eea25ffb72f3afff6465ed1dfd4bc3121cf274323d8d7eef7e727de2af00`
+because no producer fact, executable identity, fixture, or governed observation
+changed. F012 remains `passes: false`; implementation review and conformance are
+separate outstanding gates.
