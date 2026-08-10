@@ -459,8 +459,14 @@ impl GeneratedDataset {
             prefix: "bead".to_string(),
         };
 
+        // create_issue assigns its own real ID -- it does not accept the
+        // synthetic bead-{rng} id the dataset generator used to build
+        // self.dependencies. Remap synthetic id -> real id so dependency
+        // edges reference issues that actually exist in the store.
+        let mut id_map: HashMap<String, String> = HashMap::with_capacity(self.issues.len());
+
         for issue in &self.issues {
-            issues::create_issue(
+            let created = issues::create_issue(
                 conn,
                 &config,
                 issue.title.clone(),
@@ -470,10 +476,23 @@ impl GeneratedDataset {
                 None,   // assignee
                 vec![], // labels
             )?;
+            id_map.insert(issue.id.clone(), created.id);
         }
 
         for (blocked, blocker, kind) in &self.dependencies {
-            dependencies::add_dependency(store, blocked, blocker, kind, None)?;
+            let real_blocked = id_map.get(blocked).ok_or_else(|| {
+                bead_rs::Error::not_found(format!(
+                    "dataset dependency references unknown blocked id {}",
+                    blocked
+                ))
+            })?;
+            let real_blocker = id_map.get(blocker).ok_or_else(|| {
+                bead_rs::Error::not_found(format!(
+                    "dataset dependency references unknown blocker id {}",
+                    blocker
+                ))
+            })?;
+            dependencies::add_dependency(store, real_blocked, real_blocker, kind, None)?;
         }
 
         Ok(())
@@ -610,6 +629,7 @@ pub fn run_benchmark(config: BenchmarkConfig) -> Result<BenchmarkReport> {
     fs::create_dir_all(workspace_path.join(".beads"))?;
 
     let mut store = SqliteStore::with_path(&store_path)?;
+    store.apply_migrations()?;
 
     // Generate and load dataset
     println!("Generating dataset...");
@@ -658,10 +678,8 @@ fn run_warmup(config: &BenchmarkConfig, store: &mut SqliteStore) -> Result<()> {
                     if let Some(bead_id) = &result.bead_id {
                         tx.commit()?;
 
-                        // Immediately release for warmup
-                        let release_tx = store.conn().unchecked_transaction()?;
-                        lifecycle::release_issue(&release_tx, bead_id, None, None)?;
-                        release_tx.commit()?;
+                        // Immediately release for warmup (release_issue self-manages its transaction)
+                        lifecycle::release_issue(store.conn(), bead_id, None, None)?;
                     } else {
                         tx.commit()?;
                     }
@@ -750,15 +768,13 @@ fn execute_claim_close(
 
                         // Close the claimed issue
                         if let Some(bead_id) = &result.bead_id {
-                            let close_tx = store.conn().unchecked_transaction()?;
                             lifecycle::close_issue(
-                                &close_tx,
+                                store.conn(),
                                 bead_id,
                                 "benchmark completed",
                                 None,
                                 None,
                             )?;
-                            close_tx.commit()?;
                             metrics.closes += 1;
                         }
                     } else {
@@ -809,9 +825,7 @@ fn execute_claim_release(
 
                         // Release the claimed issue
                         if let Some(bead_id) = &result.bead_id {
-                            let release_tx = store.conn().unchecked_transaction()?;
-                            lifecycle::release_issue(&release_tx, bead_id, None, None)?;
-                            release_tx.commit()?;
+                            lifecycle::release_issue(store.conn(), bead_id, None, None)?;
                             metrics.releases += 1;
                         }
                     } else {
@@ -881,9 +895,7 @@ fn execute_mixed_workload(
                     if let Ok(claimed) = claim::claim_issue(&tx, assignee, None, None, None) {
                         if let Some(bead_id) = &claimed.bead_id {
                             tx.commit()?;
-                            let release_tx = store.conn().unchecked_transaction()?;
-                            lifecycle::release_issue(&release_tx, bead_id, None, None)?;
-                            release_tx.commit()?;
+                            lifecycle::release_issue(store.conn(), bead_id, None, None)?;
                             metrics.releases += 1;
                         } else {
                             tx.commit()?;
@@ -899,20 +911,16 @@ fn execute_mixed_workload(
                         if let Some(bead_id) = &claimed.bead_id {
                             tx.commit()?;
 
-                            let close_tx = store.conn().unchecked_transaction()?;
                             lifecycle::close_issue(
-                                &close_tx,
+                                store.conn(),
                                 bead_id,
                                 "benchmark cycle",
                                 None,
                                 None,
                             )?;
-                            close_tx.commit()?;
                             metrics.closes += 1;
 
-                            let reopen_tx = store.conn().unchecked_transaction()?;
-                            lifecycle::reopen_issue(&reopen_tx, bead_id, None, None)?;
-                            reopen_tx.commit()?;
+                            lifecycle::reopen_issue(store.conn(), bead_id, None, None)?;
                             metrics.reopens += 1;
                         } else {
                             tx.commit()?;
@@ -975,9 +983,7 @@ fn execute_dependency_churn(
                         tx.commit()?;
 
                         if let Some(bead_id) = &result.bead_id {
-                            let release_tx = store.conn().unchecked_transaction()?;
-                            lifecycle::release_issue(&release_tx, bead_id, None, None)?;
-                            release_tx.commit()?;
+                            lifecycle::release_issue(store.conn(), bead_id, None, None)?;
                             metrics.releases += 1;
                         }
                     } else {
