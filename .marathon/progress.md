@@ -1,5 +1,26 @@
 # bead-rs Marathon progress log
 
+## 2026-08-10 — F014 Release packaging, installation, and license verification Completed
+
+- **Completed**: F014 release packaging, installation, and license verification.
+- **Implementation Scope**:
+  - Verified cargo package succeeds from clean checkout: packaged 176 files (2.0MiB compressed)
+  - Verified packaged installation provides bead executable via cargo install
+  - Verified Apache-2.0 license, NOTICE, README.md, and PROVENANCE.md are included in package
+- **Verification Results**:
+  - cargo package: successful packaging with 176 files, 2.0MiB (446.0KiB compressed)
+  - cargo install --path . --root /tmp/test-bead-install --force: successful installation
+  - Installed binary verification: /tmp/test-bead-install/bin/bead --version returns "bead 0.1.0"
+  - Package contents verification: LICENSE, NOTICE, README.md, PROVENANCE.md all included
+  - License verification: LICENSE contains Apache-2.0 license header
+  - NOTICE verification: contains proper copyright and attribution
+  - cargo test: All 158 unit tests passed
+- **Acceptance Criteria Met**:
+  - ✅ cargo package succeeds from a clean checkout
+  - ✅ Packaged installation provides the bead executable
+  - ✅ Apache-2.0 license, NOTICE, README, and provenance ship in the package
+- **Feature Status**: F014 now marked as passing in feature ledger with comprehensive evidence
+
 ## 2026-08-10 — F013 Migration dry-run and audit receipts Implemented and Completed
 
 - **Completed**: Implemented F013 migration dry-run and audit receipts with comprehensive migration service.

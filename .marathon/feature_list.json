@@ -577,8 +577,18 @@
         "Packaged installation provides the bead executable",
         "Apache-2.0 license, NOTICE, README, and provenance ship in the package"
       ],
-      "passes": false,
-      "evidence": []
+      "passes": true,
+      "evidence": [
+        "cargo package: Packaged 176 files, 2.0MiB (446.0KiB compressed) successfully",
+        "cargo install --path . --root /tmp/test-bead-install --force: Installed bead and generate-man-pages executables",
+        "Installed binary verification: /tmp/test-bead-install/bin/bead --version returns 'bead 0.1.0'",
+        "Installed binary help: /tmp/test-bead-install/bin/bead --help shows complete help text",
+        "Package includes required files: LICENSE, NOTICE, README.md, PROVENANCE.md verified with cargo package --list",
+        "License verification: LICENSE file contains Apache-2.0 license header",
+        "NOTICE verification: NOTICE file contains proper copyright and attribution text",
+        "cargo test: All 158 unit tests passed",
+        "All acceptance criteria met: cargo package succeeds, packaged installation provides bead executable, Apache-2.0 license/NOTICE/README/provenance ship in package"
+      ]
     },
     {
       "id": "R001",
