@@ -264,6 +264,11 @@ pub struct Issue {
 }
 
 impl Issue {
+    /// Get an extension value by key
+    pub fn get_extension(&self, key: &str) -> Option<&serde_json::Value> {
+        self.extensions.get(key)
+    }
+
     /// Validate a complete issue
     pub fn validate(&self) -> Result<(), Error> {
         // Validate ID

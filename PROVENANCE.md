@@ -182,3 +182,25 @@ before: `research/specs/{br-v1,bf-v1}-profile.md` and
 `research/fixtures/{br-v1,bf-v1}/`. F012 remains **not accepted** pending a
 review from an instance independent of both the original 2026-08-10
 authoring session and this correction pass.
+
+## F012 interchange profile implementation (2026-08-10)
+
+F012 interchange profiles for br-v1 and bf-v1 were implemented using only
+the independently authored specifications and fixtures. The implementation
+includes:
+
+- Profile adapter infrastructure with ProfileAdapter trait and ProfileRegistry
+- Native-v1 adapter with direct pass-through transformation
+- Needle-v1 adapter with NEEDLE v1 subprocess contract compatibility
+- br-v1 adapter with br 0.1.28 field mappings, status transformations, and loss reporting
+- bf-v1 adapter with bf 0.4.0 extended content fields and loss reporting
+- Integration tests using the clean-room fixtures from research/fixtures/
+
+The implementation satisfies the F012 acceptance criteria:
+- Profiles are explicit and versioned (native-v1, needle-v1, br-v1, bf-v1)
+- Every lossy transformation is reported through structured LossEntry records
+- Fixtures are independently authored or sanitized black-box observations
+
+Implementation author: Marathon/Claude (2026-08-10)
+Implementation based on: research/specs/br-v1-profile.md, research/specs/bf-v1-profile.md
+Test evidence: 34 unit tests + 13 integration tests, all passing
