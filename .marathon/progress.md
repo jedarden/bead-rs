@@ -1366,3 +1366,21 @@ The mission remains **ACTIVE BLOCKED** awaiting external dependency resolution. 
 - Current and Rust 1.75 full test suites pass, as do current formatting,
   all-target clippy, Rust 1.75 all-target check, and diff checks. F012 remains
   false pending a fresh independent implementation review of this correction.
+
+[2026-08-10] F012 final independent implementation review rejection
+
+- Reviewed exact clean commit `3baf98e` against the complete accepted
+  round-four baseline. All prior observed-corpus, empty-close-reason,
+  status/optional-field, edge-metadata, report-accounting, private-marker
+  atomicity, coverage, and MSRV findings pass.
+- All 50 invalid cases passed; all ten actual marker-family CLI failures
+  returned `known_extension_collision` with byte-identical databases; accepted
+  reports/corpora and distinct status-source accounting passed.
+- Locked targeted suites (18 + 8 + 19), formatting, clippy,
+  `cargo +1.75.0 check --locked --all-targets`, and complete
+  `cargo +1.75.0 test --locked` passed.
+- Rejected on one narrow defect: valid noncolliding unknown field
+  `__profile_custom__` is rejected because adapters reserve the entire prefix,
+  while accepted profiles require noncolliding “other fields” to round trip.
+  Narrow collision matching plus regression coverage and final confirmation
+  remain. F012 stays false; no implementation/spec/fixture/ledger edits.

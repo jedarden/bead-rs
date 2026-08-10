@@ -420,3 +420,16 @@ The dependency lock is pinned to versions verified by full tests and an
 all-target check on Rust 1.75. This is correction evidence, not self-approval;
 F012 remains false until a fresh independent implementation review accepts the
 committed result.
+
+## F012 final implementation review rejection (2026-08-10)
+
+OpenAI Codex independently reviewed exact commit
+`3baf98e2efdab447230566af9db61895d9303275` against the complete accepted
+round-four baseline. All prior corpus, status, optional-field, edge,
+loss-report, collision-atomicity, coverage, and Rust 1.75 findings were
+resolved. One defect remains: both adapters reject every unknown key beginning
+`__profile_`, although the accepted profiles reserve no blanket prefix and
+require noncolliding “other fields” to survive exactly. A valid
+`__profile_custom__` object failed import in both profiles. Full evidence is in
+`docs/reviews/f012-implementation-review-final-2026-08-10.md`. No implementation,
+specification, fixture, or ledger value was modified. F012 remains false.
