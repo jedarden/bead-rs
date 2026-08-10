@@ -63,8 +63,9 @@ pub use rehearsal::run_recovery_rehearsal;
 pub use scheduling::{AttemptTier, GraphMetrics, SchedulingPolicy, SchedulingState};
 pub use why::{explain_why, WhyExplanation};
 
+pub mod migrate;
 pub mod policy;
+#[allow(unused_imports)]
+pub use migrate::{run_migration, MigrationOptions, MigrationReceipt};
+#[allow(unused_imports)]
 pub use policy::{FindingCategory, FindingSeverity, PolicyDiagnosticStatus, PolicyDiagnostics};
-
-// Placeholder modules for future implementation
-// pub mod migrate;

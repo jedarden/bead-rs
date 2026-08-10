@@ -404,8 +404,28 @@
         "Dry-run validates without activating destination state",
         "Stdout and any requested receipt file carry the canonical receipt/report with hashes, transformation counts, and deterministic preview semantics"
       ],
-      "passes": false,
-      "evidence": []
+      "passes": true,
+      "evidence": [
+        "cargo test --test f013_migration: 13 tests passed",
+        "cargo fmt --check: passed",
+        "cargo clippy --all-targets -- -D warnings: passed",
+        "Implemented comprehensive migration service in src/service/migrate.rs with dry-run support and canonical receipts",
+        "MigrationReceipt structure includes: schema_ref, tool_version, timestamp, source_profile, target_profile, input_sha256, output_sha256, record_counts, transformation_counts, warnings, dry_run, successful",
+        "Profile transformation support: native-v1, needle-v1, br-v1, bf-v1 adapters with loss reporting",
+        "Non-overwriting validation: input/output paths must be distinct, output file must not exist, receipt path must be distinct from all file paths",
+        "Workspace-managed path protection: rejects output to .beads directory",
+        "Dry-run mode: validates transformation without writing files, emits MigrationPreview with prospective flag",
+        "Atomic file operations: uses temporary files with atomic rename for both output and receipt files",
+        "Comprehensive error handling: invalid profiles, missing input, existing output, malformed JSON, same input/output paths, workspace-managed output paths",
+        "SHA-256 hash calculation for input and output files with verification",
+        "Record counts: total_issues, input_issues, output_issues, total_lines, blank_lines, malformed_lines",
+        "Transformation counts: transformed_issues, preserved_issues, total_transformations, loss_entries",
+        "Loss reporting: collects warnings from profile transformations with field paths and descriptions",
+        "CLI integration: bead migrate command with --from, --to, --input, --output, --receipt, --dry-run flags",
+        "Help text and comprehensive examples for all migration scenarios",
+        "13 integration tests: help availability, native-to-native dry-run, native-to-needle dry-run, invalid profile, output file exists, same input/output, real execution with receipt, receipt structure validation, malformed input, input not found, workspace-managed output, receipt file exists, receipt equals stdout",
+        "All acceptance criteria met: migration never overwrites input, profiles explicit with distinct non-overwriting paths, dry-run validates without activation, stdout and receipt file carry canonical receipt with hashes and transformation counts"
+      ]
     },
     {
       "id": "F015",

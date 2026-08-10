@@ -1,5 +1,61 @@
 # bead-rs Marathon progress log
 
+## 2026-08-10 — F013 Migration dry-run and audit receipts Implemented and Completed
+
+- **Completed**: Implemented F013 migration dry-run and audit receipts with comprehensive migration service.
+- **Implementation Scope**:
+  - Created src/service/migrate.rs with complete migration functionality
+  - MigrationReceipt structure with canonical schema: schema_ref, tool_version, timestamp, source_profile, target_profile, input_sha256, output_sha256, record_counts, transformation_counts, warnings, dry_run, successful
+  - MigrationPreview structure for dry-run operations with prospective flag
+  - RecordCounts: total_issues, input_issues, output_issues, total_lines, blank_lines, malformed_lines
+  - TransformationCounts: transformed_issues, preserved_issues, total_transformations, loss_entries
+  - Profile transformation support: native-v1, needle-v1, br-v1, bf-v1 adapters with loss reporting
+  - Non-overwriting validation: input/output paths distinct, output file must not exist, receipt path distinct from all file paths
+  - Workspace-managed path protection: rejects output to .beads directory
+  - Dry-run mode: validates transformation without writing files, emits MigrationPreview with prospective flag
+  - Atomic file operations: uses temporary files with atomic rename for both output and receipt files
+  - Comprehensive error handling: invalid profiles, missing input, existing output, malformed JSON, same input/output paths, workspace-managed output paths
+  - SHA-256 hash calculation for input and output files with verification
+  - Loss reporting: collects warnings from profile transformations with field paths and descriptions
+  - CLI integration: bead migrate command with --from, --to, --input, --output, --receipt, --dry-run flags
+  - Help text and comprehensive examples for all migration scenarios
+
+- **Test Coverage** (13 comprehensive integration tests):
+  - test_migration_help_available: Verifies CLI help documentation
+  - test_migration_native_to_native_dry_run: Tests dry-run mode with same profile
+  - test_migration_native_to_needle_dry_run: Tests profile transformation dry-run
+  - test_migration_invalid_profile: Tests profile validation
+  - test_migration_output_file_exists: Tests non-overwriting validation
+  - test_migration_same_input_output: Tests distinct path validation
+  - test_migration_real_execution: Tests full migration with receipt generation
+  - test_migration_receipt_structure: Validates canonical receipt structure
+  - test_migration_malformed_input: Tests JSON parsing error handling
+  - test_migration_input_not_found: Tests missing input file handling
+  - test_migration_workspace_managed_output: Tests workspace path protection
+  - test_migration_receipt_file_exists: Tests receipt non-overwriting
+  - test_migration_receipt_equals_stdout: Verifies stdout and receipt file match
+  - cargo test --test f013_migration: 13/13 tests passed
+
+- **Acceptance Criteria Met**:
+  - ✅ Migration never overwrites its input (input/output paths must be distinct)
+  - ✅ Source and target profiles are explicit with validation
+  - ✅ Every input, output, and optional receipt path is distinct and non-overwriting
+  - ✅ Dry-run validates without activating destination state
+  - ✅ Stdout and any requested receipt file carry canonical receipt/report
+  - ✅ Receipts include hashes (input_sha256, output_sha256) and transformation counts
+  - ✅ Deterministic preview semantics with prospective flag in dry-run mode
+
+- **Code Quality**:
+  - cargo test --test f013_migration: 13/13 tests passed
+  - cargo fmt --check: passed
+  - cargo clippy --all-targets -- -D warnings: passed
+  - Clean compilation with comprehensive migration service
+  - Proper error handling with structured validation
+  - Atomic file operations with crash-safe temporary file handling
+  - SHA-256 hash calculation for file integrity verification
+
+- **Feature Status**: F013 now marked as passing in feature ledger with comprehensive evidence
+
 ## 2026-08-10 — F012 Interchange Profiles for br-v1 and bf-v1 Implemented and Completed
 
 - **Completed**: Implemented F012 interchange profiles for br-v1 and bf-v1 with comprehensive profile adapter system.

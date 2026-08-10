@@ -12,6 +12,7 @@ use crate::cli::{Cli, Command};
 use crate::error::{Error, Result};
 use crate::service::checkpoint::CheckpointMode;
 use crate::service::claim::ClaimResult;
+use crate::service::migrate::{run_migration, MigrationOptions};
 use crate::service::policy::{validate_workspace_policy, WorkspaceConfig};
 use crate::service::scheduling::SchedulingPolicy;
 use crate::store::Store;
@@ -59,6 +60,7 @@ fn execute_command(cli: Cli) -> Result<()> {
         Command::Why(opts) => cmd_why(opts),
         Command::Recurrence(opts) => cmd_recurrence(opts),
         Command::Policy(opts) => cmd_policy(opts),
+        Command::Migrate(opts) => cmd_migrate(opts),
         Command::Unimplemented(_) => Err(Error::cli_usage(
             "This command is not yet implemented. See `bead --help` for available commands.",
         )),
@@ -2280,6 +2282,58 @@ fn cmd_recurrence_history(opts: cli::RecurrenceHistoryOptions) -> Result<()> {
                 }
             }
         }
+    }
+
+    Ok(())
+}
+
+fn cmd_migrate(opts: cli::MigrateOptions) -> Result<()> {
+    use std::path::PathBuf;
+
+    // Build migration options from CLI options
+    let migrate_opts = MigrationOptions {
+        from_profile: opts.from,
+        to_profile: opts.to,
+        input_path: PathBuf::from(opts.input),
+        output_path: PathBuf::from(opts.output),
+        receipt_path: opts.receipt.map(PathBuf::from),
+        dry_run: opts.dry_run,
+    };
+
+    // Run migration
+    let receipt = run_migration(migrate_opts)?;
+
+    // Emit additional stderr context for human users
+    if !opts.dry_run {
+        eprintln!("Migration completed successfully:");
+        eprintln!("  Input hash: {}", receipt.input_sha256);
+        eprintln!("  Output hash: {}", receipt.output_sha256);
+        eprintln!(
+            "  Records processed: {}",
+            receipt.record_counts.total_issues
+        );
+        eprintln!(
+            "  Transformations: {}",
+            receipt.transformation_counts.transformed_issues
+        );
+        if !receipt.warnings.is_empty() {
+            eprintln!("  Warnings: {}", receipt.warnings.len());
+        }
+    } else {
+        eprintln!("Dry-run migration validated successfully:");
+        eprintln!("  Input hash: {}", receipt.input_sha256);
+        eprintln!(
+            "  Records validated: {}",
+            receipt.record_counts.total_issues
+        );
+        eprintln!(
+            "  Prospective transformations: {}",
+            receipt.transformation_counts.transformed_issues
+        );
+        if !receipt.warnings.is_empty() {
+            eprintln!("  Warnings: {}", receipt.warnings.len());
+        }
+        eprintln!("  No files were written (dry-run mode)");
     }
 
     Ok(())

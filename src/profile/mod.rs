@@ -7,6 +7,7 @@ use crate::model::Issue;
 use anyhow::{anyhow, bail, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::str::FromStr;
 
 pub mod bf_v1;
 pub mod br_v1;
@@ -44,6 +45,14 @@ impl ProfileId {
     /// Convert to string identifier
     pub fn as_str(&self) -> String {
         format!("{}-{}", self.name, self.version)
+    }
+}
+
+impl FromStr for ProfileId {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse_id(s)
     }
 }
 
@@ -134,19 +143,23 @@ pub trait ProfileAdapter: Send + Sync + std::fmt::Debug {
     fn profile_to_native(&self, data: &serde_json::Value) -> Result<TransformResult>;
 
     /// Validate profile data
+    #[allow(dead_code)]
     fn validate_profile_data(&self, data: &serde_json::Value) -> Result<Vec<LossEntry>>;
 
     /// Check if profile is supported for export
+    #[allow(dead_code)]
     fn supports_export(&self) -> bool {
         true
     }
 
     /// Check if profile is supported for import
+    #[allow(dead_code)]
     fn supports_import(&self) -> bool {
         true
     }
 
     /// Get profile description
+    #[allow(dead_code)]
     fn description(&self) -> &str;
 }
 
@@ -186,6 +199,7 @@ impl ProfileRegistry {
     }
 
     /// List all supported profiles
+    #[allow(dead_code)]
     pub fn list_profiles(&self) -> Vec<String> {
         self.adapters.keys().cloned().collect()
     }
@@ -215,6 +229,7 @@ pub fn get_adapter(profile_id: &str) -> Result<&'static dyn ProfileAdapter> {
 }
 
 /// List all supported profiles
+#[allow(dead_code)]
 pub fn list_profiles() -> Vec<String> {
     global_registry().list_profiles()
 }
