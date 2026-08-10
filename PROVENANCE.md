@@ -394,3 +394,17 @@ profiles and fixtures. It preserves the complete observed corpora through the
 operational CLI and asserts every accepted round-trip/export report fixture
 exactly. This correction is not self-approval; the ledger remains false until
 a fresh independent implementation review accepts the corrected commit.
+
+## F012 independent implementation review round-two rejection (2026-08-10)
+
+OpenAI Codex independently re-reviewed corrected implementation commit
+`b89f36360506d2010ae8184e5605ee7c4f7c0823`. The correction resolved the
+previous observed-corpus, empty-close-reason, optional-field, status, edge
+metadata, accepted-report, and coverage findings. Full-baseline testing found
+a new blocker: external unknown keys in the adapters' private
+`__profile_*` namespace are accepted, then interpreted as control state and
+silently alter or disappear from output. The reviewed dependency lock also
+fails Rust 1.75. Full findings are in
+`docs/reviews/f012-implementation-review-round2-2026-08-10.md`. No prohibited
+producer material was consulted and no implementation, specification, fixture,
+or ledger value was changed. F012 remains `passes: false`.

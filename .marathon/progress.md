@@ -1328,3 +1328,26 @@ The mission remains **ACTIVE BLOCKED** awaiting external dependency resolution. 
 - Verification: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
   full `cargo test`, and `git diff --check` passed. F012 remains false pending
   fresh independent implementation review and MSRV verification.
+
+[2026-08-10] F012 independent implementation review round-two rejection
+
+- Re-reviewed exact correction commit `b89f363` against the complete accepted
+  round-four baseline. Prior failures are resolved: both observed corpora round
+  trip operationally, bf empty close reason and br optional/status fields
+  survive, complete edge metadata/order survives, and accepted same-profile
+  and complete export reports match exactly with expanded tests.
+- Rejected on a new full-baseline collision: an allowed unknown field named
+  `__profile_status__` is treated as private adapter state, changing input
+  `status:open` to output `status:closed` and dropping the extension for both
+  profiles. Other private `__profile_*` markers share the unsafe namespace.
+  This must preserve exactly or fail as `known_extension_collision` before
+  activation; add operational collision/immutability tests.
+- Operational export also aggregates distinct `base_status` and
+  `manual_blocked` occurrences as `field:status,count:2` without the required
+  `fields` list and should be corrected.
+- Exact-commit targeted suites passed (17 F012, 8 sync, 18 sync-import), as did
+  formatting and clippy. All 50 invalid cases retained expected dispositions.
+  `cargo +1.75.0 check --locked --all-targets` failed because reviewed
+  `rusqlite 0.32.1` uses experimental C-string literals on Rust 1.75.
+- Another worker concurrently created uncommitted dependency-pin changes;
+  they were preserved and excluded from this review commit. F012 remains false.
