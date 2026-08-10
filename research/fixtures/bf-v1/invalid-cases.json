@@ -5,6 +5,7 @@
     {"name":"malformed-json","input":"{not-json","expected":"reject with a line-specific parse error"},
     {"name":"missing-id","input":{"title":"Missing identifier","status":"open","priority":2,"created_at":"2030-01-01T00:00:00Z","updated_at":"2030-01-01T00:00:00Z"},"expected":"reject as missing a required field"},
     {"name":"unknown-status","input":{"id":"bfx-unknown","title":"Unknown status","status":"future_state","priority":2,"created_at":"2030-01-01T00:00:00Z","updated_at":"2030-01-01T00:00:00Z"},"expected":"preserve and report; never silently normalize"},
-    {"name":"invalid-timestamp","input":{"id":"bfx-bad-time","title":"Bad timestamp","status":"open","priority":2,"created_at":"not-a-time","updated_at":"2030-01-01T00:00:00Z"},"expected":"reject as invalid RFC 3339"}
+    {"name":"invalid-timestamp","input":{"id":"bfx-bad-time","title":"Bad timestamp","status":"open","priority":2,"created_at":"not-a-time","updated_at":"2030-01-01T00:00:00Z"},"expected":"reject as invalid RFC 3339"},
+    {"name":"explicit-null-optional-field","input":{"id":"bfx-null-assignee","title":"Explicit null assignee","status":"open","priority":2,"created_at":"2030-01-01T00:00:00Z","updated_at":"2030-01-01T00:00:00Z","assignee":null},"expected":"retain as an explicit-null extension distinct from absence; report the loss if the native field cannot represent null distinctly from unset"}
   ]
 }

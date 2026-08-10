@@ -4,18 +4,32 @@ This document records the ownership and requirements for features that are block
 
 ## F012: Interchange profiles for br-v1 and bf-v1
 
-**2026-08-10 disposition**: The independent review is complete. See
-`docs/reviews/f012-independent-review-2026-08-10.md`. No prohibited-source
-contamination was found, hash integrity holds, and every independently
-testable bf-v1 rule reproduced correctly against the real `bf 0.4.0`
-producer. F012 is **not yet accepted as an implementation baseline**: one
-completeness defect (an undocumented, silently-omitted `events` field in the
-bf-v1 fixture) and several conformance-fixture gaps (explicit-null handling,
-multi-dependency ordering, and — for each profile — the one status-mapping
-rule that distinguishes it from the other) must be closed, and br-v1's
-central claim (native `blocked` is never itself an exported status) needs a
-dedicated independent observation against a real `br 0.1.28` binary, which
-this review could not obtain.
+**2026-08-10 correction**: Both profile candidates and fixture corpora were
+corrected to resolve the independent review's findings; see the "F012
+fixture correction" entry in `PROVENANCE.md` and the regenerated
+`research/specs/{br-v1,bf-v1}-profile.md` /
+`research/fixtures/{br-v1,bf-v1}/`. br-v1's central claim, which the review
+could not verify, was empirically checked against the real `br 0.1.28`
+release binary and found **false**: non-derived `blocked` is directly
+supported, not rejected. A second br-v1 gap (`close_reason`, previously
+undocumented) and two more bf-v1 gaps (dependency-array ordering is
+creation-order, not sorted; `deferred` is accepted by the producer) were
+found and corrected in the same pass. Awaiting review from an instance
+independent of both the original 2026-08-10 authoring session and this
+correction. See `docs/reviews/f012-independent-review-request-2026-08-10-round2.md`.
+
+**2026-08-10 disposition (round 1, superseded above)**: The independent
+review is complete. See `docs/reviews/f012-independent-review-2026-08-10.md`.
+No prohibited-source contamination was found, hash integrity holds, and every
+independently testable bf-v1 rule reproduced correctly against the real
+`bf 0.4.0` producer. F012 is **not yet accepted as an implementation
+baseline**: one completeness defect (an undocumented, silently-omitted
+`events` field in the bf-v1 fixture) and several conformance-fixture gaps
+(explicit-null handling, multi-dependency ordering, and — for each profile —
+the one status-mapping rule that distinguishes it from the other) must be
+closed, and br-v1's central claim (native `blocked` is never itself an
+exported status) needs a dedicated independent observation against a real
+`br 0.1.28` binary, which this review could not obtain.
 
 **Status**: PROFILE CANDIDATES AND FIXTURES AUTHORED - Pending independent review
 

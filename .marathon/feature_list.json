@@ -372,7 +372,12 @@
         "Every independently testable bf-v1 rule reproduced correctly against the real bf 0.4.0 producer (dependency direction/edge schema, blocked-status materialization, empty-vs-absent semantics, export ordering, timestamp format)",
         "No evidence of clean-room contamination found",
         "NOT accepted as implementation baseline: bf-v1 fixture silently omits the events field present in every real bf sync --flush-only record; both invalid-cases.json fixtures lack explicit-null, multi-dependency-ordering, and each profile's own distinguishing status-mapping negative case",
-        "br-v1's central claim (native blocked is never itself an exported status) remains unverified; this machine's br is a shim to bf, not a standalone br 0.1.28 producer, and the review declined to build the real beads_rust project present on the machine to fill that gap"
+        "br-v1's central claim (native blocked is never itself an exported status) remains unverified; this machine's br is a shim to bf, not a standalone br 0.1.28 producer, and the review declined to build the real beads_rust project present on the machine to fill that gap",
+        "Fixture correction 2026-08-10 by Claude (Anthropic): both profiles and both fixture corpora regenerated against real producers (bf 0.4.0 installed locally; br 0.1.28 via checksummed official GitHub release binary, not the local beads_rust source checkout) to resolve independent-review findings",
+        "br-v1's central claim was found FALSE on reproduction: non-derived blocked is directly accepted/exported by real br 0.1.28, not rejected; close_reason field added to field matrix",
+        "bf-v1 gained two more corrections beyond the events fix: dependencies array is creation-ordered not sorted, and deferred is accepted by the producer with no established semantic mapping",
+        "Both invalid-cases.json fixtures gained an explicit-null case; all manifest hashes recomputed",
+        "Awaiting round-2 review from an instance independent of both the original authoring session and this correction pass; see docs/reviews/f012-independent-review-request-2026-08-10-round2.md \u2014 passes remains false, no bead-rs implementation exists yet"
       ]
     },
     {

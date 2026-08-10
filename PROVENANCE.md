@@ -132,3 +132,53 @@ accepted as an implementation baseline** — the `events` gap must be resolved,
 the fixture completeness gaps should be closed, and br-v1's core claim needs
 a dedicated, separately attested observation against a real `br 0.1.28`
 binary before implementation activation.
+
+## F012 fixture correction (2026-08-10)
+
+Claude (Anthropic) — the same reviewer as the disposition above, now acting
+in the specification/fixture-author role for this correction pass, with the
+next review to be performed by a separate, independent instance — corrected
+both profile candidates and both fixture corpora to resolve the review's
+findings.
+
+For bf-v1, corrections were made against the real `bf 0.4.0` binary already
+installed as this workspace's canonical bead CLI (fresh disposable
+workspaces, invented records, `bf sync --flush-only`). This reproduced two
+additional defects beyond the review's `events` finding: the candidate's
+claim that the `dependencies` array exports in "deterministic
+lexical/canonical ordering" does not hold for this producer — it is
+creation-ordered, independently confirmed by inserting blockers in
+deliberately non-alphabetical order and observing the export preserve that
+exact order — and `deferred` is accepted and exported by the producer
+(contradicting "no `deferred` mapping has been established"), though it
+still has no established bf-v1 lifecycle semantics.
+
+For br-v1, no standalone `br 0.1.28` binary was available locally (the
+machine's `br` command execs `bf`). Rather than build the real `beads_rust`
+source project also present on the machine, this pass downloaded the
+official `br-v0.1.28-linux_amd64.tar.gz` release asset from the upstream
+project's public GitHub Releases page and verified it against its published
+`.sha256` checksum before running it as a black box — the same class of
+public compiled artifact the original 2026-08-10 session used, obtained
+through a legitimate distribution channel rather than the locally-present
+source checkout, which this pass did not open, build, or read from. This
+reproduced the review's flagged central claim as **false**: `br 0.1.28`
+accepts `--status blocked` on `create` and exports it as a literal
+`status":"blocked"` with no error, warning, or fallback, contradicting the
+original candidate's claim that a non-derived `blocked` value "has no proven
+br-v1 representation and must fail." A second, previously undocumented
+field, `close_reason`, was also found present on every closed record and
+added to the field matrix. The dependency-derived-blocked behavior the
+original candidate described (an unfinished blocker leaves an already-`open`
+record's stored status at `open`) was independently reproduced and holds,
+as does br-v1's dependency-array lexical-sort-by-blocker-ID ordering claim
+(confirmed with a deliberate reverse-alphabetical insertion test) — an
+asymmetry with bf-v1, whose dependency array does not sort.
+
+Both `invalid-cases.json` fixtures gained an explicit-null case. Manifests
+were recomputed for all corrected files; both fixture READMEs record the
+exact reproduction method. Full corrected artifacts are the same paths as
+before: `research/specs/{br-v1,bf-v1}-profile.md` and
+`research/fixtures/{br-v1,bf-v1}/`. F012 remains **not accepted** pending a
+review from an instance independent of both the original 2026-08-10
+authoring session and this correction pass.

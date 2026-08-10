@@ -1,19 +1,30 @@
 # bf-v1 compatibility profile
 
-Status: authored normative candidate; independent review pending.
+Status: corrected normative candidate after 2026-08-10 independent review;
+re-review pending.
 
 - Profile identifier: `bf-v1`
 - Observed producer: `bf 0.4.0`
-- Author: OpenAI Codex (external clean-room specification/fixture role)
-- Authored: 2026-08-10
-- Reviewer: unassigned; must be independent of this author
+- Original author: OpenAI Codex (external clean-room specification/fixture
+  role, 2026-08-10)
+- Correction author: Claude (Anthropic), 2026-08-10, correcting findings from
+  `docs/reviews/f012-independent-review-2026-08-10.md`
+- Reviewer: unassigned; must be independent of both authors above
 
 ## Provenance and scope
 
-This profile is derived from invented records exercised through the public
-compiled CLI in an isolated `agent-sandbox` workspace. No source, upstream
+This profile is derived from invented records exercised through the real
+`bf 0.4.0` binary in disposable scratch workspaces. No source, upstream
 tests, upstream fixtures, SQLite schema, or internal documentation was used.
 The supporting corpus is `research/fixtures/bf-v1/observed-valid.jsonl`.
+
+This revision corrects three findings from the 2026-08-10 independent
+review, each reproduced directly against the real producer: the `events`
+field was undocumented and silently missing from the fixture; the claimed
+lexical ordering of the `dependencies` array does not hold (it is creation
+order); and `deferred` is accepted and exported by the producer rather than
+being an established bf-v1 mapping question. See the fixture README for the
+reproduction method.
 
 It specifies JSONL interchange, not the producer's live database or every CLI
 response. Unobserved behavior remains unsupported pending a separate sanitized
@@ -38,6 +49,7 @@ Each nonblank line is one UTF-8 JSON object terminated by LF.
 | `closed_at` | optional | RFC 3339 instant |
 | `close_reason`, `closed_by_session`, `source_repo` | optional | preserved string |
 | `compaction_level` | optional | preserved nonnegative integer |
+| `events` | required by observed writer | array of native audit-event objects (`id`, `issue_id`, `type`, `actor`, `created_at`); every observed record carries at least one `created` event; preserve as an extension on same-profile round trip and report if a target cannot store it |
 | `schema_ref` | not observed | native export omission is reported as profile loss |
 | other fields | extension | preserve original JSON value on same-profile round trip |
 
@@ -60,9 +72,13 @@ Numeric zero is a value.
 | `closed` | `finished` | `closed` |
 
 `blocked` is observed both as an accepted explicit value and as the materialized
-result of adding an unfinished `blocks` edge. Unknown values are preserved and
-reported rather than guessed. No `deferred` mapping has been established for
-this version.
+result of adding an unfinished `blocks` edge. The producer performs no
+CLI-side validation of `status` against a fixed enum: any string, including
+`deferred`, is accepted and exported verbatim. `deferred` is therefore
+observable on the wire, but bf-v1 defines no native lifecycle mapping for it;
+treat it exactly as any other unrecognized status — preserve and report,
+never silently coerce it to a native lifecycle state. Unknown values in
+general are preserved and reported rather than guessed.
 
 ## Dependencies and CLI direction
 
@@ -78,14 +94,26 @@ and cycles before activation and never infers direction solely from position.
 Timestamps are RFC 3339. Observed output uses UTC `Z` with nanosecond precision;
 valid offsets are accepted, represented instants and available precision are
 preserved, and invalid values are rejected. Export sorts issues by ID. Labels
-and dependencies use deterministic lexical/canonical ordering.
+export in deterministic lexical order, independently confirmed by inserting
+labels out of order and observing the sorted result. **The `dependencies`
+array does not**: it is emitted in the order the edges were created, not
+sorted by `depends_on_id` or any other key. This was independently reproduced
+by adding two blockers in a deliberately non-alphabetical order and observing
+the export preserve exactly that order; the earlier candidate's claim of
+"deterministic lexical/canonical ordering" for dependencies did not hold and
+is corrected here. An importer must preserve creation order (or another
+explicitly declared canonical order) rather than assume dependencies can be
+freely resorted.
 
 ## Loss reporting
 
-Every conversion reports: missing native `schema_ref`; unknown fields/statuses;
+Every conversion reports: missing native `schema_ref`; the native `events`
+audit-event history when a target cannot store it; unknown fields/statuses
+(including `deferred`, which has no established bf-v1 lifecycle mapping);
 explicit nulls native fields cannot distinguish; unsupported native deferred
-state; native-only comments/data/conditions; empty-versus-absent coercions; and
-any timestamp precision or edge metadata loss. Silent dropping is forbidden.
+state; native-only comments/data/conditions; empty-versus-absent coercions;
+and any timestamp precision, dependency order, or edge metadata loss. Silent
+dropping is forbidden.
 
 ## Conformance
 
