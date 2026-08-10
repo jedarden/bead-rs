@@ -1253,3 +1253,21 @@ The mission remains **ACTIVE BLOCKED** awaiting external dependency resolution. 
 - Accepted the complete F012 br-v1/bf-v1 specification and fixture artifact
   baseline. F012 remains `passes: false`; separate implementation review and
   complete profile conformance verification are still required.
+[2026-08-10] F012 adapter relationship/status defect increment
+
+- Began implementation only after the round-four independent review accepted
+  the br-v1/bf-v1 specification and fixture baseline.
+- Added complete-record adapter input so callers can supply labels and
+  dependency edges stored outside the issue row.
+- br-v1 now exports labels lexically, dependencies canonically, and explicit
+  manual blocking as `blocked`; bf-v1 exports labels lexically, preserves the
+  supplied dependency creation order, and exports explicit manual blocking.
+- Both import adapters now return native dependency/label projections instead
+  of discarding them, and literal `blocked` retains the native manual-block
+  state. br-v1 also retains `close_reason`.
+- Verification: `cargo test --test f012_integration` passed 15/15;
+  `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`, and
+  `git diff --check` passed.
+- F012 remains false. Remaining work includes fixture-complete unknown/null
+  preservation and loss-report conformance, real CLI/checkpoint wiring, full
+  verification, and independent implementation review.

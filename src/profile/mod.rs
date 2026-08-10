@@ -90,6 +90,17 @@ pub trait ProfileAdapter: Send + Sync + std::fmt::Debug {
     /// Transform native issue to profile representation
     fn native_to_profile(&self, issue: &Issue) -> Result<TransformResult>;
 
+    /// Transform a complete native issue projection, including relationship
+    /// data that is stored outside the `issues` row.
+    fn native_record_to_profile(
+        &self,
+        issue: &Issue,
+        _labels: &[String],
+        _dependencies: &[(String, String, String)],
+    ) -> Result<TransformResult> {
+        self.native_to_profile(issue)
+    }
+
     /// Transform profile representation to native issue
     fn profile_to_native(&self, data: &serde_json::Value) -> Result<TransformResult>;
 

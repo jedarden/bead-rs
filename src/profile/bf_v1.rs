@@ -47,7 +47,7 @@ impl BfV1Adapter {
         match status {
             "open" => Ok(BaseStatus::Open),
             "in_progress" => Ok(BaseStatus::InProgress),
-            "blocked" => Ok(BaseStatus::Open), // bf-v1 blocked maps to native open (blocker derived from dependencies)
+            "blocked" => Ok(BaseStatus::Open),
             "closed" => Ok(BaseStatus::Closed),
             _ => Err(anyhow!("Unknown bf-v1 status: {}", status)),
         }
@@ -78,6 +78,15 @@ impl ProfileAdapter for BfV1Adapter {
     }
 
     fn native_to_profile(&self, issue: &Issue) -> Result<TransformResult> {
+        self.native_record_to_profile(issue, &[], &[])
+    }
+
+    fn native_record_to_profile(
+        &self,
+        issue: &Issue,
+        labels: &[String],
+        dependencies: &[(String, String, String)],
+    ) -> Result<TransformResult> {
         let mut losses = vec![];
         let mut bf_obj = serde_json::Map::new();
 
@@ -96,16 +105,20 @@ impl ProfileAdapter for BfV1Adapter {
         bf_obj.insert("notes".to_string(), Value::String(notes));
 
         // Status with loss reporting for deferred
-        let status = match self.native_status_to_bf(&issue.base_status) {
-            Ok(s) => s,
-            Err(e) => {
-                losses.push(LossEntry {
-                    category: LossCategory::StatusMapping,
-                    field_path: "status".to_string(),
-                    description: e.to_string(),
-                    severity: LossSeverity::Error,
-                });
-                "open".to_string() // Default fallback
+        let status = if issue.manual_blocked.unwrap_or(false) {
+            "blocked".to_string()
+        } else {
+            match self.native_status_to_bf(&issue.base_status) {
+                Ok(s) => s,
+                Err(e) => {
+                    losses.push(LossEntry {
+                        category: LossCategory::StatusMapping,
+                        field_path: "status".to_string(),
+                        description: e.to_string(),
+                        severity: LossSeverity::Error,
+                    });
+                    "open".to_string() // Default fallback
+                }
             }
         };
         bf_obj.insert("status".to_string(), Value::String(status));
@@ -137,13 +150,13 @@ impl ProfileAdapter for BfV1Adapter {
             bf_obj.insert("assignee".to_string(), Value::String(assignee.clone()));
         }
 
-        if let Some(labels) = self.get_labels_for_issue(&issue.id) {
-            if !labels.is_empty() {
-                bf_obj.insert(
-                    "labels".to_string(),
-                    Value::Array(labels.into_iter().map(Value::String).collect()),
-                );
-            }
+        if !labels.is_empty() {
+            let mut labels = labels.to_vec();
+            labels.sort();
+            bf_obj.insert(
+                "labels".to_string(),
+                Value::Array(labels.into_iter().map(Value::String).collect()),
+            );
         }
 
         if let Some(closed_at) = &issue.closed_at {
@@ -169,8 +182,23 @@ impl ProfileAdapter for BfV1Adapter {
             bf_obj.insert("compaction_level".to_string(), level.clone());
         }
 
-        // Dependencies placeholder - in full implementation, query from database
-        bf_obj.insert("dependencies".to_string(), Value::Array(vec![]));
+        if !dependencies.is_empty() {
+            bf_obj.insert(
+                "dependencies".to_string(),
+                Value::Array(
+                    dependencies
+                        .iter()
+                        .map(|(blocked, blocker, kind)| {
+                            serde_json::json!({
+                                "issue_id": blocked,
+                                "depends_on_id": blocker,
+                                "type": kind
+                            })
+                        })
+                        .collect(),
+                ),
+            );
+        }
 
         // Track loss for schema_ref (not observed in bf-v1)
         if issue.schema_ref.is_some() {
@@ -218,6 +246,7 @@ impl ProfileAdapter for BfV1Adapter {
             .ok_or_else(|| anyhow!("Missing required field: status"))?;
 
         let base_status = self.bf_status_to_native(status_str)?;
+        let manual_blocked = status_str == "blocked";
 
         let priority = obj
             .get("priority")
@@ -351,7 +380,7 @@ impl ProfileAdapter for BfV1Adapter {
             priority,
             issue_type,
             base_status,
-            manual_blocked: Some(false),
+            manual_blocked: Some(manual_blocked),
             assignee,
             created_at,
             updated_at,
@@ -367,8 +396,40 @@ impl ProfileAdapter for BfV1Adapter {
             extensions: extensions_map,
         };
 
-        let serialized = serde_json::to_value(&issue)
+        let mut serialized = serde_json::to_value(&issue)
             .map_err(|e| anyhow!("Failed to serialize native issue: {}", e))?;
+        let native_obj = serialized
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("Serialized native issue must be an object"))?;
+        if let Some(dependencies) = obj.get("dependencies") {
+            let dependencies = dependencies
+                .as_array()
+                .ok_or_else(|| anyhow!("dependencies must be an array"))?;
+            let native_dependencies = dependencies
+                .iter()
+                .map(|dependency| {
+                    let dependency = dependency
+                        .as_object()
+                        .ok_or_else(|| anyhow!("dependency must be an object"))?;
+                    let blocker = dependency
+                        .get("depends_on_id")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| anyhow!("dependency missing depends_on_id"))?;
+                    let kind = dependency
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .unwrap_or("blocks");
+                    Ok(serde_json::json!({"blocker": blocker, "kind": kind}))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            native_obj.insert(
+                "dependencies".to_string(),
+                Value::Array(native_dependencies),
+            );
+        }
+        if let Some(labels) = obj.get("labels") {
+            native_obj.insert("labels".to_string(), labels.clone());
+        }
 
         Ok(TransformResult {
             data: serialized,
@@ -453,15 +514,6 @@ impl ProfileAdapter for BfV1Adapter {
 
     fn description(&self) -> &str {
         "bf 0.4.0 compatibility profile with extended content fields and status mappings"
-    }
-}
-
-impl BfV1Adapter {
-    /// Placeholder for getting labels from database
-    /// In full implementation, this would query the labels table
-    fn get_labels_for_issue(&self, _issue_id: &str) -> Option<Vec<String>> {
-        // TODO: Implement label querying from database
-        None
     }
 }
 

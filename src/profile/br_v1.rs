@@ -45,6 +45,7 @@ impl BrV1Adapter {
             "open" => Ok(BaseStatus::Open),
             "in_progress" => Ok(BaseStatus::InProgress),
             "deferred" => Ok(BaseStatus::Deferred),
+            "blocked" => Ok(BaseStatus::Open),
             "finished" => Ok(BaseStatus::Closed), // br-v1 "finished" maps to native "closed"
             "closed" => Ok(BaseStatus::Closed),   // Some br-v1 data may use "closed"
             _ => Err(anyhow!("Unknown br-v1 status: {}", status)),
@@ -105,6 +106,15 @@ impl ProfileAdapter for BrV1Adapter {
     }
 
     fn native_to_profile(&self, issue: &Issue) -> Result<TransformResult> {
+        self.native_record_to_profile(issue, &[], &[])
+    }
+
+    fn native_record_to_profile(
+        &self,
+        issue: &Issue,
+        labels: &[String],
+        dependencies: &[(String, String, String)],
+    ) -> Result<TransformResult> {
         let mut losses = vec![];
         let mut br_obj = serde_json::Map::new();
 
@@ -113,7 +123,11 @@ impl ProfileAdapter for BrV1Adapter {
         br_obj.insert("title".to_string(), Value::String(issue.title.clone()));
         br_obj.insert(
             "status".to_string(),
-            Value::String(self.native_status_to_br(&issue.base_status)),
+            Value::String(if issue.manual_blocked.unwrap_or(false) {
+                "blocked".to_string()
+            } else {
+                self.native_status_to_br(&issue.base_status)
+            }),
         );
         br_obj.insert(
             "priority".to_string(),
@@ -152,17 +166,23 @@ impl ProfileAdapter for BrV1Adapter {
         // br-v1 uses both assignee and owner
         // Note: In full implementation, we'd need to determine which field to use
 
-        if let Some(labels) = self.get_labels_for_issue(&issue.id) {
-            if !labels.is_empty() {
-                br_obj.insert(
-                    "labels".to_string(),
-                    Value::Array(labels.into_iter().map(Value::String).collect()),
-                );
-            }
+        if !labels.is_empty() {
+            let mut labels = labels.to_vec();
+            labels.sort();
+            br_obj.insert(
+                "labels".to_string(),
+                Value::Array(labels.into_iter().map(Value::String).collect()),
+            );
         }
 
-        // Dependencies placeholder - in full implementation, query from database
-        br_obj.insert("dependencies".to_string(), Value::Array(vec![]));
+        if !dependencies.is_empty() {
+            let mut dependencies = dependencies.to_vec();
+            dependencies.sort();
+            br_obj.insert(
+                "dependencies".to_string(),
+                self.transform_dependencies_to_br(&dependencies),
+            );
+        }
 
         // Track loss for schema_ref (not observed in br-v1)
         if issue.schema_ref.is_some() {
@@ -209,7 +229,11 @@ impl ProfileAdapter for BrV1Adapter {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("Missing required field: status"))?;
 
-        let base_status = self.br_status_to_native(status_str)?;
+        let (base_status, manual_blocked) = if status_str == "blocked" {
+            (BaseStatus::Open, true)
+        } else {
+            (self.br_status_to_native(status_str)?, false)
+        };
 
         let priority = obj
             .get("priority")
@@ -293,11 +317,12 @@ impl ProfileAdapter for BrV1Adapter {
             });
         }
 
-        // Extract dependencies for validation.
-        // FIXME(F012 stub): parsed but not yet attached to the returned Issue or
-        // persisted — dependency import is not actually implemented. Do not treat
-        // this adapter as complete until this is wired up and reviewed.
-        let _dependencies = self.extract_dependencies_from_br(obj);
+        let dependencies = self.extract_dependencies_from_br(obj);
+        let labels = obj
+            .get("labels")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
 
         // Build native issue
         let issue = Issue {
@@ -309,12 +334,15 @@ impl ProfileAdapter for BrV1Adapter {
             priority,
             issue_type: Some(issue_type),
             base_status,
-            manual_blocked: Some(false),
+            manual_blocked: Some(manual_blocked),
             assignee,
             created_at,
             updated_at,
             closed_at,
-            close_reason: None,
+            close_reason: obj
+                .get("close_reason")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             source_repo: obj
                 .get("source_repo")
                 .and_then(|v| v.as_str())
@@ -328,8 +356,25 @@ impl ProfileAdapter for BrV1Adapter {
             extensions: Default::default(),
         };
 
-        let serialized = serde_json::to_value(&issue)
+        let mut serialized = serde_json::to_value(&issue)
             .map_err(|e| anyhow!("Failed to serialize native issue: {}", e))?;
+        let native_obj = serialized
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("Serialized native issue must be an object"))?;
+        if !dependencies.is_empty() {
+            native_obj.insert(
+                "dependencies".to_string(),
+                Value::Array(
+                    dependencies
+                        .into_iter()
+                        .map(|(_, blocker, kind)| serde_json::json!({"blocker": blocker, "kind": kind}))
+                        .collect(),
+                ),
+            );
+        }
+        if !labels.is_empty() {
+            native_obj.insert("labels".to_string(), Value::Array(labels));
+        }
 
         Ok(TransformResult {
             data: serialized,
@@ -367,7 +412,7 @@ impl ProfileAdapter for BrV1Adapter {
             if let Some(status) = obj.get("status").and_then(|v| v.as_str()) {
                 if !matches!(
                     status,
-                    "open" | "in_progress" | "deferred" | "finished" | "closed"
+                    "open" | "in_progress" | "deferred" | "blocked" | "finished" | "closed"
                 ) {
                     losses.push(LossEntry {
                         category: LossCategory::StatusMapping,
@@ -396,15 +441,6 @@ impl ProfileAdapter for BrV1Adapter {
 
     fn description(&self) -> &str {
         "br 0.1.28 compatibility profile with field mappings and loss reporting"
-    }
-}
-
-impl BrV1Adapter {
-    /// Placeholder for getting labels from database
-    /// In full implementation, this would query the labels table
-    fn get_labels_for_issue(&self, _issue_id: &str) -> Option<Vec<String>> {
-        // TODO: Implement label querying from database
-        None
     }
 }
 

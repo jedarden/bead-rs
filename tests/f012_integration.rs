@@ -345,4 +345,82 @@ mod f012_integration_tests {
         assert_eq!(profiles1.len(), profiles2.len());
         assert!(profiles1.iter().all(|p| profiles2.contains(p)));
     }
+
+    #[test]
+    fn external_record_projection_exports_relationships_and_manual_block() {
+        let issue = bead_rs::model::Issue {
+            id: "blocked".to_string(),
+            title: "Blocked issue".to_string(),
+            description: None,
+            notes: None,
+            revision: None,
+            priority: 2,
+            issue_type: Some("task".to_string()),
+            base_status: bead_rs::model::BaseStatus::Open,
+            manual_blocked: Some(true),
+            assignee: None,
+            created_at: "2026-08-10T00:00:00Z".to_string(),
+            updated_at: "2026-08-10T00:00:00Z".to_string(),
+            closed_at: None,
+            close_reason: None,
+            source_repo: None,
+            profile: None,
+            schema_ref: None,
+            data: None,
+            extensions: Default::default(),
+        };
+        let labels = vec!["zeta".to_string(), "alpha".to_string()];
+        let dependencies = vec![(
+            "blocked".to_string(),
+            "blocker".to_string(),
+            "blocks".to_string(),
+        )];
+
+        for profile in ["br-v1", "bf-v1"] {
+            let result = get_adapter(profile)
+                .unwrap()
+                .native_record_to_profile(&issue, &labels, &dependencies)
+                .unwrap();
+            assert_eq!(result.data["status"], "blocked");
+            assert_eq!(result.data["labels"], serde_json::json!(["alpha", "zeta"]));
+            assert_eq!(result.data["dependencies"][0]["issue_id"], "blocked");
+            assert_eq!(result.data["dependencies"][0]["depends_on_id"], "blocker");
+        }
+    }
+
+    #[test]
+    fn external_import_projection_retains_relationships_and_manual_block() {
+        for profile in ["br-v1", "bf-v1"] {
+            let mut record = serde_json::json!({
+                "id": "blocked",
+                "title": "Blocked issue",
+                "status": "blocked",
+                "priority": 2,
+                "issue_type": "task",
+                "created_at": "2026-08-10T00:00:00Z",
+                "updated_at": "2026-08-10T00:00:00Z",
+                "labels": ["alpha"],
+                "dependencies": [{
+                    "issue_id": "blocked",
+                    "depends_on_id": "blocker",
+                    "type": "blocks"
+                }]
+            });
+            if profile == "bf-v1" {
+                let object = record.as_object_mut().unwrap();
+                for field in ["description", "design", "acceptance_criteria", "notes"] {
+                    object.insert(field.to_string(), serde_json::json!(""));
+                }
+                object.insert("events".to_string(), serde_json::json!([]));
+            }
+
+            let result = get_adapter(profile)
+                .unwrap()
+                .profile_to_native(&record)
+                .unwrap();
+            assert_eq!(result.data["manual_blocked"], true);
+            assert_eq!(result.data["labels"], serde_json::json!(["alpha"]));
+            assert_eq!(result.data["dependencies"][0]["blocker"], "blocker");
+        }
+    }
 }
