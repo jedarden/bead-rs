@@ -1,112 +1,95 @@
-# bf-v1 Profile Specification (TEMPLATE - FOR EXTERNAL INPUT)
+# bf-v1 compatibility profile
 
-**Status**: TEMPLATE - Requires external author and independent review
-**Created**: 2026-08-09
-**Author**: [TO BE ASSIGNED - External owner required]  
-**Required Reviewer**: [TO BE ASSIGNED - Independent reviewer required]
-**Purpose**: Define compatibility profile for bf-v1 interchange format
+Status: authored normative candidate; independent review pending.
 
-## Abstract
+- Profile identifier: `bf-v1`
+- Observed producer: `bf 0.4.0`
+- Author: OpenAI Codex (external clean-room specification/fixture role)
+- Authored: 2026-08-10
+- Reviewer: unassigned; must be independent of this author
 
-This specification defines the bf-v1 (bead-forge v1) compatibility profile for bead-rs, enabling interchange with systems using the bf-v1 format. This template must be completed by external authors with knowledge of the bf-v1 format.
+## Provenance and scope
 
-## Required Specification Contents
+This profile is derived from invented records exercised through the public
+compiled CLI in an isolated `agent-sandbox` workspace. No source, upstream
+tests, upstream fixtures, SQLite schema, or internal documentation was used.
+The supporting corpus is `research/fixtures/bf-v1/observed-valid.jsonl`.
 
-### Field Presence Matrix
+It specifies JSONL interchange, not the producer's live database or every CLI
+response. Unobserved behavior remains unsupported pending a separate sanitized
+observation and review.
 
-Define which fields are:
-- Required in bf-v1 format
-- Optional in bf-v1 format
-- Not supported in bf-v1 format  
-- Treated differently than native-v1
+## Transport and field matrix
 
-### Status Value Mappings
+Each nonblank line is one UTF-8 JSON object terminated by LF.
 
-Define how bf-v1 status values map to native-v1 statuses:
-- bf-v1 status → native-v1 base_status
-- Any reverse mappings needed for export
-- Unknown or invalid status handling
+| Field | Presence | Type and mapping |
+| --- | --- | --- |
+| `id` | required | nonempty string; native stable ID |
+| `title` | required | string |
+| `description`, `design`, `acceptance_criteria`, `notes` | required by observed writer | string; empty string means present but empty |
+| `status` | required | lifecycle mapping below |
+| `priority` | required | integer 0..4, unchanged |
+| `issue_type` | required | string, unchanged |
+| `created_at`, `updated_at` | required | RFC 3339 instant |
+| `assignee` | optional | string; absence means unassigned |
+| `labels` | optional | array of strings; absence means empty set |
+| `dependencies` | optional | dependency objects defined below |
+| `closed_at` | optional | RFC 3339 instant |
+| `close_reason`, `closed_by_session`, `source_repo` | optional | preserved string |
+| `compaction_level` | optional | preserved nonnegative integer |
+| `schema_ref` | not observed | native export omission is reported as profile loss |
+| other fields | extension | preserve original JSON value on same-profile round trip |
 
-### Dependency Direction Declarations
+## Null and absence
 
-Define how bf-v1 represents dependencies:
-- Field names for blocked/blocker relationships
-- Direction of dependency edges (blocked→blocker or blocker→blocked) 
-- Dependency kinds/types and their mappings
-- Special bf-v1 dependency syntax (e.g., `dep add BLOCKER --blocks BLOCKED`)
+The observed writer emits empty strings for the four content fields above and
+omits other unset optional fields. Import preserves the distinction among empty
+string, explicit null, and absence. Explicit null is retained as an extension
+or reported when native storage cannot represent it. Absent labels and
+dependencies mean empty collections; explicit empty arrays remain explicit.
+Numeric zero is a value.
 
-### Null vs Absent Behavior
+## Status mapping
 
-Define bf-v1 semantics for:
-- Null string values vs absent fields
-- Empty arrays vs null arrays
-- Zero values vs absent values
-- Timestamp handling
+| bf-v1 | Native base status | Reverse export |
+| --- | --- | --- |
+| `open` | `open` | `open` |
+| `in_progress` | `in_progress` | `in_progress` |
+| `blocked` | `blocked` | `blocked` while required blocker is unfinished |
+| `closed` | `finished` | `closed` |
 
-### Timestamp Handling
+`blocked` is observed both as an accepted explicit value and as the materialized
+result of adding an unfinished `blocks` edge. Unknown values are preserved and
+reported rather than guessed. No `deferred` mapping has been established for
+this version.
 
-Define bf-v1 timestamp formats:
-- RFC 3339 vs other formats
-- Timezone handling
-- Fractional second precision
-- Invalid timestamp recovery
+## Dependencies and CLI direction
 
-### Loss Reports  
+The public form is `bf dep add BLOCKER --blocks BLOCKED`. The exported item is
+stored on the blocked record: `issue_id` is BLOCKED, `depends_on_id` is BLOCKER,
+and `type` is the dependency kind. The observed default kind is `blocks`.
+Optional edge fields `created_at`, `created_by`, and `thread_id` are preserved.
+Canonical direction is `(blocked, blocker, kind)`. Import validates references
+and cycles before activation and never infers direction solely from position.
 
-Define transformation reports for:
-- Field presence differences
-- Status mapping information loss
-- Dependency direction changes
-- Unknown field handling
-- Comment/content preservation
+## Timestamps and ordering
 
-## bf-v1-Specific Requirements
+Timestamps are RFC 3339. Observed output uses UTC `Z` with nanosecond precision;
+valid offsets are accepted, represented instants and available precision are
+preserved, and invalid values are rejected. Export sorts issues by ID. Labels
+and dependencies use deterministic lexical/canonical ordering.
 
-### CLI Syntax Differences
+## Loss reporting
 
-Document any bf-v1-specific command syntax:
-- Alternative dependency ordering (`dep add BLOCKER --blocks BLOCKED`)
-- Special flags or options
-- Output format differences
+Every conversion reports: missing native `schema_ref`; unknown fields/statuses;
+explicit nulls native fields cannot distinguish; unsupported native deferred
+state; native-only comments/data/conditions; empty-versus-absent coercions; and
+any timestamp precision or edge metadata loss. Silent dropping is forbidden.
 
-### Data Structure Variations
+## Conformance
 
-Document bf-v1-specific data structures:
-- Different field naming conventions
-- Alternative array/object organization
-- Special metadata or envelope formats
-
-## Conformance Fixture Requirements
-
-Fixtures under `research/fixtures/bf-v1/` must cover:
-
-1. **Basic issue**: Minimal valid bf-v1 issue record
-2. **Complete issue**: All fields populated
-3. **Status variants**: All bf-v1 status values
-4. **Dependencies**: Various dependency configurations including --blocks syntax
-5. **Edge cases**: Malformed, missing, and invalid data
-6. **Round-trip**: Import → export → import preservation
-7. **CLI variants**: Alternative command syntax
-
-## Independent Creation Requirements
-
-Author must confirm:
-- [ ] Fixtures created without inspection of bead-forge source
-- [ ] Fixtures created without copying bead-forge tests
-- [ ] Only public bf-v1 CLI behavior observed
-- [ ] Sanitized behavioral facts recorded only
-- [ ] No internal documentation consulted
-- [ ] Fixture manifests with SHA-256 hashes provided
-
-## Acceptance Criteria
-
-F012 implementation may proceed only when:
-- [ ] This specification is complete and unambiguous
-- [ ] All required matrices and mappings are defined
-- [ ] Conformance fixtures are independently created
-- [ ] Clean-room reviewer validates no upstream contamination  
-- [ ] Fixture manifests recorded in research/fixtures/
-
----
-
-**EXTERNAL INPUT REQUIRED**: This template must be completed by the assigned external owner with knowledge of the bf-v1 format. The specification author and independent reviewer must be assigned before F012 implementation can proceed.
+The fixture README defines expected observations. `invalid-cases.json` defines
+negative and forward-compatibility cases. Approval requires an independent
+reviewer to verify provenance, completeness, hashes, mappings, and dependency
+direction before implementation uses this candidate as a compatibility claim.

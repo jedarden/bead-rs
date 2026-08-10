@@ -1,95 +1,99 @@
-# br-v1 Profile Specification (TEMPLATE - FOR EXTERNAL INPUT)
+# br-v1 compatibility profile
 
-**Status**: TEMPLATE - Requires external author and independent review
-**Created**: 2026-08-09  
-**Author**: [TO BE ASSIGNED - External owner required]
-**Required Reviewer**: [TO BE ASSIGNED - Independent reviewer required]
-**Purpose**: Define compatibility profile for br-v1 interchange format
+Status: authored normative candidate; independent review pending.
 
-## Abstract
+- Profile identifier: `br-v1`
+- Observed producer: `br 0.1.28`
+- Author: OpenAI Codex (external clean-room specification/fixture role)
+- Authored: 2026-08-10
+- Reviewer: unassigned; must be independent of this author
 
-This specification defines the br-v1 (bead-rust v1) compatibility profile for bead-rs, enabling interchange with systems using the br-v1 format. This template must be completed by external authors with knowledge of the br-v1 format.
+## Provenance and scope
 
-## Required Specification Contents
+This profile is derived from invented records exercised through the public
+compiled CLI in an isolated `agent-sandbox` workspace. No source, upstream
+tests, upstream fixtures, SQLite schema, or internal documentation was used.
+The supporting corpus is `research/fixtures/br-v1/observed-valid.jsonl`.
 
-### Field Presence Matrix
+It specifies JSONL interchange, not the producer's live database or every CLI
+response. Behavior not covered here is unsupported until separately observed,
+sanitized, versioned, and reviewed.
 
-Define which fields are:
-- Required in br-v1 format
-- Optional in br-v1 format  
-- Not supported in br-v1 format
-- Treated differently than native-v1
+## Transport and field matrix
 
-### Status Value Mappings
+Each nonblank line is one UTF-8 JSON object terminated by LF.
 
-Define how br-v1 status values map to native-v1 statuses:
-- br-v1 status → native-v1 base_status
-- Any reverse mappings needed for export
-- Unknown or invalid status handling
+| Field | Presence | Type and mapping |
+| --- | --- | --- |
+| `id` | required | nonempty string; native stable ID |
+| `title` | required | string |
+| `status` | required | lifecycle mapping below |
+| `priority` | required | integer 0..4, unchanged |
+| `issue_type` | required | string, unchanged |
+| `created_at` | required | RFC 3339 instant |
+| `updated_at` | required | RFC 3339 instant |
+| `description` | optional | string; absent maps to native absence |
+| `assignee`, `owner` | optional | string; absent maps to native absence |
+| `labels` | optional | array of strings; absent maps to empty native set |
+| `dependencies` | optional | dependency objects defined below |
+| `closed_at`, `due_at`, `defer_until` | optional | RFC 3339 instant |
+| `estimated_minutes` | optional | nonnegative integer |
+| `external_ref`, `source_repo`, `created_by` | optional | preserved string |
+| `compaction_level`, `original_size` | optional | preserved nonnegative integer |
+| `schema_ref` | not observed | native export omission is reported as profile loss |
+| other fields | extension | preserve original JSON value on same-profile round trip |
 
-### Dependency Direction Declarations
+## Null and absence
 
-Define how br-v1 represents dependencies:
-- Field names for blocked/blocker relationships
-- Direction of dependency edges (blocked→blocker or blocker→blocked)
-- Dependency kinds/types and their mappings
-- Cyclic dependency handling
+Observed writers omit unset optional fields. Import treats absent optional
+strings as absent, absent labels/dependencies as empty collections, and explicit
+JSON null as an extension value requiring a loss/warning entry if the native
+field cannot represent null distinctly. Empty strings and empty arrays remain
+explicit values and must not be conflated with null. Numeric zero is a value.
 
-### Null vs Absent Behavior
+## Status mapping
 
-Define br-v1 semantics for:
-- Null string values vs absent fields
-- Empty arrays vs null arrays
-- Zero values vs absent values
-- Timestamp handling
+| br-v1 | Native base status | Reverse export |
+| --- | --- | --- |
+| `open` | `open` | `open` |
+| `in_progress` | `in_progress` | `in_progress` |
+| `deferred` | `deferred` | `deferred` |
+| `closed` | `finished` | `closed` |
 
-### Timestamp Handling
+Dependency-derived blocked readiness does not change an observed stored `open`
+status. Native `blocked` therefore exports as `open` plus dependency edges when
+the block is derived; a non-derived native `blocked` value has no proven br-v1
+representation and must fail or produce an explicit lossy-conversion report.
+Unknown external statuses are retained as extensions and reported, never
+silently mapped.
 
-Define br-v1 timestamp formats:
-- RFC 3339 vs other formats
-- Timezone handling
-- Fractional second precision
-- Invalid timestamp recovery
+## Dependencies
 
-### Loss Reports
+Each item uses `issue_id` for the blocked issue, `depends_on_id` for the blocker,
+and `type` for the kind. The observed kind is `blocks`. Optional observed edge
+metadata includes `created_at`, `created_by`, `metadata`, and `thread_id` and is
+preserved. The canonical direction is therefore `(issue_id, depends_on_id,
+type) = (blocked, blocker, kind)`. Import validates references and cycles before
+activation; it does not reverse edges based on CLI argument order.
 
-Define transformation reports for:
-- Field presence differences
-- Status mapping information loss
-- Dependency direction changes
-- Unknown field handling
-- Comment/content preservation
+## Timestamps and ordering
 
-## Conformance Fixture Requirements
+Timestamps are RFC 3339. Observed output uses UTC `Z` and nanosecond precision;
+readers accept valid offsets, preserve the represented instant and available
+precision, and reject invalid values. Export sorts issues by ID. Labels are a
+set and export in deterministic lexical order. Dependency order is canonical by
+blocked ID, blocker ID, then kind.
 
-Fixtures under `research/fixtures/br-v1/` must cover:
+## Loss reporting
 
-1. **Basic issue**: Minimal valid br-v1 issue record
-2. **Complete issue**: All fields populated
-3. **Status variants**: All br-v1 status values
-4. **Dependencies**: Various dependency configurations
-5. **Edge cases**: Malformed, missing, and invalid data
-6. **Round-trip**: Import → export → import preservation
+Every conversion reports: missing native `schema_ref`; unknown fields or status
+values; explicit nulls that native fields cannot distinguish; native-only
+comments/data/conditions; unsupported non-derived `blocked`; and any timestamp
+precision or dependency metadata loss. Silent dropping is forbidden.
 
-## Independent Creation Requirements
+## Conformance
 
-Author must confirm:
-- [ ] Fixtures created without inspection of beads_rust source
-- [ ] Fixtures created without copying beads_rust tests
-- [ ] Only public br-v1 CLI behavior observed
-- [ ] Sanitized behavioral facts recorded only
-- [ ] No internal documentation consulted
-- [ ] Fixture manifests with SHA-256 hashes provided
-
-## Acceptance Criteria
-
-F012 implementation may proceed only when:
-- [ ] This specification is complete and unambiguous
-- [ ] All required matrices and mappings are defined
-- [ ] Conformance fixtures are independently created
-- [ ] Clean-room reviewer validates no upstream contamination
-- [ ] Fixture manifests recorded in research/fixtures/
-
----
-
-**EXTERNAL INPUT REQUIRED**: This template must be completed by the assigned external owner with knowledge of the br-v1 format. The specification author and independent reviewer must be assigned before F012 implementation can proceed.
+The fixture README defines expected observations. `invalid-cases.json` defines
+negative and forward-compatibility cases. Approval requires an independent
+reviewer to verify provenance, completeness, hashes, mappings, and edge
+direction before implementation uses this candidate as a compatibility claim.

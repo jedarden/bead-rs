@@ -4,36 +4,36 @@ This document records the ownership and requirements for features that are block
 
 ## F012: Interchange profiles for br-v1 and bf-v1
 
-**Status**: SPECIFICATION TEMPLATES CREATED - Pending external author assignment
+**Status**: PROFILE CANDIDATES AND FIXTURES AUTHORED - Pending independent review
 
 **Feature Description**: Implement compatibility profiles for the `br-v1` and `bf-v1` interchange formats, including field-presence matrices, status mappings, dependency-direction declarations, and independent fixtures.
 
-### Current Status (2026-08-09)
+### Current Status (2026-08-10)
 
-- **Specification templates created**:
-  - `research/specs/br-v1-profile.md` (template for external completion)
-  - `research/specs/bf-v1-profile.md` (template for external completion)
-- **Templates include**: Required specification structure and conformance fixture requirements
-- **External input needed**: Templates must be completed by assigned external owners
+- **Profile candidates completed** by OpenAI Codex as external clean-room author.
+- **Black-box fixture corpora created** with `br 0.1.28` and `bf 0.4.0` in
+  disposable `agent-sandbox` workspaces.
+- **Manifests recorded** with author, method, producer versions, and SHA-256.
+- **Remaining external input**: review and acceptance by a different reviewer.
 
 ### Blocking Requirements
 
 1. **br-v1 Fixture Specification**
-   - **Owner**: [TO BE ASSIGNED - External owner required]
+   - **Owner**: OpenAI Codex (2026-08-10 external authoring session)
    - **Reviewer**: [TO BE ASSIGNED - Independent reviewer required]
    - **Deliverable**: Completed `research/specs/br-v1-profile.md` with sanitized behavioral facts
-   - **Current State**: Template created, awaiting external author with br-v1 knowledge
+   - **Current State**: Candidate and fixture corpus authored; review pending
    - **Evidence Required**: Independent fixture manifests recording author, date, requirement, independent creation method, and SHA-256
 
 2. **bf-v1 Fixture Specification**
-   - **Owner**: [TO BE ASSIGNED - External owner required]
+   - **Owner**: OpenAI Codex (2026-08-10 external authoring session)
    - **Reviewer**: [TO BE ASSIGNED - Independent reviewer required]
    - **Deliverable**: Completed `research/specs/bf-v1-profile.md` with sanitized behavioral facts
-   - **Current State**: Template created, awaiting external author with bf-v1 knowledge
+   - **Current State**: Candidate and fixture corpus authored; review pending
    - **Evidence Required**: Independent fixture manifests recording author, date, requirement, independent creation method, and SHA-256
 
 3. **Conformance Fixtures**
-   - **Owner**: [TO BE ASSIGNED - External owner required]
+   - **Owner**: OpenAI Codex (2026-08-10 external authoring session)
    - **Reviewer**: [TO BE ASSIGNED - Independent reviewer required]
    - **Deliverable**: Test fixtures under `research/fixtures/br-v1/` and `research/fixtures/bf-v1/` covering:
      - Field presence/absence matrices
@@ -48,20 +48,18 @@ This document records the ownership and requirements for features that are block
 
 Before F012 implementation can proceed, the following must be assigned:
 
-1. **br-v1 Owner**: Person with knowledge of br-v1 format to complete specification
-2. **br-v1 Reviewer**: Independent reviewer to validate clean-room compliance
-3. **bf-v1 Owner**: Person with knowledge of bf-v1 format to complete specification
-4. **bf-v1 Reviewer**: Independent reviewer to validate clean-room compliance
-5. **Fixture Owner**: Person to create conformance fixtures for both formats
+1. **br-v1 Reviewer**: Independent reviewer to validate the candidate and provenance
+2. **bf-v1 Reviewer**: Independent reviewer to validate the candidate and provenance
+3. **Release owner**: Accept review dispositions before implementation activation
 
 ### Acceptance Criteria for Unblock
 
 F012 may proceed only when:
-- [ ] Both profile specifications are completed by assigned owners
+- [x] Both profile specifications are completed by an accountable external author
 - [ ] Both specifications are reviewed and accepted by independent reviewers
-- [ ] All fixtures are independently created and documented
+- [x] All fixtures are independently created and documented
 - [ ] Clean-room reviewer validates that no upstream source, tests, or internal documentation was consulted
-- [ ] Fixture manifests are recorded in `research/fixtures/`
+- [x] Fixture manifests are recorded in `research/fixtures/`
 
 ---
 

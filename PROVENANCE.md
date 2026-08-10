@@ -86,3 +86,13 @@ review dependency is now satisfied. The specification is accepted as the F017
 implementation baseline, while implementation activation remains rejected until
 the conformance findings in
 `docs/reviews/f017-independent-review-2026-08-09.md` are implemented and tested.
+
+## F012 external fixture authorship (2026-08-10)
+
+OpenAI Codex acted as the external clean-room author for the `br-v1` and
+`bf-v1` profile candidates and fixture corpora. Only compiled public CLIs
+(`br 0.1.28` and `bf 0.4.0`) were exercised in disposable `agent-sandbox`
+workspaces using invented records. No upstream source, tests, fixtures, SQL,
+or internal documentation was inspected. The specifications and manifests
+remain pending review by a different reviewer; no self-approval or compatibility
+claim is made by this entry.
