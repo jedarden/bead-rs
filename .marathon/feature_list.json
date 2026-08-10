@@ -366,7 +366,14 @@
         "Fixtures are independently authored or sanitized black-box observations"
       ],
       "passes": false,
-      "evidence": []
+      "evidence": [
+        "Independent review completed 2026-08-10 by Claude (Anthropic); see docs/reviews/f012-independent-review-2026-08-10.md",
+        "All 6 manifest SHA-256 hashes recomputed and matched (br-v1, bf-v1)",
+        "Every independently testable bf-v1 rule reproduced correctly against the real bf 0.4.0 producer (dependency direction/edge schema, blocked-status materialization, empty-vs-absent semantics, export ordering, timestamp format)",
+        "No evidence of clean-room contamination found",
+        "NOT accepted as implementation baseline: bf-v1 fixture silently omits the events field present in every real bf sync --flush-only record; both invalid-cases.json fixtures lack explicit-null, multi-dependency-ordering, and each profile's own distinguishing status-mapping negative case",
+        "br-v1's central claim (native blocked is never itself an exported status) remains unverified; this machine's br is a shim to bf, not a standalone br 0.1.28 producer, and the review declined to build the real beads_rust project present on the machine to fill that gap"
+      ]
     },
     {
       "id": "F013",
@@ -820,7 +827,7 @@
         "cargo fmt --check: passed",
         "cargo clippy --all-targets -- -D warnings: passed",
         "Implemented database Migration 6: external_references table with issue_id, namespace, key, value columns and UNIQUE constraint",
-        "Implemented ExternalReference model with validation functions: validate_reference_namespace (1-64 bytes, lowercase alphanumeric/hyphens/underscores, must start with letter), validate_reference_key (nonempty, ≤128 bytes), validate_reference_value (nonempty, ≤512 bytes)",
+        "Implemented ExternalReference model with validation functions: validate_reference_namespace (1-64 bytes, lowercase alphanumeric/hyphens/underscores, must start with letter), validate_reference_key (nonempty, \u2264128 bytes), validate_reference_value (nonempty, \u2264512 bytes)",
         "Created service layer in src/service/external_refs.rs: add_external_reference, remove_external_reference, list_external_references, find_issues_by_reference",
         "Added CLI command 'bead ref' with subcommands: add, remove, list, find",
         "CLI options: ref add --id ISSUE --namespace NS --key KEY --value VALUE, ref remove --id ISSUE --namespace NS --key KEY, ref list --id ISSUE [--json], ref find --namespace NS --value VALUE [--json]",
@@ -1053,7 +1060,7 @@
         "Implemented comprehensive structured data service in src/service/data.rs",
         "Service functions: set_data, get_data, list_data, remove_data with atomic transactions",
         "Namespace validation: 1-64 bytes, lowercase alphanumeric/hyphens/underscores, must start with lowercase letter",
-        "Schema reference validation: nonempty, ≤512 bytes",
+        "Schema reference validation: nonempty, \u2264512 bytes",
         "JSON value serialization with proper error handling",
         "CLI integration: bead data {set,get,list,remove} with comprehensive help text",
         "JSON output support for get and list commands with stable structure",

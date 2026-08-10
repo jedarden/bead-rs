@@ -96,3 +96,39 @@ workspaces using invented records. No upstream source, tests, fixtures, SQL,
 or internal documentation was inspected. The specifications and manifests
 remain pending review by a different reviewer; no self-approval or compatibility
 claim is made by this entry.
+
+## F012 independent review disposition (2026-08-10)
+
+Claude (Anthropic) reviewed the `br-v1`/`bf-v1` profile candidates and
+fixture corpora independently from the OpenAI Codex 2026-08-10 authoring
+session, using this repository plus a fresh disposable workspace run against
+the real `bf 0.4.0` binary installed on the review machine (the same
+producer version bf-v1 claims). `br 0.1.28` could not be similarly
+cross-checked: the review machine's `br` command is a documented shim that
+execs `bf`, and the review deliberately did not build or run the real
+`beads_rust` project also present on that machine rather than have a review
+pass improvise a fresh producer observation against the one
+named-prohibited source repository.
+
+All six manifest SHA-256 hashes were recomputed and matched. Every
+independently testable bf-v1 mechanical rule (dependency direction and edge
+schema, blocked-status materialization, empty-string-vs-absent semantics,
+export ordering including the create-echo-vs-export label-order distinction,
+timestamp format) reproduced exactly against the real producer. One
+completeness defect was found: `bf-v1/observed-valid.jsonl` silently omits
+the `events` array that every real `bf sync --flush-only` record carries,
+and `bf-v1-profile.md`'s field matrix doesn't mention `events` at all. Both
+`invalid-cases.json` fixtures are also missing coverage for explicit-null
+handling, multi-dependency ordering, and — most notably — the one rule each
+profile uses to distinguish itself from the other (br-v1's non-derived
+`blocked` rejection/report requirement, bf-v1's absent `deferred` mapping).
+br-v1's central claim, that native `blocked` is never itself an exported
+status, remains unverified by this review for the reason above.
+
+No evidence of clean-room-boundary contamination was found. Full findings
+and required disposition are in
+`docs/reviews/f012-independent-review-2026-08-10.md`. **F012 is not yet
+accepted as an implementation baseline** — the `events` gap must be resolved,
+the fixture completeness gaps should be closed, and br-v1's core claim needs
+a dedicated, separately attested observation against a real `br 0.1.28`
+binary before implementation activation.
