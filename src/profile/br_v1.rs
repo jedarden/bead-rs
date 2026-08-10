@@ -35,7 +35,7 @@ impl BrV1Adapter {
             BaseStatus::Open => "open".to_string(),
             BaseStatus::InProgress => "in_progress".to_string(),
             BaseStatus::Deferred => "deferred".to_string(),
-            BaseStatus::Closed => "finished".to_string(), // br-v1 uses "finished" for closed
+            BaseStatus::Closed => "closed".to_string(),
         }
     }
 
@@ -46,8 +46,7 @@ impl BrV1Adapter {
             "in_progress" => Ok(BaseStatus::InProgress),
             "deferred" => Ok(BaseStatus::Deferred),
             "blocked" => Ok(BaseStatus::Open),
-            "finished" => Ok(BaseStatus::Closed), // br-v1 "finished" maps to native "closed"
-            "closed" => Ok(BaseStatus::Closed),   // Some br-v1 data may use "closed"
+            "finished" | "closed" => Ok(BaseStatus::Closed),
             _ => Err(anyhow!("Unknown br-v1 status: {}", status)),
         }
     }
@@ -159,15 +158,36 @@ impl ProfileAdapter for BrV1Adapter {
         );
 
         // Optional fields - only include if present
-        if let Some(description) = &issue.description {
-            br_obj.insert(
-                "description".to_string(),
-                Value::String(description.clone()),
-            );
+        if !issue
+            .extensions
+            .contains_key("__profile_absent__:description")
+        {
+            if let Some(description) = &issue.description {
+                br_obj.insert(
+                    "description".to_string(),
+                    Value::String(description.clone()),
+                );
+            }
         }
 
         if let Some(assignee) = &issue.assignee {
             br_obj.insert("assignee".to_string(), Value::String(assignee.clone()));
+        }
+
+        if let Some(closed_at) = &issue.closed_at {
+            br_obj.insert("closed_at".to_string(), Value::String(closed_at.clone()));
+        }
+        if let Some(close_reason) = &issue.close_reason {
+            br_obj.insert(
+                "close_reason".to_string(),
+                Value::String(close_reason.clone()),
+            );
+        }
+        if let Some(source_repo) = &issue.source_repo {
+            br_obj.insert(
+                "source_repo".to_string(),
+                Value::String(source_repo.clone()),
+            );
         }
 
         // br-v1 uses both assignee and owner
@@ -187,7 +207,9 @@ impl ProfileAdapter for BrV1Adapter {
             br_obj.insert("labels".to_string(), Value::Array(Vec::new()));
         }
 
-        if !dependencies.is_empty() {
+        if let Some(raw_dependencies) = issue.extensions.get("__profile_dependencies__") {
+            br_obj.insert("dependencies".to_string(), raw_dependencies.clone());
+        } else if !dependencies.is_empty() {
             let mut dependencies = dependencies.to_vec();
             dependencies.sort();
             br_obj.insert(
@@ -202,7 +224,13 @@ impl ProfileAdapter for BrV1Adapter {
         }
 
         for (key, value) in &issue.extensions {
-            if key.starts_with("__profile_empty_array__:") || key == "__profile_status__" {
+            if key.starts_with("__profile_empty_array__:")
+                || key.starts_with("__profile_absent__:")
+                || matches!(
+                    key.as_str(),
+                    "__profile_status__" | "__profile_dependencies__"
+                )
+            {
                 continue;
             }
             if let Some(field) = key.strip_prefix("__profile_null__:") {
@@ -303,22 +331,13 @@ impl ProfileAdapter for BrV1Adapter {
         // Optional fields
         let description = obj
             .get("description")
-            .and_then(|v| v.as_str())
-            .and_then(|s| {
-                if s.is_empty() {
-                    None
-                } else {
-                    Some(s.to_string())
-                }
-            });
+            .and_then(Value::as_str)
+            .map(str::to_string);
 
-        let assignee = obj.get("assignee").and_then(|v| v.as_str()).and_then(|s| {
-            if s.is_empty() {
-                None
-            } else {
-                Some(s.to_string())
-            }
-        });
+        let assignee = obj
+            .get("assignee")
+            .and_then(Value::as_str)
+            .map(str::to_string);
 
         // Handle closed_at for "finished"/"closed" status
         let closed_at = if matches!(base_status, BaseStatus::Closed) {
@@ -356,7 +375,6 @@ impl ProfileAdapter for BrV1Adapter {
             "updated_at",
             "description",
             "assignee",
-            "owner",
             "labels",
             "dependencies",
             "closed_at",
@@ -386,6 +404,18 @@ impl ProfileAdapter for BrV1Adapter {
         }
         if let Some(status) = preserved_status {
             extensions.insert("__profile_status__".to_string(), Value::String(status));
+        }
+        if !obj.contains_key("description") {
+            extensions.insert(
+                "__profile_absent__:description".to_string(),
+                Value::Bool(true),
+            );
+        }
+        if let Some(raw_dependencies) = obj.get("dependencies") {
+            extensions.insert(
+                "__profile_dependencies__".to_string(),
+                raw_dependencies.clone(),
+            );
         }
 
         // Build native issue
@@ -576,7 +606,7 @@ mod tests {
             adapter.native_status_to_br(&BaseStatus::Deferred),
             "deferred"
         );
-        assert_eq!(adapter.native_status_to_br(&BaseStatus::Closed), "finished");
+        assert_eq!(adapter.native_status_to_br(&BaseStatus::Closed), "closed");
 
         assert_eq!(
             adapter.br_status_to_native("open").unwrap(),
@@ -687,7 +717,7 @@ mod tests {
         let adapter = BrV1Adapter::new();
 
         // Test native closed -> br finished
-        assert_eq!(adapter.native_status_to_br(&BaseStatus::Closed), "finished");
+        assert_eq!(adapter.native_status_to_br(&BaseStatus::Closed), "closed");
 
         // Test br finished -> native closed
         let br_data = serde_json::json!({

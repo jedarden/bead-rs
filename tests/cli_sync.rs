@@ -224,6 +224,25 @@ fn test_sync_flush_only_external_profile_emits_loss_report() {
     );
     assert_eq!(report["profile"], "br-v1");
     assert_eq!(report["direction"], "export");
+    let entries = report["entries"].as_array().unwrap();
+    let entry_sum: u64 = entries
+        .iter()
+        .map(|entry| entry["count"].as_u64().unwrap())
+        .sum();
+    let count_sum = report["counts"]["preserved"].as_u64().unwrap()
+        + report["counts"]["transformed"].as_u64().unwrap()
+        + report["counts"]["omitted"].as_u64().unwrap();
+    assert_eq!(entry_sum, count_sum);
+    let ranks: Vec<u8> = entries
+        .iter()
+        .map(|entry| match entry["classification"].as_str().unwrap() {
+            "preserved" => 0,
+            "transformed" => 1,
+            "omitted" => 2,
+            value => panic!("unexpected classification {value}"),
+        })
+        .collect();
+    assert!(ranks.windows(2).all(|window| window[0] <= window[1]));
 
     let records: Vec<Value> = fs::read_to_string(output_path)
         .unwrap()

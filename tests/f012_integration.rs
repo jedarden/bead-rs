@@ -4,7 +4,9 @@
 //! clean-room fixtures from research/fixtures/.
 
 use anyhow::Result;
-use bead_rs::profile::{get_adapter, LossCategory};
+use bead_rs::profile::{
+    get_adapter, profile_export_loss_report_for_records, same_profile_round_trip, LossCategory,
+};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
@@ -402,6 +404,13 @@ mod f012_integration_tests {
             let fixture: serde_json::Value =
                 serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
             for case in fixture["cases"].as_array().unwrap() {
+                let (round_trip_output, report) =
+                    same_profile_round_trip(profile, &case["input"]).unwrap();
+                assert_eq!(round_trip_output, case["expected_output"]);
+                assert_eq!(
+                    serde_json::to_value(report).unwrap(),
+                    case["expected_report"]
+                );
                 let imported = get_adapter(profile)
                     .unwrap()
                     .profile_to_native(&case["input"])
@@ -442,6 +451,35 @@ mod f012_integration_tests {
                     exported.data, case["expected_output"],
                     "{} fixture {}",
                     profile, case["name"]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn accepted_export_loss_report_fixtures_are_exact() {
+        for profile in ["br-v1", "bf-v1"] {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("research/fixtures")
+                .join(profile)
+                .join("loss-report-cases.json");
+            let fixture: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+            for case in fixture["cases"].as_array().unwrap() {
+                let Some(input_records) = case.get("input_records") else {
+                    continue;
+                };
+                let report = profile_export_loss_report_for_records(
+                    profile,
+                    input_records.as_array().unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    serde_json::to_value(report).unwrap(),
+                    case["expected_report"],
+                    "{} fixture {}",
+                    profile,
+                    case["name"]
                 );
             }
         }

@@ -385,3 +385,12 @@ and loss reports classify those losses, plus synthesized export fields, as
 preserved. Full findings are in
 `docs/reviews/f012-implementation-review-2026-08-10.md`. F012 remains
 `passes: false` pending correction and fresh independent review.
+## F012 implementation review correction (2026-08-10)
+
+The independent implementation review at commit `75e83c6` rejected the first
+operational implementation on observed-corpus preservation and loss-report
+truthfulness. The subsequent correction used only the already accepted
+profiles and fixtures. It preserves the complete observed corpora through the
+operational CLI and asserts every accepted round-trip/export report fixture
+exactly. This correction is not self-approval; the ledger remains false until
+a fresh independent implementation review accepts the corrected commit.

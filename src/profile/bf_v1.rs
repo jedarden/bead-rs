@@ -199,7 +199,9 @@ impl ProfileAdapter for BfV1Adapter {
             bf_obj.insert("compaction_level".to_string(), level.clone());
         }
 
-        if !dependencies.is_empty() {
+        if let Some(raw_dependencies) = issue.extensions.get("__profile_dependencies__") {
+            bf_obj.insert("dependencies".to_string(), raw_dependencies.clone());
+        } else if !dependencies.is_empty() {
             bf_obj.insert(
                 "dependencies".to_string(),
                 Value::Array(
@@ -223,7 +225,12 @@ impl ProfileAdapter for BfV1Adapter {
         }
 
         for (key, value) in &issue.extensions {
-            if key.starts_with("__profile_empty_array__:") || key == "__profile_status__" {
+            if key.starts_with("__profile_empty_array__:")
+                || matches!(
+                    key.as_str(),
+                    "__profile_status__" | "__profile_dependencies__"
+                )
+            {
                 continue;
             }
             if matches!(
@@ -349,13 +356,10 @@ impl ProfileAdapter for BfV1Adapter {
             .map(|s| s.to_string());
 
         // Optional fields
-        let assignee = obj.get("assignee").and_then(|v| v.as_str()).and_then(|s| {
-            if s.is_empty() {
-                None
-            } else {
-                Some(s.to_string())
-            }
-        });
+        let assignee = obj
+            .get("assignee")
+            .and_then(Value::as_str)
+            .map(str::to_string);
 
         let closed_at = obj
             .get("closed_at")
@@ -466,6 +470,12 @@ impl ProfileAdapter for BfV1Adapter {
         }
         if let Some(status) = preserved_status {
             extensions_map.insert("__profile_status__".to_string(), Value::String(status));
+        }
+        if let Some(raw_dependencies) = obj.get("dependencies") {
+            extensions_map.insert(
+                "__profile_dependencies__".to_string(),
+                raw_dependencies.clone(),
+            );
         }
 
         // Build native issue

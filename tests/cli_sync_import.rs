@@ -709,3 +709,65 @@ fn test_sync_import_only_external_profile_merge() {
         .stdout(predicate::str::contains("test-0000000000000001"))
         .stdout(predicate::str::contains("alpha"));
 }
+
+#[test]
+#[serial]
+fn accepted_observed_profile_corpora_round_trip_operationally() {
+    for profile in ["br-v1", "bf-v1"] {
+        let temp_dir = TempDir::new().unwrap();
+        Command::cargo_bin("bead")
+            .unwrap()
+            .args(["init", "--prefix", "test"])
+            .current_dir(temp_dir.path())
+            .assert()
+            .success();
+        let input = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("research/fixtures")
+            .join(profile)
+            .join("observed-valid.jsonl");
+        Command::cargo_bin("bead")
+            .unwrap()
+            .args([
+                "sync",
+                "import-only",
+                "--merge",
+                "--actor",
+                "conformance",
+                "--input",
+                input.to_str().unwrap(),
+                "--profile",
+                profile,
+            ])
+            .current_dir(temp_dir.path())
+            .assert()
+            .success();
+
+        let output = temp_dir.path().join("round-trip.jsonl");
+        Command::cargo_bin("bead")
+            .unwrap()
+            .args([
+                "sync",
+                "flush-only",
+                "--output",
+                output.to_str().unwrap(),
+                "--profile",
+                profile,
+            ])
+            .current_dir(temp_dir.path())
+            .assert()
+            .success();
+
+        let parse =
+            |path: &std::path::Path| -> std::collections::BTreeMap<String, serde_json::Value> {
+                fs::read_to_string(path)
+                    .unwrap()
+                    .lines()
+                    .map(|line| {
+                        let record: serde_json::Value = serde_json::from_str(line).unwrap();
+                        (record["id"].as_str().unwrap().to_string(), record)
+                    })
+                    .collect()
+            };
+        assert_eq!(parse(&input), parse(&output), "{} observed corpus", profile);
+    }
+}

@@ -224,6 +224,426 @@ pub fn is_supported(profile_id: &str) -> bool {
     global_registry().is_supported(profile_id)
 }
 
+/// Execute an in-memory same-profile round trip and produce the normative
+/// accounting report used by the accepted F012 fixtures.
+pub fn same_profile_round_trip(
+    profile_id: &str,
+    input: &serde_json::Value,
+) -> Result<(serde_json::Value, ProfileLossReport)> {
+    let adapter = get_adapter(profile_id)?;
+    let imported = adapter.profile_to_native(input)?;
+    let mut native = imported
+        .data
+        .as_object()
+        .cloned()
+        .ok_or_else(|| anyhow!("transformed issue must be an object"))?;
+    let labels = native
+        .remove("labels")
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| anyhow!("label must be a string"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let dependency_values = native
+        .remove("dependencies")
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default();
+    let issue: Issue = serde_json::from_value(serde_json::Value::Object(native))?;
+    let dependencies = dependency_values
+        .into_iter()
+        .map(|value| {
+            let value = value
+                .as_object()
+                .ok_or_else(|| anyhow!("dependency must be an object"))?;
+            Ok((
+                issue.id.clone(),
+                value
+                    .get("blocker")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| anyhow!("dependency missing blocker"))?
+                    .to_string(),
+                value
+                    .get("kind")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("blocks")
+                    .to_string(),
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let output = adapter
+        .native_record_to_profile(&issue, &labels, &dependencies)?
+        .data;
+
+    let input_object = input
+        .as_object()
+        .ok_or_else(|| anyhow!("profile record must be an object"))?;
+    let output_object = output
+        .as_object()
+        .ok_or_else(|| anyhow!("profile output must be an object"))?;
+    let known = |field: &str| match profile_id {
+        "br-v1" => matches!(
+            field,
+            "id" | "title"
+                | "status"
+                | "priority"
+                | "issue_type"
+                | "created_at"
+                | "updated_at"
+                | "description"
+                | "assignee"
+                | "owner"
+                | "labels"
+                | "dependencies"
+                | "closed_at"
+                | "close_reason"
+                | "source_repo"
+                | "schema_ref"
+                | "due_at"
+                | "defer_until"
+                | "estimated_minutes"
+                | "external_ref"
+                | "created_by"
+                | "compaction_level"
+                | "original_size"
+        ),
+        "bf-v1" => matches!(
+            field,
+            "id" | "title"
+                | "description"
+                | "design"
+                | "acceptance_criteria"
+                | "notes"
+                | "status"
+                | "priority"
+                | "issue_type"
+                | "created_at"
+                | "updated_at"
+                | "assignee"
+                | "labels"
+                | "dependencies"
+                | "closed_at"
+                | "close_reason"
+                | "closed_by_session"
+                | "source_repo"
+                | "compaction_level"
+                | "events"
+                | "schema_ref"
+        ),
+        _ => false,
+    };
+    let mut ordinary = Vec::new();
+    let mut entries = Vec::new();
+    let mut counts = ProfileLossCounts {
+        preserved: 1,
+        transformed: 0,
+        omitted: 0,
+    };
+    for (field, value) in input_object {
+        match output_object.get(field) {
+            Some(output_value) if output_value == value => {
+                counts.preserved += 1;
+                if value.is_null() {
+                    entries.push(ProfileLossReportEntry {
+                        classification: "preserved".to_string(),
+                        scope: "field".to_string(),
+                        field: field.clone(),
+                        fields: None,
+                        reason: "explicit_null_preserved".to_string(),
+                        count: 1,
+                    });
+                } else if known(field) {
+                    ordinary.push(field.clone());
+                } else {
+                    entries.push(ProfileLossReportEntry {
+                        classification: "preserved".to_string(),
+                        scope: "field".to_string(),
+                        field: field.clone(),
+                        fields: None,
+                        reason: "extension_preserved".to_string(),
+                        count: 1,
+                    });
+                }
+            }
+            Some(_) => {
+                counts.transformed += 1;
+                entries.push(ProfileLossReportEntry {
+                    classification: "transformed".to_string(),
+                    scope: "field".to_string(),
+                    field: field.clone(),
+                    fields: None,
+                    reason: "field_transformed".to_string(),
+                    count: 1,
+                });
+            }
+            None => {
+                counts.omitted += 1;
+                entries.push(ProfileLossReportEntry {
+                    classification: "omitted".to_string(),
+                    scope: "field".to_string(),
+                    field: field.clone(),
+                    fields: None,
+                    reason: "extension_omitted".to_string(),
+                    count: 1,
+                });
+            }
+        }
+    }
+    ordinary.sort();
+    if !ordinary.is_empty() {
+        entries.push(ProfileLossReportEntry {
+            classification: "preserved".to_string(),
+            scope: "field".to_string(),
+            field: "*".to_string(),
+            fields: Some(ordinary.clone()),
+            reason: "field_preserved".to_string(),
+            count: ordinary.len(),
+        });
+    }
+    entries.push(ProfileLossReportEntry {
+        classification: "preserved".to_string(),
+        scope: "record".to_string(),
+        field: "*".to_string(),
+        fields: None,
+        reason: "record_preserved".to_string(),
+        count: 1,
+    });
+    entries.sort_by(|left, right| {
+        let rank = |value: &str| match value {
+            "preserved" => 0,
+            "transformed" => 1,
+            "omitted" => 2,
+            _ => 3,
+        };
+        (
+            rank(&left.classification),
+            &left.scope,
+            &left.field,
+            &left.reason,
+        )
+            .cmp(&(
+                rank(&right.classification),
+                &right.scope,
+                &right.field,
+                &right.reason,
+            ))
+    });
+    Ok((
+        output,
+        ProfileLossReport {
+            schema_ref: "urn:bead-rs:schema:profile-loss-report:v1".to_string(),
+            profile: profile_id.to_string(),
+            direction: "same-profile-round-trip".to_string(),
+            input_records: 1,
+            output_records: 1,
+            counts,
+            entries,
+        },
+    ))
+}
+
+/// Account for a native forensic record set projected to an external profile.
+/// This is shared by conformance tests and higher-level migration analysis.
+pub fn profile_export_loss_report_for_records(
+    profile_id: &str,
+    records: &[serde_json::Value],
+) -> Result<ProfileLossReport> {
+    if !matches!(profile_id, "br-v1" | "bf-v1") {
+        bail!("unsupported external profile: {}", profile_id);
+    }
+    let mut ordinary = Vec::new();
+    let mut entries = Vec::new();
+    let mut counts = ProfileLossCounts {
+        preserved: 0,
+        transformed: 0,
+        omitted: 0,
+    };
+    let mut output_records = 0;
+    for record in records {
+        match record
+            .get("record_type")
+            .and_then(serde_json::Value::as_str)
+        {
+            Some("issue") => {
+                output_records += 1;
+                counts.preserved += 1;
+                let issue = record
+                    .get("issue")
+                    .and_then(serde_json::Value::as_object)
+                    .ok_or_else(|| anyhow!("issue record must contain an object"))?;
+                for (field, value) in issue {
+                    let omission_reason = match field.as_str() {
+                        "schema_ref" => Some("schema_ref_omitted"),
+                        "comments" => Some("comment_omitted"),
+                        "data" => Some("structured_data_omitted"),
+                        _ => None,
+                    };
+                    if let Some(reason) = omission_reason {
+                        counts.omitted += 1;
+                        entries.push(ProfileLossReportEntry {
+                            classification: "omitted".to_string(),
+                            scope: "field".to_string(),
+                            field: field.clone(),
+                            fields: None,
+                            reason: reason.to_string(),
+                            count: 1,
+                        });
+                    } else if is_profile_fixture_known_field(profile_id, field) {
+                        counts.preserved += 1;
+                        if value.is_null() {
+                            entries.push(ProfileLossReportEntry {
+                                classification: "preserved".to_string(),
+                                scope: "field".to_string(),
+                                field: field.clone(),
+                                fields: None,
+                                reason: "explicit_null_preserved".to_string(),
+                                count: 1,
+                            });
+                        } else {
+                            ordinary.push(field.clone());
+                        }
+                    } else {
+                        counts.preserved += 1;
+                        entries.push(ProfileLossReportEntry {
+                            classification: "preserved".to_string(),
+                            scope: "field".to_string(),
+                            field: field.clone(),
+                            fields: None,
+                            reason: "extension_preserved".to_string(),
+                            count: 1,
+                        });
+                    }
+                }
+            }
+            Some("event") => {
+                counts.omitted += 1;
+                entries.push(ProfileLossReportEntry {
+                    classification: "omitted".to_string(),
+                    scope: "record_kind".to_string(),
+                    field: "event".to_string(),
+                    fields: None,
+                    reason: "event_omitted".to_string(),
+                    count: 1,
+                });
+            }
+            Some("provenance_receipt") => {
+                counts.omitted += 1;
+                entries.push(ProfileLossReportEntry {
+                    classification: "omitted".to_string(),
+                    scope: "record_kind".to_string(),
+                    field: "provenance_receipt".to_string(),
+                    fields: None,
+                    reason: "provenance_receipt_omitted".to_string(),
+                    count: 1,
+                });
+            }
+            other => bail!("unsupported record type: {:?}", other),
+        }
+    }
+    ordinary.sort();
+    if !ordinary.is_empty() {
+        entries.push(ProfileLossReportEntry {
+            classification: "preserved".to_string(),
+            scope: "field".to_string(),
+            field: "*".to_string(),
+            fields: Some(ordinary.clone()),
+            reason: "field_preserved".to_string(),
+            count: ordinary.len(),
+        });
+    }
+    if output_records > 0 {
+        entries.push(ProfileLossReportEntry {
+            classification: "preserved".to_string(),
+            scope: "record".to_string(),
+            field: "*".to_string(),
+            fields: None,
+            reason: "record_preserved".to_string(),
+            count: output_records,
+        });
+    }
+    entries.sort_by(profile_report_entry_order);
+    Ok(ProfileLossReport {
+        schema_ref: "urn:bead-rs:schema:profile-loss-report:v1".to_string(),
+        profile: profile_id.to_string(),
+        direction: "export".to_string(),
+        input_records: records.len(),
+        output_records,
+        counts,
+        entries,
+    })
+}
+
+fn is_profile_fixture_known_field(profile_id: &str, field: &str) -> bool {
+    matches!(
+        field,
+        "id" | "title" | "status" | "priority" | "issue_type" | "created_at" | "updated_at"
+    ) || match profile_id {
+        "br-v1" => matches!(
+            field,
+            "description"
+                | "assignee"
+                | "owner"
+                | "labels"
+                | "dependencies"
+                | "closed_at"
+                | "close_reason"
+                | "source_repo"
+                | "due_at"
+                | "defer_until"
+                | "estimated_minutes"
+                | "external_ref"
+                | "created_by"
+                | "compaction_level"
+                | "original_size"
+        ),
+        "bf-v1" => matches!(
+            field,
+            "description"
+                | "design"
+                | "acceptance_criteria"
+                | "notes"
+                | "assignee"
+                | "labels"
+                | "dependencies"
+                | "closed_at"
+                | "close_reason"
+                | "closed_by_session"
+                | "source_repo"
+                | "compaction_level"
+                | "events"
+        ),
+        _ => false,
+    }
+}
+
+fn profile_report_entry_order(
+    left: &ProfileLossReportEntry,
+    right: &ProfileLossReportEntry,
+) -> std::cmp::Ordering {
+    let rank = |value: &str| match value {
+        "preserved" => 0,
+        "transformed" => 1,
+        "omitted" => 2,
+        _ => 3,
+    };
+    (
+        rank(&left.classification),
+        &left.scope,
+        &left.field,
+        &left.reason,
+    )
+        .cmp(&(
+            rank(&right.classification),
+            &right.scope,
+            &right.field,
+            &right.reason,
+        ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

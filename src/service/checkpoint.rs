@@ -869,6 +869,31 @@ fn sort_profile_report_entries(entries: &mut [ProfileLossReportEntry]) {
     });
 }
 
+fn add_profile_accounting(
+    entries: &mut BTreeMap<(String, String, String, String), usize>,
+    counts: &mut ProfileLossCounts,
+    classification: &str,
+    scope: &str,
+    field: &str,
+    reason: &str,
+    count: usize,
+) {
+    match classification {
+        "preserved" => counts.preserved += count,
+        "transformed" => counts.transformed += count,
+        "omitted" => counts.omitted += count,
+        _ => {}
+    }
+    *entries
+        .entry((
+            classification.to_string(),
+            scope.to_string(),
+            field.to_string(),
+            reason.to_string(),
+        ))
+        .or_default() += count;
+}
+
 fn stage_external_profile(
     input_path: &Path,
     profile: &str,
@@ -882,7 +907,7 @@ fn stage_external_profile(
     let mut seen_ids = HashSet::new();
     let mut hasher = Sha256::new();
     let mut entries: BTreeMap<(String, String, String, String), usize> = BTreeMap::new();
-    let transformed_count = 0usize;
+    let mut transformed_count = 0usize;
     let omitted_count = 0usize;
     let mut preserved_count = 0usize;
 
@@ -930,9 +955,15 @@ fn stage_external_profile(
             serde_json::from_value(serde_json::Value::Object(native)).map_err(|error| {
                 anyhow!("Line {}: invalid transformed issue: {}", line_number, error)
             })?;
-        issue
-            .validate()
-            .map_err(|error| anyhow!("Line {}: issue validation failed: {}", line_number, error))?;
+        let profile_valid_empty_close_reason = profile == "bf-v1"
+            && issue.base_status == crate::model::BaseStatus::Closed
+            && issue.close_reason.as_deref() == Some("")
+            && issue.closed_at.is_some();
+        if !profile_valid_empty_close_reason {
+            issue.validate().map_err(|error| {
+                anyhow!("Line {}: issue validation failed: {}", line_number, error)
+            })?;
+        }
         if !seen_ids.insert(issue.id.clone()) {
             bail!("Line {}: duplicate issue ID '{}'", line_number, issue.id);
         }
@@ -957,22 +988,28 @@ fn stage_external_profile(
             labels.push((issue.id.clone(), label.to_string()));
         }
         let input_object = external.as_object();
-        let field_count = input_object.map(|object| object.len()).unwrap_or(0);
-        preserved_count += field_count + 1;
+        preserved_count += 1;
         if let Some(object) = input_object {
             for (field, value) in object {
-                let reason = if let Some(reason) = field_reasons.get(field) {
-                    *reason
+                let (classification, reason) = if let Some(reason) = field_reasons.get(field) {
+                    ("preserved", *reason)
+                } else if field == "status" {
+                    ("transformed", "status_mapped")
                 } else if value.is_null() {
-                    "explicit_null_preserved"
+                    ("preserved", "explicit_null_preserved")
                 } else if is_known_profile_field(profile, field) {
-                    "field_preserved"
+                    ("preserved", "field_preserved")
                 } else {
-                    "extension_preserved"
+                    ("preserved", "extension_preserved")
                 };
+                if classification == "preserved" {
+                    preserved_count += 1;
+                } else {
+                    transformed_count += 1;
+                }
                 *entries
                     .entry((
-                        "preserved".to_string(),
+                        classification.to_string(),
                         "field".to_string(),
                         field.clone(),
                         reason.to_string(),
@@ -3302,9 +3339,11 @@ pub fn flush_profile_checkpoint(
 
     let mut output_records = Vec::with_capacity(issues.len());
     let mut entries: BTreeMap<(String, String, String, String), usize> = BTreeMap::new();
-    let mut transformed = 0usize;
-    let mut omitted = 0usize;
-    let mut preserved = 0usize;
+    let mut counts = ProfileLossCounts {
+        preserved: 0,
+        transformed: 0,
+        omitted: 0,
+    };
 
     for issue in &issues {
         let mut label_stmt =
@@ -3333,60 +3372,89 @@ pub fn flush_profile_checkpoint(
         if !transformed_record.successful {
             bail!("{} transformation failed for issue {}", profile, issue.id);
         }
-        for loss in transformed_record.losses {
-            let classification = if loss.severity == crate::profile::LossSeverity::Error {
-                "transformed"
-            } else {
-                "omitted"
-            };
-            if classification == "transformed" {
-                transformed += 1;
-            } else {
-                omitted += 1;
+        let output_object = transformed_record
+            .data
+            .as_object()
+            .ok_or_else(|| anyhow!("{} transformation did not produce an object", profile))?;
+        let native_value = serde_json::to_value(issue)?;
+        let native_object = native_value
+            .as_object()
+            .ok_or_else(|| anyhow!("native issue did not serialize as an object"))?;
+        let absent_description = issue
+            .extensions
+            .contains_key("__profile_absent__:description");
+        for (field, value) in native_object {
+            if field.starts_with("__profile_") || (field == "description" && absent_description) {
+                continue;
             }
-            *entries
-                .entry((
-                    classification.to_string(),
-                    "field".to_string(),
-                    loss.field_path,
-                    if classification == "transformed" {
-                        "status_mapped".to_string()
+            let (classification, target_field, reason) = match field.as_str() {
+                "base_status" | "manual_blocked" => ("transformed", "status", "status_mapped"),
+                "schema_ref" => ("omitted", "schema_ref", "schema_ref_omitted"),
+                "data" => ("omitted", "data", "structured_data_omitted"),
+                "revision" | "profile" => ("omitted", field.as_str(), "extension_omitted"),
+                "notes" if profile == "br-v1" => ("omitted", "notes", "extension_omitted"),
+                _ if output_object.contains_key(field) => (
+                    "preserved",
+                    field.as_str(),
+                    if value.is_null() {
+                        "explicit_null_preserved"
+                    } else if issue.extensions.contains_key(field) {
+                        "extension_preserved"
                     } else {
-                        "schema_ref_omitted".to_string()
+                        "field_preserved"
                     },
-                ))
-                .or_default() += 1;
+                ),
+                _ => ("omitted", field.as_str(), "extension_omitted"),
+            };
+            add_profile_accounting(
+                &mut entries,
+                &mut counts,
+                classification,
+                "field",
+                target_field,
+                reason,
+                1,
+            );
         }
-        let output_object = transformed_record.data.as_object();
-        let field_count = output_object.map(|object| object.len()).unwrap_or(0);
-        preserved += field_count + 1;
-        if let Some(object) = output_object {
-            for (field, value) in object {
-                let reason = if value.is_null() {
-                    "explicit_null_preserved"
-                } else if issue.extensions.contains_key(field) {
-                    "extension_preserved"
-                } else {
-                    "field_preserved"
-                };
-                *entries
-                    .entry((
-                        "preserved".to_string(),
-                        "field".to_string(),
-                        field.clone(),
-                        reason.to_string(),
-                    ))
-                    .or_default() += 1;
-            }
+        if !labels.is_empty()
+            || issue
+                .extensions
+                .contains_key("__profile_empty_array__:labels")
+        {
+            add_profile_accounting(
+                &mut entries,
+                &mut counts,
+                "preserved",
+                "field",
+                "labels",
+                "field_preserved",
+                1,
+            );
         }
-        *entries
-            .entry((
-                "preserved".to_string(),
-                "record".to_string(),
-                "*".to_string(),
-                "record_preserved".to_string(),
-            ))
-            .or_default() += 1;
+        if !dependencies.is_empty()
+            || issue
+                .extensions
+                .contains_key("__profile_empty_array__:dependencies")
+        {
+            add_profile_accounting(
+                &mut entries,
+                &mut counts,
+                "preserved",
+                "field",
+                "dependencies",
+                "field_preserved",
+                1,
+            );
+        }
+        add_profile_accounting(
+            &mut entries,
+            &mut counts,
+            "preserved",
+            "record",
+            "*",
+            "record_preserved",
+            1,
+        );
         output_records.push(transformed_record.data);
     }
 
@@ -3399,7 +3467,7 @@ pub fn flush_profile_checkpoint(
         ),
     ] {
         if count > 0 {
-            omitted += count;
+            counts.omitted += count;
             entries.insert(
                 (
                     "omitted".to_string(),
@@ -3416,7 +3484,7 @@ pub fn flush_profile_checkpoint(
         (data_field_count, "data", "structured_data_omitted"),
     ] {
         if count > 0 {
-            omitted += count;
+            counts.omitted += count;
             entries.insert(
                 (
                     "omitted".to_string(),
@@ -3463,11 +3531,7 @@ pub fn flush_profile_checkpoint(
         direction: "export".to_string(),
         input_records: issues.len() + event_count + receipt_count,
         output_records: output_records.len(),
-        counts: ProfileLossCounts {
-            preserved,
-            transformed,
-            omitted,
-        },
+        counts,
         entries,
     };
 
@@ -4472,8 +4536,8 @@ fn read_all_issues(tx: &Transaction) -> Result<Vec<Issue>> {
         let issue = Issue {
             id: id.clone(),
             title,
-            description: description.or(Some(String::new())),
-            notes: notes.or(Some(String::new())),
+            description,
+            notes,
             priority,
             issue_type: issue_type.or(Some(String::from("task"))),
             base_status: crate::model::BaseStatus::parse(&base_status)

@@ -1313,3 +1313,18 @@ The mission remains **ACTIVE BLOCKED** awaiting external dependency resolution. 
 - Rust 1.75 was unavailable locally, so MSRV remains unverified. Full review:
   `docs/reviews/f012-implementation-review-2026-08-10.md`. F012 remains false;
   correct the four findings and obtain a fresh independent review.
+[2026-08-10] F012 implementation-review correction increment
+
+- Corrected every blocking finding in the independent implementation review
+  at `docs/reviews/f012-implementation-review-2026-08-10.md`.
+- Complete accepted br-v1 and bf-v1 observed corpora now import and immediately
+  export byte-semantically identical records through the real CLI, including
+  empty close reasons, optional-field absence, owner/source fields, closed
+  timestamps, exact status spellings, and complete dependency metadata.
+- Added exact accepted report assertions for all same-profile and export loss
+  fixture cases. Operational reports now classify native input occurrences
+  rather than synthesized target fields, retain reason identity, order entries
+  normatively, and keep counts equal to entry sums.
+- Verification: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
+  full `cargo test`, and `git diff --check` passed. F012 remains false pending
+  fresh independent implementation review and MSRV verification.
