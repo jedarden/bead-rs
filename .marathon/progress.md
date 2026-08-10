@@ -1351,3 +1351,18 @@ The mission remains **ACTIVE BLOCKED** awaiting external dependency resolution. 
   `rusqlite 0.32.1` uses experimental C-string literals on Rust 1.75.
 - Another worker concurrently created uncommitted dependency-pin changes;
   they were preserved and excluded from this review commit. F012 remains false.
+
+[2026-08-10] F012 round-two implementation-review correction
+
+- External input now fails closed with `known_extension_collision` for the
+  complete reserved `__profile_*` adapter-state namespace before activation;
+  adapter coverage exercises each private marker family and an operational
+  import regression verifies the SQLite store remains byte-identical.
+- External-export loss accounting now retains `base_status` and
+  `manual_blocked` as distinct source fields instead of combining them under
+  one `status` entry.
+- Pinned the dependency resolution to releases compatible with the declared
+  Rust 1.75 floor and made the forensic CLI tests use Cargo's binary path.
+- Current and Rust 1.75 full test suites pass, as do current formatting,
+  all-target clippy, Rust 1.75 all-target check, and diff checks. F012 remains
+  false pending a fresh independent implementation review of this correction.

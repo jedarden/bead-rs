@@ -270,6 +270,9 @@ impl ProfileAdapter for BrV1Adapter {
         let obj = data
             .as_object()
             .ok_or_else(|| anyhow!("br-v1 data must be an object"))?;
+        if let Some(field) = obj.keys().find(|field| field.starts_with("__profile_")) {
+            bail!("known_extension_collision: {}", field);
+        }
 
         let mut losses = vec![];
 

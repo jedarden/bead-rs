@@ -243,6 +243,20 @@ fn test_sync_flush_only_external_profile_emits_loss_report() {
         })
         .collect();
     assert!(ranks.windows(2).all(|window| window[0] <= window[1]));
+    for field in ["base_status", "manual_blocked"] {
+        assert!(entries.iter().any(|entry| {
+            entry["classification"] == "transformed"
+                && entry["scope"] == "field"
+                && entry["field"] == field
+                && entry["reason"] == "status_mapped"
+                && entry.get("fields").is_none()
+        }));
+    }
+    assert!(!entries.iter().any(|entry| {
+        entry["classification"] == "transformed"
+            && entry["field"] == "status"
+            && entry["reason"] == "status_mapped"
+    }));
 
     let records: Vec<Value> = fs::read_to_string(output_path)
         .unwrap()

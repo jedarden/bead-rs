@@ -7,30 +7,13 @@
 //! - Atomic operations and crash safety
 //! - Doctor validation for forensic checkpoints
 
-use std::env;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 
 /// Get the path to the bead binary for testing
 fn bead_binary() -> String {
-    // Try CARGO_BIN_EXE_bead first (set by cargo test)
-    if let Ok(bin) = env::var("CARGO_BIN_EXE_bead") {
-        return bin;
-    }
-
-    // Fallback to target/debug/bead
-    let mut cargo_target_dir = env::current_dir().unwrap();
-    cargo_target_dir.push("target");
-    cargo_target_dir.push("debug");
-    cargo_target_dir.push("bead");
-
-    if cargo_target_dir.exists() {
-        return cargo_target_dir.to_str().unwrap().to_string();
-    }
-
-    // Another fallback: use target/debug/bead
-    "target/debug/bead".to_string()
+    env!("CARGO_BIN_EXE_bead").to_string()
 }
 
 #[test]

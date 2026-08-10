@@ -771,3 +771,61 @@ fn accepted_observed_profile_corpora_round_trip_operationally() {
         assert_eq!(parse(&input), parse(&output), "{} observed corpus", profile);
     }
 }
+
+#[test]
+#[serial]
+fn external_profile_reserved_state_collision_is_atomic() {
+    for profile in ["br-v1", "bf-v1"] {
+        let temp_dir = TempDir::new().unwrap();
+        Command::cargo_bin("bead")
+            .unwrap()
+            .args(["init", "--prefix", "test"])
+            .current_dir(temp_dir.path())
+            .assert()
+            .success();
+        let database = temp_dir.path().join(".beads/beads.db");
+        let before = fs::read(&database).unwrap();
+        let input = temp_dir.path().join("collision.jsonl");
+        let mut record = serde_json::json!({
+            "id": "test-0000000000000001",
+            "title": "Collision",
+            "status": "open",
+            "priority": 2,
+            "issue_type": "task",
+            "created_at": "2030-01-01T00:00:00Z",
+            "updated_at": "2030-01-01T00:00:00Z",
+            "__profile_status__": "closed"
+        });
+        if profile == "bf-v1" {
+            let object = record.as_object_mut().unwrap();
+            for field in ["description", "design", "acceptance_criteria", "notes"] {
+                object.insert(field.to_string(), serde_json::json!(""));
+            }
+            object.insert("events".to_string(), serde_json::json!([]));
+        }
+        fs::write(&input, format!("{}\n", record)).unwrap();
+
+        Command::cargo_bin("bead")
+            .unwrap()
+            .args([
+                "sync",
+                "import-only",
+                "--merge",
+                "--actor",
+                "conformance",
+                "--input",
+                input.to_str().unwrap(),
+                "--profile",
+                profile,
+            ])
+            .current_dir(temp_dir.path())
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("known_extension_collision"));
+        assert_eq!(
+            fs::read(database).unwrap(),
+            before,
+            "{profile} mutated store"
+        );
+    }
+}

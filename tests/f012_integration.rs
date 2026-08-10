@@ -484,4 +484,70 @@ mod f012_integration_tests {
             }
         }
     }
+
+    #[test]
+    fn reserved_adapter_state_collision_fails_closed() {
+        for (profile, reserved_field, reserved_value) in [
+            ("br-v1", "__profile_status__", serde_json::json!("closed")),
+            ("br-v1", "__profile_dependencies__", serde_json::json!([])),
+            (
+                "br-v1",
+                "__profile_null__:description",
+                serde_json::json!(true),
+            ),
+            (
+                "br-v1",
+                "__profile_empty_array__:labels",
+                serde_json::json!(true),
+            ),
+            (
+                "br-v1",
+                "__profile_absent__:description",
+                serde_json::json!(true),
+            ),
+            ("bf-v1", "__profile_status__", serde_json::json!("closed")),
+            ("bf-v1", "__profile_dependencies__", serde_json::json!([])),
+            (
+                "bf-v1",
+                "__profile_null__:description",
+                serde_json::json!(true),
+            ),
+            (
+                "bf-v1",
+                "__profile_empty_array__:labels",
+                serde_json::json!(true),
+            ),
+            (
+                "bf-v1",
+                "__profile_absent__:description",
+                serde_json::json!(true),
+            ),
+        ] {
+            let mut record = serde_json::json!({
+                "id": "collision",
+                "title": "Collision",
+                "status": "open",
+                "priority": 2,
+                "issue_type": "task",
+                "created_at": "2030-01-01T00:00:00Z",
+                "updated_at": "2030-01-01T00:00:00Z"
+            });
+            record
+                .as_object_mut()
+                .unwrap()
+                .insert(reserved_field.to_string(), reserved_value);
+            if profile == "bf-v1" {
+                let object = record.as_object_mut().unwrap();
+                for field in ["description", "design", "acceptance_criteria", "notes"] {
+                    object.insert(field.to_string(), serde_json::json!(""));
+                }
+                object.insert("events".to_string(), serde_json::json!([]));
+            }
+            let error = get_adapter(profile)
+                .unwrap()
+                .profile_to_native(&record)
+                .unwrap_err();
+            assert!(error.to_string().contains("known_extension_collision"));
+        }
+    }
 }

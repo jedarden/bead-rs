@@ -408,3 +408,15 @@ fails Rust 1.75. Full findings are in
 `docs/reviews/f012-implementation-review-round2-2026-08-10.md`. No prohibited
 producer material was consulted and no implementation, specification, fixture,
 or ledger value was changed. F012 remains `passes: false`.
+
+## F012 implementation review round-two correction (2026-08-10)
+
+The round-two rejection was corrected solely against the accepted artifacts
+and the independent review findings. All external keys in the reserved
+`__profile_*` namespace now fail deterministically before activation, with
+adapter-family coverage and an operational store-immutability regression.
+Operational export reports keep the two native status source fields distinct.
+The dependency lock is pinned to versions verified by full tests and an
+all-target check on Rust 1.75. This is correction evidence, not self-approval;
+F012 remains false until a fresh independent implementation review accepts the
+committed result.

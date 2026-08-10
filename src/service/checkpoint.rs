@@ -3388,7 +3388,9 @@ pub fn flush_profile_checkpoint(
                 continue;
             }
             let (classification, target_field, reason) = match field.as_str() {
-                "base_status" | "manual_blocked" => ("transformed", "status", "status_mapped"),
+                "base_status" | "manual_blocked" => {
+                    ("transformed", field.as_str(), "status_mapped")
+                }
                 "schema_ref" => ("omitted", "schema_ref", "schema_ref_omitted"),
                 "data" => ("omitted", "data", "structured_data_omitted"),
                 "revision" | "profile" => ("omitted", field.as_str(), "extension_omitted"),
