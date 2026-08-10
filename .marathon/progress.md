@@ -1396,3 +1396,17 @@ The mission remains **ACTIVE BLOCKED** awaiting external dependency resolution. 
 - Formatting, targeted F012/import suites, all-target clippy, locked Rust 1.75
   all-target check, and diff checks pass. F012 remains false pending the final
   independent confirmation of the committed correction.
+
+[2026-08-10] F012 final independent implementation confirmation acceptance
+
+- Accepted exact clean commit `99be5a7`, incorporating the complete prior
+  review. Guards cover every consumed private sentinel/prefix without
+  reserving unrelated extension space.
+- Operational exact round trips passed for br/bf `__profile_custom__` and bf
+  `__profile_absent__:description`; actual collisions remain atomic.
+- Locked targeted suites passed (19 + 8 + 19), as did formatting, locked
+  clippy, Rust 1.75 all-target check, and Rust 1.75 targeted suites. Complete
+  baseline and Rust 1.75 evidence from the immediately preceding review remains
+  applicable.
+- Implementation conformance is accepted. F012 stays false for separate owner
+  activation; no implementation/specification/fixture/ledger edits.

@@ -442,3 +442,16 @@ require noncolliding “other fields” to survive exactly. A valid
 `__profile_custom__` object failed import in both profiles. Full evidence is in
 `docs/reviews/f012-implementation-review-final-2026-08-10.md`. No implementation,
 specification, fixture, or ledger value was modified. F012 remains false.
+
+## F012 final implementation confirmation acceptance (2026-08-10)
+
+OpenAI Codex independently confirmed exact commit
+`99be5a7d8bb760ed55efe8612678f7f29515708c`, incorporating the complete
+`3baf98e` review. Guards now cover exactly the private keys/prefixes each
+adapter consumes while noncolliding profile-prefixed unknown extensions round
+trip operationally and report as preserved. Accepted corpora/reports,
+collision atomicity, accounting, current locked checks, and Rust 1.75 locked
+checks/tests remain green. Full evidence is in
+`docs/reviews/f012-implementation-confirmation-2026-08-10.md`. No
+implementation, specification, fixture, or ledger value was modified. The
+implementation is accepted; F012 remains false pending owner activation.
