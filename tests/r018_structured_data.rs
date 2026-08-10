@@ -8,7 +8,7 @@ use tempfile::TempDir;
 
 /// Helper function to run bead commands in a test workspace
 fn run_bead_command(args: &[&str], workspace_dir: &std::path::Path) -> String {
-    let output = Command::new("/home/needle/target/debug/bead")
+    let output = Command::new(env!("CARGO_BIN_EXE_bead"))
         .args(args)
         .current_dir(workspace_dir)
         .output()
@@ -22,7 +22,7 @@ fn run_bead_command(args: &[&str], workspace_dir: &std::path::Path) -> String {
 
 /// Helper function to run command and capture stderr as well
 fn run_bead_command_full(args: &[&str], workspace_dir: &std::path::Path) -> (String, String, i32) {
-    let output = Command::new("/home/needle/target/debug/bead")
+    let output = Command::new(env!("CARGO_BIN_EXE_bead"))
         .args(args)
         .current_dir(workspace_dir)
         .output()

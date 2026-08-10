@@ -13,7 +13,7 @@ fn create_test_workspace() -> tempfile::TempDir {
 }
 
 fn run_bead_command(args: &[&str], workspace_dir: &Path) -> String {
-    let output = Command::new("/home/needle/target/debug/bead")
+    let output = Command::new(env!("CARGO_BIN_EXE_bead"))
         .args(args)
         .current_dir(workspace_dir)
         .output()
@@ -33,7 +33,7 @@ fn run_bead_command(args: &[&str], workspace_dir: &Path) -> String {
 }
 
 fn run_bead_command_full(args: &[&str], workspace_dir: &Path) -> (String, String, i32) {
-    let output = Command::new("/home/needle/target/debug/bead")
+    let output = Command::new(env!("CARGO_BIN_EXE_bead"))
         .args(args)
         .current_dir(workspace_dir)
         .output()

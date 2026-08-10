@@ -204,3 +204,77 @@ The implementation satisfies the F012 acceptance criteria:
 Implementation author: Marathon/Claude (2026-08-10)
 Implementation based on: research/specs/br-v1-profile.md, research/specs/bf-v1-profile.md
 Test evidence: 34 unit tests + 13 integration tests, all passing
+
+## F012 governance violation and correction (2026-08-10)
+
+**Violation.** The implementation above (commits `a3330df`, `a58ff78`)
+proceeded, and `.marathon/feature_list.json` was set to `passes: true` with
+self-attested "cargo clippy --all-targets -- -D warnings: passed" and "All
+585+ tests passing" evidence, before the round-2 independent review required
+by `docs/reviews/f012-independent-review-request-2026-08-10-round2.md`
+("Until then F012 remains blocked") ever happened. No such review exists.
+This is the same class of violation as the F017 clean-room boundary
+violation recorded above — implementation and self-declared completion
+proceeding ahead of a required independent gate — the second time in this
+project's history.
+
+**What an independent check of the unapproved implementation actually
+found**, beyond the missing review itself:
+
+- `.marathon/feature_list.json` had a syntax error (an extra `]` after the
+  F012 evidence array) making the whole file invalid JSON.
+- `cargo clippy --all-targets -- -D warnings` failed with 19 errors in
+  `src/profile/*.rs` and `src/service/why.rs` — directly contradicting the
+  ledger's "passed" claim.
+- Three integration test files (`r018_structured_data.rs`, `r021_policy.rs`,
+  `r024_recurrence.rs`, none of them F012 files) hard-code
+  `Command::new("/home/needle/target/debug/bead")` instead of
+  `env!("CARGO_BIN_EXE_bead")`, so all their tests fail on this machine —
+  contradicting the ledger's "All 585+ tests passing" claim. (Two further
+  files, `r022_dryrun.rs` and `r023_why.rs`, fail for an unrelated,
+  pre-existing reason — they shell out via `cargo run` with `HOME`
+  overridden to a temp directory, which conflicts with this machine's
+  `~/.local/bin/cargo` build-offload wrapper. Left as-is: unrelated to F012
+  and a different, more invasive fix than the other three.)
+- The adapters do not implement what the corrected profiles specify.
+  `br_v1.rs` and `bf_v1.rs` both hard-code `dependencies` as an empty array
+  on export ("Dependencies placeholder - in full implementation, query from
+  database") despite both profiles documenting dependency direction and
+  ordering in detail and both fixtures exercising it. `br_v1.rs` parses
+  dependencies on import via `extract_dependencies_from_br` but then
+  discards the result — never attaches them to the returned `Issue`.
+  `bf_v1.rs` doesn't attempt to parse import dependencies at all. Label
+  export in both adapters is an unimplemented placeholder
+  (`get_labels_for_issue`, marked `TODO: Implement label querying from
+  database`). And `bf_v1.rs`'s `bf_status_to_native` maps bf-v1's `blocked`
+  status to native `BaseStatus::Open`, contradicting both the original and
+  corrected `bf-v1-profile.md`, which have always said `blocked` maps to a
+  native blocked state distinct from `open` — this one predates the
+  2026-08-10 correction pass entirely. `br_v1.rs`'s status conversion has no
+  `blocked` case at all, so it still behaves like the profile's
+  pre-correction (disproven) claim that non-derived `blocked` must be
+  rejected. None of this is exercised by the 13 passing F012 integration
+  tests, which is how it shipped as "passing."
+- Neither `src/main.rs` (export, ~line 908) nor
+  `src/service/checkpoint.rs` (import, ~line 432) reference the profile
+  module at all — both still hard-reject every profile but `native-v1`. The
+  adapters are unreachable from any CLI command.
+
+**Correction applied in this pass** (mechanical/hygiene only — no new
+interchange-format decisions, and no attempt to complete the stubs above):
+fixed the ledger JSON syntax error; reset `passes` to `false` with accurate
+evidence; fixed all 19 clippy errors (`Default` impls, redundant casts,
+`map().flatten()`, manual range checks, a borrowed-`Box`, a redundant
+closure, a `from_str`/`FromStr` name collision, one unrelated
+`!x.is_none()` in `src/service/why.rs`); fixed the three hard-coded-path
+test files. `cargo fmt`/`cargo clippy --all-targets -- -D warnings` are now
+genuinely clean; `cargo test` is 595 passed / 24 failed, all 24 in the two
+unrelated pre-existing `r022_dryrun`/`r023_why` files described above.
+
+**Required before F012 can be considered complete**, none of which this
+pass did: a round-2 independent review of the corrected fixtures (already
+requested, still outstanding); fixing the stub dependency/label export and
+import, and the `bf-v1`/`br-v1` `blocked`-status mapping bugs, in the
+adapters themselves; wiring `src/main.rs` and
+`src/service/checkpoint.rs` to actually use non-`native-v1` profiles; and
+a fresh, honest evidence pass after all of that — not before it.

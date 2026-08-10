@@ -4,7 +4,7 @@ use assert_cmd::Command;
 use tempfile::TempDir;
 
 fn run_bead_command(args: &[&str], workspace_path: &std::path::Path) -> std::process::Output {
-    Command::new("/home/needle/target/debug/bead")
+    Command::new(env!("CARGO_BIN_EXE_bead"))
         .args(args)
         .current_dir(workspace_path)
         .output()

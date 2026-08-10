@@ -16,6 +16,12 @@ pub struct BfV1Adapter {
     profile_id: ProfileId,
 }
 
+impl Default for BfV1Adapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BfV1Adapter {
     pub fn new() -> Self {
         Self {
@@ -239,14 +245,13 @@ impl ProfileAdapter for BfV1Adapter {
         let description = obj
             .get("description")
             .and_then(|v| v.as_str())
-            .map(|s| {
+            .and_then(|s| {
                 if s.is_empty() {
                     None
                 } else {
                     Some(s.to_string())
                 }
-            })
-            .flatten();
+            });
 
         let design = obj
             .get("design")
@@ -262,17 +267,13 @@ impl ProfileAdapter for BfV1Adapter {
             .map(|s| s.to_string());
 
         // Optional fields
-        let assignee = obj
-            .get("assignee")
-            .and_then(|v| v.as_str())
-            .map(|s| {
-                if s.is_empty() {
-                    None
-                } else {
-                    Some(s.to_string())
-                }
-            })
-            .flatten();
+        let assignee = obj.get("assignee").and_then(|v| v.as_str()).and_then(|s| {
+            if s.is_empty() {
+                None
+            } else {
+                Some(s.to_string())
+            }
+        });
 
         let closed_at = obj
             .get("closed_at")
@@ -347,7 +348,7 @@ impl ProfileAdapter for BfV1Adapter {
             description,
             notes: notes_str,
             revision: None,
-            priority: priority as i64,
+            priority,
             issue_type,
             base_status,
             manual_blocked: Some(false),
@@ -419,7 +420,7 @@ impl ProfileAdapter for BfV1Adapter {
 
             // Validate priority range
             if let Some(priority) = obj.get("priority").and_then(|v| v.as_i64()) {
-                if priority < 0 || priority > 4 {
+                if !(0..=4).contains(&priority) {
                     losses.push(LossEntry {
                         category: LossCategory::UnsupportedField,
                         field_path: "priority".to_string(),

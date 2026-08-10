@@ -521,7 +521,7 @@ fn build_reason_codes(
     if is_ready {
         reasons.push(ReasonCode::EligibleSelected);
     } else {
-        if !issue.assignee.is_none() {
+        if issue.assignee.is_some() {
             reasons.push(ReasonCode::AlreadyAssigned);
         }
         if blockers.active_blocker_count > 0 {

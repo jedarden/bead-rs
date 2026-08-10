@@ -30,7 +30,7 @@ impl ProfileId {
     }
 
     /// Parse from profile identifier string (e.g., "native-v1", "br-v1")
-    pub fn from_str(s: &str) -> Result<Self> {
+    pub fn parse_id(s: &str) -> Result<Self> {
         let parts: Vec<&str> = s.splitn(2, '-').collect();
         if parts.len() != 2 {
             bail!(
@@ -138,9 +138,10 @@ impl ProfileRegistry {
     }
 
     /// Get adapter by profile identifier
-    pub fn get_adapter(&self, profile_id: &str) -> Result<&Box<dyn ProfileAdapter>> {
+    pub fn get_adapter(&self, profile_id: &str) -> Result<&dyn ProfileAdapter> {
         self.adapters
             .get(profile_id)
+            .map(|adapter| adapter.as_ref())
             .ok_or_else(|| anyhow!("Unsupported profile: {}", profile_id))
     }
 
@@ -165,11 +166,11 @@ impl Default for ProfileRegistry {
 fn global_registry() -> &'static ProfileRegistry {
     use std::sync::OnceLock;
     static REGISTRY: OnceLock<ProfileRegistry> = OnceLock::new();
-    REGISTRY.get_or_init(|| ProfileRegistry::new())
+    REGISTRY.get_or_init(ProfileRegistry::new)
 }
 
 /// Get profile adapter by identifier
-pub fn get_adapter(profile_id: &str) -> Result<&'static Box<dyn ProfileAdapter>> {
+pub fn get_adapter(profile_id: &str) -> Result<&'static dyn ProfileAdapter> {
     global_registry().get_adapter(profile_id)
 }
 
@@ -189,7 +190,7 @@ mod tests {
 
     #[test]
     fn test_profile_id_parsing() {
-        let id = ProfileId::from_str("native-v1").unwrap();
+        let id = ProfileId::parse_id("native-v1").unwrap();
         assert_eq!(id.name, "native");
         assert_eq!(id.version, "v1");
         assert_eq!(id.as_str(), "native-v1");
@@ -197,7 +198,7 @@ mod tests {
 
     #[test]
     fn test_invalid_profile_id() {
-        let result = ProfileId::from_str("invalid");
+        let result = ProfileId::parse_id("invalid");
         assert!(result.is_err());
     }
 
