@@ -1,9 +1,12 @@
 # bf-v1 black-box fixture set
 
-Status: corrected after 2026-08-10 independent review; re-review pending.
+Status: round-three correction; independent review pending.
 
 - Author: Claude (Anthropic), acting as external clean-room fixture author for
   this correction pass
+- Round-three author: OpenAI Codex, adding independently invented conformance
+  cases and report expectations without inspecting implementation or producer
+  source
 - Observation date: 2026-08-10 UTC
 - Producer: the real `bf 0.4.0` binary already installed as this workspace's
   canonical bead CLI (system PATH, not a copy)
@@ -60,6 +63,15 @@ Expected observations:
 - A record closed through a generic status transition (rather than the
   dedicated close subcommand's default-reason path) shows an empty
   `close_reason` and `closed_by_session":"cli"`.
+
+`round-trip-cases.json` is independently authored normative conformance data,
+not producer output. It proves nested unknown JSON, explicit null, empty arrays,
+Unicode, a real newline, and exact dependency array order have expected
+same-profile outputs and machine-readable reports. `loss-report-cases.json`
+exercises zero-loss output, required recovery-content omissions, and the
+mandatory report for dependency reordering. `invalid-cases.json` uses one
+complete baseline plus one mutation per case so missing-field and type
+diagnostics are not confounded; graph cases are separately complete corpora.
 
 This corpus is not approved until a reviewer independent of this author
 records a decision and verifies the manifest hashes.

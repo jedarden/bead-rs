@@ -1,7 +1,6 @@
 # br-v1 compatibility profile
 
-Status: corrected normative candidate after 2026-08-10 independent review;
-re-review pending.
+Status: round-three corrected normative candidate; independent review pending.
 
 - Profile identifier: `br-v1`
 - Observed producer: `br 0.1.28`
@@ -9,6 +8,8 @@ re-review pending.
   role, 2026-08-10)
 - Correction author: Claude (Anthropic), 2026-08-10, correcting findings from
   `docs/reviews/f012-independent-review-2026-08-10.md`
+- Round-three author: OpenAI Codex, 2026-08-10, correcting findings 1-5 from
+  `docs/reviews/f012-independent-review-round2-2026-08-10.md`
 - Reviewer: unassigned; must be independent of both authors above
 
 ## Provenance and scope
@@ -81,7 +82,7 @@ explicit values and must not be conflated with null. Numeric zero is a value.
 | `open` | `open` | `open` |
 | `in_progress` | `in_progress` | `in_progress` |
 | `deferred` | `deferred` | `deferred` |
-| `blocked` | `blocked` | `blocked` while required blocker is unfinished |
+| `blocked` | `blocked` | `blocked` (whether explicitly stored or materialized by the target) |
 | `closed` | `finished` | `closed` |
 
 `blocked` is observed both as an accepted explicit value on `create`/`update`
@@ -113,16 +114,22 @@ blocked ID, blocker ID, then kind.
 
 ## Loss reporting
 
-Every conversion reports: missing native `schema_ref`; unknown fields or status
-values; explicit nulls that native fields cannot distinguish; native-only
-comments/data/conditions; and any timestamp precision or dependency metadata
-loss. Silent dropping is forbidden. (The original candidate also required
-reporting "unsupported non-derived `blocked`"; that requirement is removed —
-non-derived `blocked` is a directly supported status, not a lossy case.)
+Every conversion emits the machine-readable report defined by
+`profile-loss-report-v1.md`, including when all transformed and omitted counts
+are zero. Classification covers every input top-level field and record and
+specifically accounts for `schema_ref`, events, provenance receipts,
+extensions, comments, structured data, explicit nulls, unknown statuses,
+timestamp precision, dependency order, and dependency metadata. Silent
+dropping is forbidden. An unknown/known-field collision is a transformation
+conflict and fails before output; it is never resolved by overwriting either
+value. (The original candidate also required reporting "unsupported
+non-derived `blocked`"; that requirement is removed — non-derived `blocked` is
+a directly supported status, not a lossy case.)
 
 ## Conformance
 
-The fixture README defines expected observations. `invalid-cases.json` defines
-negative and forward-compatibility cases. Approval requires an independent
+The fixture README defines expected observations. `round-trip-cases.json`
+defines exact same-profile preservation cases and expected reports;
+`invalid-cases.json` defines isolated validation cases. Approval requires an independent
 reviewer to verify provenance, completeness, hashes, mappings, and edge
 direction before implementation uses this candidate as a compatibility claim.

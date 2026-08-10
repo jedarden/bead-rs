@@ -1,7 +1,6 @@
 # bf-v1 compatibility profile
 
-Status: corrected normative candidate after 2026-08-10 independent review;
-re-review pending.
+Status: round-three corrected normative candidate; independent review pending.
 
 - Profile identifier: `bf-v1`
 - Observed producer: `bf 0.4.0`
@@ -9,6 +8,8 @@ re-review pending.
   role, 2026-08-10)
 - Correction author: Claude (Anthropic), 2026-08-10, correcting findings from
   `docs/reviews/f012-independent-review-2026-08-10.md`
+- Round-three author: OpenAI Codex, 2026-08-10, correcting findings 1-6 from
+  `docs/reviews/f012-independent-review-round2-2026-08-10.md`
 - Reviewer: unassigned; must be independent of both authors above
 
 ## Provenance and scope
@@ -101,23 +102,27 @@ sorted by `depends_on_id` or any other key. This was independently reproduced
 by adding two blockers in a deliberately non-alphabetical order and observing
 the export preserve exactly that order; the earlier candidate's claim of
 "deterministic lexical/canonical ordering" for dependencies did not hold and
-is corrected here. An importer must preserve creation order (or another
-explicitly declared canonical order) rather than assume dependencies can be
-freely resorted.
+is corrected here. Import and same-profile export MUST preserve the exact input
+array order. A conversion to a representation that cannot retain it MUST emit
+a `dependency_order_changed` transformed entry; reordering without that entry
+is nonconforming.
 
 ## Loss reporting
 
-Every conversion reports: missing native `schema_ref`; the native `events`
-audit-event history when a target cannot store it; unknown fields/statuses
-(including `deferred`, which has no established bf-v1 lifecycle mapping);
-explicit nulls native fields cannot distinguish; unsupported native deferred
-state; native-only comments/data/conditions; empty-versus-absent coercions;
-and any timestamp precision, dependency order, or edge metadata loss. Silent
-dropping is forbidden.
+Every conversion emits the machine-readable report defined by
+`profile-loss-report-v1.md`, including when all transformed and omitted counts
+are zero. Classification covers every input top-level field and record and
+specifically accounts for `schema_ref`, events, provenance receipts,
+extensions, comments, structured data, explicit nulls, unknown statuses,
+timestamp precision, dependency order, edge metadata, and empty-versus-absent
+coercions. Silent dropping is forbidden. An unknown/known-field collision is a
+transformation conflict and fails before output; it is never resolved by
+overwriting either value.
 
 ## Conformance
 
-The fixture README defines expected observations. `invalid-cases.json` defines
-negative and forward-compatibility cases. Approval requires an independent
+The fixture README defines expected observations. `round-trip-cases.json`
+defines exact same-profile preservation cases and expected reports;
+`invalid-cases.json` defines isolated validation cases. Approval requires an independent
 reviewer to verify provenance, completeness, hashes, mappings, and dependency
 direction before implementation uses this candidate as a compatibility claim.

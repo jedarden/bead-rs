@@ -1182,3 +1182,25 @@ Per plan section 15: "These gaps do not block F001-F011, but F012-F014 cannot be
 
 The mission remains **ACTIVE BLOCKED** awaiting external dependency resolution. No premature completion sentinel can be created while any feature remains incomplete.
 
+## 2026-08-10 — F012 round-three specification/fixture correction
+
+- Corrected round-two independent-review findings 1-6 without inspecting the
+  unapproved profile implementation/tests or any producer source.
+- Added `profile-loss-report-v1.md` with deterministic preserved/transformed/
+  omitted accounting, zero-loss output, collision behavior, and mandatory
+  recovery-content reasons.
+- Added exact same-profile round-trip and loss-report fixtures for both
+  profiles, including nested unknown JSON, null/absence/empty distinctions,
+  Unicode, literal multiline content, bf dependency order, and zero-loss cases.
+- Replaced confounded negative fixtures with baseline-plus-single-mutation
+  cases covering every required field, wrong types, P0/P4 and out-of-range
+  priority, offsets/invalid timestamps, unknown statuses, dangling edges,
+  self-edges, and two-record cycles.
+- Corrected br explicit-blocked reverse mapping and made bf exact dependency
+  array order normative with mandatory transformation reporting.
+- Recorded the exact bf executable SHA-256, build ID, version, and size in a
+  narrow governance exception request. No official publisher-attested bf 0.4.0
+  binary was identified; exception approval remains an independent gate.
+- Regenerated both manifests and requested round-three independent review.
+  F012 remains `passes: false`; the artifact review does not approve the
+  separate unreachable/stubbed implementation.

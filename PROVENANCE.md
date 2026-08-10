@@ -278,3 +278,28 @@ import, and the `bf-v1`/`br-v1` `blocked`-status mapping bugs, in the
 adapters themselves; wiring `src/main.rs` and
 `src/service/checkpoint.rs` to actually use non-`native-v1` profiles; and
 a fresh, honest evidence pass after all of that — not before it.
+
+## F012 round-three specification and fixture correction (2026-08-10)
+
+OpenAI Codex acted only in the clean-room specification/fixture-author role to
+correct findings 1-6 from
+`docs/reviews/f012-independent-review-round2-2026-08-10.md`. It read the
+governing repository specifications, plans, fixtures, and reviews, but did not
+inspect `src/profile`, its tests, producer source, producer tests, producer
+fixtures, SQL, or internal producer documentation.
+
+The pass defined a machine-readable loss-report contract; independently
+invented exact round-trip, loss-report, and isolated validation fixtures;
+corrected the br blocked-status and bf dependency-order contradictions; and
+regenerated both manifests. The pre-existing producer-observation JSONL files
+were not changed. Public web/release metadata searches did not identify an
+official publisher-checksummed bf 0.4.0 binary. The exact observed executable
+identity and a narrow, independently rejectable governance exception request
+are recorded in
+`docs/reviews/f012-bf-v1-binary-governance-exception-2026-08-10.md`; the
+exception is pending and is not self-approved.
+
+The complete candidate is requested for a new independent review in
+`docs/reviews/f012-independent-review-request-2026-08-10-round3.md`. This
+authorship entry makes no compatibility or implementation claim and does not
+change F012 from `passes: false`.
