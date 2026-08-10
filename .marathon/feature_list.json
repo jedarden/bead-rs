@@ -1164,8 +1164,23 @@
         "Compare meaning rather than incidental JSON formatting",
         "Bound record count and never write either representation"
       ],
-      "passes": false,
-      "evidence": []
+      "passes": true,
+      "evidence": [
+        "cargo test --test r020_comparison: 9 tests passed",
+        "cargo test: All 511 tests passed (502 existing + 9 new R020 tests)",
+        "cargo fmt --check: passed",
+        "cargo clippy --all-targets -- -D warnings: passed",
+        "Implemented src/service/comparison.rs with compare_issue_profiles() function",
+        "Field-by-field semantic comparison using BTreeSet for field collection",
+        "values_semantically_equal() for comparing JSON values meaning rather than formatting",
+        "FieldComparison and ComparisonSummary structures for detailed reporting",
+        "FieldStatus enum: Preserved, Transformed, Omitted, Added, Unsupported",
+        "6 unit tests in comparison.rs all passing",
+        "CLI command 'bead compare' with --id, --source, --target, --json flags",
+        "print_human_readable_comparison() for CLI output with status symbols",
+        "Integration tests verify: help availability, basic comparison, JSON output, error handling, cross-profile comparison, bound record count, read-only operation",
+        "Comparison is read-only: state unchanged before/after verified in tests"
+      ]
     },
     {
       "id": "R021",

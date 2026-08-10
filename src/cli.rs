@@ -103,6 +103,9 @@ pub enum Command {
     /// Explain issue state, readiness, blockers, and legal operations
     Why(WhyOptions),
 
+    /// Compare issue representation across two profiles
+    Compare(CompareOptions),
+
     /// Manage structured bead data
     #[command(subcommand)]
     Data(DataCommand),
@@ -1256,6 +1259,39 @@ pub struct WhyOptions {
     /// Issue ID to explain
     #[arg(long)]
     pub id: String,
+
+    /// Output in JSON format
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Cross-profile semantic comparison (R020)
+#[derive(clap::Args, Debug)]
+#[command(
+    about = "Compare issue representation across two profiles",
+    long_about = "Compare how an issue is represented in two different profiles.
+Reports preserved, transformed, omitted, and unsupported semantic fields.
+This is a read-only operation that never writes to the database.
+
+EXAMPLES:
+  bead compare --id bead-1234567890abcdef --source native-v1 --target needle-v1
+  bead compare --id bead-1234567890abcdef --source native-v1 --target bf-v1 --json
+
+The command fails with exit code 3 if the issue is not found,
+or exit code 2 if either profile is not supported."
+)]
+pub struct CompareOptions {
+    /// Issue ID to compare
+    #[arg(long)]
+    pub id: String,
+
+    /// Source profile name
+    #[arg(long)]
+    pub source: String,
+
+    /// Target profile name
+    #[arg(long)]
+    pub target: String,
 
     /// Output in JSON format
     #[arg(long)]

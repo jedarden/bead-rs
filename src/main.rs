@@ -58,6 +58,7 @@ fn execute_command(cli: Cli) -> Result<()> {
         Command::Changes(opts) => cmd_changes(opts),
         Command::Data(opts) => cmd_data(opts),
         Command::Why(opts) => cmd_why(opts),
+        Command::Compare(opts) => cmd_compare(opts),
         Command::Recurrence(opts) => cmd_recurrence(opts),
         Command::Policy(opts) => cmd_policy(opts),
         Command::Migrate(opts) => cmd_migrate(opts),
@@ -2090,6 +2091,93 @@ fn print_human_readable_why(why: &service::WhyExplanation) {
         for reason in &why.reasons {
             println!("  - {:?}", reason);
         }
+    }
+}
+
+fn cmd_compare(opts: cli::CompareOptions) -> Result<()> {
+    // Discover workspace
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    let db_path = config.database_path();
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    // Perform cross-profile comparison
+    let comparison = service::compare_issue_profiles(&conn, &opts.id, &opts.source, &opts.target)?;
+
+    if opts.json {
+        // Output machine-readable JSON
+        let output = serde_json::to_string_pretty(&comparison).map_err(|e| {
+            Error::Internal(anyhow::anyhow!(
+                "Failed to serialize comparison result: {}",
+                e
+            ))
+        })?;
+        println!("{}", output);
+    } else {
+        // Human-readable comparison
+        print_human_readable_comparison(&comparison);
+    }
+
+    Ok(())
+}
+
+fn print_human_readable_comparison(comparison: &service::ComparisonResult) {
+    println!("Cross-profile comparison for: {}", comparison.issue_id);
+    println!("Source Profile: {}", comparison.source_profile);
+    println!("Target Profile: {}", comparison.target_profile);
+
+    println!("\n=== Comparison Summary ===");
+    println!("Total Fields: {}", comparison.summary.total_fields);
+    println!("Preserved: {}", comparison.summary.preserved_count);
+    println!("Transformed: {}", comparison.summary.transformed_count);
+    println!("Omitted: {}", comparison.summary.omitted_count);
+    println!("Added: {}", comparison.summary.added_count);
+    println!("Unsupported: {}", comparison.summary.unsupported_count);
+
+    println!("\n=== Field-by-Field Comparison ===");
+    for field_comparison in &comparison.field_comparisons {
+        let status_symbol = match field_comparison.status {
+            service::FieldStatus::Preserved => "✓",
+            service::FieldStatus::Transformed => "~",
+            service::FieldStatus::Omitted => "-",
+            service::FieldStatus::Added => "+",
+            service::FieldStatus::Unsupported => "?",
+        };
+
+        println!(
+            "{} [{}] {}",
+            status_symbol,
+            field_comparison.field_path,
+            format_comparison_status(&field_comparison.status)
+        );
+
+        if let Some(source_val) = &field_comparison.source_value {
+            println!("  Source: {}", truncate_value(source_val));
+        }
+        if let Some(target_val) = &field_comparison.target_value {
+            println!("  Target: {}", truncate_value(target_val));
+        }
+    }
+}
+
+fn format_comparison_status(status: &service::FieldStatus) -> &'static str {
+    match status {
+        service::FieldStatus::Preserved => "Preserved",
+        service::FieldStatus::Transformed => "Transformed",
+        service::FieldStatus::Omitted => "Omitted in target",
+        service::FieldStatus::Added => "Added in target",
+        service::FieldStatus::Unsupported => "Unsupported",
+    }
+}
+
+fn truncate_value(value: &serde_json::Value) -> String {
+    let json_str = value.to_string();
+    if json_str.len() > 60 {
+        format!("{}...", &json_str[..57])
+    } else {
+        json_str
     }
 }
 

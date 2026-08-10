@@ -7,6 +7,7 @@ pub mod capabilities;
 pub mod changes;
 pub mod checkpoint;
 pub mod claim;
+pub mod comparison;
 pub mod conditions;
 pub mod data;
 pub mod dependencies;
@@ -59,6 +60,10 @@ pub use recurrence::{
 };
 pub use rehearsal::run_recovery_rehearsal;
 // Scheduling types are part of R019 public API but may show as unused during compilation
+#[allow(unused_imports)]
+pub use comparison::{
+    compare_issue_profiles, ComparisonResult, ComparisonSummary, FieldComparison, FieldStatus,
+};
 #[allow(unused_imports)]
 pub use scheduling::{AttemptTier, GraphMetrics, SchedulingPolicy, SchedulingState};
 pub use why::{explain_why, WhyExplanation};
