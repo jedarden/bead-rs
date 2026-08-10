@@ -82,6 +82,35 @@ pub struct TransformResult {
     pub successful: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileLossCounts {
+    pub preserved: usize,
+    pub transformed: usize,
+    pub omitted: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileLossReportEntry {
+    pub classification: String,
+    pub scope: String,
+    pub field: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fields: Option<Vec<String>>,
+    pub reason: String,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileLossReport {
+    pub schema_ref: String,
+    pub profile: String,
+    pub direction: String,
+    pub input_records: usize,
+    pub output_records: usize,
+    pub counts: ProfileLossCounts,
+    pub entries: Vec<ProfileLossReportEntry>,
+}
+
 /// Profile adapter trait
 pub trait ProfileAdapter: Send + Sync + std::fmt::Debug {
     /// Get profile identifier

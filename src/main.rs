@@ -3,6 +3,8 @@
 mod cli;
 mod error;
 mod model;
+#[allow(dead_code)]
+mod profile;
 mod service;
 mod store;
 
@@ -906,15 +908,20 @@ fn cmd_sync_flush_only(opts: cli::SyncFlushOptions) -> Result<()> {
             ));
         }
 
-        // Validate profile for export
         if opts.profile != "native-v1" {
-            return Err(Error::validation(format!(
-                "Profile '{}' is not supported for export. Only 'native-v1' is available.",
-                opts.profile
-            )));
+            let result =
+                service::flush_profile_checkpoint(&mut store, &output_path, &opts.profile)?;
+            println!("{}", serde_json::to_string(&result.report)?);
+            eprintln!(
+                "Exported {} issues to {}",
+                result.issue_count,
+                output_path.display()
+            );
+            eprintln!("SHA-256: {}", result.hash);
+            return Ok(());
         }
 
-        // Flush issue-only checkpoint for export
+        // Flush native issue-only checkpoint for export
         let result = service::flush_checkpoint(&mut store, &output_path)?;
 
         // Print success message
@@ -1020,6 +1027,10 @@ fn cmd_sync_import_only(opts: cli::SyncImportOptions) -> Result<()> {
         &actor,
         opts.dry_run,
     )?;
+
+    if let Some(report) = &result.loss_report {
+        println!("{}", serde_json::to_string(report)?);
+    }
 
     // Print result
     if opts.dry_run {

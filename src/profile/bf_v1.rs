@@ -7,7 +7,7 @@ use crate::model::{BaseStatus, Issue};
 use crate::profile::{
     LossCategory, LossEntry, LossSeverity, ProfileAdapter, ProfileId, TransformResult,
 };
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use serde_json::Value;
 
 /// bf-v1 profile adapter
@@ -103,9 +103,21 @@ impl ProfileAdapter for BfV1Adapter {
             Value::String(acceptance_criteria),
         );
         bf_obj.insert("notes".to_string(), Value::String(notes));
+        bf_obj.insert(
+            "events".to_string(),
+            issue
+                .get_extension("events")
+                .cloned()
+                .unwrap_or_else(|| Value::Array(Vec::new())),
+        );
 
         // Status with loss reporting for deferred
-        let status = if issue.manual_blocked.unwrap_or(false) {
+        let status = if let Some(status) = issue
+            .get_extension("__profile_status__")
+            .and_then(Value::as_str)
+        {
+            status.to_string()
+        } else if issue.manual_blocked.unwrap_or(false) {
             "blocked".to_string()
         } else {
             match self.native_status_to_bf(&issue.base_status) {
@@ -117,7 +129,7 @@ impl ProfileAdapter for BfV1Adapter {
                         description: e.to_string(),
                         severity: LossSeverity::Error,
                     });
-                    "open".to_string() // Default fallback
+                    "deferred".to_string()
                 }
             }
         };
@@ -157,6 +169,11 @@ impl ProfileAdapter for BfV1Adapter {
                 "labels".to_string(),
                 Value::Array(labels.into_iter().map(Value::String).collect()),
             );
+        } else if issue
+            .extensions
+            .contains_key("__profile_empty_array__:labels")
+        {
+            bf_obj.insert("labels".to_string(), Value::Array(Vec::new()));
         }
 
         if let Some(closed_at) = &issue.closed_at {
@@ -198,6 +215,31 @@ impl ProfileAdapter for BfV1Adapter {
                         .collect(),
                 ),
             );
+        } else if issue
+            .extensions
+            .contains_key("__profile_empty_array__:dependencies")
+        {
+            bf_obj.insert("dependencies".to_string(), Value::Array(Vec::new()));
+        }
+
+        for (key, value) in &issue.extensions {
+            if key.starts_with("__profile_empty_array__:") || key == "__profile_status__" {
+                continue;
+            }
+            if matches!(
+                key.as_str(),
+                "design" | "acceptance_criteria" | "compaction_level" | "events"
+            ) {
+                continue;
+            }
+            if let Some(field) = key.strip_prefix("__profile_null__:") {
+                bf_obj.insert(field.to_string(), Value::Null);
+            } else {
+                if bf_obj.contains_key(key) {
+                    bail!("known extension collision for bf-v1 field '{}'", key);
+                }
+                bf_obj.insert(key.clone(), value.clone());
+            }
         }
 
         // Track loss for schema_ref (not observed in bf-v1)
@@ -245,8 +287,19 @@ impl ProfileAdapter for BfV1Adapter {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("Missing required field: status"))?;
 
-        let base_status = self.bf_status_to_native(status_str)?;
-        let manual_blocked = status_str == "blocked";
+        let (base_status, manual_blocked, preserved_status) = if status_str == "blocked" {
+            (BaseStatus::Open, true, None)
+        } else if let Ok(status) = self.bf_status_to_native(status_str) {
+            (status, false, None)
+        } else {
+            losses.push(LossEntry {
+                category: LossCategory::StatusMapping,
+                field_path: "status".to_string(),
+                description: "Unknown bf-v1 status preserved for same-profile export".to_string(),
+                severity: LossSeverity::Info,
+            });
+            (BaseStatus::Open, false, Some(status_str.to_string()))
+        };
 
         let priority = obj
             .get("priority")
@@ -370,6 +423,51 @@ impl ProfileAdapter for BfV1Adapter {
             extensions_map.insert("compaction_level".to_string(), compaction_level.clone());
         }
 
+        let known_fields = [
+            "id",
+            "title",
+            "description",
+            "design",
+            "acceptance_criteria",
+            "notes",
+            "status",
+            "priority",
+            "issue_type",
+            "created_at",
+            "updated_at",
+            "assignee",
+            "labels",
+            "dependencies",
+            "closed_at",
+            "close_reason",
+            "source_repo",
+            "schema_ref",
+            "compaction_level",
+            "closed_by_session",
+        ];
+        for (key, value) in obj {
+            if !known_fields.contains(&key.as_str()) {
+                extensions_map.insert(key.clone(), value.clone());
+            } else if value.is_null() {
+                extensions_map.insert(format!("__profile_null__:{}", key), Value::Null);
+            }
+        }
+        for field in ["labels", "dependencies"] {
+            if obj
+                .get(field)
+                .and_then(Value::as_array)
+                .is_some_and(Vec::is_empty)
+            {
+                extensions_map.insert(
+                    format!("__profile_empty_array__:{}", field),
+                    Value::Bool(true),
+                );
+            }
+        }
+        if let Some(status) = preserved_status {
+            extensions_map.insert("__profile_status__".to_string(), Value::String(status));
+        }
+
         // Build native issue
         let issue = Issue {
             id,
@@ -455,6 +553,7 @@ impl ProfileAdapter for BfV1Adapter {
                 "issue_type",
                 "created_at",
                 "updated_at",
+                "events",
             ];
             for field in &required_fields {
                 if !obj.contains_key(*field) {
@@ -464,6 +563,62 @@ impl ProfileAdapter for BfV1Adapter {
                         description: format!("Missing required bf-v1 field: {}", field),
                         severity: LossSeverity::Error,
                     });
+                }
+            }
+            for (field, valid) in [
+                ("id", obj.get("id").map_or(true, Value::is_string)),
+                ("title", obj.get("title").map_or(true, Value::is_string)),
+                (
+                    "description",
+                    obj.get("description").map_or(true, Value::is_string),
+                ),
+                ("design", obj.get("design").map_or(true, Value::is_string)),
+                (
+                    "acceptance_criteria",
+                    obj.get("acceptance_criteria")
+                        .map_or(true, Value::is_string),
+                ),
+                ("notes", obj.get("notes").map_or(true, Value::is_string)),
+                ("status", obj.get("status").map_or(true, Value::is_string)),
+                ("priority", obj.get("priority").map_or(true, Value::is_i64)),
+                (
+                    "issue_type",
+                    obj.get("issue_type").map_or(true, Value::is_string),
+                ),
+                (
+                    "created_at",
+                    obj.get("created_at").map_or(true, Value::is_string),
+                ),
+                (
+                    "updated_at",
+                    obj.get("updated_at").map_or(true, Value::is_string),
+                ),
+                ("events", obj.get("events").map_or(true, Value::is_array)),
+                ("labels", obj.get("labels").map_or(true, Value::is_array)),
+                (
+                    "dependencies",
+                    obj.get("dependencies").map_or(true, Value::is_array),
+                ),
+            ] {
+                if !valid {
+                    losses.push(LossEntry {
+                        category: LossCategory::UnsupportedField,
+                        field_path: field.to_string(),
+                        description: format!("Invalid bf-v1 field type: {}", field),
+                        severity: LossSeverity::Error,
+                    });
+                }
+            }
+            for field in ["created_at", "updated_at", "closed_at"] {
+                if let Some(value) = obj.get(field).and_then(Value::as_str) {
+                    if chrono::DateTime::parse_from_rfc3339(value).is_err() {
+                        losses.push(LossEntry {
+                            category: LossCategory::PrecisionLoss,
+                            field_path: field.to_string(),
+                            description: format!("Invalid RFC 3339 timestamp: {}", field),
+                            severity: LossSeverity::Error,
+                        });
+                    }
                 }
             }
 
@@ -672,7 +827,8 @@ mod tests {
             "priority": 2,
             "issue_type": "task",
             "created_at": "2026-08-10T00:00:00Z",
-            "updated_at": "2026-08-10T00:00:00Z"
+            "updated_at": "2026-08-10T00:00:00Z",
+            "events": []
         });
 
         let result = adapter.profile_to_native(&bf_data).unwrap();
@@ -694,7 +850,8 @@ mod tests {
             "priority": 2,
             "issue_type": "task",
             "created_at": "2026-08-10T00:00:00Z",
-            "updated_at": "2026-08-10T00:00:00Z"
+            "updated_at": "2026-08-10T00:00:00Z",
+            "events": []
         });
 
         let losses = adapter.validate_profile_data(&complete_data).unwrap();

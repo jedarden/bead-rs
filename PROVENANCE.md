@@ -361,3 +361,14 @@ profile hash
 because no producer fact, executable identity, fixture, or governed observation
 changed. F012 remains `passes: false`; implementation review and conformance are
 separate outstanding gates.
+## F012 approved-baseline implementation continuation (2026-08-10)
+
+Implementation resumed only after the independently accepted round-four
+baseline recorded in
+`docs/reviews/f012-independent-review-round4-2026-08-10.md`. The adapter and
+CLI work in commits after `6f64d300b2d703d22c76f0f3474fd96bb27bec48`
+used only the accepted repository specifications and fixtures. It adds real
+relationship projection, exact same-profile extension/null/order retention,
+structured loss reports, and operational external export/merge paths. This is
+implementation evidence, not self-approval; F012 remains false pending
+independent code/conformance review.

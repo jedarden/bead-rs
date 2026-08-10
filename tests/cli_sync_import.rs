@@ -364,9 +364,7 @@ fn test_sync_import_only_invalid_profile() {
         .current_dir(temp_dir.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains(
-            "is not supported for forensic import. Only 'native-v1' is allowed",
-        ));
+        .stderr(predicate::str::contains("is not supported for import"));
 }
 
 #[test]
@@ -659,4 +657,55 @@ fn test_sync_import_only_nonexistent_input() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("Input not found"));
+}
+
+#[test]
+#[serial]
+fn test_sync_import_only_external_profile_merge() {
+    let temp_dir = TempDir::new().unwrap();
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["init", "--prefix", "test"])
+        .current_dir(temp_dir.path())
+        .assert()
+        .success();
+
+    let import_path = temp_dir.path().join("bf.jsonl");
+    let content = r#"{"id":"test-0000000000000001","title":"Blocker","description":"","design":"","acceptance_criteria":"","notes":"","status":"open","priority":2,"issue_type":"task","created_at":"2026-08-08T12:00:00Z","updated_at":"2026-08-08T12:00:00Z","events":[]}
+{"id":"test-0000000000000002","title":"Blocked","description":"","design":"","acceptance_criteria":"","notes":"","status":"blocked","priority":2,"issue_type":"task","created_at":"2026-08-08T12:00:00Z","updated_at":"2026-08-08T12:00:00Z","labels":["alpha"],"dependencies":[{"issue_id":"test-0000000000000002","depends_on_id":"test-0000000000000001","type":"blocks"}],"events":[]}"#;
+    fs::write(&import_path, content).unwrap();
+
+    let output = Command::cargo_bin("bead")
+        .unwrap()
+        .args([
+            "sync",
+            "import-only",
+            "--merge",
+            "--actor",
+            "testuser",
+            "--input",
+            import_path.to_str().unwrap(),
+            "--profile",
+            "bf-v1",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["profile"], "bf-v1");
+    assert_eq!(report["direction"], "import");
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["show", "test-0000000000000002", "--json"])
+        .current_dir(temp_dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("test-0000000000000001"))
+        .stdout(predicate::str::contains("alpha"));
 }

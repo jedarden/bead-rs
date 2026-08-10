@@ -63,12 +63,13 @@
 
 use crate::cli::ImportMode;
 use crate::model::Issue;
+use crate::profile::{get_adapter, ProfileLossCounts, ProfileLossReport, ProfileLossReportEntry};
 use crate::store::SqliteStore;
 use anyhow::{anyhow, bail, Result};
 use rusqlite::{params, Transaction};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
@@ -321,6 +322,7 @@ pub struct FullImportResult {
     pub receipt_preview: Option<ReceiptPreview>,
     pub receipt: Option<SerializedReceipt>,
     pub summary_event_sequence: Option<i64>,
+    pub loss_report: Option<ProfileLossReport>,
 }
 
 /// Flush checkpoint result
@@ -330,6 +332,13 @@ pub struct FlushResult {
     pub hash: String,
     pub covered_sequence: i64,
     pub export_time: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProfileFlushResult {
+    pub issue_count: usize,
+    pub hash: String,
+    pub report: ProfileLossReport,
 }
 
 /// Import checkpoint from JSONL file
@@ -601,16 +610,20 @@ pub fn import_forensic_checkpoint(
     actor: &str,
     dry_run: bool,
 ) -> Result<FullImportResult> {
-    // Validate profile
-    if profile != "native-v1" {
-        bail!(
-            "Profile '{}' is not supported for forensic import. Only 'native-v1' is allowed.",
-            profile
-        );
-    }
-
-    // Detect checkpoint type and parse
-    let staging = stage_forensic_checkpoint(input_path)?;
+    let (staging, loss_report) = if profile == "native-v1" {
+        (stage_forensic_checkpoint(input_path)?, None)
+    } else if matches!(profile, "br-v1" | "bf-v1") {
+        if mode != ImportMode::Merge {
+            bail!(
+                "Profile '{}' is an interchange projection and cannot restore a native checkpoint",
+                profile
+            );
+        }
+        let (staging, report) = stage_external_profile(input_path, profile)?;
+        (staging, Some(report))
+    } else {
+        bail!("Profile '{}' is not supported for import", profile);
+    };
 
     // Validate forensic checkpoint
     validate_forensic_checkpoint(&staging, mode, store, dry_run)?;
@@ -639,6 +652,7 @@ pub fn import_forensic_checkpoint(
             receipt_preview: Some(preview),
             receipt: None,
             summary_event_sequence: None,
+            loss_report,
         });
     }
 
@@ -652,6 +666,10 @@ pub fn import_forensic_checkpoint(
     let conn = store.conn();
     let (_final_sequence, result) = get_import_result(conn, &staging.store_uuid)?;
 
+    let mut result = result;
+    result.profile = profile.to_string();
+    result.input_hash = staging.input_hash;
+    result.loss_report = loss_report;
     Ok(result)
 }
 
@@ -758,6 +776,7 @@ fn get_import_result(
         receipt_preview: None,
         receipt,
         summary_event_sequence: None,
+        loss_report: None,
     };
 
     Ok((final_sequence, result))
@@ -781,6 +800,240 @@ fn stage_forensic_checkpoint(input_path: &Path) -> Result<ForensicStaging> {
         // Single file - treat as monolithic
         stage_monolithic_checkpoint(input_path)
     }
+}
+
+fn is_known_profile_field(profile: &str, field: &str) -> bool {
+    let common = [
+        "id",
+        "title",
+        "status",
+        "priority",
+        "issue_type",
+        "created_at",
+        "updated_at",
+        "description",
+        "assignee",
+        "labels",
+        "dependencies",
+        "closed_at",
+        "close_reason",
+        "source_repo",
+        "schema_ref",
+    ];
+    common.contains(&field)
+        || match profile {
+            "br-v1" => matches!(
+                field,
+                "owner"
+                    | "due_at"
+                    | "defer_until"
+                    | "estimated_minutes"
+                    | "external_ref"
+                    | "created_by"
+                    | "compaction_level"
+                    | "original_size"
+            ),
+            "bf-v1" => matches!(
+                field,
+                "design"
+                    | "acceptance_criteria"
+                    | "notes"
+                    | "closed_by_session"
+                    | "compaction_level"
+                    | "events"
+            ),
+            _ => false,
+        }
+}
+
+fn sort_profile_report_entries(entries: &mut [ProfileLossReportEntry]) {
+    let rank = |classification: &str| match classification {
+        "preserved" => 0,
+        "transformed" => 1,
+        "omitted" => 2,
+        _ => 3,
+    };
+    entries.sort_by(|left, right| {
+        (
+            rank(&left.classification),
+            &left.scope,
+            &left.field,
+            &left.reason,
+        )
+            .cmp(&(
+                rank(&right.classification),
+                &right.scope,
+                &right.field,
+                &right.reason,
+            ))
+    });
+}
+
+fn stage_external_profile(
+    input_path: &Path,
+    profile: &str,
+) -> Result<(ForensicStaging, ProfileLossReport)> {
+    let adapter = get_adapter(profile)?;
+    let file = File::open(input_path)?;
+    let reader = BufReader::new(file);
+    let mut issues = Vec::new();
+    let mut dependencies = Vec::new();
+    let mut labels = Vec::new();
+    let mut seen_ids = HashSet::new();
+    let mut hasher = Sha256::new();
+    let mut entries: BTreeMap<(String, String, String, String), usize> = BTreeMap::new();
+    let transformed_count = 0usize;
+    let omitted_count = 0usize;
+    let mut preserved_count = 0usize;
+
+    for (index, line) in reader.lines().enumerate() {
+        let line_number = index + 1;
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        hasher.update(line.as_bytes());
+        hasher.update(b"\n");
+        let external: serde_json::Value = serde_json::from_str(&line)
+            .map_err(|error| anyhow!("Line {}: malformed JSON: {}", line_number, error))?;
+        let validation = adapter.validate_profile_data(&external)?;
+        if let Some(error) = validation
+            .iter()
+            .find(|entry| entry.severity == crate::profile::LossSeverity::Error)
+        {
+            bail!("Line {}: {}", line_number, error.description);
+        }
+        let transformed = adapter.profile_to_native(&external)?;
+        if !transformed.successful {
+            bail!("Line {}: profile transformation failed", line_number);
+        }
+        let mut field_reasons = HashMap::new();
+        for loss in validation.into_iter().chain(transformed.losses) {
+            if matches!(loss.category, crate::profile::LossCategory::StatusMapping) {
+                field_reasons.insert(loss.field_path, "unknown_status_preserved");
+            }
+        }
+
+        let mut native =
+            transformed.data.as_object().cloned().ok_or_else(|| {
+                anyhow!("Line {}: transformed issue is not an object", line_number)
+            })?;
+        let dependency_values = native
+            .remove("dependencies")
+            .and_then(|value| value.as_array().cloned())
+            .unwrap_or_default();
+        let label_values = native
+            .remove("labels")
+            .and_then(|value| value.as_array().cloned())
+            .unwrap_or_default();
+        let issue: Issue =
+            serde_json::from_value(serde_json::Value::Object(native)).map_err(|error| {
+                anyhow!("Line {}: invalid transformed issue: {}", line_number, error)
+            })?;
+        issue
+            .validate()
+            .map_err(|error| anyhow!("Line {}: issue validation failed: {}", line_number, error))?;
+        if !seen_ids.insert(issue.id.clone()) {
+            bail!("Line {}: duplicate issue ID '{}'", line_number, issue.id);
+        }
+        for dependency in dependency_values {
+            let dependency = dependency
+                .as_object()
+                .ok_or_else(|| anyhow!("Line {}: dependency must be an object", line_number))?;
+            let blocker = dependency
+                .get("blocker")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| anyhow!("Line {}: dependency missing blocker", line_number))?;
+            let kind = dependency
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("blocks");
+            dependencies.push((issue.id.clone(), blocker.to_string(), kind.to_string()));
+        }
+        for label in label_values {
+            let label = label
+                .as_str()
+                .ok_or_else(|| anyhow!("Line {}: label must be a string", line_number))?;
+            labels.push((issue.id.clone(), label.to_string()));
+        }
+        let input_object = external.as_object();
+        let field_count = input_object.map(|object| object.len()).unwrap_or(0);
+        preserved_count += field_count + 1;
+        if let Some(object) = input_object {
+            for (field, value) in object {
+                let reason = if let Some(reason) = field_reasons.get(field) {
+                    *reason
+                } else if value.is_null() {
+                    "explicit_null_preserved"
+                } else if is_known_profile_field(profile, field) {
+                    "field_preserved"
+                } else {
+                    "extension_preserved"
+                };
+                *entries
+                    .entry((
+                        "preserved".to_string(),
+                        "field".to_string(),
+                        field.clone(),
+                        reason.to_string(),
+                    ))
+                    .or_default() += 1;
+            }
+        }
+        *entries
+            .entry((
+                "preserved".to_string(),
+                "record".to_string(),
+                "*".to_string(),
+                "record_preserved".to_string(),
+            ))
+            .or_default() += 1;
+        issues.push(issue);
+    }
+
+    let input_hash = format!("{:x}", hasher.finalize());
+    let mut report_entries: Vec<_> = entries
+        .into_iter()
+        .map(
+            |((classification, scope, field, reason), count)| ProfileLossReportEntry {
+                classification,
+                scope,
+                field,
+                fields: None,
+                reason,
+                count,
+            },
+        )
+        .collect();
+    sort_profile_report_entries(&mut report_entries);
+    let report = ProfileLossReport {
+        schema_ref: "urn:bead-rs:schema:profile-loss-report:v1".to_string(),
+        profile: profile.to_string(),
+        direction: "import".to_string(),
+        input_records: issues.len(),
+        output_records: issues.len(),
+        counts: ProfileLossCounts {
+            preserved: preserved_count,
+            transformed: transformed_count,
+            omitted: omitted_count,
+        },
+        entries: report_entries,
+    };
+    let staging = ForensicStaging {
+        issue_count: issues.len(),
+        issues,
+        dependencies,
+        labels,
+        events: Vec::new(),
+        receipts: Vec::new(),
+        input_hash: input_hash.clone(),
+        store_uuid: format!("external:{}:{}", profile, input_hash),
+        snapshot_sequence: 0,
+        mode: CheckpointMode::Monolithic,
+        event_count: 0,
+        receipt_count: 0,
+    };
+    Ok((staging, report))
 }
 
 /// Stage monolithic checkpoint from JSONL file
@@ -2153,8 +2406,9 @@ fn create_merge_receipt(
     tx.execute(
         "INSERT INTO provenance_receipts (
             receipt_id, schema_ref, kind, source_store_uuid, target_store_uuid,
-            source_root_sha256, actor, created_at, counts_json, result, summary_event_identity
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            source_root_sha256, actor, created_at, counts_json, result,
+            summary_event_identity, receipt_sha256
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             &receipt.receipt_id,
             &receipt.schema_ref,
@@ -2167,6 +2421,7 @@ fn create_merge_receipt(
             &counts_json,
             &receipt.result,
             &receipt.summary_event_identity,
+            &receipt.receipt_sha256,
         ],
     )?;
 
@@ -3011,6 +3266,215 @@ pub fn flush_checkpoint(store: &mut SqliteStore, output_path: &Path) -> Result<F
         hash,
         covered_sequence: current_sequence,
         export_time,
+    })
+}
+
+/// Export an issue-only projection through an approved external profile.
+/// External exports never update native checkpoint freshness or pointers.
+pub fn flush_profile_checkpoint(
+    store: &mut SqliteStore,
+    output_path: &Path,
+    profile: &str,
+) -> Result<ProfileFlushResult> {
+    if !matches!(profile, "br-v1" | "bf-v1") {
+        bail!("Profile '{}' is not supported for external export", profile);
+    }
+    let adapter = get_adapter(profile)?;
+    let conn = store.conn();
+    let tx = conn.unchecked_transaction()?;
+    let mut issues = read_all_issues(&tx)?;
+    issues.sort_by(|a, b| a.id.cmp(&b.id));
+
+    let event_count: usize = tx.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?;
+    let receipt_count: usize =
+        tx.query_row("SELECT COUNT(*) FROM provenance_receipts", [], |row| {
+            row.get(0)
+        })?;
+    let comment_field_count: usize =
+        tx.query_row("SELECT COUNT(DISTINCT issue_id) FROM comments", [], |row| {
+            row.get(0)
+        })?;
+    let data_field_count: usize = tx.query_row(
+        "SELECT COUNT(DISTINCT issue_id) FROM issue_data",
+        [],
+        |row| row.get(0),
+    )?;
+
+    let mut output_records = Vec::with_capacity(issues.len());
+    let mut entries: BTreeMap<(String, String, String, String), usize> = BTreeMap::new();
+    let mut transformed = 0usize;
+    let mut omitted = 0usize;
+    let mut preserved = 0usize;
+
+    for issue in &issues {
+        let mut label_stmt =
+            tx.prepare("SELECT label FROM labels WHERE issue_id = ?1 ORDER BY label")?;
+        let labels = label_stmt
+            .query_map([&issue.id], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let order = if profile == "bf-v1" {
+            "rowid"
+        } else {
+            "blocker_issue_id, kind"
+        };
+        let sql = format!(
+            "SELECT blocked_issue_id, blocker_issue_id, kind FROM dependencies \
+             WHERE blocked_issue_id = ?1 ORDER BY {}",
+            order
+        );
+        let mut dependency_stmt = tx.prepare(&sql)?;
+        let dependencies = dependency_stmt
+            .query_map([&issue.id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let transformed_record = adapter.native_record_to_profile(issue, &labels, &dependencies)?;
+        if !transformed_record.successful {
+            bail!("{} transformation failed for issue {}", profile, issue.id);
+        }
+        for loss in transformed_record.losses {
+            let classification = if loss.severity == crate::profile::LossSeverity::Error {
+                "transformed"
+            } else {
+                "omitted"
+            };
+            if classification == "transformed" {
+                transformed += 1;
+            } else {
+                omitted += 1;
+            }
+            *entries
+                .entry((
+                    classification.to_string(),
+                    "field".to_string(),
+                    loss.field_path,
+                    if classification == "transformed" {
+                        "status_mapped".to_string()
+                    } else {
+                        "schema_ref_omitted".to_string()
+                    },
+                ))
+                .or_default() += 1;
+        }
+        let output_object = transformed_record.data.as_object();
+        let field_count = output_object.map(|object| object.len()).unwrap_or(0);
+        preserved += field_count + 1;
+        if let Some(object) = output_object {
+            for (field, value) in object {
+                let reason = if value.is_null() {
+                    "explicit_null_preserved"
+                } else if issue.extensions.contains_key(field) {
+                    "extension_preserved"
+                } else {
+                    "field_preserved"
+                };
+                *entries
+                    .entry((
+                        "preserved".to_string(),
+                        "field".to_string(),
+                        field.clone(),
+                        reason.to_string(),
+                    ))
+                    .or_default() += 1;
+            }
+        }
+        *entries
+            .entry((
+                "preserved".to_string(),
+                "record".to_string(),
+                "*".to_string(),
+                "record_preserved".to_string(),
+            ))
+            .or_default() += 1;
+        output_records.push(transformed_record.data);
+    }
+
+    for (count, field, reason) in [
+        (event_count, "event", "event_omitted"),
+        (
+            receipt_count,
+            "provenance_receipt",
+            "provenance_receipt_omitted",
+        ),
+    ] {
+        if count > 0 {
+            omitted += count;
+            entries.insert(
+                (
+                    "omitted".to_string(),
+                    "record_kind".to_string(),
+                    field.to_string(),
+                    reason.to_string(),
+                ),
+                count,
+            );
+        }
+    }
+    for (count, field, reason) in [
+        (comment_field_count, "comments", "comment_omitted"),
+        (data_field_count, "data", "structured_data_omitted"),
+    ] {
+        if count > 0 {
+            omitted += count;
+            entries.insert(
+                (
+                    "omitted".to_string(),
+                    "field".to_string(),
+                    field.to_string(),
+                    reason.to_string(),
+                ),
+                count,
+            );
+        }
+    }
+    tx.commit()?;
+
+    let temp_path = output_path.with_extension("tmp");
+    let temp_file = File::create(&temp_path)?;
+    let mut writer = BufWriter::new(temp_file);
+    for record in &output_records {
+        serde_json::to_writer(&mut writer, record)?;
+        writer.write_all(b"\n")?;
+    }
+    writer.flush()?;
+    writer.get_ref().sync_all()?;
+    let hash = calculate_file_hash(&temp_path)?;
+    drop(writer);
+    std::fs::rename(&temp_path, output_path)?;
+
+    let mut entries: Vec<_> = entries
+        .into_iter()
+        .map(
+            |((classification, scope, field, reason), count)| ProfileLossReportEntry {
+                classification,
+                scope,
+                field,
+                fields: None,
+                reason,
+                count,
+            },
+        )
+        .collect();
+    sort_profile_report_entries(&mut entries);
+    let report = ProfileLossReport {
+        schema_ref: "urn:bead-rs:schema:profile-loss-report:v1".to_string(),
+        profile: profile.to_string(),
+        direction: "export".to_string(),
+        input_records: issues.len() + event_count + receipt_count,
+        output_records: output_records.len(),
+        counts: ProfileLossCounts {
+            preserved,
+            transformed,
+            omitted,
+        },
+        entries,
+    };
+
+    Ok(ProfileFlushResult {
+        issue_count: output_records.len(),
+        hash,
+        report,
     })
 }
 

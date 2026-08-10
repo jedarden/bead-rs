@@ -4,7 +4,7 @@
 //! clean-room fixtures from research/fixtures/.
 
 use anyhow::Result;
-use bead_rs::profile::{get_adapter, LossCategory, LossSeverity};
+use bead_rs::profile::{get_adapter, LossCategory};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
@@ -129,7 +129,7 @@ mod f012_integration_tests {
     }
 
     #[test]
-    fn test_br_v1_loss_reporting_for_unsupported_fields() {
+    fn test_br_v1_profile_extensions_round_trip() {
         let adapter = get_adapter("br-v1").unwrap();
 
         // br-v1 has fields like "due_at", "estimated_minutes" that aren't native
@@ -159,42 +159,10 @@ mod f012_integration_tests {
             "Should be successful even with unsupported fields"
         );
 
-        // Should report losses for unsupported fields
-        assert!(
-            !transform_result.losses.is_empty(),
-            "Should report losses for unsupported fields"
-        );
-
-        let loss_fields: Vec<&str> = transform_result
-            .losses
-            .iter()
-            .map(|l| l.field_path.as_str())
-            .collect();
-        assert!(
-            loss_fields.contains(&"due_at"),
-            "Should report loss for due_at"
-        );
-        assert!(
-            loss_fields.contains(&"estimated_minutes"),
-            "Should report loss for estimated_minutes"
-        );
-        assert!(
-            loss_fields.contains(&"external_ref"),
-            "Should report loss for external_ref"
-        );
-
-        // All unsupported fields should be Info severity, but let's check what we actually get
-        for loss in &transform_result.losses {
-            println!(
-                "Loss: field={}, severity={:?}",
-                loss.field_path, loss.severity
-            );
-            // Unsupported fields should be Info, not Warning or Error
-            assert!(
-                (loss.severity == LossSeverity::Info) || (loss.severity == LossSeverity::Warning),
-                "Unsupported field losses should be Info or Warning level, got {:?}",
-                loss.severity
-            );
+        let issue: bead_rs::model::Issue = serde_json::from_value(transform_result.data).unwrap();
+        let exported = adapter.native_to_profile(&issue).unwrap();
+        for field in ["due_at", "estimated_minutes", "external_ref"] {
+            assert_eq!(exported.data[field], br_data_with_extras[field]);
         }
     }
 
@@ -421,6 +389,61 @@ mod f012_integration_tests {
             assert_eq!(result.data["manual_blocked"], true);
             assert_eq!(result.data["labels"], serde_json::json!(["alpha"]));
             assert_eq!(result.data["dependencies"][0]["blocker"], "blocker");
+        }
+    }
+
+    #[test]
+    fn accepted_same_profile_round_trip_fixtures_are_exact() {
+        for profile in ["br-v1", "bf-v1"] {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("research/fixtures")
+                .join(profile)
+                .join("round-trip-cases.json");
+            let fixture: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+            for case in fixture["cases"].as_array().unwrap() {
+                let imported = get_adapter(profile)
+                    .unwrap()
+                    .profile_to_native(&case["input"])
+                    .unwrap();
+                let labels = imported.data["labels"]
+                    .as_array()
+                    .map(|values| {
+                        values
+                            .iter()
+                            .map(|value| value.as_str().unwrap().to_string())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let mut issue_value = imported.data.clone();
+                issue_value.as_object_mut().unwrap().remove("labels");
+                issue_value.as_object_mut().unwrap().remove("dependencies");
+                let issue: bead_rs::model::Issue = serde_json::from_value(issue_value).unwrap();
+                let dependencies = imported.data["dependencies"]
+                    .as_array()
+                    .map(|values| {
+                        values
+                            .iter()
+                            .map(|value| {
+                                (
+                                    issue.id.clone(),
+                                    value["blocker"].as_str().unwrap().to_string(),
+                                    value["kind"].as_str().unwrap().to_string(),
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let exported = get_adapter(profile)
+                    .unwrap()
+                    .native_record_to_profile(&issue, &labels, &dependencies)
+                    .unwrap();
+                assert_eq!(
+                    exported.data, case["expected_output"],
+                    "{} fixture {}",
+                    profile, case["name"]
+                );
+            }
         }
     }
 }

@@ -1271,3 +1271,23 @@ The mission remains **ACTIVE BLOCKED** awaiting external dependency resolution. 
 - F012 remains false. Remaining work includes fixture-complete unknown/null
   preservation and loss-report conformance, real CLI/checkpoint wiring, full
   verification, and independent implementation review.
+[2026-08-10] F012 operational profile interchange increment
+
+- Wired approved `br-v1` and `bf-v1` adapters into explicit-output
+  `sync --flush-only` exports and merge-only `sync import-only` imports.
+  External projections cannot restore a native checkpoint and do not update
+  native checkpoint pointers or freshness.
+- Added atomic external JSONL export, structured profile loss reports on
+  stdout, deterministic issue/label ordering, bf dependency creation-order
+  preservation, import staging/validation, and native relationship activation.
+- Same-profile fixture tests now prove exact nested unknown-value, Unicode,
+  multiline, explicit-null, empty-array, and dependency-order preservation.
+  Unknown statuses retain their exact wire value for same-profile export.
+- Added field type/RFC 3339 validation, required bf-v1 `events`, explicit
+  accounting for schema references, events, receipts, comments, and structured
+  data, and fixed merge receipts to persist their required SHA-256 value.
+- Verification: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
+  full `cargo test`, and `git diff --check` passed. Targeted suites include
+  16 F012 adapter tests, 8 sync export tests, and 17 sync import tests.
+- F012 remains false pending deeper fixture-case conformance, independent
+  implementation review, and final evidence audit.

@@ -7,7 +7,7 @@ use crate::model::{BaseStatus, Issue};
 use crate::profile::{
     LossCategory, LossEntry, LossSeverity, ProfileAdapter, ProfileId, TransformResult,
 };
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use serde_json::Value;
 
 /// br-v1 profile adapter
@@ -123,11 +123,18 @@ impl ProfileAdapter for BrV1Adapter {
         br_obj.insert("title".to_string(), Value::String(issue.title.clone()));
         br_obj.insert(
             "status".to_string(),
-            Value::String(if issue.manual_blocked.unwrap_or(false) {
-                "blocked".to_string()
-            } else {
-                self.native_status_to_br(&issue.base_status)
-            }),
+            Value::String(
+                if let Some(status) = issue
+                    .get_extension("__profile_status__")
+                    .and_then(Value::as_str)
+                {
+                    status.to_string()
+                } else if issue.manual_blocked.unwrap_or(false) {
+                    "blocked".to_string()
+                } else {
+                    self.native_status_to_br(&issue.base_status)
+                },
+            ),
         );
         br_obj.insert(
             "priority".to_string(),
@@ -173,6 +180,11 @@ impl ProfileAdapter for BrV1Adapter {
                 "labels".to_string(),
                 Value::Array(labels.into_iter().map(Value::String).collect()),
             );
+        } else if issue
+            .extensions
+            .contains_key("__profile_empty_array__:labels")
+        {
+            br_obj.insert("labels".to_string(), Value::Array(Vec::new()));
         }
 
         if !dependencies.is_empty() {
@@ -182,6 +194,28 @@ impl ProfileAdapter for BrV1Adapter {
                 "dependencies".to_string(),
                 self.transform_dependencies_to_br(&dependencies),
             );
+        } else if issue
+            .extensions
+            .contains_key("__profile_empty_array__:dependencies")
+        {
+            br_obj.insert("dependencies".to_string(), Value::Array(Vec::new()));
+        }
+
+        for (key, value) in &issue.extensions {
+            if key.starts_with("__profile_empty_array__:") || key == "__profile_status__" {
+                continue;
+            }
+            if let Some(field) = key.strip_prefix("__profile_null__:") {
+                if br_obj.contains_key(field) {
+                    bail!("known extension collision for br-v1 field '{}'", field);
+                }
+                br_obj.insert(field.to_string(), Value::Null);
+            } else {
+                if br_obj.contains_key(key) {
+                    bail!("known extension collision for br-v1 field '{}'", key);
+                }
+                br_obj.insert(key.clone(), value.clone());
+            }
         }
 
         // Track loss for schema_ref (not observed in br-v1)
@@ -229,10 +263,18 @@ impl ProfileAdapter for BrV1Adapter {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("Missing required field: status"))?;
 
-        let (base_status, manual_blocked) = if status_str == "blocked" {
-            (BaseStatus::Open, true)
+        let (base_status, manual_blocked, preserved_status) = if status_str == "blocked" {
+            (BaseStatus::Open, true, None)
+        } else if let Ok(status) = self.br_status_to_native(status_str) {
+            (status, false, None)
         } else {
-            (self.br_status_to_native(status_str)?, false)
+            losses.push(LossEntry {
+                category: LossCategory::StatusMapping,
+                field_path: "status".to_string(),
+                description: "Unknown br-v1 status preserved for same-profile export".to_string(),
+                severity: LossSeverity::Info,
+            });
+            (BaseStatus::Open, false, Some(status_str.to_string()))
         };
 
         let priority = obj
@@ -287,26 +329,6 @@ impl ProfileAdapter for BrV1Adapter {
             None
         };
 
-        // Track unsupported fields
-        for field in [
-            "due_at",
-            "defer_until",
-            "estimated_minutes",
-            "external_ref",
-            "created_by",
-            "compaction_level",
-            "original_size",
-        ] {
-            if obj.contains_key(field) {
-                losses.push(LossEntry {
-                    category: LossCategory::UnsupportedField,
-                    field_path: field.to_string(),
-                    description: format!("br-v1 field '{}' is not supported natively", field),
-                    severity: LossSeverity::Info,
-                });
-            }
-        }
-
         // Check for missing schema_ref
         if !obj.contains_key("schema_ref") {
             losses.push(LossEntry {
@@ -323,6 +345,48 @@ impl ProfileAdapter for BrV1Adapter {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
+
+        let known_fields = [
+            "id",
+            "title",
+            "status",
+            "priority",
+            "issue_type",
+            "created_at",
+            "updated_at",
+            "description",
+            "assignee",
+            "owner",
+            "labels",
+            "dependencies",
+            "closed_at",
+            "close_reason",
+            "source_repo",
+            "schema_ref",
+        ];
+        let mut extensions = std::collections::HashMap::new();
+        for (key, value) in obj {
+            if !known_fields.contains(&key.as_str()) {
+                extensions.insert(key.clone(), value.clone());
+            } else if value.is_null() {
+                extensions.insert(format!("__profile_null__:{}", key), Value::Null);
+            }
+        }
+        for field in ["labels", "dependencies"] {
+            if obj
+                .get(field)
+                .and_then(Value::as_array)
+                .is_some_and(Vec::is_empty)
+            {
+                extensions.insert(
+                    format!("__profile_empty_array__:{}", field),
+                    Value::Bool(true),
+                );
+            }
+        }
+        if let Some(status) = preserved_status {
+            extensions.insert("__profile_status__".to_string(), Value::String(status));
+        }
 
         // Build native issue
         let issue = Issue {
@@ -353,7 +417,7 @@ impl ProfileAdapter for BrV1Adapter {
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
             data: None,
-            extensions: Default::default(),
+            extensions,
         };
 
         let mut serialized = serde_json::to_value(&issue)
@@ -405,6 +469,56 @@ impl ProfileAdapter for BrV1Adapter {
                         description: format!("Missing required br-v1 field: {}", field),
                         severity: LossSeverity::Error,
                     });
+                }
+            }
+            for (field, valid) in [
+                ("id", obj.get("id").map_or(true, Value::is_string)),
+                ("title", obj.get("title").map_or(true, Value::is_string)),
+                ("status", obj.get("status").map_or(true, Value::is_string)),
+                ("priority", obj.get("priority").map_or(true, Value::is_i64)),
+                (
+                    "issue_type",
+                    obj.get("issue_type").map_or(true, Value::is_string),
+                ),
+                (
+                    "created_at",
+                    obj.get("created_at").map_or(true, Value::is_string),
+                ),
+                (
+                    "updated_at",
+                    obj.get("updated_at").map_or(true, Value::is_string),
+                ),
+                ("labels", obj.get("labels").map_or(true, Value::is_array)),
+                (
+                    "dependencies",
+                    obj.get("dependencies").map_or(true, Value::is_array),
+                ),
+            ] {
+                if !valid {
+                    losses.push(LossEntry {
+                        category: LossCategory::UnsupportedField,
+                        field_path: field.to_string(),
+                        description: format!("Invalid br-v1 field type: {}", field),
+                        severity: LossSeverity::Error,
+                    });
+                }
+            }
+            for field in [
+                "created_at",
+                "updated_at",
+                "closed_at",
+                "due_at",
+                "defer_until",
+            ] {
+                if let Some(value) = obj.get(field).and_then(Value::as_str) {
+                    if chrono::DateTime::parse_from_rfc3339(value).is_err() {
+                        losses.push(LossEntry {
+                            category: LossCategory::PrecisionLoss,
+                            field_path: field.to_string(),
+                            description: format!("Invalid RFC 3339 timestamp: {}", field),
+                            severity: LossSeverity::Error,
+                        });
+                    }
                 }
             }
 
@@ -644,7 +758,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unsupported_fields_loss_reporting() {
+    fn test_profile_extension_fields_are_preserved() {
         let adapter = BrV1Adapter::new();
         let br_data_with_extra = serde_json::json!({
             "id": "test",
@@ -662,13 +776,16 @@ mod tests {
         let result = adapter.profile_to_native(&br_data_with_extra).unwrap();
         assert!(result.successful);
 
-        // Should report losses for unsupported fields
-        assert!(!result.losses.is_empty());
-        assert!(result.losses.iter().any(|l| l.field_path == "due_at"));
-        assert!(result
-            .losses
-            .iter()
-            .any(|l| l.field_path == "estimated_minutes"));
-        assert!(result.losses.iter().any(|l| l.field_path == "external_ref"));
+        let issue: Issue = serde_json::from_value(result.data).unwrap();
+        let exported = adapter.native_to_profile(&issue).unwrap();
+        assert_eq!(exported.data["due_at"], br_data_with_extra["due_at"]);
+        assert_eq!(
+            exported.data["estimated_minutes"],
+            br_data_with_extra["estimated_minutes"]
+        );
+        assert_eq!(
+            exported.data["external_ref"],
+            br_data_with_extra["external_ref"]
+        );
     }
 }

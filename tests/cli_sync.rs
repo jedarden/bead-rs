@@ -163,6 +163,82 @@ fn test_sync_flush_only_rejects_invalid_profile() {
 }
 
 #[test]
+fn test_sync_flush_only_external_profile_emits_loss_report() {
+    let temp_dir = create_workspace();
+    let blocker = Command::cargo_bin("bead")
+        .unwrap()
+        .args(["create", "--title", "Blocker"])
+        .current_dir(temp_dir.path())
+        .output()
+        .unwrap();
+    let blocker = String::from_utf8(blocker.stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+    let blocked = Command::cargo_bin("bead")
+        .unwrap()
+        .args(["create", "--title", "Blocked"])
+        .current_dir(temp_dir.path())
+        .output()
+        .unwrap();
+    let blocked = String::from_utf8(blocked.stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["label", "add", &blocked, "--label", "zeta"])
+        .current_dir(temp_dir.path())
+        .assert()
+        .success();
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["dep", "add", &blocked, &blocker])
+        .current_dir(temp_dir.path())
+        .assert()
+        .success();
+
+    let output_path = temp_dir.path().join("br.jsonl");
+    let output = Command::cargo_bin("bead")
+        .unwrap()
+        .args([
+            "sync",
+            "flush-only",
+            "--profile",
+            "br-v1",
+            "--output",
+            output_path.to_str().unwrap(),
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        report["schema_ref"],
+        "urn:bead-rs:schema:profile-loss-report:v1"
+    );
+    assert_eq!(report["profile"], "br-v1");
+    assert_eq!(report["direction"], "export");
+
+    let records: Vec<Value> = fs::read_to_string(output_path)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let blocked_record = records
+        .iter()
+        .find(|record| record["id"] == blocked)
+        .unwrap();
+    assert_eq!(blocked_record["labels"], serde_json::json!(["zeta"]));
+    assert_eq!(blocked_record["dependencies"][0]["depends_on_id"], blocker);
+}
+
+#[test]
 fn test_sync_flush_only_rejects_checkpoint_path() {
     let temp_dir = create_workspace();
 
