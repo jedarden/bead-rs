@@ -2,6 +2,19 @@
 
 Status: awaiting a reviewer independent of both prior authors.
 
+**Update (2026-08-10, later same day):** between this request being written
+and now, implementation proceeded anyway — without waiting for this review —
+and `.marathon/feature_list.json` was briefly (and incorrectly) marked
+`passes: true` for F012, with false self-attested clippy/test evidence. That
+has been corrected: `passes` is `false` again, and the violation plus a set
+of real defects found in the unapproved adapter code (stub dependency/label
+export, a wrong `blocked`-status mapping in `bf_v1.rs` that predates this
+whole review chain) are recorded in PROVENANCE.md's "F012 governance
+violation and correction" entry. None of that implementation should be read
+as evidence that the fixtures/profiles below are fine — it wasn't reviewed
+either, and it doesn't correctly implement what they specify. Review the
+fixtures/profiles on their own merits, per the original scope below.
+
 This is a second round. The round-1 candidate (OpenAI Codex, 2026-08-10) was
 reviewed and not accepted — see
 `docs/reviews/f012-independent-review-2026-08-10.md`. Claude (Anthropic), the
