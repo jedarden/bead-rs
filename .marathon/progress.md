@@ -1410,3 +1410,15 @@ The mission remains **ACTIVE BLOCKED** awaiting external dependency resolution. 
   applicable.
 - Implementation conformance is accepted. F012 stays false for separate owner
   activation; no implementation/specification/fixture/ledger edits.
+
+[2026-08-10] F012 owner activation
+
+- Activated F012 only after independent acceptance of both the complete
+  external artifact baseline (`6f64d30`) and operational implementation
+  (`87122ed`, reviewing exact implementation `99be5a7`).
+- Ledger evidence now records the superseding artifact hashes/review, real CLI
+  paths, exact loss-report accounting, all invalid and collision cases, and
+  current plus Rust 1.75 verification. Historical rejected/self-attested
+  evidence remains intact for auditability.
+- F012 now passes. Its downstream features are no longer blocked on external
+  profile conformance.

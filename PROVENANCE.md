@@ -455,3 +455,11 @@ checks/tests remain green. Full evidence is in
 `docs/reviews/f012-implementation-confirmation-2026-08-10.md`. No
 implementation, specification, fixture, or ledger value was modified. The
 implementation is accepted; F012 remains false pending owner activation.
+
+## F012 owner activation (2026-08-10)
+
+The owner activated F012 only after independent acceptance of the complete
+round-four artifact baseline and exact implementation commit `99be5a7`, plus
+successful current and Rust 1.75 release-floor verification. The ledger keeps
+all earlier rejected and governance-violation evidence and appends superseding
+acceptance evidence rather than rewriting history. F012 is now `passes: true`.

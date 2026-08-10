@@ -365,7 +365,7 @@
         "Every lossy transformation is reported",
         "Fixtures are independently authored or sanitized black-box observations"
       ],
-      "passes": false,
+      "passes": true,
       "evidence": [
         "Independent review completed 2026-08-10 by Claude (Anthropic); see docs/reviews/f012-independent-review-2026-08-10.md",
         "All 6 manifest SHA-256 hashes recomputed and matched (br-v1, bf-v1)",
@@ -381,7 +381,12 @@
         "Corrected this pass, mechanical/hygiene only, no new interchange-format decisions: fixed the ledger's JSON syntax error (stray extra ']'); reset passes to false; fixed all 19 cargo clippy --all-targets -- -D warnings errors (Default impls, redundant casts, map().flatten(), manual range checks, borrowed-Box, redundant closure, from_str/FromStr name collision, one unrelated !x.is_none() in src/service/why.rs); fixed 3 integration test files hard-coding Command::new(\"/home/needle/target/debug/bead\") instead of env!(\"CARGO_BIN_EXE_bead\") (r018_structured_data.rs, r021_policy.rs, r024_recurrence.rs — none are F012 files)",
         "Verified (not self-reported) as of this pass: cargo fmt --check passed; cargo clippy --all-targets -- -D warnings passed, 0 errors; cargo test (--no-fail-fast) 595 passed / 24 failed — all 24 failures in r022_dryrun.rs (14) and r023_why.rs (10), neither an F012 file, both pre-existing and unrelated: their helpers shell out via `cargo run` with HOME overridden to a temp dir, which conflicts with this machine's ~/.local/bin/cargo build-offload wrapper; left unfixed as out of scope for F012 and a more invasive fix than the other three files got",
         "f012_integration.rs: 13/13 passing (accurate, unchanged); profile::* lib unit tests: 34/34 passing (accurate, unchanged) — both true but insufficient, since neither exercises the stub defects above",
-        "Round-2 independent review has not occurred. F012 remains blocked pending, in order: (1) fixing the stub dependency/label export+import and blocked-status mapping bugs in the adapters; (2) a reviewer independent of the original author, the review/correction author, and the implementer, covering the fixed adapters; (3) real CLI/checkpoint integration of the approved adapters; (4) a fresh evidence pass gathered after all three, not before"
+        "Round-2 independent review has not occurred. F012 remains blocked pending, in order: (1) fixing the stub dependency/label export+import and blocked-status mapping bugs in the adapters; (2) a reviewer independent of the original author, the review/correction author, and the implementer, covering the fixed adapters; (3) real CLI/checkpoint integration of the approved adapters; (4) a fresh evidence pass gathered after all three, not before",
+        "Superseding accepted artifact baseline: independent round-four review commit 6f64d30 accepted the complete br-v1/bf-v1 specifications, fixture manifests, invalid corpora, observed corpora, round-trip cases, and loss-report cases at the hashes recorded in docs/reviews/f012-independent-review-round4-2026-08-10.md; the narrow bf-v1 binary governance exception was explicitly approved",
+        "Operational implementation: exact observed corpora round-trip through real sync import-only --merge and flush-only paths; labels, relationships and edge metadata/order, blocked/deferred/unknown statuses, null/absence/empty arrays, close metadata, events, and unknown extensions are preserved according to the accepted profiles; external export does not mutate native checkpoint state and failed collision imports are atomic",
+        "Loss-report conformance: accepted same-profile and export reports compare exactly; operational reports retain normative classification/scope/field/reason ordering, distinguish base_status from manual_blocked, account every input occurrence, and keep entry sums equal to aggregate counts",
+        "Independent implementation acceptance: commit 99be5a7 accepted in review-only commit 87122ed; see docs/reviews/f012-implementation-confirmation-2026-08-10.md. The review incorporated the complete prior baseline, all 50 invalid cases, actual private-state collision families, noncolliding profile-prefixed extensions, accepted corpora/reports, and operational atomicity",
+        "Final owner verification 2026-08-10: cargo fmt --check passed; cargo clippy --all-targets -- -D warnings passed; full current cargo test passed; cargo +1.75.0 check --locked --all-targets passed; full cargo +1.75.0 test --locked passed; F012 acceptance criteria are satisfied"
       ]
     },
     {
