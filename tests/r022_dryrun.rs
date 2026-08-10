@@ -5,18 +5,9 @@ use std::path::Path;
 fn setup_test_workspace() -> tempfile::TempDir {
     let temp_dir = tempfile::tempdir().unwrap();
 
-    // Initialize workspace using cargo run from the project directory
-    let project_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-
-    let mut cmd = std::process::Command::new("cargo");
-    cmd.arg("run")
-        .arg("--quiet")
-        .arg("--bin")
-        .arg("bead")
-        .arg("--")
-        .arg("init")
-        .current_dir(&project_dir)
-        .env("HOME", temp_dir.path().to_str().unwrap())
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_bead"));
+    cmd.arg("init")
+        .current_dir(temp_dir.path())
         .env("RUST_BACKTRACE", "1")
         .output()
         .expect("Failed to initialize workspace");
@@ -25,17 +16,9 @@ fn setup_test_workspace() -> tempfile::TempDir {
 }
 
 fn run_bead_command(args: &[&str], workspace_dir: &std::path::Path) -> std::process::Output {
-    let project_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-
-    let mut cmd = std::process::Command::new("cargo");
-    cmd.arg("run")
-        .arg("--quiet")
-        .arg("--bin")
-        .arg("bead")
-        .arg("--")
-        .args(args)
-        .current_dir(&project_dir)
-        .env("HOME", workspace_dir.to_str().unwrap())
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_bead"));
+    cmd.args(args)
+        .current_dir(workspace_dir)
         .env("RUST_BACKTRACE", "1")
         .env("BEAD_WORKSPACE_ROOT", workspace_dir.to_str().unwrap())
         .output()
