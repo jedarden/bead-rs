@@ -471,11 +471,20 @@ impl GeneratedDataset {
         // synthetic bead-{rng} id the dataset generator used to build
         // self.dependencies. Remap synthetic id -> real id so dependency
         // edges reference issues that actually exist in the store.
+        //
+        // create_issue never opens its own transaction (it just executes
+        // INSERT statements), so a bare loop of N calls runs as N separate
+        // SQLite autocommit transactions -- each with its own WAL sync. That
+        // was the dominant cost at scale (~400-500us/issue at 100k-1M,
+        // measured before this fix). Wrap the whole batch in one explicit
+        // transaction instead; create_issue accepts a plain &Connection and
+        // a &Transaction derefs to one, so no signature change is needed.
         let mut id_map: HashMap<String, String> = HashMap::with_capacity(self.issues.len());
 
+        let tx = conn.unchecked_transaction()?;
         for issue in &self.issues {
             let created = issues::create_issue(
-                conn,
+                &tx,
                 &config,
                 issue.title.clone(),
                 issue.description.clone(),
@@ -486,6 +495,7 @@ impl GeneratedDataset {
             )?;
             id_map.insert(issue.id.clone(), created.id);
         }
+        tx.commit()?;
 
         for (blocked, blocker, kind) in &self.dependencies {
             let real_blocked = id_map.get(blocked).ok_or_else(|| {
