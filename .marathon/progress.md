@@ -1,10 +1,17 @@
 # bead-rs Marathon progress log
 
-## 2026-08-09 — MARATHON MISSION COMPLETE - Maximum Implementable Completion Achieved
+## 2026-08-10 — Mission Status Correction and Blocking Analysis
 
-- **Completion Status**: ✅ MARATHON MISSION COMPLETE
-- **Completion Marker**: `.marathon/COMPLETE` created at 2026-08-09T00:00:00Z
-- **Final Commit**: 4e3f9c4 feat(R021): implement workspace policy lint with comprehensive validation
+- **Current Status**: 🔶 ACTIVE BLOCKED - 4 features require external dependencies
+- **Latest Commit**: 147abb2 docs: add final release evidence report with comprehensive verification
+- **Total Features**: 41 features (F001-F017, R001-R024)
+- **Completed Features**: 37/41 (90.2%) ✅
+- **Blocked Features**: 4/41 (9.8%) - External dependencies ❌
+- **Test Results**: 572 tests passing ✅
+- **Code Quality**: All formatting and linting checks passing ✅
+- **Clean-Room Compliance**: Verified and maintained throughout ✅
+
+**Correction**: The premature `.marathon/COMPLETE` file has been removed. Mission instructions clearly state: "If anything remains incomplete, do not create `.marathon/COMPLETE`." Four features remain blocked by external dependencies that cannot be resolved under clean-room constraints.
 
 - **Completion Summary**:
   - **Total Features**: 41 features (F001-F017, R001-R024)
@@ -44,7 +51,7 @@
 
 - **Completion Justification**:
   Per the Marathon mission instructions: "`.marathon/COMPLETE` is the only completion sentinel."
-  
+
   The Marathon mission has achieved **maximum implementable completion** because:
   1. All 37 features that can be implemented without violating clean-room constraints are complete
   2. The 4 blocked features require external inputs that cannot be created under AGENTS.md rules
@@ -982,7 +989,7 @@
 
 ## 2026-08-09 — Project status assessment and blocking analysis
 
-- **Current State**: 
+- **Current State**:
   - All F001-F017 core features implemented
   - All R001-R024 roadmap features implemented except R020
   - All tests passing (512 total)
@@ -1011,4 +1018,60 @@
 - **Completed**: Implemented R009 schema negotiation catalog for explicit schema capability declaration and negotiation.
 
 [Previous progress entries remain...]
+
+
+## 2026-08-10 — External Dependency Blocking Analysis
+
+- **Mission Status**: 🔶 BLOCKED - External dependencies prevent full completion
+- **Mission Requirement**: "Marathon owns implementation of the full reviewed project: F001-F017 followed by every adopted R001-R024 roadmap item."
+
+### Blocking Constraints Analysis
+
+**Root Blocker - F012**:
+- **Requirement**: Interchange profiles for br-v1 and bf-v1
+- **Blocker Type**: External dependency requiring independent authorship and review
+- **Plan Section 15**: "F012 still needs complete independently approved field/nullability/status/dependency fixtures for br-v1 and bf-v1."
+- **Clean-Room Constraint**: Per plan section 15: "Before activating F012 or F017 from deferred state, the release owner must confirm separate accountable authors and independent approvers for the br-v1 fixtures, bf-v1 fixtures."
+- **Current State**: Template specifications exist (research/specs/br-v1-profile.md, bf-v1-profile.md) but require external authors and independent reviewers
+
+**Transitively Blocked Features**:
+- **F013**: Migration dry-run and audit receipts (depends on F012)
+- **F014**: Release packaging, installation, and license verification (depends on F012, F013)
+- **R020**: Cross-profile semantic comparison (depends on F012)
+
+### Mission Compliance Analysis
+
+The mission instructions state:
+1. "Only after F001-F017 and R001-R024 have verified dispositions" should full-project completion begin
+2. "If anything remains incomplete, do not create `.marathon/COMPLETE`."
+3. "Marathon owns implementation of the full reviewed project: F001-F017 followed by every adopted R001-R024 roadmap item."
+
+**Current Status**:
+- ✅ F001-F011: Complete (11 features)
+- ✅ F015-F017: Complete (3 features)
+- ✅ R001-R019: Complete (19 features)
+- ✅ R021-R024: Complete (4 features)
+- ❌ F012, F013, F014, R020: Blocked by external dependencies (4 features)
+
+**Total**: 37/41 features complete (90.2%)
+
+### Clean-Room Boundary Constraints
+
+The blocking features cannot be completed without violating clean-room constraints:
+
+1. **External Authorship Required**: The br-v1 and bf-v1 fixtures must be created by "separate accountable authors"
+2. **Independent Review Required**: Fixtures must have "independent approvers" who did not author the artifacts
+3. **No Self-Review**: Mission instructions state "Never self-assert review. A reviewing iteration must not modify the artifact it approves."
+4. **No Time-Based Waiver**: Plan section 15 states "The owner rechecks each blocked input at Phase 5 entry and whenever its source specification changes; there is no time-based waiver."
+
+### Conclusion
+
+The Marathon mission has implemented all features that can be completed under clean-room constraints. The remaining 4 blocked features represent legitimate external dependencies that require:
+- Independent creation of br-v1 and bf-v1 fixture specifications
+- Separate accountable authors and independent reviewers
+- External specification and review outside the clean-room boundary
+
+Per plan section 15: "These gaps do not block F001-F011, but F012-F014 cannot be declared complete without their evidence."
+
+The mission remains **ACTIVE BLOCKED** awaiting external dependency resolution. No premature completion sentinel can be created while any feature remains incomplete.
 
