@@ -303,3 +303,24 @@ The complete candidate is requested for a new independent review in
 `docs/reviews/f012-independent-review-request-2026-08-10-round3.md`. This
 authorship entry makes no compatibility or implementation claim and does not
 change F012 from `passes: false`.
+
+## F012 round-three independent review disposition (2026-08-10)
+
+OpenAI Codex, in a session independent of all named F012 artifact authors,
+correction authors, implementers, and prior reviewers, reviewed commit
+`7a6ad205d4714bdcae29294d65672e8a7b747a04` without inspecting
+`src/profile`, implementation tests, or any producer-private material. Every
+candidate and manifest digest matched, and fresh public-binary observations
+reproduced the load-bearing br-v1 and bf-v1 facts.
+
+The narrow bf-v1 binary governance exception is independently approved for the
+exact hashes recorded in
+`docs/reviews/f012-independent-review-round3-2026-08-10.md`: accessible public
+publisher/mirror/registry checks found no official attested bf 0.4.0 artifact,
+the executable identity matched exactly, and all required observations
+reproduced. The exception expires if an official attested artifact is found.
+
+The overall candidate is rejected because bf-v1's status table still
+conditions reverse `blocked` export on an unfinished dependency, contradicting
+its own prose, fixture, and fresh explicit-blocked observation. F012 remains
+`passes: false`; implementation approval and conformance remain separate gates.

@@ -1204,3 +1204,22 @@ The mission remains **ACTIVE BLOCKED** awaiting external dependency resolution. 
 - Regenerated both manifests and requested round-three independent review.
   F012 remains `passes: false`; the artifact review does not approve the
   separate unreachable/stubbed implementation.
+
+## 2026-08-10 — F012 round-three independent review
+
+- Independently reviewed commit
+  `7a6ad205d4714bdcae29294d65672e8a7b747a04` under the clean-room boundary;
+  no profile implementation/tests or producer-private material was inspected.
+- Recomputed all candidate and manifest hashes, validated all JSON/JSONL, and
+  confirmed round-two findings 1-5 are substantively corrected.
+- Reproduced the br-v1 explicit-blocked/dependency behavior using the official
+  publisher-checksummed br 0.1.28 release binary.
+- Independently approved the narrow bf-v1 binary governance exception after
+  public metadata checks, exact executable identity verification, and fresh
+  reproduction of status, dependency direction/order, event, and null/absence
+  observations.
+- Rejected the overall artifacts because bf-v1's status table still makes
+  reverse `blocked` conditional on an unfinished blocker, contradicting the
+  profile prose and explicit-blocked fixture/observation. Correct that row and
+  obtain another independent artifact review. F012 remains `passes: false`;
+  implementation review and full conformance remain outstanding.
