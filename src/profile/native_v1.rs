@@ -118,7 +118,6 @@ impl ProfileAdapter for NativeV1Adapter {
 mod tests {
     use super::*;
     use crate::model::BaseStatus;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn create_test_issue() -> Issue {
         Issue {

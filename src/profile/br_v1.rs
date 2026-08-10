@@ -16,6 +16,12 @@ pub struct BrV1Adapter {
     profile_id: ProfileId,
 }
 
+impl Default for BrV1Adapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BrV1Adapter {
     pub fn new() -> Self {
         Self {
@@ -46,6 +52,7 @@ impl BrV1Adapter {
     }
 
     /// Transform native dependencies to br-v1 format
+    #[allow(dead_code)]
     fn transform_dependencies_to_br(&self, dependencies: &[(String, String, String)]) -> Value {
         dependencies
             .iter()
@@ -228,26 +235,24 @@ impl ProfileAdapter for BrV1Adapter {
         let description = obj
             .get("description")
             .and_then(|v| v.as_str())
-            .map(|s| {
+            .and_then(|s| {
                 if s.is_empty() {
                     None
                 } else {
                     Some(s.to_string())
                 }
-            })
-            .flatten();
+            });
 
         let assignee = obj
             .get("assignee")
             .and_then(|v| v.as_str())
-            .map(|s| {
+            .and_then(|s| {
                 if s.is_empty() {
                     None
                 } else {
                     Some(s.to_string())
                 }
-            })
-            .flatten();
+            });
 
         // Handle closed_at for "finished"/"closed" status
         let closed_at = if matches!(base_status, BaseStatus::Closed) {
@@ -289,7 +294,7 @@ impl ProfileAdapter for BrV1Adapter {
         }
 
         // Extract dependencies for validation
-        let dependencies = self.extract_dependencies_from_br(obj);
+        let _dependencies = self.extract_dependencies_from_br(obj);
 
         // Build native issue
         let issue = Issue {
@@ -298,7 +303,7 @@ impl ProfileAdapter for BrV1Adapter {
             description,
             notes: None,
             revision: None,
-            priority: priority as i64,
+            priority,
             issue_type: Some(issue_type),
             base_status,
             manual_blocked: Some(false),
@@ -372,7 +377,7 @@ impl ProfileAdapter for BrV1Adapter {
 
             // Validate priority range
             if let Some(priority) = obj.get("priority").and_then(|v| v.as_i64()) {
-                if priority < 0 || priority > 4 {
+                if !(0..=4).contains(&priority) {
                     losses.push(LossEntry {
                         category: LossCategory::UnsupportedField,
                         field_path: "priority".to_string(),

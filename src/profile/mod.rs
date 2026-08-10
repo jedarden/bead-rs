@@ -7,6 +7,7 @@ use crate::model::Issue;
 use anyhow::{anyhow, bail, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::str::FromStr;
 
 pub mod bf_v1;
 pub mod br_v1;
@@ -30,7 +31,7 @@ impl ProfileId {
     }
 
     /// Parse from profile identifier string (e.g., "native-v1", "br-v1")
-    pub fn from_str(s: &str) -> Result<Self> {
+    pub fn parse_profile_id(s: &str) -> Result<Self> {
         let parts: Vec<&str> = s.splitn(2, '-').collect();
         if parts.len() != 2 {
             bail!(
@@ -44,6 +45,14 @@ impl ProfileId {
     /// Convert to string identifier
     pub fn as_str(&self) -> String {
         format!("{}-{}", self.name, self.version)
+    }
+}
+
+impl FromStr for ProfileId {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse_profile_id(s)
     }
 }
 
@@ -94,19 +103,23 @@ pub trait ProfileAdapter: Send + Sync + std::fmt::Debug {
     fn profile_to_native(&self, data: &serde_json::Value) -> Result<TransformResult>;
 
     /// Validate profile data
+    #[allow(dead_code)]
     fn validate_profile_data(&self, data: &serde_json::Value) -> Result<Vec<LossEntry>>;
 
     /// Check if profile is supported for export
+    #[allow(dead_code)]
     fn supports_export(&self) -> bool {
         true
     }
 
     /// Check if profile is supported for import
+    #[allow(dead_code)]
     fn supports_import(&self) -> bool {
         true
     }
 
     /// Get profile description
+    #[allow(dead_code)]
     fn description(&self) -> &str;
 }
 
@@ -138,13 +151,15 @@ impl ProfileRegistry {
     }
 
     /// Get adapter by profile identifier
-    pub fn get_adapter(&self, profile_id: &str) -> Result<&Box<dyn ProfileAdapter>> {
+    pub fn get_adapter(&self, profile_id: &str) -> Result<&dyn ProfileAdapter> {
         self.adapters
             .get(profile_id)
+            .map(|boxed| boxed.as_ref())
             .ok_or_else(|| anyhow!("Unsupported profile: {}", profile_id))
     }
 
     /// List all supported profiles
+    #[allow(dead_code)]
     pub fn list_profiles(&self) -> Vec<String> {
         self.adapters.keys().cloned().collect()
     }
@@ -165,15 +180,16 @@ impl Default for ProfileRegistry {
 fn global_registry() -> &'static ProfileRegistry {
     use std::sync::OnceLock;
     static REGISTRY: OnceLock<ProfileRegistry> = OnceLock::new();
-    REGISTRY.get_or_init(|| ProfileRegistry::new())
+    REGISTRY.get_or_init(ProfileRegistry::new)
 }
 
 /// Get profile adapter by identifier
-pub fn get_adapter(profile_id: &str) -> Result<&'static Box<dyn ProfileAdapter>> {
+pub fn get_adapter(profile_id: &str) -> Result<&'static dyn ProfileAdapter> {
     global_registry().get_adapter(profile_id)
 }
 
 /// List all supported profiles
+#[allow(dead_code)]
 pub fn list_profiles() -> Vec<String> {
     global_registry().list_profiles()
 }
@@ -189,7 +205,7 @@ mod tests {
 
     #[test]
     fn test_profile_id_parsing() {
-        let id = ProfileId::from_str("native-v1").unwrap();
+        let id = ProfileId::parse_profile_id("native-v1").unwrap();
         assert_eq!(id.name, "native");
         assert_eq!(id.version, "v1");
         assert_eq!(id.as_str(), "native-v1");

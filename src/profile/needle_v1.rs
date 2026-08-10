@@ -16,6 +16,12 @@ pub struct NeedleV1Adapter {
     profile_id: ProfileId,
 }
 
+impl Default for NeedleV1Adapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NeedleV1Adapter {
     pub fn new() -> Self {
         Self {
@@ -149,7 +155,7 @@ impl ProfileAdapter for NeedleV1Adapter {
             description,
             notes: None,
             revision: None,
-            priority: priority as i64,
+            priority,
             issue_type: Some("task".to_string()),
             base_status,
             manual_blocked: Some(false),
