@@ -3971,8 +3971,7 @@ fn publish_sharded_checkpoint(
                 "issue-{}-{}.tmp",
                 config.generation_id, shard_index
             ));
-            let hash =
-                write_issue_shard(&current_shard_issues, graph_data, &temp_path)?;
+            let hash = write_issue_shard(&current_shard_issues, graph_data, &temp_path)?;
 
             // Use content-addressed filename
             let shard_path = objects_dir.join(format!("{}.jsonl", hash));
@@ -4016,8 +4015,7 @@ fn publish_sharded_checkpoint(
             "issue-{}-{}.tmp",
             config.generation_id, shard_index
         ));
-        let hash =
-            write_issue_shard(&current_shard_issues, graph_data, &temp_path)?;
+        let hash = write_issue_shard(&current_shard_issues, graph_data, &temp_path)?;
 
         // Use content-addressed filename
         let shard_path = objects_dir.join(format!("{}.jsonl", hash));

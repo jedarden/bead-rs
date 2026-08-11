@@ -2,8 +2,8 @@
 
 use assert_cmd::Command;
 use predicates::prelude::*;
-use serial_test::serial;
 use serde_json::Value;
+use serial_test::serial;
 use std::fs;
 use tempfile::TempDir;
 
@@ -1157,8 +1157,8 @@ fn test_round_trip_dependencies_and_labels() {
 
     // Verify labels and dependencies exist in the restored checkpoint file itself
     // by reading the forensic.jsonl and checking for the embedded arrays
-    let forensic_content = fs::read_to_string(clone_beads.join("checkpoint/forensic.jsonl")).unwrap();
-    let mut found_a_deps = false;
+    let forensic_content =
+        fs::read_to_string(clone_beads.join("checkpoint/forensic.jsonl")).unwrap();
     let mut found_a_labels = false;
     let mut found_b_deps = false;
     let mut found_b_labels = false;
@@ -1176,7 +1176,8 @@ fn test_round_trip_dependencies_and_labels() {
                         if let Some(labels) = issue.get("labels").and_then(|v| v.as_array()) {
                             let label_strings: Vec<&str> =
                                 labels.iter().filter_map(|l| l.as_str()).collect();
-                            if label_strings.contains(&"urgent") && label_strings.contains(&"feature")
+                            if label_strings.contains(&"urgent")
+                                && label_strings.contains(&"feature")
                             {
                                 found_a_labels = true;
                             }
@@ -1223,10 +1224,19 @@ fn test_round_trip_dependencies_and_labels() {
         }
     }
 
-    assert!(found_b_deps, "Issue B should have dependency on Issue A in checkpoint");
-    assert!(found_c_deps, "Issue C should have dependency on Issue B in checkpoint");
+    assert!(
+        found_b_deps,
+        "Issue B should have dependency on Issue A in checkpoint"
+    );
+    assert!(
+        found_c_deps,
+        "Issue C should have dependency on Issue B in checkpoint"
+    );
     assert!(found_a_labels, "Issue A should have labels in checkpoint");
-    assert!(found_b_labels, "Issue B should have 'bug' label in checkpoint");
+    assert!(
+        found_b_labels,
+        "Issue B should have 'bug' label in checkpoint"
+    );
     assert!(found_c_labels, "Issue C should have labels in checkpoint");
     let ready_result = Command::cargo_bin("bead")
         .unwrap()
