@@ -789,7 +789,7 @@ fn stage_forensic_checkpoint(input_path: &Path) -> Result<ForensicStaging> {
         // Try to find current.json pointer
         let pointer_path = input_path.join("current.json");
         if pointer_path.exists() {
-            stage_sharded_checkpoint(&pointer_path)
+            stage_pointer_checkpoint(&pointer_path)
         } else {
             bail!(
                 "Directory checkpoint missing current.json pointer: {}",
@@ -799,6 +799,58 @@ fn stage_forensic_checkpoint(input_path: &Path) -> Result<ForensicStaging> {
     } else {
         // Single file - treat as monolithic
         stage_monolithic_checkpoint(input_path)
+    }
+}
+
+/// Stage a checkpoint referenced by a `current.json` pointer, dispatching on
+/// the pointer's own `mode` field. A directory checkpoint is not necessarily
+/// sharded: `bead sync flush-only` always writes the same pointer +
+/// `objects/gen-*.jsonl` layout, but for monolithic mode that generation
+/// file is the raw JSONL data itself, not a shard manifest -- treating it as
+/// the latter (as this dispatch used to do unconditionally for any
+/// directory input) fails to parse, erroring on the second JSONL record as
+/// unexpected "trailing characters".
+fn stage_pointer_checkpoint(pointer_path: &Path) -> Result<ForensicStaging> {
+    let pointer_data = std::fs::read_to_string(pointer_path)?;
+    let pointer: serde_json::Value =
+        serde_json::from_str(&pointer_data).map_err(|e| anyhow!("Invalid pointer JSON: {}", e))?;
+
+    let mode = pointer
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("Pointer missing mode"))?;
+
+    match mode {
+        "monolithic" => {
+            let base = pointer_path
+                .parent()
+                .ok_or_else(|| anyhow!("Pointer has no parent directory"))?;
+            let active_root = pointer
+                .get("active_root")
+                .ok_or_else(|| anyhow!("Pointer missing active_root"))?;
+            let root_path = active_root
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow!("Active root missing path"))?;
+
+            let mut staging = stage_monolithic_checkpoint(&base.join(root_path))?;
+
+            // The pointer's store_uuid/snapshot_sequence are authoritative
+            // and always present, unlike stage_monolithic_checkpoint's
+            // fallback of deriving them from events/receipts in the data --
+            // which is empty (and so leaves them blank/zero) for an
+            // issue-only checkpoint like a fresh `bead create` pass.
+            if let Some(uuid) = pointer.get("store_uuid").and_then(|v| v.as_str()) {
+                staging.store_uuid = uuid.to_string();
+            }
+            if let Some(seq) = pointer.get("snapshot_sequence").and_then(|v| v.as_i64()) {
+                staging.snapshot_sequence = seq;
+            }
+
+            Ok(staging)
+        }
+        "sharded" => stage_sharded_checkpoint(pointer_path),
+        other => bail!("Unknown checkpoint mode in pointer: {}", other),
     }
 }
 

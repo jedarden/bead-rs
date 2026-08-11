@@ -198,22 +198,65 @@ impl Store for SqliteStore {
             let conn = Self::open_connection(&db_path)
                 .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
-            let uuid: String = conn
-                .query_row("SELECT uuid FROM workspace WHERE id = 1", [], |row| {
-                    row.get(0)
-                })
-                .map_err(|e| Error::workspace(format!("Failed to load workspace UUID: {}", e)))?;
+            let existing: Option<(String, String)> = conn
+                .query_row(
+                    "SELECT uuid, prefix FROM workspace WHERE id = 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .ok();
 
-            let existing_prefix: String = conn
-                .query_row("SELECT prefix FROM workspace WHERE id = 1", [], |row| {
-                    row.get(0)
-                })
-                .map_err(|e| Error::workspace(format!("Failed to load workspace prefix: {}", e)))?;
+            if let Some((uuid, existing_prefix)) = existing {
+                return Ok(WorkspaceConfig {
+                    root,
+                    uuid,
+                    prefix: existing_prefix,
+                });
+            }
+
+            // `.beads/config.json` is tracked in git but `.beads/beads.db`
+            // is gitignored by design, so a fresh clone lands exactly here:
+            // config.json exists, the db doesn't have a workspace row yet.
+            // Recreate the schema and adopt the identity already committed
+            // in config.json rather than erroring or minting a new uuid
+            // that would diverge from the repo's history.
+            let config_data = std::fs::read_to_string(&config_path).map_err(|e| Error::Io {
+                path: config_path.clone(),
+                msg: e,
+            })?;
+            let existing_config: serde_json::Value = serde_json::from_str(&config_data)
+                .map_err(|e| Error::Internal(anyhow::anyhow!("Invalid config.json: {}", e)))?;
+            let uuid = existing_config
+                .get("uuid")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| Error::workspace("config.json missing uuid"))?
+                .to_string();
+            let recovered_prefix = existing_config
+                .get("prefix")
+                .and_then(|v| v.as_str())
+                .unwrap_or(prefix)
+                .to_string();
+
+            if let Err(e) = migrations::apply_migrations(&conn) {
+                return Err(Error::Internal(anyhow::anyhow!(
+                    "Failed to apply migrations: {}",
+                    e
+                )));
+            }
+
+            let created_at = time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_else(|_| "unknown".to_string());
+
+            conn.execute(
+                "INSERT INTO workspace (id, uuid, prefix, layout_version, created_at) VALUES (1, ?1, ?2, 1, ?3)",
+                [&uuid, &recovered_prefix, &created_at],
+            )?;
 
             return Ok(WorkspaceConfig {
                 root,
                 uuid,
-                prefix: existing_prefix,
+                prefix: recovered_prefix,
             });
         }
 

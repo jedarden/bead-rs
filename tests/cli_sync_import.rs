@@ -829,3 +829,118 @@ fn external_profile_reserved_state_collision_is_atomic() {
         );
     }
 }
+
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) {
+    fs::create_dir_all(dst).unwrap();
+    for entry in fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let file_type = entry.file_type().unwrap();
+        let dst_path = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_recursive(&entry.path(), &dst_path);
+        } else {
+            fs::copy(entry.path(), &dst_path).unwrap();
+        }
+    }
+}
+
+/// Regression test for two bugs found reconstituting a workspace from a
+/// real `git clone`, where `.beads/config.json` is tracked but
+/// `.beads/beads.db` is (correctly) gitignored:
+///   1. `bead init` used to hard-error instead of self-healing when
+///      config.json exists without a matching db ("Failed to load
+///      workspace UUID: no such table: workspace").
+///   2. `bead sync import-only --input <checkpoint-dir>` used to
+///      unconditionally treat any directory checkpoint as sharded, but a
+///      monolithic `flush-only` writes the same pointer+objects layout
+///      with the raw JSONL data directly at active_root.path, not a shard
+///      manifest -- parsing it as one failed with "trailing characters".
+#[test]
+#[serial]
+fn test_restore_from_flushed_checkpoint_after_fresh_clone() {
+    let origin = TempDir::new().unwrap();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["init", "--prefix", "gol"])
+        .current_dir(origin.path())
+        .assert()
+        .success();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["create", "--title", "First issue"])
+        .current_dir(origin.path())
+        .assert()
+        .success();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["create", "--title", "Second issue"])
+        .current_dir(origin.path())
+        .assert()
+        .success();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["sync", "flush-only"])
+        .current_dir(origin.path())
+        .assert()
+        .success();
+
+    // Simulate a fresh `git clone`: only the tracked files survive
+    // (config.json, checkpoint/*) -- beads.db does not.
+    let clone = TempDir::new().unwrap();
+    let clone_beads = clone.path().join(".beads");
+    fs::create_dir_all(&clone_beads).unwrap();
+    fs::copy(
+        origin.path().join(".beads/config.json"),
+        clone_beads.join("config.json"),
+    )
+    .unwrap();
+    copy_dir_recursive(
+        &origin.path().join(".beads/checkpoint"),
+        &clone_beads.join("checkpoint"),
+    );
+
+    // Bug 1: bead init must self-heal, not error, given config.json
+    // without a matching beads.db.
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["init", "--prefix", "gol"])
+        .current_dir(clone.path())
+        .assert()
+        .success();
+
+    // Bug 2: restoring from the flushed checkpoint directory must
+    // correctly parse the monolithic generation file, not misread it as a
+    // sharded manifest.
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args([
+            "sync",
+            "import-only",
+            "--input",
+            clone_beads.join("checkpoint").to_str().unwrap(),
+            "--restore-into-empty",
+            "--actor",
+            "test",
+        ])
+        .current_dir(clone.path())
+        .assert()
+        .success();
+
+    let result = Command::cargo_bin("bead")
+        .unwrap()
+        .args(["list"])
+        .current_dir(clone.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let output = std::str::from_utf8(&result).unwrap();
+    assert_eq!(output.matches("ID: gol-").count(), 2);
+    assert!(output.contains("First issue"));
+    assert!(output.contains("Second issue"));
+}
