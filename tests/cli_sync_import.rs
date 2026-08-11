@@ -3,6 +3,7 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use serial_test::serial;
+use serde_json::Value;
 use std::fs;
 use tempfile::TempDir;
 
@@ -943,4 +944,315 @@ fn test_restore_from_flushed_checkpoint_after_fresh_clone() {
     assert_eq!(output.matches("ID: gol-").count(), 2);
     assert!(output.contains("First issue"));
     assert!(output.contains("Second issue"));
+}
+
+#[test]
+#[serial]
+fn test_round_trip_dependencies_and_labels() {
+    let origin = TempDir::new().unwrap();
+
+    // Initialize origin workspace
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["init", "--prefix", "test"])
+        .current_dir(origin.path())
+        .assert()
+        .success();
+
+    // Create three issues with dependencies
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["create", "--title", "Issue A", "--priority", "1"])
+        .current_dir(origin.path())
+        .assert()
+        .success();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["create", "--title", "Issue B", "--priority", "2"])
+        .current_dir(origin.path())
+        .assert()
+        .success();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["create", "--title", "Issue C", "--priority", "3"])
+        .current_dir(origin.path())
+        .assert()
+        .success();
+
+    // Get the issue IDs from list output
+    let result = Command::cargo_bin("bead")
+        .unwrap()
+        .args(["list", "--json"])
+        .current_dir(origin.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let output = std::str::from_utf8(&result).unwrap();
+
+    // Parse issue IDs from JSON output
+    let issue_a_id = output
+        .split("\"id\":\"")
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .unwrap();
+    let issue_b_id = output
+        .split("\"id\":\"")
+        .nth(2)
+        .and_then(|s| s.split('"').next())
+        .unwrap();
+    let issue_c_id = output
+        .split("\"id\":\"")
+        .nth(3)
+        .and_then(|s| s.split('"').next())
+        .unwrap();
+
+    // Add dependency edges: B blocked by A, C blocked by B
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["dep", "add", issue_b_id, issue_a_id, "--kind", "blocks"])
+        .current_dir(origin.path())
+        .assert()
+        .success();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["dep", "add", issue_c_id, issue_b_id, "--kind", "blocks"])
+        .current_dir(origin.path())
+        .assert()
+        .success();
+
+    // Add labels to issues (one label per command)
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["label", "add", issue_a_id, "--label", "urgent"])
+        .current_dir(origin.path())
+        .assert()
+        .success();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["label", "add", issue_a_id, "--label", "feature"])
+        .current_dir(origin.path())
+        .assert()
+        .success();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["label", "add", issue_b_id, "--label", "bug"])
+        .current_dir(origin.path())
+        .assert()
+        .success();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["label", "add", issue_c_id, "--label", "enhancement"])
+        .current_dir(origin.path())
+        .assert()
+        .success();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["label", "add", issue_c_id, "--label", "backlog"])
+        .current_dir(origin.path())
+        .assert()
+        .success();
+
+    // Flush checkpoint
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["sync", "flush-only"])
+        .current_dir(origin.path())
+        .assert()
+        .success();
+
+    // Create clone workspace with only checkpoint files (simulating fresh git clone)
+    let clone = TempDir::new().unwrap();
+    let clone_beads = clone.path().join(".beads");
+    fs::create_dir_all(&clone_beads).unwrap();
+    fs::copy(
+        origin.path().join(".beads/config.json"),
+        clone_beads.join("config.json"),
+    )
+    .unwrap();
+    copy_dir_recursive(
+        &origin.path().join(".beads/checkpoint"),
+        &clone_beads.join("checkpoint"),
+    );
+
+    // Initialize clone workspace
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["init", "--prefix", "test"])
+        .current_dir(clone.path())
+        .assert()
+        .success();
+
+    // Restore from checkpoint
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args([
+            "sync",
+            "import-only",
+            "--input",
+            clone_beads.join("checkpoint").to_str().unwrap(),
+            "--restore-into-empty",
+            "--actor",
+            "test",
+        ])
+        .current_dir(clone.path())
+        .assert()
+        .success();
+
+    // Verify all issues exist after restore
+    let result = Command::cargo_bin("bead")
+        .unwrap()
+        .args(["list", "--json"])
+        .current_dir(clone.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let output = std::str::from_utf8(&result).unwrap();
+    assert!(output.contains(issue_a_id));
+    assert!(output.contains(issue_b_id));
+    assert!(output.contains(issue_c_id));
+    assert!(output.contains("Issue A"));
+    assert!(output.contains("Issue B"));
+    assert!(output.contains("Issue C"));
+
+    // Verify the ready frontier is correct (only Issue A should be ready)
+    // This confirms dependencies were properly restored
+    let ready_result = Command::cargo_bin("bead")
+        .unwrap()
+        .args(["list", "--ready"])
+        .current_dir(clone.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let ready_output = std::str::from_utf8(&ready_result).unwrap();
+
+    // Only issue_a should be ready (no blockers)
+    assert!(
+        ready_output.contains(issue_a_id),
+        "Issue A should be ready. Output:\n{}",
+        ready_output
+    );
+    assert!(
+        !ready_output.contains(issue_b_id),
+        "Issue B should NOT be ready (blocked by A). Output:\n{}",
+        ready_output
+    );
+    assert!(
+        !ready_output.contains(issue_c_id),
+        "Issue C should NOT be ready (blocked by B). Output:\n{}",
+        ready_output
+    );
+
+    // Verify labels and dependencies exist in the restored checkpoint file itself
+    // by reading the forensic.jsonl and checking for the embedded arrays
+    let forensic_content = fs::read_to_string(clone_beads.join("checkpoint/forensic.jsonl")).unwrap();
+    let mut found_a_deps = false;
+    let mut found_a_labels = false;
+    let mut found_b_deps = false;
+    let mut found_b_labels = false;
+    let mut found_c_deps = false;
+    let mut found_c_labels = false;
+
+    for line in forensic_content.lines() {
+        if let Ok(record) = serde_json::from_str::<Value>(line) {
+            if let Some(issue) = record.get("issue") {
+                if let Some(id) = issue.get("id").and_then(|v| v.as_str()) {
+                    if id == issue_a_id {
+                        if issue.get("dependencies").is_some() {
+                            // Issue A has no outgoing dependencies, but check array exists if needed
+                        }
+                        if let Some(labels) = issue.get("labels").and_then(|v| v.as_array()) {
+                            let label_strings: Vec<&str> =
+                                labels.iter().filter_map(|l| l.as_str()).collect();
+                            if label_strings.contains(&"urgent") && label_strings.contains(&"feature")
+                            {
+                                found_a_labels = true;
+                            }
+                        }
+                    } else if id == issue_b_id {
+                        if let Some(deps) = issue.get("dependencies").and_then(|v| v.as_array()) {
+                            for dep in deps {
+                                if dep.get("blocker").and_then(|v| v.as_str()) == Some(issue_a_id)
+                                    && dep.get("kind").and_then(|v| v.as_str()) == Some("blocks")
+                                {
+                                    found_b_deps = true;
+                                }
+                            }
+                        }
+                        if let Some(labels) = issue.get("labels").and_then(|v| v.as_array()) {
+                            for label in labels {
+                                if label.as_str() == Some("bug") {
+                                    found_b_labels = true;
+                                }
+                            }
+                        }
+                    } else if id == issue_c_id {
+                        if let Some(deps) = issue.get("dependencies").and_then(|v| v.as_array()) {
+                            for dep in deps {
+                                if dep.get("blocker").and_then(|v| v.as_str()) == Some(issue_b_id)
+                                    && dep.get("kind").and_then(|v| v.as_str()) == Some("blocks")
+                                {
+                                    found_c_deps = true;
+                                }
+                            }
+                        }
+                        if let Some(labels) = issue.get("labels").and_then(|v| v.as_array()) {
+                            let label_strings: Vec<&str> =
+                                labels.iter().filter_map(|l| l.as_str()).collect();
+                            if label_strings.contains(&"enhancement")
+                                && label_strings.contains(&"backlog")
+                            {
+                                found_c_labels = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(found_b_deps, "Issue B should have dependency on Issue A in checkpoint");
+    assert!(found_c_deps, "Issue C should have dependency on Issue B in checkpoint");
+    assert!(found_a_labels, "Issue A should have labels in checkpoint");
+    assert!(found_b_labels, "Issue B should have 'bug' label in checkpoint");
+    assert!(found_c_labels, "Issue C should have labels in checkpoint");
+    let ready_result = Command::cargo_bin("bead")
+        .unwrap()
+        .args(["list", "--ready"])
+        .current_dir(clone.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let ready_output = std::str::from_utf8(&ready_result).unwrap();
+
+    // Only issue_a should be ready (no blockers)
+    assert!(
+        ready_output.contains(issue_a_id),
+        "Issue A should be ready. Output:\n{}",
+        ready_output
+    );
+    assert!(
+        !ready_output.contains(issue_b_id),
+        "Issue B should NOT be ready (blocked by A). Output:\n{}",
+        ready_output
+    );
+    assert!(
+        !ready_output.contains(issue_c_id),
+        "Issue C should NOT be ready (blocked by B). Output:\n{}",
+        ready_output
+    );
 }

@@ -132,6 +132,20 @@ pub struct EventRecord {
     pub detail: serde_json::Value,
 }
 
+/// Dependency and label graph data for checkpoint serialization
+///
+/// This struct holds all dependency edges and labels across the workspace,
+/// organized for efficient lookup during checkpoint serialization.
+#[derive(Debug, Clone)]
+pub struct IssueGraphData {
+    /// All dependency edges as (blocked_id, blocker_id, kind) tuples
+    /// Sorted by blocker_id, kind, then blocked_id for canonical ordering
+    pub dependencies: Vec<(String, String, String)>,
+    /// All label assignments as (issue_id, label) tuples
+    /// Sorted by issue_id, then label for canonical ordering
+    pub labels: Vec<(String, String)>,
+}
+
 /// Provenance receipt for restore/merge operations
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProvenanceReceipt {
@@ -3630,6 +3644,12 @@ pub fn publish_forensic_checkpoint(
     let events = read_all_events(&tx)?;
     let receipts = read_all_provenance_receipts(&tx)?;
 
+    // Read all graph data for dependencies and labels
+    let graph_data = IssueGraphData {
+        dependencies: read_all_dependencies(&tx)?,
+        labels: read_all_labels(&tx)?,
+    };
+
     // Commit the read transaction
     tx.commit()?;
 
@@ -3673,6 +3693,7 @@ pub fn publish_forensic_checkpoint(
             &sorted_issues,
             &sorted_events,
             &sorted_receipts,
+            &graph_data,
             &checkpoint_dir,
             &generation_id,
             &mut changed_paths,
@@ -3687,6 +3708,7 @@ pub fn publish_forensic_checkpoint(
                 &sorted_issues,
                 &sorted_events,
                 &sorted_receipts,
+                &graph_data,
                 &checkpoint_dir,
                 &config,
                 &mut changed_paths,
@@ -3796,6 +3818,7 @@ fn publish_monolithic_checkpoint(
     issues: &[Issue],
     events: &[EventRecord],
     receipts: &[ProvenanceReceipt],
+    graph_data: &IssueGraphData,
     checkpoint_dir: &Path,
     generation_id: &str,
     changed_paths: &mut Vec<String>,
@@ -3810,9 +3833,28 @@ fn publish_monolithic_checkpoint(
 
     // Write issue records
     for issue in issues {
-        let record = CheckpointRecord::Issue {
-            issue: issue.clone(),
-        };
+        // Collect dependencies for this issue in canonical order
+        let issue_dependencies: Vec<_> = graph_data
+            .dependencies
+            .iter()
+            .filter(|(blocked, _, _)| blocked == &issue.id)
+            .collect();
+
+        // Collect labels for this issue in canonical order
+        let issue_labels: Vec<_> = graph_data
+            .labels
+            .iter()
+            .filter(|(issue_id, _)| issue_id == &issue.id)
+            .collect();
+
+        // Build enriched issue object with dependencies and labels
+        let issue_obj = build_enriched_issue_object(issue, issue_dependencies, issue_labels)?;
+
+        // Wrap in record envelope for serialization
+        let record = serde_json::json!({
+            "record_type": "issue",
+            "issue": issue_obj
+        });
         serde_json::to_writer(&mut writer, &record)?;
         writer.write_all(b"\n")?;
     }
@@ -3879,6 +3921,7 @@ fn publish_sharded_checkpoint(
     issues: &[Issue],
     events: &[EventRecord],
     receipts: &[ProvenanceReceipt],
+    graph_data: &IssueGraphData,
     checkpoint_dir: &Path,
     config: &ShardedConfig,
     changed_paths: &mut Vec<String>,
@@ -3899,10 +3942,22 @@ fn publish_sharded_checkpoint(
     sorted_issues.sort_by(|a, b| a.id.cmp(&b.id));
 
     for issue in &sorted_issues {
-        // Estimate size of this issue record (conservative estimate)
-        let issue_json = serde_json::to_string(&CheckpointRecord::Issue {
-            issue: issue.clone(),
-        })?;
+        // Collect dependencies and labels for this issue to estimate size
+        let issue_dependencies: Vec<_> = graph_data
+            .dependencies
+            .iter()
+            .filter(|(blocked, _, _)| blocked == &issue.id)
+            .collect();
+
+        let issue_labels: Vec<_> = graph_data
+            .labels
+            .iter()
+            .filter(|(issue_id, _)| issue_id == &issue.id)
+            .collect();
+
+        // Estimate size of this issue record (with dependencies and labels)
+        let issue_obj = build_enriched_issue_object(issue, issue_dependencies, issue_labels)?;
+        let issue_json = serde_json::to_string(&issue_obj)?;
         let issue_size = issue_json.len() + 1; // +1 for newline
 
         // Check if we need to start a new shard
@@ -3916,7 +3971,8 @@ fn publish_sharded_checkpoint(
                 "issue-{}-{}.tmp",
                 config.generation_id, shard_index
             ));
-            let hash = write_issue_shard(&current_shard_issues, &temp_path)?;
+            let hash =
+                write_issue_shard(&current_shard_issues, graph_data, &temp_path)?;
 
             // Use content-addressed filename
             let shard_path = objects_dir.join(format!("{}.jsonl", hash));
@@ -3960,7 +4016,8 @@ fn publish_sharded_checkpoint(
             "issue-{}-{}.tmp",
             config.generation_id, shard_index
         ));
-        let hash = write_issue_shard(&current_shard_issues, &temp_path)?;
+        let hash =
+            write_issue_shard(&current_shard_issues, graph_data, &temp_path)?;
 
         // Use content-addressed filename
         let shard_path = objects_dir.join(format!("{}.jsonl", hash));
@@ -4178,14 +4235,37 @@ fn publish_sharded_checkpoint(
 }
 
 /// Write issue shard to temp path and return hash
-fn write_issue_shard(issues: &[Issue], temp_path: &Path) -> Result<String> {
+fn write_issue_shard(
+    issues: &[Issue],
+    graph_data: &IssueGraphData,
+    temp_path: &Path,
+) -> Result<String> {
     let temp_file = File::create(temp_path)?;
     let mut writer = BufWriter::new(temp_file);
 
     for issue in issues {
-        let record = CheckpointRecord::Issue {
-            issue: issue.clone(),
-        };
+        // Collect dependencies for this issue in canonical order
+        let issue_dependencies: Vec<_> = graph_data
+            .dependencies
+            .iter()
+            .filter(|(blocked, _, _)| blocked == &issue.id)
+            .collect();
+
+        // Collect labels for this issue in canonical order
+        let issue_labels: Vec<_> = graph_data
+            .labels
+            .iter()
+            .filter(|(issue_id, _)| issue_id == &issue.id)
+            .collect();
+
+        // Build enriched issue object with dependencies and labels
+        let issue_obj = build_enriched_issue_object(issue, issue_dependencies, issue_labels)?;
+
+        // Wrap in record envelope for serialization
+        let record = serde_json::json!({
+            "record_type": "issue",
+            "issue": issue_obj
+        });
         serde_json::to_writer(&mut writer, &record)?;
         writer.write_all(b"\n")?;
     }
@@ -4200,6 +4280,46 @@ fn write_issue_shard(issues: &[Issue], temp_path: &Path) -> Result<String> {
 
     let hash = calculate_file_hash(temp_path)?;
     Ok(hash)
+}
+
+/// Build an enriched issue object with dependencies and labels embedded
+///
+/// This helper function creates a JSON object that includes all issue fields
+/// plus optional dependencies and labels arrays, following the canonical ordering
+/// specified in plan.md Section 6.1.
+fn build_enriched_issue_object<'a>(
+    issue: &Issue,
+    dependencies: Vec<&'a (String, String, String)>, // (blocked, blocker, kind)
+    labels: Vec<&'a (String, String)>,               // (issue_id, label)
+) -> Result<serde_json::Value> {
+    let issue_value = serde_json::to_value(issue)?;
+    let mut issue_obj = issue_value
+        .as_object()
+        .ok_or_else(|| anyhow!("Failed to convert issue to JSON object"))?
+        .clone();
+
+    // Embed dependencies array if non-empty, already in canonical order
+    if !dependencies.is_empty() {
+        let deps_array: Vec<serde_json::Value> = dependencies
+            .into_iter()
+            .map(|(_, blocker, kind)| serde_json::json!({"blocker": blocker, "kind": kind}))
+            .collect();
+        issue_obj.insert(
+            "dependencies".to_string(),
+            serde_json::Value::Array(deps_array),
+        );
+    }
+
+    // Embed labels array if non-empty, already in canonical order
+    if !labels.is_empty() {
+        let labels_array: Vec<serde_json::Value> = labels
+            .into_iter()
+            .map(|(_, label)| serde_json::Value::String(label.clone()))
+            .collect();
+        issue_obj.insert("labels".to_string(), serde_json::Value::Array(labels_array));
+    }
+
+    Ok(serde_json::Value::Object(issue_obj))
 }
 
 /// Write event shard to temp path and return hash
@@ -4519,6 +4639,62 @@ fn md5_compute(data: &str) -> String {
 }
 
 /// Read all issues from the database
+/// Read all dependencies from database in canonical order
+///
+/// Returns dependencies sorted by blocker_id, kind, then blocked_id as specified in
+/// plan.md Section 6.1 for deterministic serialization.
+fn read_all_dependencies(tx: &Transaction) -> Result<Vec<(String, String, String)>> {
+    let mut dependencies = Vec::new();
+
+    let mut stmt = tx.prepare(
+        "SELECT blocked_issue_id, blocker_issue_id, kind
+         FROM dependencies
+         ORDER BY blocker_issue_id ASC, kind ASC, blocked_issue_id ASC",
+    )?;
+
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>("blocked_issue_id")?,
+            row.get::<_, String>("blocker_issue_id")?,
+            row.get::<_, String>("kind")?,
+        ))
+    })?;
+
+    for row in rows {
+        let (blocked, blocker, kind) = row?;
+        dependencies.push((blocked, blocker, kind));
+    }
+
+    Ok(dependencies)
+}
+
+/// Read all labels from database in canonical order
+///
+/// Returns labels sorted lexically by (issue_id, label) for deterministic serialization.
+fn read_all_labels(tx: &Transaction) -> Result<Vec<(String, String)>> {
+    let mut labels = Vec::new();
+
+    let mut stmt = tx.prepare(
+        "SELECT issue_id, label
+         FROM labels
+         ORDER BY issue_id ASC, label ASC",
+    )?;
+
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>("issue_id")?,
+            row.get::<_, String>("label")?,
+        ))
+    })?;
+
+    for row in rows {
+        let (issue_id, label) = row?;
+        labels.push((issue_id, label));
+    }
+
+    Ok(labels)
+}
+
 fn read_all_issues(tx: &Transaction) -> Result<Vec<Issue>> {
     let mut issues = Vec::new();
 
