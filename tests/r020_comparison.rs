@@ -275,8 +275,9 @@ fn test_comparison_no_workspace() {
     let temp_dir = tempfile::tempdir().unwrap();
     let workspace_dir = temp_dir.path();
 
-    // Try to compare without workspace
-    // Note: The error message may vary depending on whether workspace discovery succeeds
+    // Try to compare without workspace. With the directory properly isolated
+    // this reaches real workspace discovery, which reports the same message
+    // every other command uses for a missing workspace.
     Command::cargo_bin("bead")
         .unwrap()
         .arg("compare")
@@ -290,7 +291,7 @@ fn test_comparison_no_workspace() {
         .env("HOME", workspace_dir.to_str().unwrap())
         .assert()
         .failure()
-        .stderr(predicates::str::contains("not found"));
+        .stderr(predicates::str::contains("No workspace found"));
 }
 
 #[test]

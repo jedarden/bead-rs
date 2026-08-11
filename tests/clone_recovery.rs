@@ -35,8 +35,6 @@ fn populated_workspace() -> tempfile::TempDir {
         .assert()
         .success();
 
-    // Three issues and two closes, so the checkpoint carries multiple events.
-    // A single event would not exercise the identity-collision path.
     for title in ["First bead", "Second bead", "Third bead"] {
         Command::cargo_bin("bead")
             .unwrap()
@@ -47,7 +45,50 @@ fn populated_workspace() -> tempfile::TempDir {
             .success();
     }
 
+    // `create` does not write to the events table, so claim and close twice to
+    // generate multiple events. More than one event is essential here: a single
+    // event cannot expose an identity collision, which is the defect these
+    // tests exist to catch.
+    for _ in 0..2 {
+        Command::cargo_bin("bead")
+            .unwrap()
+            .args(["claim", "--assignee", "fixture"])
+            .current_dir(path)
+            .env("HOME", path.to_str().unwrap())
+            .assert()
+            .success();
+
+        let claimed = in_progress_id(path).expect("claim should leave an issue in progress");
+
+        Command::cargo_bin("bead")
+            .unwrap()
+            .args(["close", &claimed, "--reason", "fixture"])
+            .current_dir(path)
+            .env("HOME", path.to_str().unwrap())
+            .assert()
+            .success();
+    }
+
     dir
+}
+
+/// Find the id of the issue currently in progress, if any.
+fn in_progress_id(root: &Path) -> Option<String> {
+    let output = Command::cargo_bin("bead")
+        .unwrap()
+        .args(["list", "--json"])
+        .current_dir(root)
+        .env("HOME", root.to_str().unwrap())
+        .output()
+        .unwrap();
+
+    // `list --json` emits NDJSON: one object per line, not a JSON array.
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|issue| issue["status"] == "in_progress")
+        .and_then(|issue| issue["id"].as_str().map(str::to_string))
 }
 
 fn read_config_uuid(root: &Path) -> String {
