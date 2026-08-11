@@ -33,7 +33,7 @@ fn test_sync_flush_only_basic() {
         .current_dir(temp_dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::is_match("bead-[a-f0-9]{16}").unwrap());
+        .stdout(predicate::str::is_match("bead-[a-f0-9]{8}").unwrap());
 
     // Flush forensic checkpoint
     Command::cargo_bin("bead")

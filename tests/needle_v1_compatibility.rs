@@ -95,7 +95,7 @@ fn needle_v1_create_command() {
 
     // Verify ID format
     assert!(issue_id.starts_with("test-"));
-    assert_eq!(issue_id.len(), 21); // "test-" + 16 hex chars
+    assert_eq!(issue_id.len(), 13); // "test-" + 8 hex chars
 
     // Verify issue was created by calling show
     Command::cargo_bin("bead")

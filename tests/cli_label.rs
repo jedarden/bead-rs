@@ -23,14 +23,14 @@ fn test_label_add_basic() {
         .args(["create", "--title", "Test Issue"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match("test-[a-f0-9]{16}").unwrap());
+        .stdout(predicate::str::is_match("test-[a-f0-9]{8}").unwrap());
 
     let issue_id = Command::cargo_bin("bead")
         .unwrap()
         .args(["create", "--title", "Another Issue"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match("test-[a-f0-9]{16}").unwrap());
+        .stdout(predicate::str::is_match("test-[a-f0-9]{8}").unwrap());
 
     let issue_id = String::from_utf8(issue_id.get_output().clone().stdout)
         .unwrap()
@@ -73,7 +73,7 @@ fn test_label_add_idempotent() {
         .args(["create", "--title", "Test Issue"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match("test-[a-f0-9]{16}").unwrap());
+        .stdout(predicate::str::is_match("test-[a-f0-9]{8}").unwrap());
 
     let issue_id = String::from_utf8(issue_id.get_output().clone().stdout)
         .unwrap()
@@ -135,7 +135,7 @@ fn test_label_remove_basic() {
         .args(["create", "--title", "Test Issue"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match("test-[a-f0-9]{16}").unwrap());
+        .stdout(predicate::str::is_match("test-[a-f0-9]{8}").unwrap());
 
     let issue_id = String::from_utf8(issue_id.get_output().clone().stdout)
         .unwrap()
@@ -183,7 +183,7 @@ fn test_label_remove_idempotent() {
         .args(["create", "--title", "Test Issue"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match("test-[a-f0-9]{16}").unwrap());
+        .stdout(predicate::str::is_match("test-[a-f0-9]{8}").unwrap());
 
     let issue_id = String::from_utf8(issue_id.get_output().clone().stdout)
         .unwrap()

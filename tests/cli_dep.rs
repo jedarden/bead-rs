@@ -23,7 +23,7 @@ fn test_dep_add_basic() {
         .args(["create", "--title", "Blocked Issue"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match("test-[a-f0-9]{16}").unwrap());
+        .stdout(predicate::str::is_match("test-[a-f0-9]{8}").unwrap());
 
     let blocked_id = String::from_utf8(blocked_id.get_output().clone().stdout)
         .unwrap()
@@ -35,7 +35,7 @@ fn test_dep_add_basic() {
         .args(["create", "--title", "Blocker Issue"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match("test-[a-f0-9]{16}").unwrap());
+        .stdout(predicate::str::is_match("test-[a-f0-9]{8}").unwrap());
 
     let blocker_id = String::from_utf8(blocker_id.get_output().clone().stdout)
         .unwrap()
@@ -70,7 +70,7 @@ fn test_dep_add_with_kind() {
         .args(["create", "--title", "Issue 1"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match("test-[a-f0-9]{16}").unwrap());
+        .stdout(predicate::str::is_match("test-[a-f0-9]{8}").unwrap());
 
     let issue1_id = String::from_utf8(issue1_id.get_output().clone().stdout)
         .unwrap()
@@ -82,7 +82,7 @@ fn test_dep_add_with_kind() {
         .args(["create", "--title", "Issue 2"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match("test-[a-f0-9]{16}").unwrap());
+        .stdout(predicate::str::is_match("test-[a-f0-9]{8}").unwrap());
 
     let issue2_id = String::from_utf8(issue2_id.get_output().clone().stdout)
         .unwrap()
@@ -117,7 +117,7 @@ fn test_dep_add_idempotent() {
         .args(["create", "--title", "Blocked Issue"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match("test-[a-f0-9]{16}").unwrap());
+        .stdout(predicate::str::is_match("test-[a-f0-9]{8}").unwrap());
 
     let blocked_id = String::from_utf8(blocked_id.get_output().clone().stdout)
         .unwrap()
@@ -129,7 +129,7 @@ fn test_dep_add_idempotent() {
         .args(["create", "--title", "Blocker Issue"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match("test-[a-f0-9]{16}").unwrap());
+        .stdout(predicate::str::is_match("test-[a-f0-9]{8}").unwrap());
 
     let blocker_id = String::from_utf8(blocker_id.get_output().clone().stdout)
         .unwrap()
@@ -169,7 +169,7 @@ fn test_dep_add_self_edge() {
         .args(["create", "--title", "Self Issue"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match("test-[a-f0-9]{16}").unwrap());
+        .stdout(predicate::str::is_match("test-[a-f0-9]{8}").unwrap());
 
     let issue_id = String::from_utf8(issue_id.get_output().clone().stdout)
         .unwrap()
@@ -204,7 +204,7 @@ fn test_dep_add_creates_cycle() {
         .args(["create", "--title", "Issue 1"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match("test-[a-f0-9]{16}").unwrap());
+        .stdout(predicate::str::is_match("test-[a-f0-9]{8}").unwrap());
 
     let issue1_id = String::from_utf8(issue1_id.get_output().clone().stdout)
         .unwrap()
@@ -216,7 +216,7 @@ fn test_dep_add_creates_cycle() {
         .args(["create", "--title", "Issue 2"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match("test-[a-f0-9]{16}").unwrap());
+        .stdout(predicate::str::is_match("test-[a-f0-9]{8}").unwrap());
 
     let issue2_id = String::from_utf8(issue2_id.get_output().clone().stdout)
         .unwrap()
@@ -228,7 +228,7 @@ fn test_dep_add_creates_cycle() {
         .args(["create", "--title", "Issue 3"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match("test-[a-f0-9]{16}").unwrap());
+        .stdout(predicate::str::is_match("test-[a-f0-9]{8}").unwrap());
 
     let issue3_id = String::from_utf8(issue3_id.get_output().clone().stdout)
         .unwrap()
@@ -276,7 +276,7 @@ fn test_relates_to_allows_cycles() {
         .args(["create", "--title", "Issue 1"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match("test-[a-f0-9]{16}").unwrap());
+        .stdout(predicate::str::is_match("test-[a-f0-9]{8}").unwrap());
 
     let issue1_id = String::from_utf8(issue1_id.get_output().clone().stdout)
         .unwrap()
@@ -288,7 +288,7 @@ fn test_relates_to_allows_cycles() {
         .args(["create", "--title", "Issue 2"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match("test-[a-f0-9]{16}").unwrap());
+        .stdout(predicate::str::is_match("test-[a-f0-9]{8}").unwrap());
 
     let issue2_id = String::from_utf8(issue2_id.get_output().clone().stdout)
         .unwrap()
@@ -328,7 +328,7 @@ fn test_dep_add_nonexistent_blocked() {
         .args(["create", "--title", "Blocker Issue"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match("test-[a-f0-9]{16}").unwrap());
+        .stdout(predicate::str::is_match("test-[a-f0-9]{8}").unwrap());
 
     let blocker_id = String::from_utf8(blocker_id.get_output().clone().stdout)
         .unwrap()
@@ -363,7 +363,7 @@ fn test_dep_add_nonexistent_blocker() {
         .args(["create", "--title", "Blocked Issue"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match("test-[a-f0-9]{16}").unwrap());
+        .stdout(predicate::str::is_match("test-[a-f0-9]{8}").unwrap());
 
     let blocked_id = String::from_utf8(blocked_id.get_output().clone().stdout)
         .unwrap()
@@ -398,7 +398,7 @@ fn test_dep_remove_basic() {
         .args(["create", "--title", "Blocked Issue"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match("test-[a-f0-9]{16}").unwrap());
+        .stdout(predicate::str::is_match("test-[a-f0-9]{8}").unwrap());
 
     let blocked_id = String::from_utf8(blocked_id.get_output().clone().stdout)
         .unwrap()
@@ -410,7 +410,7 @@ fn test_dep_remove_basic() {
         .args(["create", "--title", "Blocker Issue"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match("test-[a-f0-9]{16}").unwrap());
+        .stdout(predicate::str::is_match("test-[a-f0-9]{8}").unwrap());
 
     let blocker_id = String::from_utf8(blocker_id.get_output().clone().stdout)
         .unwrap()
@@ -452,7 +452,7 @@ fn test_dep_remove_with_kind() {
         .args(["create", "--title", "Issue 1"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match("test-[a-f0-9]{16}").unwrap());
+        .stdout(predicate::str::is_match("test-[a-f0-9]{8}").unwrap());
 
     let issue1_id = String::from_utf8(issue1_id.get_output().clone().stdout)
         .unwrap()
@@ -464,7 +464,7 @@ fn test_dep_remove_with_kind() {
         .args(["create", "--title", "Issue 2"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match("test-[a-f0-9]{16}").unwrap());
+        .stdout(predicate::str::is_match("test-[a-f0-9]{8}").unwrap());
 
     let issue2_id = String::from_utf8(issue2_id.get_output().clone().stdout)
         .unwrap()
@@ -511,7 +511,7 @@ fn test_dep_remove_without_kind() {
         .args(["create", "--title", "Issue 1"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match("test-[a-f0-9]{16}").unwrap());
+        .stdout(predicate::str::is_match("test-[a-f0-9]{8}").unwrap());
 
     let issue1_id = String::from_utf8(issue1_id.get_output().clone().stdout)
         .unwrap()
@@ -523,7 +523,7 @@ fn test_dep_remove_without_kind() {
         .args(["create", "--title", "Issue 2"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match("test-[a-f0-9]{16}").unwrap());
+        .stdout(predicate::str::is_match("test-[a-f0-9]{8}").unwrap());
 
     let issue2_id = String::from_utf8(issue2_id.get_output().clone().stdout)
         .unwrap()
@@ -570,7 +570,7 @@ fn test_dep_remove_idempotent() {
         .args(["create", "--title", "Blocked Issue"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match("test-[a-f0-9]{16}").unwrap());
+        .stdout(predicate::str::is_match("test-[a-f0-9]{8}").unwrap());
 
     let blocked_id = String::from_utf8(blocked_id.get_output().clone().stdout)
         .unwrap()
@@ -582,7 +582,7 @@ fn test_dep_remove_idempotent() {
         .args(["create", "--title", "Blocker Issue"])
         .assert()
         .success()
-        .stdout(predicate::str::is_match("test-[a-f0-9]{16}").unwrap());
+        .stdout(predicate::str::is_match("test-[a-f0-9]{8}").unwrap());
 
     let blocker_id = String::from_utf8(blocker_id.get_output().clone().stdout)
         .unwrap()

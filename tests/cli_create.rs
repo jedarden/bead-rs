@@ -26,9 +26,9 @@ fn test_create_basic() {
     let output = std::str::from_utf8(&result.get_output().stdout).unwrap();
     let issue_id = output.trim();
 
-    // Verify ID format: <prefix>-<16 hex chars>
+    // Verify ID format: <prefix>-<8 hex chars>
     assert!(issue_id.starts_with("test-"));
-    assert_eq!(issue_id.len(), 21); // "test-" + 16 hex chars
+    assert_eq!(issue_id.len(), 13); // "test-" + 8 hex chars
 }
 
 #[test]

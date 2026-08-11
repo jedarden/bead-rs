@@ -333,9 +333,11 @@ fn generate_unique_id(conn: &Connection, prefix: &str) -> Result<String> {
     let max_attempts = 5;
 
     for _attempt in 0..max_attempts {
-        // Generate random suffix
+        // Generate random suffix. 4 bytes (8 hex chars) keeps ids short and
+        // readable; collisions are checked below and retried, so this is
+        // not relying on the birthday bound alone.
         let mut rng = rand::thread_rng();
-        let bytes: [u8; 8] = rng.gen();
+        let bytes: [u8; 4] = rng.gen();
         let suffix = hex::encode(bytes);
 
         let id = format!("{}-{}", prefix, suffix);
