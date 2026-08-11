@@ -97,11 +97,9 @@ impl WorkspaceConfig {
         match Self::probe()? {
             WorkspaceState::NotFound => Ok(None),
             WorkspaceState::Ready(config) => Ok(Some(config)),
-            WorkspaceState::Uninitialized { root, db_path } => {
-                Err(crate::Error::workspace(uninitialized_message(
-                    &root, &db_path,
-                )))
-            }
+            WorkspaceState::Uninitialized { root, db_path } => Err(crate::Error::workspace(
+                uninitialized_message(&root, &db_path),
+            )),
         }
     }
 

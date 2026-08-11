@@ -1109,7 +1109,9 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
     match store::WorkspaceConfig::probe()? {
         store::WorkspaceState::Ready(_) => {}
         store::WorkspaceState::NotFound => {
-            return Err(Error::workspace("No workspace found. Run `bead init` first."));
+            return Err(Error::workspace(
+                "No workspace found. Run `bead init` first.",
+            ));
         }
         store::WorkspaceState::Uninitialized { root, db_path } => {
             println!("Running diagnostics with scopes: All");
@@ -1118,9 +1120,7 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
                 "FAIL workspace_config: Workspace database at {} is missing or uninitialized",
                 db_path.display()
             );
-            println!(
-                "     .beads/config.json is committed but beads.db is gitignored, so a fresh"
-            );
+            println!("     .beads/config.json is committed but beads.db is gitignored, so a fresh");
             println!("     clone arrives in this state.");
             println!();
             println!("Repair: run `bead init` in {}", root.display());

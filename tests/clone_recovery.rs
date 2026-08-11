@@ -103,11 +103,7 @@ fn simulate_fresh_clone(source: &Path, dest: &Path) {
     let dst_beads = dest.join(".beads");
     std::fs::create_dir_all(&dst_beads).unwrap();
 
-    std::fs::copy(
-        src_beads.join("config.json"),
-        dst_beads.join("config.json"),
-    )
-    .unwrap();
+    std::fs::copy(src_beads.join("config.json"), dst_beads.join("config.json")).unwrap();
 
     // Checkpoint files are not gitignored, so a clone carries them.
     let src_checkpoint = src_beads.join("checkpoint");
