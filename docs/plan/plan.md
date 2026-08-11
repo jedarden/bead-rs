@@ -1202,6 +1202,52 @@ operation-owned temporary. `--output` is invalid with a request for native
 adaptive/sharded publication; an explicit output is always a standalone
 monolith.
 
+#### 6.1.2 Known implementation gap: dependencies and labels are not serialized
+
+Discovered 2026-08-11 while verifying that a `bead`-tracked repository can
+actually be reconstituted from a fresh `git clone` plus its committed
+checkpoint alone (the scenario Section 6.1's "complete dependency, comment,
+schema-bound data, and unknown-extension content" language and the final
+gate's "the checkpoint covers every bead" language both already require).
+
+**FIXED 2026-08-11** by commit `01f6ed8` (bead `test-ff97dce9`).
+
+The original gap: `Issue` (`src/model.rs`) has no `dependencies` or `labels` field.
+`publish_monolithic_checkpoint` (`src/service/checkpoint.rs`) wrote each
+`CheckpointRecord::Issue` by cloning the live `Issue` struct directly, so a
+flushed checkpoint issue record could never carry dependency or label data
+regardless of what the live SQLite `dependencies`/`labels` tables contained.
+This was a one-sided defect: the import path
+(`stage_monolithic_checkpoint`) already inspected each parsed issue object for
+optional `dependencies`/`labels` arrays and would restore them if present --
+they were simply never written. Section 6.1's specified canonical ordering
+("Dependencies sort by blocker ID, kind, then blocked ID") had no code path
+that produced it.
+
+The fix extended both `publish_monolithic_checkpoint` and `publish_sharded_checkpoint`
+to query each issue's current dependencies and labels from SQLite and embed them
+into the issue record in the Section 6.1 canonical order:
+- Dependencies sorted by blocker ID, kind, then blocked ID
+- Labels sorted lexically and unique
+
+Implementation added:
+- `read_all_dependencies()` and `read_all_labels()` helpers to query SQLite
+- `IssueGraphData` struct to hold graph data for checkpoint serialization
+- `build_enriched_issue_object()` helper to construct enriched JSON with deps/labels
+- Golden round-trip regression test `test_round_trip_dependencies_and_labels`
+  in `tests/cli_sync_import.rs` that creates issues with real dependency edges
+  and labels, flushes, restores into a fresh workspace, and asserts the graph
+  and labels are identical after restore
+
+Live SQLite state was unaffected during the bug -- claim/dependency-graph behavior
+against an open workspace was correct. Only `bead sync flush-only` output (and
+therefore `bead sync import-only --restore-into-empty` against it) lost dependency
+edges and labels. A workspace reconstituted purely from a committed checkpoint
+previously had every issue but a flat, dependency-free graph -- confirmed by
+cloning a real tracked repository (`game-of-life`, 15 issues, 24 `blocks` edges)
+fresh and restoring from its checkpoint: all 15 issues returned, all 24 edges did
+not. This is now fixed.
+
 ### 6.2 Backup flush algorithm
 
 SQLite is authoritative between flushes because it supplies transactional live

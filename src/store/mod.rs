@@ -131,40 +131,27 @@ impl WorkspaceConfig {
                 crate::Error::Internal(anyhow::anyhow!("Failed to set busy timeout: {}", e))
             })?;
 
-        // `config.json` is committed to git; `beads.db` is gitignored. A fresh
-        // clone therefore has an identity but no schema. Detect that state
-        // explicitly and name the remedy, instead of surfacing a bare
-        // "no such table: workspace" from SQLite.
-        let schema_present = conn
+        // A tracked `.beads/config.json` can exist without a matching
+        // `.beads/beads.db` (the db is gitignored on purpose) -- most
+        // commonly right after a fresh `git clone`. A failed query covers both
+        // a missing `workspace` table and a missing row, so treat either as
+        // "not actually initialized here yet" rather than a hard error, and
+        // report it as a distinct recoverable state so `init` can self-heal it
+        // and `doctor` can diagnose it.
+        let workspace_row: Option<(String, String)> = conn
             .query_row(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workspace'",
+                "SELECT uuid, prefix FROM workspace WHERE id = 1",
                 [],
-                |_| Ok(()),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
-            .is_ok();
+            .ok();
 
-        if !schema_present {
+        let Some((uuid, prefix)) = workspace_row else {
             return Ok(WorkspaceState::Uninitialized {
                 root: root.to_path_buf(),
                 db_path,
             });
-        }
-
-        let uuid: String = conn
-            .query_row("SELECT uuid FROM workspace WHERE id = 1", [], |row| {
-                row.get(0)
-            })
-            .map_err(|e| {
-                crate::Error::workspace(format!("Failed to load workspace UUID: {}", e))
-            })?;
-
-        let prefix: String = conn
-            .query_row("SELECT prefix FROM workspace WHERE id = 1", [], |row| {
-                row.get(0)
-            })
-            .map_err(|e| {
-                crate::Error::workspace(format!("Failed to load workspace prefix: {}", e))
-            })?;
+        };
 
         Ok(WorkspaceState::Ready(Self {
             root: root.to_path_buf(),
