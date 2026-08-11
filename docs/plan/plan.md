@@ -1202,6 +1202,48 @@ operation-owned temporary. `--output` is invalid with a request for native
 adaptive/sharded publication; an explicit output is always a standalone
 monolith.
 
+#### 6.1.2 Known implementation gap: dependencies and labels are not serialized
+
+Discovered 2026-08-11 while verifying that a `bead`-tracked repository can
+actually be reconstituted from a fresh `git clone` plus its committed
+checkpoint alone (the scenario Section 6.1's "complete dependency, comment,
+schema-bound data, and unknown-extension content" language and the final
+gate's "the checkpoint covers every bead" language both already require).
+
+`Issue` (`src/model.rs`) has no `dependencies` or `labels` field.
+`publish_monolithic_checkpoint` (`src/service/checkpoint.rs`) writes each
+`CheckpointRecord::Issue` by cloning the live `Issue` struct directly, so a
+flushed checkpoint issue record can never carry dependency or label data
+regardless of what the live SQLite `dependencies`/`labels` tables contain.
+This is a one-sided defect: the import path
+(`stage_monolithic_checkpoint`) already inspects each parsed issue object for
+optional `dependencies`/`labels` arrays and would restore them if present --
+they are simply never written. Section 6.1's specified canonical ordering
+("Dependencies sort by blocker ID, kind, then blocked ID") has no code path
+that produces it today.
+
+Live SQLite state is unaffected -- claim/dependency-graph behavior against an
+open workspace is correct. Only `bead sync flush-only` output (and therefore
+`bead sync import-only --restore-into-empty` against it) loses dependency
+edges and labels. A workspace reconstituted purely from a committed
+checkpoint currently has every issue but a flat, dependency-free graph --
+confirmed by cloning a real tracked repository (`game-of-life`, 15 issues, 24
+`blocks` edges) fresh and restoring from its checkpoint: all 15 issues
+returned, all 24 edges did not.
+
+Not yet fixed. Tracked as a native bead in this workspace's own `.beads/`
+(see `bead list` / `bead show` for the current ID) rather than only here,
+per Section 2's authority model -- this note records the gap and its
+Section 6.1 citation; the bead is the mutable work-item. Fix scope: extend
+`publish_monolithic_checkpoint`'s issue-record construction (and the sharded
+equivalent) to embed each issue's current dependencies/labels queried from
+SQLite, in the Section 6.1 canonical order; add a golden round-trip regression
+test that creates issues with real dependency edges and labels, flushes,
+restores into a fresh workspace, and asserts the graph -- not just the issue
+set -- is identical, since the existing `tests/cli_sync_import.rs` coverage
+(including the fresh-clone regression test added 2026-08-11) only asserts on
+bare issues and would not have caught this.
+
 ### 6.2 Backup flush algorithm
 
 SQLite is authoritative between flushes because it supplies transactional live
