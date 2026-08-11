@@ -102,6 +102,41 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Report whether the database has been initialized with the native schema.
+    ///
+    /// Presence of `.beads/config.json` is NOT proof that the database exists:
+    /// `config.json` is tracked in git while `beads.db` is gitignored, so every
+    /// fresh clone starts with a config and no database. Callers must probe the
+    /// schema itself rather than inferring it from the config file.
+    fn schema_initialized(conn: &Connection) -> bool {
+        conn.query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workspace'",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok()
+            && conn
+                .query_row("SELECT 1 FROM workspace WHERE id = 1", [], |_| Ok(()))
+                .is_ok()
+    }
+
+    /// Read the workspace identity recorded in `.beads/config.json`, if present.
+    ///
+    /// Returns `(uuid, prefix)`. This is the durable identity of the workspace:
+    /// it is committed to git and is what checkpoint records key their
+    /// `origin_store_uuid` against, so a rebuilt database MUST reuse it rather
+    /// than minting a fresh UUID.
+    fn identity_from_config(config_path: &Path) -> Option<(String, String)> {
+        let raw = std::fs::read_to_string(config_path).ok()?;
+        let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
+        let uuid = parsed.get("uuid")?.as_str()?.to_string();
+        let prefix = parsed.get("prefix")?.as_str()?.to_string();
+        if uuid.is_empty() || prefix.is_empty() {
+            return None;
+        }
+        Some((uuid, prefix))
+    }
+
     /// Generate a workspace UUID
     fn generate_uuid() -> String {
         use rand::Rng;
@@ -190,32 +225,47 @@ impl Store for SqliteStore {
             msg: e,
         })?;
 
-        // Check if workspace already exists
+        // An existing config.json means this workspace already has an identity,
+        // but NOT necessarily a database — `beads.db` is gitignored while
+        // `config.json` is tracked, so a fresh clone lands here with a config
+        // and no schema. Probe the schema; only short-circuit if it is really
+        // initialized, otherwise fall through and rebuild around the recorded
+        // identity.
         let config_path = root.join(".beads/config.json");
-        if config_path.exists() {
-            // Load existing workspace configuration from database
+        let recorded_identity = if config_path.exists() {
             let db_path = root.join(".beads/beads.db");
             let conn = Self::open_connection(&db_path)
                 .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
-            let uuid: String = conn
-                .query_row("SELECT uuid FROM workspace WHERE id = 1", [], |row| {
-                    row.get(0)
-                })
-                .map_err(|e| Error::workspace(format!("Failed to load workspace UUID: {}", e)))?;
+            if Self::schema_initialized(&conn) {
+                let uuid: String = conn
+                    .query_row("SELECT uuid FROM workspace WHERE id = 1", [], |row| {
+                        row.get(0)
+                    })
+                    .map_err(|e| {
+                        Error::workspace(format!("Failed to load workspace UUID: {}", e))
+                    })?;
 
-            let existing_prefix: String = conn
-                .query_row("SELECT prefix FROM workspace WHERE id = 1", [], |row| {
-                    row.get(0)
-                })
-                .map_err(|e| Error::workspace(format!("Failed to load workspace prefix: {}", e)))?;
+                let existing_prefix: String = conn
+                    .query_row("SELECT prefix FROM workspace WHERE id = 1", [], |row| {
+                        row.get(0)
+                    })
+                    .map_err(|e| {
+                        Error::workspace(format!("Failed to load workspace prefix: {}", e))
+                    })?;
 
-            return Ok(WorkspaceConfig {
-                root,
-                uuid,
-                prefix: existing_prefix,
-            });
-        }
+                return Ok(WorkspaceConfig {
+                    root,
+                    uuid,
+                    prefix: existing_prefix,
+                });
+            }
+
+            // Config present but schema absent: rebuild, preserving identity.
+            Self::identity_from_config(&config_path)
+        } else {
+            None
+        };
 
         // Create directory structure
         Self::ensure_workspace_structure(&root)?;
@@ -244,16 +294,22 @@ impl Store for SqliteStore {
             })
             .unwrap_or(0);
 
+        // When rebuilding around a committed config.json, reuse its identity:
+        // the UUID is what checkpoint records reference as `origin_store_uuid`,
+        // and the prefix is already baked into every bead ID ever minted here.
+        let (effective_uuid, effective_prefix) = match &recorded_identity {
+            Some((uuid, recorded_prefix)) => (uuid.clone(), recorded_prefix.clone()),
+            None => (Self::generate_uuid(), prefix.to_string()),
+        };
+
         if workspace_exists == 0 {
-            let uuid = Self::generate_uuid();
-            let prefix_string = prefix.to_string();
             let created_at = time::OffsetDateTime::now_utc()
                 .format(&time::format_description::well_known::Rfc3339)
                 .unwrap_or_else(|_| "unknown".to_string());
 
             conn.execute(
                 "INSERT INTO workspace (id, uuid, prefix, layout_version, created_at) VALUES (1, ?1, ?2, 1, ?3)",
-                [&uuid, &prefix_string, &created_at],
+                [&effective_uuid, &effective_prefix, &created_at],
             )?;
         }
 
@@ -268,29 +324,33 @@ impl Store for SqliteStore {
         // Update workspace with generated UUID and prefix
         conn.execute(
             "UPDATE workspace SET uuid = ?1, prefix = ?2",
-            [&uuid, prefix],
+            [&uuid, &effective_prefix],
         )
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to update workspace: {}", e)))?;
 
-        // Create initial config.json (placeholder for now)
-        let config_content = serde_json::json!({
-            "version": 1,
-            "uuid": uuid,
-            "prefix": prefix,
-            "created_at": time::OffsetDateTime::now_utc()
-                .format(&time::format_description::well_known::Rfc3339)
-                .unwrap_or_else(|_| "unknown".to_string())
-        });
+        // Only write config.json when it does not already exist. Rewriting it
+        // during a rebuild would reset `created_at` and could silently rewrite
+        // the committed identity.
+        if !config_path.exists() {
+            let config_content = serde_json::json!({
+                "version": 1,
+                "uuid": uuid,
+                "prefix": effective_prefix,
+                "created_at": time::OffsetDateTime::now_utc()
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap_or_else(|_| "unknown".to_string())
+            });
 
-        std::fs::write(&config_path, config_content.to_string()).map_err(|e| Error::Io {
-            path: config_path.clone(),
-            msg: e,
-        })?;
+            std::fs::write(&config_path, config_content.to_string()).map_err(|e| Error::Io {
+                path: config_path.clone(),
+                msg: e,
+            })?;
+        }
 
         Ok(WorkspaceConfig {
             root,
             uuid,
-            prefix: prefix.to_string(),
+            prefix: effective_prefix,
         })
     }
 

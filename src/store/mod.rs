@@ -21,9 +21,53 @@ pub struct WorkspaceConfig {
     pub prefix: String,
 }
 
+/// Operator-facing explanation of the uninitialized-workspace state.
+///
+/// Shared by every entry point so the remedy is described identically wherever
+/// the state surfaces.
+fn uninitialized_message(root: &Path, db_path: &Path) -> String {
+    format!(
+        "Workspace database at {} is missing or uninitialized: .beads/config.json is present, \
+         but the database has no schema. This is the expected state of a fresh clone, because \
+         beads.db is gitignored while config.json is committed. Rebuild it with `bead init` in \
+         {} (the committed workspace identity is preserved), then restore content with \
+         `bead sync import-only --input .beads/checkpoint/forensic.jsonl --restore-into-empty \
+         --actor <you>`.",
+        db_path.display(),
+        root.display()
+    )
+}
+
+/// Result of probing the filesystem for a workspace.
+///
+/// The `Uninitialized` variant exists because `.beads/config.json` is tracked in
+/// git while `.beads/beads.db` is gitignored: every fresh clone has an identity
+/// but no schema. That state is recoverable, so it must be distinguishable from
+/// both "no workspace" and "working workspace" rather than collapsing into an
+/// opaque error.
+#[derive(Debug, Clone)]
+pub enum WorkspaceState {
+    /// No `.beads/config.json` found walking up from the current directory.
+    NotFound,
+    /// `config.json` found, but the database has no schema. Recoverable with
+    /// `bead init` (which rebuilds around the committed identity).
+    Uninitialized {
+        /// Workspace root containing the `.beads` directory
+        root: PathBuf,
+        /// Path to the database that is missing or empty
+        db_path: PathBuf,
+    },
+    /// Fully initialized workspace.
+    Ready(WorkspaceConfig),
+}
+
 impl WorkspaceConfig {
-    /// Discover the workspace by walking up from the current directory
-    pub fn discover() -> crate::Result<Option<Self>> {
+    /// Probe for a workspace, walking up from the current directory.
+    ///
+    /// Unlike [`discover`](Self::discover), this reports an uninitialized
+    /// workspace as a distinct state instead of an error, so `init` and
+    /// `doctor` can act on it.
+    pub fn probe() -> crate::Result<WorkspaceState> {
         let cwd = std::env::current_dir().map_err(|e| crate::Error::Io {
             path: ".".into(),
             msg: e,
@@ -33,20 +77,36 @@ impl WorkspaceConfig {
         loop {
             let config_file = current.join(".beads/config.json");
             if config_file.exists() {
-                return Self::from_config_path(&config_file);
+                return Self::state_from_config_path(&config_file);
             }
 
             match current.parent() {
                 Some(parent) if !parent.as_os_str().is_empty() => {
                     current = parent;
                 }
-                _ => return Ok(None),
+                _ => return Ok(WorkspaceState::NotFound),
             }
         }
     }
 
-    /// Load workspace configuration from a specific config file path
-    fn from_config_path(config_path: &Path) -> crate::Result<Option<Self>> {
+    /// Discover the workspace by walking up from the current directory.
+    ///
+    /// An uninitialized workspace surfaces as an actionable error naming the
+    /// remedy; see [`probe`](Self::probe) when the caller can repair it.
+    pub fn discover() -> crate::Result<Option<Self>> {
+        match Self::probe()? {
+            WorkspaceState::NotFound => Ok(None),
+            WorkspaceState::Ready(config) => Ok(Some(config)),
+            WorkspaceState::Uninitialized { root, db_path } => {
+                Err(crate::Error::workspace(uninitialized_message(
+                    &root, &db_path,
+                )))
+            }
+        }
+    }
+
+    /// Classify the workspace rooted at the given config file path
+    fn state_from_config_path(config_path: &Path) -> crate::Result<WorkspaceState> {
         let root = config_path
             .parent()
             .and_then(|p| p.parent())
@@ -71,6 +131,25 @@ impl WorkspaceConfig {
                 crate::Error::Internal(anyhow::anyhow!("Failed to set busy timeout: {}", e))
             })?;
 
+        // `config.json` is committed to git; `beads.db` is gitignored. A fresh
+        // clone therefore has an identity but no schema. Detect that state
+        // explicitly and name the remedy, instead of surfacing a bare
+        // "no such table: workspace" from SQLite.
+        let schema_present = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workspace'",
+                [],
+                |_| Ok(()),
+            )
+            .is_ok();
+
+        if !schema_present {
+            return Ok(WorkspaceState::Uninitialized {
+                root: root.to_path_buf(),
+                db_path,
+            });
+        }
+
         let uuid: String = conn
             .query_row("SELECT uuid FROM workspace WHERE id = 1", [], |row| {
                 row.get(0)
@@ -87,7 +166,7 @@ impl WorkspaceConfig {
                 crate::Error::workspace(format!("Failed to load workspace prefix: {}", e))
             })?;
 
-        Ok(Some(Self {
+        Ok(WorkspaceState::Ready(Self {
             root: root.to_path_buf(),
             uuid,
             prefix,

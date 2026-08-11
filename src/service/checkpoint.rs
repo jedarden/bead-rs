@@ -657,19 +657,27 @@ pub fn import_forensic_checkpoint(
     }
 
     // Execute real import based on mode
-    match mode {
+    let counts = match mode {
         ImportMode::RestoreIntoEmpty => execute_restore_into_empty(store, &staging, actor)?,
         ImportMode::Merge => execute_merge(store, &staging, actor)?,
-    }
+    };
 
     // Get the import result
     let conn = store.conn();
     let (_final_sequence, result) = get_import_result(conn, &staging.store_uuid)?;
 
+    // Report what was actually written. `get_import_result` reads back receipt
+    // state only and leaves every count at zero, which made a successful import
+    // report "0 inserted, 0 events" while having written the whole checkpoint.
     let mut result = result;
     result.profile = profile.to_string();
     result.input_hash = staging.input_hash;
     result.loss_report = loss_report;
+    result.inserted = counts.inserted;
+    result.updated = counts.updated;
+    result.retained = counts.retained;
+    result.events_imported = counts.events_imported;
+    result.receipts_processed = counts.receipts_processed as i64;
     Ok(result)
 }
 
@@ -1932,11 +1940,21 @@ fn validate_different_uuid_merge(store: &mut SqliteStore, staging: &ForensicStag
 }
 
 /// Execute restore-into-empty operation
+/// Counts of what an import actually wrote, for accurate reporting.
+#[derive(Debug, Default, Clone, Copy)]
+struct ImportCounts {
+    inserted: usize,
+    updated: usize,
+    retained: usize,
+    events_imported: i64,
+    receipts_processed: usize,
+}
+
 fn execute_restore_into_empty(
     store: &mut SqliteStore,
     staging: &ForensicStaging,
     actor: &str,
-) -> Result<()> {
+) -> Result<ImportCounts> {
     let conn = store.conn();
     let tx = conn.unchecked_transaction()?;
 
@@ -1945,6 +1963,26 @@ fn execute_restore_into_empty(
 
     // Activate staged data
     let (inserted, activation_sequence) = activate_forensic_import(&tx, staging)?;
+
+    // Point local checkpoint bookkeeping at the generation just restored.
+    // Without this the database still reports covered_event_sequence = 0 while
+    // the checkpoint pointer reports the real sequence, so `doctor` warns
+    // "Sequence mismatch: pointer=N, database=0" on every recovered clone.
+    // This must upsert: a freshly initialized workspace has no checkpoint_state
+    // row at all, so a bare UPDATE silently affects zero rows.
+    tx.execute(
+        "INSERT INTO checkpoint_state (id, covered_event_sequence, store_uuid, updated_at)
+         VALUES (1, ?1, ?2, ?3)
+         ON CONFLICT(id) DO UPDATE SET
+             covered_event_sequence = excluded.covered_event_sequence,
+             store_uuid = excluded.store_uuid,
+             updated_at = excluded.updated_at",
+        params![
+            staging.snapshot_sequence,
+            &staging.store_uuid,
+            format_rfc3339(SystemTime::now())
+        ],
+    )?;
 
     // Create restore receipt
     let receipt = create_restore_receipt(&tx, staging, actor, activation_sequence)?;
@@ -1959,11 +1997,22 @@ fn execute_restore_into_empty(
     );
     eprintln!("Restore receipt: {}", receipt.receipt_id);
 
-    Ok(())
+    Ok(ImportCounts {
+        inserted,
+        updated: 0,
+        retained: 0,
+        events_imported: staging.events.len() as i64,
+        // +1 for the restore receipt created above
+        receipts_processed: staging.receipts.len() + 1,
+    })
 }
 
 /// Execute merge operation
-fn execute_merge(store: &mut SqliteStore, staging: &ForensicStaging, actor: &str) -> Result<()> {
+fn execute_merge(
+    store: &mut SqliteStore,
+    staging: &ForensicStaging,
+    actor: &str,
+) -> Result<ImportCounts> {
     let conn = store.conn();
     let tx = conn.unchecked_transaction()?;
 
@@ -1990,7 +2039,14 @@ fn execute_merge(store: &mut SqliteStore, staging: &ForensicStaging, actor: &str
     );
     eprintln!("Merge receipt: {}", receipt.receipt_id);
 
-    Ok(())
+    Ok(ImportCounts {
+        inserted,
+        updated,
+        retained,
+        events_imported: staging.events.len() as i64,
+        // +1 for the merge receipt created above
+        receipts_processed: staging.receipts.len() + 1,
+    })
 }
 
 /// Activate forensic import in transaction
@@ -2003,6 +2059,13 @@ fn activate_forensic_import(tx: &Transaction, staging: &ForensicStaging) -> Resu
 
     // Import labels
     import_labels(tx, staging)?;
+
+    // Import events and receipts. Without this the restore silently drops the
+    // entire audit trail — the forensic checkpoint's whole reason for existing —
+    // while still reporting the events as restored. Events carry a foreign key
+    // to issues, so this must run after import_issues above.
+    import_events(tx, staging)?;
+    import_receipts(tx, staging)?;
 
     // Get activation sequence
     let activation_sequence: i64 = tx
@@ -4299,6 +4362,18 @@ fn read_previous_pointer_files(pointer_path: &Path) -> Result<HashSet<String>> {
 fn read_all_events(tx: &Transaction) -> Result<Vec<EventRecord>> {
     let mut events = Vec::new();
 
+    // Locally-created events are written with NULL origin columns (they are
+    // nullable for backward compatibility, and no INSERT site populates them).
+    // A NULL origin means the event originated in THIS store, so it must be
+    // exported carrying this workspace's UUID and its own local sequence.
+    // Exporting them as ("", 0) instead gives every event the identity ":0",
+    // which makes the checkpoint unimportable past its first event.
+    let local_store_uuid: String = tx
+        .query_row("SELECT uuid FROM workspace WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap_or_default();
+
     let mut stmt = tx.prepare(
         "SELECT sequence, issue_id, kind, actor, time, detail,
                 origin_store_uuid, origin_event_sequence, event_sha256, local_ingestion_sequence
@@ -4323,7 +4398,7 @@ fn read_all_events(tx: &Transaction) -> Result<Vec<EventRecord>> {
 
     for row in rows {
         let (
-            _,
+            sequence,
             issue_id,
             kind,
             actor,
@@ -4335,8 +4410,13 @@ fn read_all_events(tx: &Transaction) -> Result<Vec<EventRecord>> {
             _local_ingestion_sequence,
         ) = row?;
 
-        let origin_store_uuid = origin_store_uuid.unwrap_or_default();
-        let origin_event_sequence = origin_event_sequence.unwrap_or(0);
+        // Preserve a foreign origin verbatim; synthesize a local one otherwise.
+        // `sequence` is the AUTOINCREMENT primary key, so it is unique and
+        // monotonic — exactly the properties event identity requires.
+        let origin_store_uuid = origin_store_uuid
+            .filter(|uuid| !uuid.is_empty())
+            .unwrap_or_else(|| local_store_uuid.clone());
+        let origin_event_sequence = origin_event_sequence.unwrap_or(sequence);
 
         let event = EventRecord {
             schema_ref: "urn:bead-rs:schema:event:native-v1".to_string(),

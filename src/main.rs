@@ -71,15 +71,26 @@ fn execute_command(cli: Cli) -> Result<()> {
 fn cmd_init(opts: cli::InitOptions) -> Result<()> {
     let store = store::SqliteStore::new();
 
-    // Check if workspace already exists
-    if let Some(existing_config) = store::WorkspaceConfig::discover()? {
-        eprintln!(
-            "Workspace already exists at: {}",
-            existing_config.root.display()
-        );
-        eprintln!("Prefix: {}", existing_config.prefix);
-        eprintln!("UUID: {}", existing_config.uuid);
-        return Ok(());
+    // Check if workspace already exists. An uninitialized workspace (committed
+    // config.json, gitignored database absent — i.e. a fresh clone) is exactly
+    // what init must repair, so fall through rather than bailing out.
+    match store::WorkspaceConfig::probe()? {
+        store::WorkspaceState::Ready(existing_config) => {
+            eprintln!(
+                "Workspace already exists at: {}",
+                existing_config.root.display()
+            );
+            eprintln!("Prefix: {}", existing_config.prefix);
+            eprintln!("UUID: {}", existing_config.uuid);
+            return Ok(());
+        }
+        store::WorkspaceState::Uninitialized { root, .. } => {
+            eprintln!(
+                "Rebuilding uninitialized workspace at: {} (preserving committed identity)",
+                root.display()
+            );
+        }
+        store::WorkspaceState::NotFound => {}
     }
 
     // Initialize new workspace
@@ -1092,9 +1103,36 @@ fn cmd_sync_import_only(opts: cli::SyncImportOptions) -> Result<()> {
 }
 
 fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
-    // Discover workspace
-    let _config = store::WorkspaceConfig::discover()?
-        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+    // Discover workspace. Doctor is the tool an operator reaches for when the
+    // workspace is broken, so it must still run — and report — when the
+    // database is missing its schema, rather than failing to start.
+    match store::WorkspaceConfig::probe()? {
+        store::WorkspaceState::Ready(_) => {}
+        store::WorkspaceState::NotFound => {
+            return Err(Error::workspace("No workspace found. Run `bead init` first."));
+        }
+        store::WorkspaceState::Uninitialized { root, db_path } => {
+            println!("Running diagnostics with scopes: All");
+            println!();
+            println!(
+                "FAIL workspace_config: Workspace database at {} is missing or uninitialized",
+                db_path.display()
+            );
+            println!(
+                "     .beads/config.json is committed but beads.db is gitignored, so a fresh"
+            );
+            println!("     clone arrives in this state.");
+            println!();
+            println!("Repair: run `bead init` in {}", root.display());
+            println!(
+                "        then `bead sync import-only --input .beads/checkpoint/forensic.jsonl \\"
+            );
+            println!("             --restore-into-empty --actor <you>`");
+            return Err(Error::integrity(
+                "Workspace database is missing or uninitialized",
+            ));
+        }
+    }
 
     if opts.rehearse {
         // Run disposable recovery rehearsal
