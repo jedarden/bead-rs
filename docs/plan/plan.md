@@ -1210,39 +1210,43 @@ checkpoint alone (the scenario Section 6.1's "complete dependency, comment,
 schema-bound data, and unknown-extension content" language and the final
 gate's "the checkpoint covers every bead" language both already require).
 
-`Issue` (`src/model.rs`) has no `dependencies` or `labels` field.
-`publish_monolithic_checkpoint` (`src/service/checkpoint.rs`) writes each
+**FIXED 2026-08-11** by commit `01f6ed8` (bead `test-ff97dce9`).
+
+The original gap: `Issue` (`src/model.rs`) has no `dependencies` or `labels` field.
+`publish_monolithic_checkpoint` (`src/service/checkpoint.rs`) wrote each
 `CheckpointRecord::Issue` by cloning the live `Issue` struct directly, so a
-flushed checkpoint issue record can never carry dependency or label data
-regardless of what the live SQLite `dependencies`/`labels` tables contain.
-This is a one-sided defect: the import path
-(`stage_monolithic_checkpoint`) already inspects each parsed issue object for
+flushed checkpoint issue record could never carry dependency or label data
+regardless of what the live SQLite `dependencies`/`labels` tables contained.
+This was a one-sided defect: the import path
+(`stage_monolithic_checkpoint`) already inspected each parsed issue object for
 optional `dependencies`/`labels` arrays and would restore them if present --
-they are simply never written. Section 6.1's specified canonical ordering
-("Dependencies sort by blocker ID, kind, then blocked ID") has no code path
-that produces it today.
+they were simply never written. Section 6.1's specified canonical ordering
+("Dependencies sort by blocker ID, kind, then blocked ID") had no code path
+that produced it.
 
-Live SQLite state is unaffected -- claim/dependency-graph behavior against an
-open workspace is correct. Only `bead sync flush-only` output (and therefore
-`bead sync import-only --restore-into-empty` against it) loses dependency
-edges and labels. A workspace reconstituted purely from a committed
-checkpoint currently has every issue but a flat, dependency-free graph --
-confirmed by cloning a real tracked repository (`game-of-life`, 15 issues, 24
-`blocks` edges) fresh and restoring from its checkpoint: all 15 issues
-returned, all 24 edges did not.
+The fix extended both `publish_monolithic_checkpoint` and `publish_sharded_checkpoint`
+to query each issue's current dependencies and labels from SQLite and embed them
+into the issue record in the Section 6.1 canonical order:
+- Dependencies sorted by blocker ID, kind, then blocked ID
+- Labels sorted lexically and unique
 
-Not yet fixed. Tracked as a native bead in this workspace's own `.beads/`
-(see `bead list` / `bead show` for the current ID) rather than only here,
-per Section 2's authority model -- this note records the gap and its
-Section 6.1 citation; the bead is the mutable work-item. Fix scope: extend
-`publish_monolithic_checkpoint`'s issue-record construction (and the sharded
-equivalent) to embed each issue's current dependencies/labels queried from
-SQLite, in the Section 6.1 canonical order; add a golden round-trip regression
-test that creates issues with real dependency edges and labels, flushes,
-restores into a fresh workspace, and asserts the graph -- not just the issue
-set -- is identical, since the existing `tests/cli_sync_import.rs` coverage
-(including the fresh-clone regression test added 2026-08-11) only asserts on
-bare issues and would not have caught this.
+Implementation added:
+- `read_all_dependencies()` and `read_all_labels()` helpers to query SQLite
+- `IssueGraphData` struct to hold graph data for checkpoint serialization
+- `build_enriched_issue_object()` helper to construct enriched JSON with deps/labels
+- Golden round-trip regression test `test_round_trip_dependencies_and_labels`
+  in `tests/cli_sync_import.rs` that creates issues with real dependency edges
+  and labels, flushes, restores into a fresh workspace, and asserts the graph
+  and labels are identical after restore
+
+Live SQLite state was unaffected during the bug -- claim/dependency-graph behavior
+against an open workspace was correct. Only `bead sync flush-only` output (and
+therefore `bead sync import-only --restore-into-empty` against it) lost dependency
+edges and labels. A workspace reconstituted purely from a committed checkpoint
+previously had every issue but a flat, dependency-free graph -- confirmed by
+cloning a real tracked repository (`game-of-life`, 15 issues, 24 `blocks` edges)
+fresh and restoring from its checkpoint: all 15 issues returned, all 24 edges did
+not. This is now fixed.
 
 ### 6.2 Backup flush algorithm
 
