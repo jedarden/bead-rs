@@ -1,7 +1,7 @@
-//! Profile adapters for different interchange formats
+//! Profile adapters for native storage and NEEDLE subprocess compatibility.
 //!
-//! This module defines adapters for native-v1, needle-v1, br-v1, and bf-v1
-//! compatibility profiles as specified in F012.
+//! Per ADR-002, cross-tool profile adapters (`br-v1`, `bf-v1`) were removed.
+//! Only `native-v1` recovery and the `needle-v1` subprocess contract remain.
 
 use crate::model::Issue;
 use anyhow::{anyhow, bail, Result};
@@ -9,8 +9,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::str::FromStr;
 
-pub mod bf_v1;
-pub mod br_v1;
 pub mod native_v1;
 pub mod needle_v1;
 
@@ -178,8 +176,6 @@ impl ProfileRegistry {
         // Register built-in profiles
         registry.register(Box::new(native_v1::NativeV1Adapter::new()));
         registry.register(Box::new(needle_v1::NeedleV1Adapter::new()));
-        registry.register(Box::new(br_v1::BrV1Adapter::new()));
-        registry.register(Box::new(bf_v1::BfV1Adapter::new()));
 
         registry
     }
@@ -300,57 +296,10 @@ pub fn same_profile_round_trip(
     let output_object = output
         .as_object()
         .ok_or_else(|| anyhow!("profile output must be an object"))?;
-    let known = |field: &str| match profile_id {
-        "br-v1" => matches!(
-            field,
-            "id" | "title"
-                | "status"
-                | "priority"
-                | "issue_type"
-                | "created_at"
-                | "updated_at"
-                | "description"
-                | "assignee"
-                | "owner"
-                | "labels"
-                | "dependencies"
-                | "closed_at"
-                | "close_reason"
-                | "source_repo"
-                | "schema_ref"
-                | "due_at"
-                | "defer_until"
-                | "estimated_minutes"
-                | "external_ref"
-                | "created_by"
-                | "compaction_level"
-                | "original_size"
-        ),
-        "bf-v1" => matches!(
-            field,
-            "id" | "title"
-                | "description"
-                | "design"
-                | "acceptance_criteria"
-                | "notes"
-                | "status"
-                | "priority"
-                | "issue_type"
-                | "created_at"
-                | "updated_at"
-                | "assignee"
-                | "labels"
-                | "dependencies"
-                | "closed_at"
-                | "close_reason"
-                | "closed_by_session"
-                | "source_repo"
-                | "compaction_level"
-                | "events"
-                | "schema_ref"
-        ),
-        _ => false,
-    };
+    // Only native-v1 and needle-v1 remain registered post-ADR-002; neither
+    // profile's fields are exempted from the extension-preserved accounting
+    // below, so this always evaluates to false.
+    let known = |_field: &str| false;
     let mut ordinary = Vec::new();
     let mut entries = Vec::new();
     let mut counts = ProfileLossCounts {
@@ -461,204 +410,6 @@ pub fn same_profile_round_trip(
     ))
 }
 
-/// Account for a native forensic record set projected to an external profile.
-/// This is shared by conformance tests and higher-level migration analysis.
-pub fn profile_export_loss_report_for_records(
-    profile_id: &str,
-    records: &[serde_json::Value],
-) -> Result<ProfileLossReport> {
-    if !matches!(profile_id, "br-v1" | "bf-v1") {
-        bail!("unsupported external profile: {}", profile_id);
-    }
-    let mut ordinary = Vec::new();
-    let mut entries = Vec::new();
-    let mut counts = ProfileLossCounts {
-        preserved: 0,
-        transformed: 0,
-        omitted: 0,
-    };
-    let mut output_records = 0;
-    for record in records {
-        match record
-            .get("record_type")
-            .and_then(serde_json::Value::as_str)
-        {
-            Some("issue") => {
-                output_records += 1;
-                counts.preserved += 1;
-                let issue = record
-                    .get("issue")
-                    .and_then(serde_json::Value::as_object)
-                    .ok_or_else(|| anyhow!("issue record must contain an object"))?;
-                for (field, value) in issue {
-                    let omission_reason = match field.as_str() {
-                        "schema_ref" => Some("schema_ref_omitted"),
-                        "comments" => Some("comment_omitted"),
-                        "data" => Some("structured_data_omitted"),
-                        _ => None,
-                    };
-                    if let Some(reason) = omission_reason {
-                        counts.omitted += 1;
-                        entries.push(ProfileLossReportEntry {
-                            classification: "omitted".to_string(),
-                            scope: "field".to_string(),
-                            field: field.clone(),
-                            fields: None,
-                            reason: reason.to_string(),
-                            count: 1,
-                        });
-                    } else if is_profile_fixture_known_field(profile_id, field) {
-                        counts.preserved += 1;
-                        if value.is_null() {
-                            entries.push(ProfileLossReportEntry {
-                                classification: "preserved".to_string(),
-                                scope: "field".to_string(),
-                                field: field.clone(),
-                                fields: None,
-                                reason: "explicit_null_preserved".to_string(),
-                                count: 1,
-                            });
-                        } else {
-                            ordinary.push(field.clone());
-                        }
-                    } else {
-                        counts.preserved += 1;
-                        entries.push(ProfileLossReportEntry {
-                            classification: "preserved".to_string(),
-                            scope: "field".to_string(),
-                            field: field.clone(),
-                            fields: None,
-                            reason: "extension_preserved".to_string(),
-                            count: 1,
-                        });
-                    }
-                }
-            }
-            Some("event") => {
-                counts.omitted += 1;
-                entries.push(ProfileLossReportEntry {
-                    classification: "omitted".to_string(),
-                    scope: "record_kind".to_string(),
-                    field: "event".to_string(),
-                    fields: None,
-                    reason: "event_omitted".to_string(),
-                    count: 1,
-                });
-            }
-            Some("provenance_receipt") => {
-                counts.omitted += 1;
-                entries.push(ProfileLossReportEntry {
-                    classification: "omitted".to_string(),
-                    scope: "record_kind".to_string(),
-                    field: "provenance_receipt".to_string(),
-                    fields: None,
-                    reason: "provenance_receipt_omitted".to_string(),
-                    count: 1,
-                });
-            }
-            other => bail!("unsupported record type: {:?}", other),
-        }
-    }
-    ordinary.sort();
-    if !ordinary.is_empty() {
-        entries.push(ProfileLossReportEntry {
-            classification: "preserved".to_string(),
-            scope: "field".to_string(),
-            field: "*".to_string(),
-            fields: Some(ordinary.clone()),
-            reason: "field_preserved".to_string(),
-            count: ordinary.len(),
-        });
-    }
-    if output_records > 0 {
-        entries.push(ProfileLossReportEntry {
-            classification: "preserved".to_string(),
-            scope: "record".to_string(),
-            field: "*".to_string(),
-            fields: None,
-            reason: "record_preserved".to_string(),
-            count: output_records,
-        });
-    }
-    entries.sort_by(profile_report_entry_order);
-    Ok(ProfileLossReport {
-        schema_ref: "urn:bead-rs:schema:profile-loss-report:v1".to_string(),
-        profile: profile_id.to_string(),
-        direction: "export".to_string(),
-        input_records: records.len(),
-        output_records,
-        counts,
-        entries,
-    })
-}
-
-fn is_profile_fixture_known_field(profile_id: &str, field: &str) -> bool {
-    matches!(
-        field,
-        "id" | "title" | "status" | "priority" | "issue_type" | "created_at" | "updated_at"
-    ) || match profile_id {
-        "br-v1" => matches!(
-            field,
-            "description"
-                | "assignee"
-                | "owner"
-                | "labels"
-                | "dependencies"
-                | "closed_at"
-                | "close_reason"
-                | "source_repo"
-                | "due_at"
-                | "defer_until"
-                | "estimated_minutes"
-                | "external_ref"
-                | "created_by"
-                | "compaction_level"
-                | "original_size"
-        ),
-        "bf-v1" => matches!(
-            field,
-            "description"
-                | "design"
-                | "acceptance_criteria"
-                | "notes"
-                | "assignee"
-                | "labels"
-                | "dependencies"
-                | "closed_at"
-                | "close_reason"
-                | "closed_by_session"
-                | "source_repo"
-                | "compaction_level"
-                | "events"
-        ),
-        _ => false,
-    }
-}
-
-fn profile_report_entry_order(
-    left: &ProfileLossReportEntry,
-    right: &ProfileLossReportEntry,
-) -> std::cmp::Ordering {
-    let rank = |value: &str| match value {
-        "preserved" => 0,
-        "transformed" => 1,
-        "omitted" => 2,
-        _ => 3,
-    };
-    (
-        rank(&left.classification),
-        &left.scope,
-        &left.field,
-        &left.reason,
-    )
-        .cmp(&(
-            rank(&right.classification),
-            &right.scope,
-            &right.field,
-            &right.reason,
-        ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -684,13 +435,16 @@ mod tests {
         // Test that built-in profiles are registered
         assert!(registry.is_supported("native-v1"));
         assert!(registry.is_supported("needle-v1"));
-        assert!(registry.is_supported("br-v1"));
-        assert!(registry.is_supported("bf-v1"));
+
+        // ADR-002 removed cross-tool profiles; they must no longer resolve.
+        assert!(!registry.is_supported("br-v1"));
+        assert!(!registry.is_supported("bf-v1"));
 
         // Test listing profiles
         let profiles = registry.list_profiles();
         assert!(profiles.contains(&"native-v1".to_string()));
         assert!(profiles.contains(&"needle-v1".to_string()));
+        assert_eq!(profiles.len(), 2);
     }
 
     #[test]

@@ -18,6 +18,7 @@ pub mod issues;
 pub mod leases;
 pub mod lifecycle;
 pub mod query;
+
 pub mod recurrence;
 pub mod rehearsal;
 pub mod scheduling;
@@ -27,10 +28,7 @@ pub use capabilities::generate_capabilities;
 pub use changes::{
     get_changes_since, get_gap_info, get_snapshot_identity, validate_cursor, Cursor,
 };
-pub use checkpoint::{
-    flush_checkpoint, flush_profile_checkpoint, import_forensic_checkpoint,
-    publish_forensic_checkpoint,
-};
+pub use checkpoint::{flush_checkpoint, import_forensic_checkpoint, publish_forensic_checkpoint};
 pub use claim::{
     claim_issue_with_lease, claim_issue_with_policy, claim_issue_with_trace, EnhancedClaimResult,
 };
@@ -68,9 +66,6 @@ pub use comparison::{
 pub use scheduling::{AttemptTier, GraphMetrics, SchedulingPolicy, SchedulingState};
 pub use why::{explain_why, WhyExplanation};
 
-pub mod migrate;
 pub mod policy;
-#[allow(unused_imports)]
-pub use migrate::{run_migration, MigrationOptions, MigrationReceipt};
 #[allow(unused_imports)]
 pub use policy::{FindingCategory, FindingSeverity, PolicyDiagnosticStatus, PolicyDiagnostics};

@@ -1,8 +1,11 @@
 # bead-rs 0.1 implementation plan
 
-Plan revision: 3
+Plan revision: 4
 
-As of: 2026-08-08
+As of: 2026-08-12
+
+Revision 4 change: ADR-002 removes cross-tool profiles and migration tooling
+and replaces them with a native field guide plus agent-guided rehydration.
 
 Status owner: bead-rs release owner
 
@@ -13,11 +16,11 @@ G4 handoff, native beads and generated release evidence define work state.
 Status: bootstrap MVP and Gates G1-G4 complete. The final handoff is recorded
 at commit `ccb2c4e4304f7d69ecf0d9fedbe45d6c03e4c3f3`; native beads are now the
 sole mutable work-state authority and the Marathon ledger is frozen audit
-input. Version 0.1 remains incomplete: F012, F013, F015, F016, F017, and F014
-still require passing evidence. F017 is specification-blocked pending an
-independently reviewed normative `research/specs/checkpoint-set-v1.md`, and
-F012 is externally blocked on independently approved `br-v1` and `bf-v1`
-fixtures.
+input. Version 0.1 remains incomplete: the ADR-002 replacements for F012/F013,
+F015, F016, F017, and F014 still require passing evidence. F017 is
+specification-blocked pending an independently reviewed normative
+`research/specs/checkpoint-set-v1.md`; the field-guide replacement is blocked
+on an independently reviewed native semantics contract.
 
 This is the execution blueprint for the first usable `bead-rs` release. The
 installed executable is `bead`. SQLite is its authoritative live store,
@@ -63,14 +66,16 @@ Delivery has three distinct milestones that must not be conflated:
    operations, atomic claiming, the pre-F017 issue-only checkpoint, diagnostics,
    capabilities, and the complete `needle-v1` provider contract. The bootstrap
    is an installed, pinned development artifact used to prove self-hosting; it
-   is not version 0.1 and does not authorize compatibility claims for `br-v1`
-   or `bf-v1`.
+   is not version 0.1 and does not authorize cross-tool checkpoint
+   compatibility or migration claims.
 2. **Self-hosted execution:** after the bootstrap gates pass, the installed
    `bead` binary materializes the remaining reviewed plan into a fresh native
    bead workspace. After graph reconciliation and a one-worker canary, clean-room
    NEEDLE workers use that workspace as execution authority. This changes how
    work is coordinated; it does not make any materialized feature complete.
-3. **Version 0.1:** NEEDLE workers complete F012, F013, F015, F016, F017, and
+3. **Version 0.1:** NEEDLE workers replace F012/F013's external-profile work
+   with the ADR-002 native field guide and rehydration runbook, then complete
+   F015, F016, F017, and
    finally F014 packaging, and every final release gate passes. Post-0.1
    R-items remain outside this release unless an accepted ADR, normative
    specification, and ledger change explicitly promote one.
@@ -85,16 +90,16 @@ users are local coding-agent operators and NEEDLE workers that need a
 deterministic, recoverable, auditable work queue. Materializing plan prose as
 beads is representation evidence only, never implementation evidence.
 
-The remaining implementation-ready work includes F015 and the portions of
-F016 that do not require F013. F013's design is ready but its execution depends
-on the blocked F012 profiles. This is not a release-readiness claim. F017 is a
+The remaining implementation-ready work includes F015, F016, and the ADR-002
+field guide and rehydration runbook. Cross-tool migration and external profile
+work are removed rather than treated as release blockers. This is not a
+release-readiness claim. F017 is a
 design proposal only: implementation must not begin until the
 new normative `research/specs/checkpoint-set-v1.md` exists and has been
 independently reviewed. Plan prose cannot substitute for that specification.
-F012 cannot start its external-profile conformance implementation until the
-inputs in section 15 exist, and F014/package release cannot pass while F012 is
-blocked. No profile, fixture, evidence, or gate may be waived to turn that
-external dependency into a nominal 0.1 release.
+The field guide cannot pass until its completeness tests cover every public
+native issue field and lifecycle value. Plan prose cannot substitute for the
+versioned guide emitted by the installed binary.
 
 In scope:
 
@@ -106,13 +111,15 @@ In scope:
 - explicit per-bead public schema identification;
 - diagnostics and narrowly scoped repair;
 - machine-readable capabilities and NEEDLE v1 subprocess compatibility;
-- explicit `native-v1`, `needle-v1`, `br-v1`, and `bf-v1` profiles;
-- migration dry-run and receipts;
+- explicit `native-v1` recovery and `needle-v1` subprocess contracts;
+- a versioned native field guide and agent-guided rehydration runbook;
 - an Apache-2.0 Rust crate providing the `bead` binary.
 
 Out of scope:
 
 - reading or modifying another implementation's SQLite database;
+- parsing or transforming another implementation's checkpoint schema;
+- direct agent writes to native SQLite or synthesized recovery checkpoints;
 - daemon mode, network sync, or multi-host consensus;
 - Git automation or automatic commits by the application;
 - fuzzy dependency-direction inference;
@@ -226,9 +233,9 @@ audit event. Thus generic update can never bypass reopen validation or its
 forensic record. Finishing the last graph blocker reveals the stored base
 status unless the manual flag remains set.
 
-Profiles map `done` and `completed` explicitly to `closed`. Unknown imported
-status values are retained in extensions and rejected for activation unless
-the selected profile defines a mapping; they are never treated as open.
+Native input accepts only the lifecycle values defined by its exact schema.
+Unknown imported status values fail validation; they are never treated as open
+or silently retained for activation.
 
 The dedicated lifecycle commands have this complete base-state contract. A
 conflict changes no fields or timestamps, appends no event, prints no success
@@ -679,7 +686,7 @@ as build artifacts, not source-controlled performance claims.
     manifests/      immutable generation-named sharded manifests
     objects/        content-addressed issue and event JSONL shards
   config.json       nonsecret workspace configuration
-  receipts/         migration receipts created on request
+  receipts/         native recovery and reconciliation receipts
   .gitignore        ignores journals and temporary files
 ```
 
@@ -802,7 +809,7 @@ Human output may evolve; named-profile machine output is stable.
 | `bead capabilities --format json --profile P` | versioned capabilities and supported schema references |
 | `bead schema list --format json` | list supported public document schemas |
 | `bead schema show SCHEMA_REF --format json` | emit the exact versioned JSON Schema document |
-| `bead migrate --from P --to P --input I --output O [--receipt R] [--dry-run]` | explicit profile transform with deterministic report/receipt behavior and without overwriting any existing path |
+| `bead schema explain SCHEMA_REF --format json\|markdown` | emit the versioned field semantics, ownership, invariants, examples, and common mistakes for an agent; JSON and Markdown derive from one typed source |
 
 The native command is `bead`. Do not create a `br` executable; that name is a
 deprecated compatibility shim in the surrounding environment. Alternate
@@ -1448,83 +1455,56 @@ failed dry-runs.
 - `native-v1`: canonical fields and explicit dependency objects; native export
   default.
 - `needle-v1`: the normative consumer CLI/output contract.
-- `br-v1`: enabled only after independently captured and approved fixtures
-  specify it.
-- `bf-v1`: enabled only after independently captured and approved fixtures
-  specify it.
-
-F012 requires for each external profile: a field-presence matrix, status
-mapping, dependency-direction declaration, null/absent behavior, timestamp
-rules, independent fixtures, and loss report. Unsupported profiles fail
-closed.
 
 Authoritative publication and disaster-recovery restore are always
-`native-v1`. Therefore `sync --flush-only` without `--output` rejects any
-`--profile` other than `native-v1`, and `--restore-into-empty` accepts only a
-verified native pointer/manifest or native monolith. External profiles are
-interchange projections, not recovery backups: exporting one requires both
-`--output PATH` and an explicit nonnative `--profile P`, never changes
-`current.json` or checkpoint freshness, and emits a machine-readable loss
-report even when every loss count is zero. The report enumerates preserved,
-transformed, and omitted record kinds/fields and specifically accounts for
-events, provenance receipts, schema references, extensions, comments, and
-structured data.
+`native-v1`. `sync --flush-only` rejects every other profile, and
+`--restore-into-empty` accepts only a verified native pointer/manifest or
+native monolith. `needle-v1` defines subprocess behavior, not a recovery or
+cross-tool checkpoint format. All other profile names fail closed.
 
 Native pointers and manifests self-describe `native-v1`; their profile cannot
 be overridden. Native envelope JSONL is self-describing as `native-v1` only
-after the exact envelope and payload schemas validate. A standalone external
-artifact must either carry its approved immutable profile identifier in that
-profile's specified metadata or be imported with explicit `--profile P`;
-missing or conflicting identification fails closed. `--profile` is an input
-adapter selection/assertion, not permission to reinterpret a native artifact
-or bypass its declared schema. `--merge` may accept an installed external
-profile through that rule and must return the corresponding import loss and
-transformation report. `--restore-into-empty --profile P` rejects nonnative
-profiles because lossy interchange cannot establish a native recovery corpus.
-
-The observed `bf` spelling `dep add BLOCKER --blocks BLOCKED` belongs only to
-an explicit future CLI adapter. Native and NEEDLE syntax remains
+after the exact envelope and payload schemas validate. Missing or conflicting
+identification fails closed. `--profile` cannot reinterpret an artifact or
+bypass its declared schema. Native and NEEDLE dependency syntax remains
 `dep add BLOCKED BLOCKER --type blocks`.
 
 Each emitted native bead includes its `schema_ref`. Profiles explicitly map,
-preserve, or report omission of the reference. Supported public schemas use
+preserve, or reject the reference according to their native/NEEDLE contract.
+Supported public schemas use
 immutable absolute identifiers and JSON Schema Draft 2020-12; the schema
 document's `$id` equals the reference. See
 `research/specs/schema-identification-v1.md`.
 
-### 6.5 Migration receipts
+### 6.5 Native field guide and agent-guided rehydration
 
-The full grammar is `bead migrate --from SOURCE_PROFILE --to TARGET_PROFILE
---input INPUT --output OUTPUT [--receipt RECEIPT] [--dry-run]`. Both profiles
-are required and must be installed profile identifiers; inference
-from filenames is forbidden. `INPUT`, `OUTPUT`, and optional `RECEIPT` are
-explicit distinct file paths after resolving existing ancestors and aliases.
-Input is an existing read-only regular file. Output and receipt destinations
-must not exist and must not alias input or each other. Output must not name a
-workspace-managed file; a receipt may be placed in the designated
-`.beads/receipts/` directory but nowhere else under `.beads`.
-A real migration writes and verifies an operation-owned temporary sibling for
-the transformed output, atomically renames it, then optionally does the same
-for the receipt. If receipt publication fails, remove only an output created by
-this invocation before returning failure, so success never leaves one requested
-artifact without the other.
+Per ADR-002, version 0.1 has no cross-tool migration command and accepts no
+external checkpoint profile. `bead schema explain SCHEMA_REF --format
+json|markdown` explains the native model to an agent without exposing or
+authorizing native storage internals.
 
-Every invocation emits exactly one compact canonical JSON report plus LF on
-stdout and diagnostics only on stderr. For a successful real migration the
-report is the canonical receipt, byte-identical to `RECEIPT` when that option
-is supplied. `--dry-run` performs the same parsing, limits, transformation,
-loss analysis, and output-byte hashing, but creates neither `OUTPUT` nor
-`RECEIPT`, allocates no durable receipt ID or time, and emits a canonical
-`receipt_preview` report with those materialized fields absent. Consequently
-dry-run never uses either destination as a hidden output channel. Exit 2 covers
-grammar/path validation, exit 4 a profile transformation conflict, and exit 5
-malformed input or integrity/transformation failure.
+For every public issue field the guide records semantic meaning, structural
+type, nullability, default, allowed values, stored/derived/read-only ownership,
+owning CLI operations, cross-field invariants, a minimal valid example, and
+common interpretation mistakes. It separately explains lifecycle transitions,
+derived readiness and blocked presentation, dependency direction, revisions,
+events, unknown extensions, and which values an agent must never synthesize.
+The JSON document carries `schema_ref` equal to
+`urn:bead-rs:schema:field-guide:native-v1`; the Markdown form is a deterministic
+rendering of the same typed source. Completeness tests compare the guide with
+the public native issue schema and fail on an undocumented, duplicated, or
+stale field or lifecycle value.
 
-The canonical JSON receipt has top-level `schema_ref` equal to
-`urn:bead-rs:schema:migration-receipt:native-v1`. It includes tool version, UTC time, profiles, input
-and output SHA-256, record counts, transformation counts, warnings, and dry-run
-state. It excludes user content, credentials, absolute home paths, and
-environment values.
+An agent moving work from another tracker treats that repository as read-only
+source material. It creates a fresh native workspace and reconstructs useful
+work only through public `bead` commands. It emits a separate reconciliation
+report containing the source repository and commit plus one disposition for
+every source identifier: a target native ID or explicit `omitted`, `merged`, or
+`unresolved` status with rationale. The report is for review and is never
+accepted as checkpoint input. The required runbook rehearses the work in a
+disposable workspace, compares counts and dependency intent, runs `doctor`,
+flushes a native checkpoint, and preserves the original source artifact as an
+archive. Agents never write SQLite or manufacture native checkpoint records.
 
 ## 7. Diagnostics and recovery
 
@@ -1599,9 +1579,9 @@ src/
     dependencies.rs   graph validation
     checkpoint.rs     snapshot/import
     doctor.rs         diagnosis and repair
-    migrate.rs        profile conversion and receipts
+    field_guide.rs    typed native semantics and deterministic renderers
   profile/
-    mod.rs            adapter interface
+    mod.rs            native recovery and NEEDLE contract selection
     native_v1.rs
     needle_v1.rs
   output.rs           deterministic rendering
@@ -1648,7 +1628,7 @@ creation method, and SHA-256.
 
 Required layers:
 
-1. Unit tests for validation, transitions, profile mapping, deterministic
+1. Unit tests for validation, transitions, native/NEEDLE projection, deterministic
    serialization, and cycle detection.
 2. Store tests for transactions, migrations, constraints, rollback, snapshot
    isolation, and interruption recovery.
@@ -1741,8 +1721,8 @@ revision, and UTC state-transition time.
   to its normative source and acceptance evidence.
 - Establish `docs/adr/README.md` and an ADR template before accepting new
   architectural or delivery decisions.
-- Record owners and independent reviewers for the missing F012 fixtures and
-  F017 specification; an unowned external input is still blocked.
+- Record an owner and independent reviewer for the ADR-002 field guide and the
+  missing F017 specification; an unowned required input is still blocked.
 - Update Marathon control files once so they stop at the handoff rather than
   waiting for full 0.1 before allowing self-hosting.
 - Define `docs/traceability/release-evidence-v1.schema.json` and a versioned,
@@ -1787,7 +1767,8 @@ clean-room reviewer; evidence: feature ledger commands and committed handoff.
 **Gate G2 — self-hosting candidate:** the pinned installed artifact passes
 issue-only flush/import recovery, doctor, capability negotiation, the provider
 suite, a consumer-side NEEDLE test, package-content/provenance checks, and the
-G1 workflow when invoked from the installed path. F012, F013, F015, F016,
+G1 workflow when invoked from the installed path. The F012/F013 replacements,
+F015, F016,
 F017, and F014 remain incomplete. Accountable role: release owner; review:
 NEEDLE adapter owner and clean-room reviewer; evidence: artifact hash,
 installation transcript, provider/consumer results, and checkpoint hash.
@@ -1822,15 +1803,13 @@ ideas receive explicit non-executable dispositions; translation does not
 silently promote them.
 
 External readiness is represented in the graph, not entrusted to prose. Create
-separate prerequisite acceptance beads for the independently reviewed
-`br-v1` fixtures, `bf-v1` fixtures, and `checkpoint-set-v1.md`, each satisfied
-only by the accepted artifact hash and review evidence. F012 depends on both
-fixture-acceptance beads; F017 depends on the checkpoint-spec acceptance bead.
-Keep F012 and F017 explicitly `deferred` as defense in depth until a reviewer
-closes their prerequisites and performs the recorded `deferred`-to-`open`
-activation. F013, F016, and F014 remain transitively blocked by their owning
-feature dependencies. G3 asserts that none of these externally blocked beads
-appears in the ready frontier.
+separate prerequisite acceptance beads for the independently reviewed native
+field-guide specification and `checkpoint-set-v1.md`, each satisfied only by
+the accepted artifact hash and review evidence. Their implementation beads
+remain `deferred` until a reviewer closes the prerequisite and performs the
+recorded `deferred`-to-`open` activation. Dependent release work remains
+transitively blocked. G3 asserts that no externally blocked bead appears in the
+ready frontier.
 
 Create beads first, record their generated IDs, then add dependencies using
 canonical direction. Because the bootstrap has no atomic bulk-manifest feature,
@@ -1891,8 +1870,11 @@ or merge their divergent work-state claims.
 
 ### Phase 5: complete version 0.1 under Marathon
 
-1. **F012:** external profile matrices, independent fixtures, loss reports.
-2. **F013:** dry-run, path safety, atomic migration output, receipts.
+1. **F012 replacement:** remove external profile adapters and compatibility
+   claims under ADR-002; retain only native recovery and NEEDLE conformance.
+2. **F013 replacement:** implement the complete native field guide, JSON and
+   Markdown renderers, schema/guide completeness tests, and agent-guided
+   rehydration runbook.
 3. **F015:** deterministic lifecycle stress harness, fast matrix, full-scale
    benchmark driver, capacity calculation, and schema-stable reports.
 4. **F016:** complete help tree, generated man pages, drift/coverage tests, and
@@ -1943,7 +1925,7 @@ beads, and superseding ADRs.
 
 Seed ADRs for SQLite live authority with JSONL recovery; the staged native
 NEEDLE backend; the bootstrap/full-0.1 boundary; Marathon-to-native-beads-to-
-NEEDLE authority transfer; F012 external-profile deferral; and F017 placement.
+NEEDLE authority transfer; ADR-002 agent-guided rehydration; and F017 placement.
 Record rejected alternatives rather than silently reopening them, including
 native SQLite backup, mandatory file-intent gates, live upstream database
 adapters, automatic Git publication, daemon/network authority, and arbitrary
@@ -1968,7 +1950,7 @@ convenient.
 | Dual Marathon/NEEDLE authority | Explicit stop, process check, one committed handoff record | Any concurrent writer stops cutover; restore pre-cutover workspace and reconcile through ADR | Release owner / G4 handoff record |
 | NEEDLE capability mismatch or duplicate claim | Fail-closed handshake, provider/consumer suites, one-worker canary then bounded concurrency | Missing capability, duplicate ID, or state drift stops workers and restores last verified checkpoint | NEEDLE adapter owner / G2 and G4 results |
 | Worker scope or context escape | Bounded source locators and inherited clean-room restrictions | Unauthorized source/tool access stops worker and invokes contamination procedure | Worker operator + clean-room reviewer / worker config and audit |
-| Missing F012 fixtures or F017 specification | Named author, independent approver, explicit blocked state | Missing approval keeps dependent beads blocked; never narrow claims or implement from plan prose | External-artifact owner + approver / accepted artifact hashes |
+| Missing field-guide or F017 specification | Named author, independent approver, explicit blocked state | Missing approval keeps dependent beads blocked; never implement from plan prose | Specification owner + approver / accepted artifact hashes |
 | Oversized F017 hides progress or failure | Reviewed sub-gates with independent evidence and capability invalidation | Any failed sub-gate leaves F017 false and rolls back only its bounded migration/activation step | F017 owner + recovery reviewer / sub-gate evidence |
 | Packaged binary differs from tested binary | Pin commit and artifact hash; run tests from installed path | Hash mismatch invalidates all canary evidence and returns to G2 packaging | Release owner / artifact manifest |
 | Checkpoint or cutover recovery fails | Verified pre-canary checkpoint and rehearsed empty-target restore | Failed restore blocks handoff/release and preserves source workspace for diagnosis | Recovery owner / restore-equivalence report |
@@ -1987,7 +1969,7 @@ Version 0.1 assigns these exact immutable public schema identities:
 | native issue representation | `urn:bead-rs:schema:issue:native-v1` |
 | native audit event | `urn:bead-rs:schema:event:native-v1` |
 | capability document | `urn:bead-rs:schema:capabilities:native-v1` |
-| migration receipt | `urn:bead-rs:schema:migration-receipt:native-v1` |
+| native field guide | `urn:bead-rs:schema:field-guide:native-v1` |
 
 Every instance of one of these documents carries top-level `schema_ref` equal
 to the identity above. Every schema document returned by `schema show` is JSON
@@ -2016,9 +1998,9 @@ least the following **provisional pre-F017** example:
   "schemas": [
     {"schema_ref":"urn:bead-rs:schema:event:native-v1","document_kind":"audit_event","validate":true,"consume":[],"emit":[]},
     {"schema_ref":"urn:bead-rs:schema:issue:native-v1","document_kind":"issue","validate":true,"consume":["sync.import-only"],"emit":["sync.flush-only"]},
-    {"schema_ref":"urn:bead-rs:schema:migration-receipt:native-v1","document_kind":"migration_receipt","validate":true,"consume":[],"emit":["migrate"]}
+    {"schema_ref":"urn:bead-rs:schema:field-guide:native-v1","document_kind":"field_guide","validate":true,"consume":[],"emit":["schema.explain"]}
   ],
-  "commands": ["capabilities", "claim", "close", "create", "dep", "doctor", "init", "label", "list", "migrate", "release", "reopen", "schema", "show", "sync", "update"]
+  "commands": ["capabilities", "claim", "close", "create", "dep", "doctor", "init", "label", "list", "release", "reopen", "schema", "show", "sync", "update"]
 }
 ```
 
@@ -2039,8 +2021,8 @@ document. `consume` and `emit` are lexical, duplicate-free lists of concrete
 public operation paths that respectively accept or produce that document;
 empty lists are meaningful. Before F017, audit events are internal durable rows:
 their public schema is resolvable and usable for validation, but no sync command
-consumes or emits event documents. Migration receipts are emitted by `migrate`
-but are not accepted as migration input. Issue documents are consumed and
+consumes or emits event documents. The field guide is emitted by `schema
+explain` but is not accepted as store input. Issue documents are consumed and
 emitted only by the issue-only sync operations shown. Lossy support uses an
 additive entry naming the operation, direction, and explicit loss reason and
 does not appear in the lossless `consume` or `emit` list. The capabilities
@@ -2107,8 +2089,8 @@ cost and compatibility bounded.
 ### R005 — Machine-readable schemas and per-bead schema references (core incorporated)
 
 F010 and the 0.1 domain/command contract already require immutable schemas for
-native issue records, capabilities, and migration receipts, per-bead
-`schema_ref`, schema resolution, and capability/receipt enumeration. R005 is
+native issue records, capabilities, and the native field guide, per-bead
+`schema_ref`, schema resolution, and capability enumeration. R005 is
 superseded for that subset. Its extension is limited to schemas for R001
 decision traces and future bulk/error documents.
 
@@ -2139,9 +2121,9 @@ for selected risky mutations.
 ### R009 — Schema negotiation catalog
 
 Capabilities declare exact readable and writable schema URN sets. Producers
-and consumers negotiate only an exact mutual identifier and report read-only or
-lossy support explicitly. Do not infer compatibility from similar names or
-schema structure.
+and consumers negotiate only an exact mutual identifier and report read-only
+support explicitly. Do not infer compatibility from similar names or schema
+structure.
 
 ### R010 — Comment mutation and richer threaded-comment workflow (core incorporated, extension scoped)
 
@@ -2329,7 +2311,7 @@ G4 may transfer execution authority only when:
 
 - the G3 mapping has no missing, duplicate, invented, or unresolved active
   requirement and its dependency graph and expected ready frontier are verified;
-- F012, F017, their transitive dependents, and all post-0.1 R-extension beads
+- the field-guide prerequisite, F017, their transitive dependents, and all post-0.1 R-extension beads
   are absent from that frontier until their explicit activation conditions pass;
 - the canonical native workspace was created only with the pinned public
   `bead` CLI and has a verified recovery checkpoint;
@@ -2342,7 +2324,7 @@ G4 may transfer execution authority only when:
   work-state authority.
 
 Neither gate creates `.marathon/COMPLETE`, calls the artifact version 0.1, or
-claims `br-v1`/`bf-v1` compatibility.
+claims cross-tool checkpoint compatibility.
 
 ### Final version 0.1 gates
 
@@ -2359,12 +2341,12 @@ Before declaring version 0.1 complete:
 - the independently reviewed normative
   `research/specs/checkpoint-set-v1.md` exists before any F017 implementation
   evidence is accepted; plan prose alone is not implementation authority;
-- F012 includes independently approved `br-v1` and `bf-v1` fixture manifests,
-  full matrices, and loss reports; absence of either external input blocks the
-  release rather than narrowing its profile claims;
+- the ADR-002 field guide describes every public native issue field and
+  lifecycle value exactly once, and its JSON and Markdown renderings pass
+  deterministic completeness tests;
 - `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and
   `cargo test` pass on the release commit;
-- native, interchange, NEEDLE, concurrency, and migration lanes pass;
+- native, field-guide, rehydration-runbook, NEEDLE, and concurrency lanes pass;
 - the rapid-fire benchmark smoke matrix passes and a full 100-to-1,000,000-bead
   run either completes or records explicit resource-limited results for every
   uncompleted scale;
@@ -2427,24 +2409,24 @@ operation.
 
 ## 15. Inputs still required for version 0.1
 
-The bootstrap core is complete. F012 still needs complete independently
-approved field/nullability/status/dependency fixtures for `br-v1` and `bf-v1`.
-F017 still needs an independently authored and reviewed normative
-`checkpoint-set-v1.md` plus conformance fixtures. F014 also needs a
-consumer-side NEEDLE run if its deployment harness imposes a requirement
-absent from the v1 contract.
+The bootstrap core is complete. ADR-002 requires an independently reviewed
+normative field-guide contract covering every public native issue field,
+lifecycle value, derived state, and owning CLI operation. F017 still needs an
+independently authored and reviewed normative `checkpoint-set-v1.md` plus
+conformance fixtures. F014 also needs a consumer-side NEEDLE run if its
+deployment harness imposes a requirement absent from the v1 contract.
 
-Before activating F012 or F017 from deferred state, the release owner must
-confirm separate accountable authors and independent approvers for the
-`br-v1` fixtures, `bf-v1` fixtures, and `checkpoint-set-v1.md`. “Independent
-approval” means the reviewer did not author the artifact, verifies its
-clean-room provenance and requirement coverage, and records the reviewed hash
-and decision. The owner rechecks each blocked input at Phase 5 entry and
-whenever its source specification changes; there is no time-based waiver. The
-NEEDLE adapter owner is separately accountable for the consumer-side suite and
-native backend used at G5.
+Before activating either implementation from deferred state, the release owner
+must confirm separate accountable authors and independent approvers for the
+field-guide contract and `checkpoint-set-v1.md`. “Independent approval” means
+the reviewer did not author the artifact, verifies its clean-room provenance
+and requirement coverage, and records the reviewed hash and decision. The owner
+rechecks each blocked input at Phase 5 entry and whenever its native source
+schema changes; there is no time-based waiver. The NEEDLE adapter owner is
+separately accountable for the consumer-side suite and native backend used at
+G5.
 
-Do not guess missing details. Record new sanitized observable facts in a
-versioned `research/specs/` file, review them independently, then extend only
-the relevant adapter and fixture. These gaps do not block F001-F011, but
-F012-F014 cannot be declared complete without their evidence.
+Do not guess missing native semantics. Define them in a versioned normative
+specification, review them independently, and generate both field-guide
+renderings from one typed implementation source. The guide and runbook must be
+complete before their replacement feature evidence or F014 can pass.

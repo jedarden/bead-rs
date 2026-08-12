@@ -210,67 +210,6 @@ fn test_comparison_invalid_profile() {
 
 #[test]
 #[serial]
-fn test_comparison_br_to_bf() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let workspace_dir = temp_dir.path();
-
-    // Initialize workspace
-    Command::cargo_bin("bead")
-        .unwrap()
-        .arg("init")
-        .current_dir(workspace_dir)
-        .env("HOME", workspace_dir.to_str().unwrap())
-        .assert()
-        .success();
-
-    // Create a test issue with complete information
-    let issue_id = Command::cargo_bin("bead")
-        .unwrap()
-        .arg("create")
-        .arg("--title")
-        .arg("Test br-bf comparison")
-        .arg("--description")
-        .arg("Testing comparison between br-v1 and bf-v1 profiles")
-        .arg("--priority")
-        .arg("1")
-        .arg("--label")
-        .arg("bug")
-        .arg("--label")
-        .arg("high-priority")
-        .current_dir(workspace_dir)
-        .env("HOME", workspace_dir.to_str().unwrap())
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-
-    let issue_id = String::from_utf8_lossy(&issue_id).trim().to_string();
-
-    // Compare between br-v1 and bf-v1
-    Command::cargo_bin("bead")
-        .unwrap()
-        .arg("compare")
-        .arg("--id")
-        .arg(&issue_id)
-        .arg("--source")
-        .arg("br-v1")
-        .arg("--target")
-        .arg("bf-v1")
-        .current_dir(workspace_dir)
-        .env("HOME", workspace_dir.to_str().unwrap())
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("br-v1"))
-        .stdout(predicates::str::contains("bf-v1"))
-        .stdout(predicates::str::contains("Total Fields"))
-        .stdout(predicates::str::contains("Preserved"))
-        .stdout(predicates::str::contains("Transformed"))
-        .stdout(predicates::str::contains("Omitted"));
-}
-
-#[test]
-#[serial]
 fn test_comparison_no_workspace() {
     let temp_dir = tempfile::tempdir().unwrap();
     let workspace_dir = temp_dir.path();
@@ -434,7 +373,7 @@ fn test_comparison_read_only_operation() {
         .arg("--source")
         .arg("native-v1")
         .arg("--target")
-        .arg("bf-v1")
+        .arg("needle-v1")
         .current_dir(workspace_dir)
         .env("HOME", workspace_dir.to_str().unwrap())
         .assert()
@@ -470,7 +409,7 @@ fn test_comparison_reports_real_dependencies_and_labels() {
     // record-less `native_to_profile(&issue)` trait method on both sides,
     // which every adapter either hardcodes empty dependencies/labels for
     // (needle-v1) or can only fill from a `native_record_to_profile` call
-    // it never received (native-v1, bf-v1) -- so `compare` always reported
+    // it never received (native-v1) -- so `compare` always reported
     // every real dependency/label as "Added in target" with an empty
     // value, regardless of which profiles were compared or what data the
     // issue actually had.

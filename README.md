@@ -135,20 +135,19 @@ Exit codes are stable across every command:
 
 ## Interoperability
 
-bead-rs keeps a private native schema and interoperates through versioned
-interchange profiles rather than by writing to another tool's live database:
+bead-rs keeps a private native schema. Per [ADR-002](docs/adr/002-agent-guided-rehydration-over-cross-tool-migration.md)
+it does not parse or transform another tool's checkpoint format:
 
-- `native-v1` — full fidelity, the default
+- `native-v1` — full fidelity, the default; the only supported recovery format
 - `needle-v1` — NEEDLE subprocess compatibility
-- `br-v1`, `bf-v1` — external compatibility formats
 
-`bead migrate --from <P> --to <P> --input <F> --output <F>` transforms a
-checkpoint between profiles and emits a canonical receipt recording hashes,
-counts, and any lossy transformations. `bead compare --id <ID> --source <P>
---target <P>` reports which fields a given profile pair preserves, transforms,
-omits, or cannot represent. Unknown fields survive round trips.
-
-See [interoperability notes](docs/notes/interoperability-architecture.md) and
+`bead compare --id <ID> --source <P> --target <P>` reports which fields a
+given profile pair preserves, transforms, omits, or cannot represent, scoped
+to these two profiles. Moving existing work from another tracker is
+**agent-guided rehydration**, not import: an agent reads the source
+repository read-only and recreates work through public `bead` commands,
+producing a reconciliation report rather than a synthesized checkpoint. See
+[interoperability notes](docs/notes/interoperability-architecture.md) and
 [NEEDLE compatibility](docs/notes/needle-compatibility.md).
 
 ## CLI conventions worth knowing

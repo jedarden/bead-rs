@@ -9,5 +9,4 @@ pub mod service;
 pub mod store;
 
 pub use error::{Error, Result};
-pub use service::migrate::{run_migration, MigrationOptions, MigrationReceipt};
 pub use store::Store;

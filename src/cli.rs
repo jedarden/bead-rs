@@ -188,8 +188,6 @@ or ineffective settings and never changes whether a bead is claimable.
     )]
     Policy(PolicyCommand),
 
-    Migrate(MigrateOptions),
-
     /// Reserved for commands that are specified but not yet implemented
     #[command(subcommand, hide = true)]
     #[allow(clippy::enum_variant_names)]
@@ -774,7 +772,6 @@ CHECKPOINT FRESHNESS:
 PROFILES:
   - native-v1: full native checkpoint (default)
   - needle-v1: issue-only NEEDLE compatibility checkpoint
-  - br-v1, bf-v1: external compatibility formats
 
 ATOMICITY:
   - A read transaction captures the snapshot
@@ -1376,7 +1373,7 @@ This is a read-only operation that never writes to the database.
 
 EXAMPLES:
   bead compare --id bead-1234567890abcdef --source native-v1 --target needle-v1
-  bead compare --id bead-1234567890abcdef --source native-v1 --target bf-v1 --json
+  bead compare --id bead-1234567890abcdef --source needle-v1 --target native-v1 --json
 
 The command fails with exit code 3 if the issue is not found,
 or exit code 2 if either profile is not supported."
@@ -1784,65 +1781,6 @@ pub struct PolicyCheckOptions {
     pub policy_version: Option<String>,
 }
 
-/// Options for the migrate command
-#[derive(Parser, Debug)]
-#[command(
-    about = "Migrate checkpoints between profiles with dry-run and receipt support",
-    long_about = "Transform checkpoint data between interchange profiles with validation and audit receipts.
-
-This command performs profile transformation with comprehensive validation, loss reporting,
-and deterministic output. Source and target profiles must both be installed and supported.
-
-Every invocation emits a canonical JSON receipt/report to stdout with hashes, transformation
-counts, warnings, and dry-run state. For successful real migrations, this stdout receipt is
-byte-identical to the optional RECEIPT file.
-
-Dry-run performs full parsing, validation, and transformation analysis without creating output
-or receipt files. Real migration writes OUTPUT and optionally RECEIPT only after successful
-transformation and validation.
-
-REQUIREMENTS:
-  - Input must exist and be readable
-  - Output and receipt (if specified) must not exist
-  - Output must not be a workspace-managed file
-  - Receipt may be placed in .beads/receipts/ directory
-  - Source and target profiles must be supported
-  - All paths must be distinct (input, output, optional receipt)
-
-EXAMPLES:
-  bead migrate --from native-v1 --to needle-v1 --input issues.jsonl --output needle-issues.jsonl
-  bead migrate --from br-v1 --to native-v1 --input br-export.jsonl --output native.jsonl --receipt receipt.json
-  bead migrate --from native-v1 --to bf-v1 --input backup.jsonl --output bf-backup.jsonl --dry-run
-
-The canonical receipt includes: tool version, timestamp, profiles, hashes, record counts,
-transformation counts, warnings, and dry-run state."
-)]
-pub struct MigrateOptions {
-    /// Source profile identifier (e.g., native-v1, needle-v1, br-v1, bf-v1)
-    #[arg(long)]
-    pub from: String,
-
-    /// Target profile identifier (e.g., native-v1, needle-v1, br-v1, bf-v1)
-    #[arg(long)]
-    pub to: String,
-
-    /// Input checkpoint file path
-    #[arg(long)]
-    pub input: String,
-
-    /// Output checkpoint file path (must not exist)
-    #[arg(long)]
-    pub output: String,
-
-    /// Optional receipt file path (must not exist)
-    #[arg(long)]
-    pub receipt: Option<String>,
-
-    /// Perform dry-run validation without writing files
-    #[arg(long)]
-    pub dry_run: bool,
-}
-
 /// Options for creating a recurrence template
 #[derive(Parser, Debug)]
 #[command(
@@ -1977,7 +1915,8 @@ pub struct RecurrenceHistoryOptions {
 
 /// Placeholder for commands that are specified but not yet implemented.
 ///
-/// `migrate` was previously listed here; it is now a real top-level command.
+/// `migrate` was briefly a real top-level command; ADR-002 removed it in
+/// favor of a native field guide and agent-guided rehydration.
 #[derive(Subcommand, Debug)]
 pub enum UnimplementedCommand {
     Schema,

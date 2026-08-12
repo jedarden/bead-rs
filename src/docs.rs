@@ -416,9 +416,9 @@ mod tests {
             );
         }
 
-        // `migrate` is a real top-level command and must not also be advertised
-        // as unimplemented.
-        assert!(paths.contains(&"bead migrate".to_string()));
+        // ADR-002 removed `migrate` entirely; it must not appear anywhere in
+        // the command tree, implemented or unimplemented.
+        assert!(!paths.contains(&"bead migrate".to_string()));
         assert!(!paths.contains(&"bead unimplemented migrate".to_string()));
     }
 
