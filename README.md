@@ -184,6 +184,13 @@ The screencast drives the real binary, so it cannot quietly disagree with the
 CLI: if behaviour changes, re-running the tape either shows the change or
 visibly fails.
 
+The lifecycle animation is timed against the classical animation principles,
+used to carry meaning rather than decoration — the claim fires in 0.2s against
+0.4–0.6s elsewhere because atomicity is the point; staging dims whatever the
+current beat is not about; and closing `design` sends a ripple along the edge
+so that `store` turning ready reads as a consequence rather than a coincidence.
+The generator documents the mapping in full.
+
 Every `bead ...` example printed in the help text is parsed by the real CLI in
 the test suite, so a documented invocation cannot drift from the interface it
 documents.

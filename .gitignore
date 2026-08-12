@@ -4,3 +4,7 @@
 .DS_Store
 .marathon/logs/
 .marathon/COMPLETE
+
+# byte-cache from the doc-image generator
+__pycache__/
+*.pyc
