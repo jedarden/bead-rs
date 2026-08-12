@@ -1888,6 +1888,8 @@ fn import_issues(tx: &Transaction, staging: &ForensicStaging) -> Result<usize> {
             ],
         )?;
 
+        import_issue_data(tx, issue)?;
+
         // Insert extensions (unknown fields)
         for (key, value) in &issue.extensions {
             let value_str = serde_json::to_string(value)
@@ -2108,6 +2110,8 @@ fn reconcile_and_merge(
                     ],
                 )?;
 
+                import_issue_data(tx, issue)?;
+
                 // Insert extensions (unknown fields)
                 for (key, value) in &issue.extensions {
                     let value_str = serde_json::to_string(value)
@@ -2164,6 +2168,9 @@ fn reconcile_and_merge(
                         [&issue.id],
                     )?;
 
+                    tx.execute("DELETE FROM issue_data WHERE issue_id = ?1", [&issue.id])?;
+                    import_issue_data(tx, issue)?;
+
                     for (key, value) in &issue.extensions {
                         let value_str = serde_json::to_string(value).map_err(|e| {
                             anyhow!("Failed to serialize extension '{}': {}", key, e)
@@ -2193,6 +2200,50 @@ fn reconcile_and_merge(
     import_labels(tx, staging)?;
 
     Ok((inserted, updated, retained))
+}
+
+fn import_issue_data(tx: &Transaction, issue: &Issue) -> Result<()> {
+    let Some(data) = &issue.data else {
+        return Ok(());
+    };
+    let namespaces = data
+        .as_object()
+        .ok_or_else(|| anyhow!("Issue '{}' data must be a JSON object", issue.id))?;
+
+    for (namespace, envelope) in namespaces {
+        let envelope = envelope.as_object().ok_or_else(|| {
+            anyhow!(
+                "Issue '{}' data namespace '{}' must be an object",
+                issue.id,
+                namespace
+            )
+        })?;
+        let schema_ref = envelope
+            .get("schema_ref")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                anyhow!(
+                    "Issue '{}' data namespace '{}' requires schema_ref",
+                    issue.id,
+                    namespace
+                )
+            })?;
+        let value = envelope.get("value").ok_or_else(|| {
+            anyhow!(
+                "Issue '{}' data namespace '{}' requires value",
+                issue.id,
+                namespace
+            )
+        })?;
+        let value = serde_json::to_string(value)?;
+        tx.execute(
+            "INSERT INTO issue_data (issue_id, namespace, schema_ref, value)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![&issue.id, namespace, schema_ref, value],
+        )?;
+    }
+
+    Ok(())
 }
 
 /// Create merge summary event
@@ -2958,6 +3009,8 @@ fn activate_import(store: &mut SqliteStore, staging: &ImportStaging) -> Result<(
                 &issue.revision.unwrap_or(1),
             ],
         )?;
+
+        import_issue_data(&tx, issue)?;
 
         // Insert extensions (unknown fields)
         for (key, value) in &issue.extensions {
@@ -4322,6 +4375,34 @@ fn read_all_issues(tx: &Transaction) -> Result<Vec<Issue>> {
         }
 
         // Convert to Issue model
+        let mut data = serde_json::Map::new();
+        let mut data_stmt = tx.prepare(
+            "SELECT namespace, schema_ref, value FROM issue_data
+             WHERE issue_id = ?1 ORDER BY namespace",
+        )?;
+        let data_rows = data_stmt.query_map([&id], |row| {
+            Ok((
+                row.get::<_, String>("namespace")?,
+                row.get::<_, String>("schema_ref")?,
+                row.get::<_, String>("value")?,
+            ))
+        })?;
+        for data_row in data_rows {
+            let (namespace, schema_ref, value) = data_row?;
+            let value: serde_json::Value = serde_json::from_str(&value).map_err(|error| {
+                anyhow!(
+                    "Failed to parse data namespace '{}' for issue '{}': {}",
+                    namespace,
+                    id,
+                    error
+                )
+            })?;
+            data.insert(
+                namespace,
+                serde_json::json!({"schema_ref": schema_ref, "value": value}),
+            );
+        }
+
         let issue = Issue {
             id: id.clone(),
             title,
@@ -4341,7 +4422,7 @@ fn read_all_issues(tx: &Transaction) -> Result<Vec<Issue>> {
             profile: profile.or(Some(String::from("native-v1"))),
             schema_ref: schema_ref.or(Some(String::from("urn:bead-rs:schema:issue:native-v1"))),
             revision: Some(revision),
-            data: None,
+            data: (!data.is_empty()).then_some(serde_json::Value::Object(data)),
             extensions,
         };
 
