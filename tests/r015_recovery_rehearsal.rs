@@ -1,177 +1,262 @@
-//! Integration tests for R015: Disposable recovery rehearsal
+//! Integration tests for R015: Disposable recovery rehearsal.
 //!
-//! These tests verify that the recovery rehearsal functionality works correctly:
-//! - Creates temporary workspace from current checkpoint
-//! - Runs diagnostics on temporary workspace
-//! - Re-exports from temporary workspace
-//! - Compares semantic equivalence between original and re-exported checkpoints
-//! - Cleans up only operation-owned temporary files
+//! The previous version of this file never once invoked `bead doctor
+//! --rehearse` or `run_recovery_rehearsal()`. Every test exercised generic
+//! file-hashing/line-counting logic in isolation (unrelated to the actual
+//! command), plus two literally-empty placeholder tests. All of that passed
+//! while the real command failed unconditionally against any real
+//! workspace -- it was built against the pre-forensic `.beads/issues.jsonl`
+//! flat-file format and never updated when the checkpoint system moved to
+//! `.beads/checkpoint/`. These tests replace that file entirely and
+//! actually drive the real CLI command end to end.
 
+use assert_cmd::Command;
+use serial_test::serial;
 use std::fs;
-use std::io::{BufRead, BufReader};
-use tempfile::TempDir;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Build a workspace with content and a real flushed forensic checkpoint.
+fn populated_workspace() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path();
 
-    /// Test that recovery rehearsal help is available
-    #[test]
-    fn test_recovery_rehearsal_help() {
-        // For now, just verify the CLI compiles with the option
-        // The actual help text verification can be done manually
-        // Test placeholder for CLI option availability
+    Command::cargo_bin("bead")
+        .unwrap()
+        .arg("init")
+        .current_dir(path)
+        .env("HOME", path.to_str().unwrap())
+        .assert()
+        .success();
+
+    for title in ["First bead", "Second bead", "Third bead"] {
+        Command::cargo_bin("bead")
+            .unwrap()
+            .args(["create", "--title", title])
+            .current_dir(path)
+            .env("HOME", path.to_str().unwrap())
+            .assert()
+            .success();
     }
 
-    /// Test CLI basic compilation
-    #[test]
-    fn test_cli_compiles() {
-        // This test just verifies that the CLI compiles with the --rehearse option
-        // The actual functionality is tested in integration
-        // Test placeholder for CLI compilation
-    }
+    // claim + close generates real events, matching how a live workspace
+    // actually accumulates history before anyone rehearses recovery on it.
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["claim", "--assignee", "fixture"])
+        .current_dir(path)
+        .env("HOME", path.to_str().unwrap())
+        .assert()
+        .success();
 
-    /// Test semantic comparison functionality
-    #[test]
-    fn test_semantic_comparison_identical() {
-        let temp_dir = TempDir::new().unwrap();
+    let list_output = Command::cargo_bin("bead")
+        .unwrap()
+        .args(["list", "--json"])
+        .current_dir(path)
+        .env("HOME", path.to_str().unwrap())
+        .output()
+        .unwrap();
+    let in_progress_id = String::from_utf8_lossy(&list_output.stdout)
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find(|v| v["status"] == "in_progress")
+        .and_then(|v| v["id"].as_str().map(str::to_string))
+        .expect("claim should have left one issue in_progress");
 
-        // Create two identical checkpoint files
-        let checkpoint1 = temp_dir.path().join("checkpoint1.jsonl");
-        let checkpoint2 = temp_dir.path().join("checkpoint2.jsonl");
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["close", &in_progress_id, "--reason", "fixture"])
+        .current_dir(path)
+        .env("HOME", path.to_str().unwrap())
+        .assert()
+        .success();
 
-        let content = r#"{"id":"semantic-1","title":"Test","priority":1,"base_status":"open","created_at":"2024-08-09T12:00:00Z","updated_at":"2024-08-09T12:00:00Z"}
-"#;
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["sync", "flush-only"])
+        .current_dir(path)
+        .env("HOME", path.to_str().unwrap())
+        .assert()
+        .success();
 
-        fs::write(&checkpoint1, content).unwrap();
-        fs::write(&checkpoint2, content).unwrap();
+    dir
+}
 
-        // Calculate hashes
-        let hash1 = bead_rs::service::rehearsal::calculate_file_hash_for_test(&checkpoint1);
-        let hash2 = bead_rs::service::rehearsal::calculate_file_hash_for_test(&checkpoint2);
+#[test]
+#[serial]
+fn rehearse_succeeds_against_a_real_checkpoint() {
+    let workspace = populated_workspace();
 
-        assert_eq!(hash1, hash2, "Identical files should have identical hashes");
-    }
+    let assert = Command::cargo_bin("bead")
+        .unwrap()
+        .args(["doctor", "--rehearse"])
+        .current_dir(workspace.path())
+        .env("HOME", workspace.path().to_str().unwrap())
+        .assert()
+        .success();
 
-    /// Test semantic comparison with different content
-    #[test]
-    fn test_semantic_comparison_different() {
-        let temp_dir = TempDir::new().unwrap();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        stderr.contains("EQUIVALENT"),
+        "expected the recovered state to be reported equivalent: {stderr}"
+    );
+    assert!(
+        stderr.contains("Recovery rehearsal completed successfully"),
+        "{stderr}"
+    );
+}
 
-        // Create two different checkpoint files
-        let checkpoint1 = temp_dir.path().join("checkpoint1.jsonl");
-        let checkpoint2 = temp_dir.path().join("checkpoint2.jsonl");
+#[test]
+#[serial]
+fn rehearse_reports_correct_issue_and_event_counts() {
+    let workspace = populated_workspace();
 
-        let content1 = r#"{"id":"semantic-1","title":"Test","priority":1,"base_status":"open","created_at":"2024-08-09T12:00:00Z","updated_at":"2024-08-09T12:00:00Z"}
-"#;
-        let content2 = r#"{"id":"semantic-1","title":"Different","priority":2,"base_status":"open","created_at":"2024-08-09T12:00:00Z","updated_at":"2024-08-09T12:00:00Z"}
-"#;
+    let assert = Command::cargo_bin("bead")
+        .unwrap()
+        .args(["doctor", "--rehearse"])
+        .current_dir(workspace.path())
+        .env("HOME", workspace.path().to_str().unwrap())
+        .assert()
+        .success();
 
-        fs::write(&checkpoint1, content1).unwrap();
-        fs::write(&checkpoint2, content2).unwrap();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        stderr.contains("Original: 3 issues"),
+        "original checkpoint should report 3 issues: {stderr}"
+    );
+    assert!(
+        stderr.contains("Rehearsal: 3 issues"),
+        "recovered+re-exported checkpoint should still report 3 issues: {stderr}"
+    );
+    // claim + close produced 2 events; the original checkpoint's event count
+    // and the recovered-then-re-exported one must match exactly, or the
+    // recovery path is silently dropping history.
+    assert!(
+        !stderr.contains("event_count_mismatch"),
+        "recovery must not change the event count: {stderr}"
+    );
+}
 
-        // Calculate hashes
-        let hash1 = bead_rs::service::rehearsal::calculate_file_hash_for_test(&checkpoint1);
-        let hash2 = bead_rs::service::rehearsal::calculate_file_hash_for_test(&checkpoint2);
+#[test]
+#[serial]
+fn rehearse_fails_with_a_clear_message_when_no_checkpoint_exists() {
+    // A freshly-init'd workspace with no flush yet has no .beads/checkpoint/
+    // content at all -- rehearse must fail with a message naming the real
+    // problem, not a generic "Internal error" (the exact bug this file's
+    // predecessor should have, but never did, catch).
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path();
 
-        assert_ne!(hash1, hash2, "Different files should have different hashes");
-    }
+    Command::cargo_bin("bead")
+        .unwrap()
+        .arg("init")
+        .current_dir(path)
+        .env("HOME", path.to_str().unwrap())
+        .assert()
+        .success();
 
-    /// Test checkpoint info calculation
-    #[test]
-    fn test_checkpoint_info_calculation() {
-        let temp_dir = TempDir::new().unwrap();
-        let checkpoint_path = temp_dir.path().join("test-checkpoint.jsonl");
+    let assert = Command::cargo_bin("bead")
+        .unwrap()
+        .args(["doctor", "--rehearse"])
+        .current_dir(path)
+        .env("HOME", path.to_str().unwrap())
+        .assert()
+        .failure();
 
-        let content = r#"{"id":"info-test-1","title":"Info Test","priority":1,"base_status":"open","created_at":"2024-08-09T12:00:00Z","updated_at":"2024-08-09T12:00:00Z"}
-{"id":"info-test-2","title":"Another Test","priority":2,"base_status":"closed","created_at":"2024-08-09T12:00:00Z","updated_at":"2024-08-09T12:05:00Z","closed_at":"2024-08-09T12:05:00Z","close_reason":"done"}
-"#;
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        stderr.contains("No checkpoint found"),
+        "error should name the real problem: {stderr}"
+    );
+}
 
-        fs::write(&checkpoint_path, content).unwrap();
+#[test]
+#[serial]
+fn rehearse_does_not_mutate_the_live_workspace() {
+    let workspace = populated_workspace();
 
-        // Calculate info
-        let metadata = fs::metadata(&checkpoint_path).unwrap();
-        let file = fs::File::open(&checkpoint_path).unwrap();
-        let reader = BufReader::new(file);
+    let checkpoint_path = workspace.path().join(".beads/checkpoint/forensic.jsonl");
+    let before = fs::read_to_string(&checkpoint_path).unwrap();
 
-        let issue_count = reader
-            .lines()
-            .map_while(Result::ok)
-            .filter(|line| !line.trim().is_empty())
-            .count();
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["doctor", "--rehearse"])
+        .current_dir(workspace.path())
+        .env("HOME", workspace.path().to_str().unwrap())
+        .assert()
+        .success();
 
-        assert_eq!(issue_count, 2);
-        assert!(metadata.len() > 0);
-    }
+    let after = fs::read_to_string(&checkpoint_path).unwrap();
+    assert_eq!(
+        before, after,
+        "rehearsal must not touch the live checkpoint file"
+    );
 
-    /// Test file hash calculation
-    #[test]
-    fn test_file_hash_calculation() {
-        let temp_dir = TempDir::new().unwrap();
-        let test_file = temp_dir.path().join("test.txt");
-
-        fs::write(&test_file, "test content").unwrap();
-
-        let hash1 = bead_rs::service::rehearsal::calculate_file_hash_for_test(&test_file);
-        let hash2 = bead_rs::service::rehearsal::calculate_file_hash_for_test(&test_file);
-
-        assert_eq!(hash1, hash2);
-        assert!(hash1.len() == 64); // SHA-256 hash should be 64 hex chars
-    }
-
-    /// Test that hash changes with content
-    #[test]
-    fn test_file_hash_different_content() {
-        let temp_dir = TempDir::new().unwrap();
-        let test_file = temp_dir.path().join("test.txt");
-
-        fs::write(&test_file, "content 1").unwrap();
-        let hash1 = bead_rs::service::rehearsal::calculate_file_hash_for_test(&test_file);
-
-        fs::write(&test_file, "content 2").unwrap();
-        let hash2 = bead_rs::service::rehearsal::calculate_file_hash_for_test(&test_file);
-
-        assert_ne!(
-            hash1, hash2,
-            "Different content should produce different hash"
+    let assert = Command::cargo_bin("bead")
+        .unwrap()
+        .arg("list")
+        .current_dir(workspace.path())
+        .env("HOME", workspace.path().to_str().unwrap())
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    for title in ["First bead", "Second bead", "Third bead"] {
+        assert!(
+            stdout.contains(title),
+            "live workspace must be unchanged after rehearsal: missing {title}: {stdout}"
         );
     }
+}
 
-    /// Test checkpoint info with empty file
-    #[test]
-    fn test_checkpoint_info_empty() {
-        let temp_dir = TempDir::new().unwrap();
-        let checkpoint_path = temp_dir.path().join("empty.jsonl");
+#[test]
+#[serial]
+fn rehearse_survives_a_checkpoint_containing_a_provenance_receipt() {
+    // The exact scenario that broke a different way before the
+    // SerializedReceipt/$schema fix landed: a checkpoint that itself
+    // contains a receipt (because the workspace was restored once already).
+    // Rehearsal must import that checkpoint (via the same
+    // import_forensic_checkpoint path sync import-only uses) without
+    // erroring.
+    let source = populated_workspace();
+    let source_checkpoint = source.path().join(".beads/checkpoint/forensic.jsonl");
 
-        fs::write(&checkpoint_path, "").unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    Command::cargo_bin("bead")
+        .unwrap()
+        .arg("init")
+        .current_dir(workspace.path())
+        .env("HOME", workspace.path().to_str().unwrap())
+        .assert()
+        .success();
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args([
+            "sync",
+            "import-only",
+            "--input",
+            source_checkpoint.to_str().unwrap(),
+            "--restore-into-empty",
+            "--actor",
+            "r015-fixture",
+        ])
+        .current_dir(workspace.path())
+        .env("HOME", workspace.path().to_str().unwrap())
+        .assert()
+        .success();
+    // Flushing now produces a checkpoint that itself contains the receipt
+    // the restore above just created.
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["sync", "flush-only"])
+        .current_dir(workspace.path())
+        .env("HOME", workspace.path().to_str().unwrap())
+        .assert()
+        .success();
 
-        let metadata = fs::metadata(&checkpoint_path).unwrap();
-        assert_eq!(metadata.len(), 0);
-    }
-
-    /// Test checkpoint info with blank lines
-    #[test]
-    fn test_checkpoint_info_blank_lines() {
-        let temp_dir = TempDir::new().unwrap();
-        let checkpoint_path = temp_dir.path().join("with_blanks.jsonl");
-
-        let content = r#"{"id":"test-1","title":"Issue 1","priority":1,"base_status":"open","created_at":"2024-08-09T12:00:00Z","updated_at":"2024-08-09T12:00:00Z"}
-
-{"id":"test-2","title":"Issue 2","priority":2,"base_status":"open","created_at":"2024-08-09T12:00:00Z","updated_at":"2024-08-09T12:00:00Z"}
-
-"#;
-
-        fs::write(&checkpoint_path, content).unwrap();
-
-        // Count non-empty lines
-        let file = fs::File::open(&checkpoint_path).unwrap();
-        let reader = BufReader::new(file);
-        let issue_count = reader
-            .lines()
-            .map_while(Result::ok)
-            .filter(|line| !line.trim().is_empty())
-            .count();
-
-        assert_eq!(issue_count, 2); // Should count only the two JSON lines, not the blank lines
-    }
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["doctor", "--rehearse"])
+        .current_dir(workspace.path())
+        .env("HOME", workspace.path().to_str().unwrap())
+        .assert()
+        .success();
 }

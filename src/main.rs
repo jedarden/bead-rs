@@ -16,7 +16,6 @@ use crate::service::migrate::{run_migration, MigrationOptions};
 use crate::service::policy::{validate_workspace_policy, WorkspaceConfig};
 use crate::service::scheduling::SchedulingPolicy;
 use crate::store::Store;
-use anyhow::Context;
 use clap::Parser;
 use std::process::ExitCode;
 
@@ -1141,7 +1140,13 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
             "This will create a temporary workspace, run diagnostics, and verify recovery.\n"
         );
 
-        let report = service::run_recovery_rehearsal().context("Recovery rehearsal failed")?;
+        // No .context() wrapper here: run_recovery_rehearsal()'s own errors
+        // already name the real problem (e.g. "No checkpoint found at:
+        // ..."), and the top-level error printer (`eprintln!("bead: {err}")`,
+        // Display not Debug) only shows the outermost context -- adding a
+        // generic one here would replace a useful message with "Internal
+        // error: Recovery rehearsal failed" on every failure.
+        let report = service::run_recovery_rehearsal()?;
 
         // Determine overall success
         let success = report.diagnostics.overall_status != "FAILED"

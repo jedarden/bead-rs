@@ -1,25 +1,40 @@
 //! Disposable recovery rehearsal service (R015)
 //!
-//! This module provides functionality to create a temporary workspace from the
-//! current checkpoint, run diagnostics, re-export, and compare semantic equivalence.
-//! This exercises the real disaster-recovery path without overwriting live state.
+//! Creates a temporary workspace from the *currently committed* forensic
+//! checkpoint (`.beads/checkpoint/`), imports it exactly the way `sync
+//! import-only --restore-into-empty` would, runs diagnostics, re-exports it
+//! exactly the way `sync flush-only` would, and compares the two checkpoints
+//! for semantic equivalence. This exercises the real disaster-recovery path
+//! without ever touching live state.
+//!
+//! Deliberately reuses the same production functions the CLI's `sync`
+//! subcommand calls (`import_forensic_checkpoint`, `publish_forensic_checkpoint`,
+//! `SqliteStore::apply_migrations`) rather than a parallel reimplementation.
+//! An earlier version of this module *did* reimplement checkpoint import/
+//! export from scratch, against the pre-forensic single-flat-file format
+//! (`.beads/issues.jsonl`, one bare `Issue` per line) -- a format nothing in
+//! bead-rs has written since the forensic checkpoint system landed. That
+//! made every rehearsal fail unconditionally, on every real workspace, with
+//! "No checkpoint file found". See the F017/R015 history in this project's
+//! own docs for the full story.
 
+use crate::cli::ImportMode;
 use crate::error::{Error, Result};
 use crate::model::Issue;
+use crate::service::checkpoint::{
+    import_forensic_checkpoint, publish_forensic_checkpoint, CheckpointMode, CheckpointRecord,
+};
 use crate::service::doctor;
 use crate::store::{SqliteStore, Store};
 use anyhow::Context;
-use rusqlite::Connection;
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use std::collections::HashMap;
-use std::fs::{self, File};
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::collections::BTreeMap;
+use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 /// Recovery rehearsal report
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RecoveryRehearsalReport {
     pub timestamp: String,
     pub original_checkpoint: CheckpointInfo,
@@ -29,17 +44,27 @@ pub struct RecoveryRehearsalReport {
     pub cleanup_info: CleanupInfo,
 }
 
-/// Information about a checkpoint
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Information about a checkpoint, read from its `current.json` pointer --
+/// the same bookkeeping `sync flush-only`/`sync import-only` themselves
+/// trust, rather than re-derived by hand-counting or hand-hashing files.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CheckpointInfo {
     pub path: PathBuf,
     pub issue_count: usize,
+    pub event_count: i64,
+    pub receipt_count: i64,
+    /// `active_root.sha256` from `current.json` -- the checkpoint's own
+    /// canonical content hash. Note this is expected to differ between the
+    /// original checkpoint and a freshly re-exported one even when their
+    /// *content* is fully equivalent: every export mints a new generation id
+    /// and timestamp, both folded into the hashed bytes. Informational only,
+    /// not part of `overall_equivalence`.
     pub hash: String,
     pub size_bytes: u64,
 }
 
 /// Diagnostics result from temporary workspace
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DiagnosticsResult {
     pub checks_performed: usize,
     pub errors: Vec<String>,
@@ -48,18 +73,21 @@ pub struct DiagnosticsResult {
     pub overall_status: String,
 }
 
-/// Semantic comparison between original and re-exported checkpoints
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Semantic comparison between the original checkpoint and the one produced
+/// by importing it, then immediately re-exporting the imported state.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SemanticComparison {
-    pub issues_match: bool,
     pub issue_count_matches: bool,
+    pub event_count_matches: bool,
     pub content_hashes_match: bool,
     pub differences: Vec<SemanticDifference>,
+    /// Gates `bead doctor --rehearse`'s own exit code (see `main.rs`). Does
+    /// **not** require `content_hashes_match` -- see `CheckpointInfo::hash`.
     pub overall_equivalence: bool,
 }
 
 /// Individual semantic difference found during comparison
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SemanticDifference {
     pub issue_id: String,
     pub difference_type: String,
@@ -67,7 +95,7 @@ pub struct SemanticDifference {
 }
 
 /// Cleanup information for the rehearsal
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CleanupInfo {
     pub temp_directory_created: bool,
     pub temp_directory_path: Option<PathBuf>,
@@ -77,17 +105,19 @@ pub struct CleanupInfo {
 
 /// Run a disposable recovery rehearsal
 ///
-/// This function:
-/// 1. Creates a temporary workspace directory
-/// 2. Copies the current checkpoint to the temporary workspace
-/// 3. Initializes a new workspace in the temporary directory
-/// 4. Imports the checkpoint into the temporary workspace
-/// 5. Runs diagnostics on the temporary workspace
-/// 6. Exports from the temporary workspace
-/// 7. Compares semantic equivalence between original and exported checkpoints
-/// 8. Cleans up the temporary workspace
+/// 1. Creates a temporary workspace directory.
+/// 2. Copies the current `.beads/checkpoint/` directory into it.
+/// 3. Initializes a real workspace there (real migrations, real pragmas).
+/// 4. Imports the copied checkpoint via `import_forensic_checkpoint`
+///    (`ImportMode::RestoreIntoEmpty`) -- the exact function `sync
+///    import-only --restore-into-empty` calls.
+/// 5. Runs diagnostics on the temporary workspace.
+/// 6. Re-exports via `publish_forensic_checkpoint` -- the exact function
+///    `sync flush-only` calls.
+/// 7. Compares the re-exported checkpoint against the original for semantic
+///    equivalence (issue/event counts, per-issue content).
+/// 8. Cleans up the temporary workspace (automatic on drop).
 pub fn run_recovery_rehearsal() -> Result<RecoveryRehearsalReport> {
-    // Step 1: Create temporary workspace directory
     let temp_dir = TempDir::new().context("Failed to create temporary workspace directory")?;
     let temp_path = temp_dir.path();
 
@@ -96,88 +126,97 @@ pub fn run_recovery_rehearsal() -> Result<RecoveryRehearsalReport> {
         temp_path.display()
     );
 
-    // Step 2: Get current workspace config and checkpoint info
+    // Step 2: locate the current, real checkpoint directory.
     let current_store = SqliteStore::new();
     let workspace_config = current_store
         .get_workspace_config()
         .map_err(|e| Error::integrity(format!("Failed to get workspace configuration: {}", e)))?;
 
-    let checkpoint_path = workspace_config.root.join(".beads").join("issues.jsonl");
+    let checkpoint_dir = workspace_config.root.join(".beads").join("checkpoint");
 
-    if !checkpoint_path.exists() {
+    // `bead init` always creates an empty .beads/checkpoint/ directory as
+    // part of the normal workspace layout, so its mere existence proves
+    // nothing -- check for the pointer file that a real flush writes.
+    if !checkpoint_dir.join("current.json").exists() {
         return Err(Error::integrity(format!(
-            "No checkpoint file found at: {}",
-            checkpoint_path.display()
+            "No checkpoint found at: {} (run `bead sync flush-only` first)",
+            checkpoint_dir.display()
         )));
     }
 
-    eprintln!("📋 Original checkpoint: {}", checkpoint_path.display());
+    eprintln!("📋 Original checkpoint: {}", checkpoint_dir.display());
 
-    // Get original checkpoint info
-    let original_checkpoint = get_checkpoint_info(&checkpoint_path)?;
+    let original_checkpoint = get_checkpoint_info(&checkpoint_dir)?;
 
-    // Step 3: Copy checkpoint to temporary workspace
-    let temp_checkpoint_path = temp_path.join("issues.jsonl");
-    fs::copy(&checkpoint_path, &temp_checkpoint_path)
+    // Step 3: stage a copy of the whole checkpoint directory -- import reads
+    // from here, never from the live `.beads/checkpoint/` itself.
+    let staged_input = temp_path.join("checkpoint-input");
+    copy_dir_recursive(&checkpoint_dir, &staged_input)
         .context("Failed to copy checkpoint to temporary workspace")?;
 
     eprintln!("✅ Checkpoint copied to temporary workspace");
 
-    // Step 4: Initialize new workspace in temporary directory
+    // Step 4: initialize a real workspace at temp_path. Reuses the actual
+    // connection setup (`SqliteStore::with_path`) and real migrations
+    // (`apply_migrations`) rather than a hand-rolled schema -- the earlier
+    // version's schema was missing entire tables (`provenance_receipts`,
+    // `bead_annotations`, ...) that diagnostics and import both depend on.
     let temp_beads_dir = temp_path.join(".beads");
-    fs::create_dir_all(&temp_beads_dir)
-        .context("Failed to create .beads directory in temporary workspace")?;
+    fs::create_dir_all(temp_beads_dir.join("checkpoint"))
+        .context("Failed to create .beads/checkpoint in temporary workspace")?;
+    fs::create_dir_all(temp_beads_dir.join("receipts"))
+        .context("Failed to create .beads/receipts in temporary workspace")?;
 
-    let temp_config_json = temp_beads_dir.join("config.json");
     let temp_db_path = temp_beads_dir.join("beads.db");
+    let mut temp_store = SqliteStore::with_path(&temp_db_path)
+        .context("Failed to create temporary workspace database")?;
+    temp_store
+        .apply_migrations()
+        .context("Failed to apply migrations to temporary workspace")?;
 
-    // Create minimal config for temporary workspace
+    let rehearsal_uuid = uuid::Uuid::new_v4().to_string();
+    let created_at = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_string());
+    temp_store
+        .conn()
+        .execute(
+            "INSERT INTO workspace (id, uuid, prefix, layout_version, created_at) VALUES (1, ?1, ?2, 1, ?3)",
+            rusqlite::params![&rehearsal_uuid, "rehearsal", &created_at],
+        )
+        .context("Failed to initialize temporary workspace identity")?;
+
     let temp_config = serde_json::json!({
-        "workspace_uuid": format!("rehearsal-{}", uuid::Uuid::new_v4()),
+        "version": 1,
+        "uuid": rehearsal_uuid,
         "prefix": "rehearsal",
-        "layout_version": 1,
-        "created_at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        "created_at": created_at,
     });
-
-    fs::write(
-        &temp_config_json,
-        serde_json::to_string_pretty(&temp_config)?,
-    )
-    .context("Failed to write temporary workspace config")?;
-
-    // Initialize SQLite database for temporary workspace
-    let temp_conn = Connection::open(&temp_db_path).context("Failed to open temporary database")?;
-
-    // Run migrations
-    run_migrations_on_connection(&temp_conn)
-        .context("Failed to run migrations on temporary workspace")?;
+    fs::write(temp_beads_dir.join("config.json"), temp_config.to_string())
+        .context("Failed to write temporary workspace config")?;
 
     eprintln!("🔧 Temporary workspace initialized");
 
-    // Step 5: Import checkpoint into temporary workspace
+    // Step 5: import using the exact production import path.
     eprintln!("📥 Importing checkpoint into temporary workspace...");
 
-    let import_result = import_checkpoint_to_temp_workspace(&temp_checkpoint_path, &temp_conn)?;
-
-    if !import_result.success {
-        return Err(Error::integrity(format!(
-            "Failed to import checkpoint into temporary workspace: {} errors, {} warnings",
-            import_result.error_count, import_result.warning_count
-        )));
-    }
+    let import_result = import_forensic_checkpoint(
+        &mut temp_store,
+        &staged_input,
+        "native-v1",
+        ImportMode::RestoreIntoEmpty,
+        "rehearsal",
+        false,
+    )
+    .context("Failed to import checkpoint into temporary workspace")?;
 
     eprintln!(
-        "✅ Checkpoint imported: {} issues",
-        import_result.issue_count
+        "✅ Checkpoint imported: {} issues, {} events, {} receipts processed",
+        import_result.inserted, import_result.events_imported, import_result.receipts_processed
     );
 
-    // Step 6: Run diagnostics on temporary workspace using a wrapper store
+    // Step 6: diagnostics on the recovered workspace.
     eprintln!("🔍 Running diagnostics on temporary workspace...");
-
-    // Create a store wrapper for diagnostics (requires moving the connection)
-    drop(temp_conn); // Close the connection first
-    let temp_store =
-        SqliteStore::with_path(&temp_db_path).context("Failed to create store for diagnostics")?;
 
     let temp_diagnostics = doctor::run_diagnostics(&temp_store)?;
     let diagnostics_result = DiagnosticsResult {
@@ -215,21 +254,29 @@ pub fn run_recovery_rehearsal() -> Result<RecoveryRehearsalReport> {
         diagnostics_result.warnings.len()
     );
 
-    // Step 7: Export from temporary workspace
+    // Step 7: re-export using the exact production flush path.
     eprintln!("📤 Exporting from temporary workspace...");
 
-    let temp_export_path = temp_path.join("rehearsal-export.jsonl");
-    flush_checkpoint_to_path(&temp_db_path, &temp_export_path)?;
+    publish_forensic_checkpoint(&mut temp_store, CheckpointMode::Monolithic, &temp_beads_dir)
+        .context("Failed to export checkpoint from temporary workspace")?;
+    let rehearsal_checkpoint_dir = temp_beads_dir.join("checkpoint");
 
-    eprintln!("✅ Export completed: {}", temp_export_path.display());
+    eprintln!(
+        "✅ Export completed: {}",
+        rehearsal_checkpoint_dir.display()
+    );
 
-    // Get rehearsal checkpoint info
-    let rehearsal_checkpoint = get_checkpoint_info(&temp_export_path)?;
+    let rehearsal_checkpoint = get_checkpoint_info(&rehearsal_checkpoint_dir)?;
 
-    // Step 8: Compare semantic equivalence
+    // Step 8: compare.
     eprintln!("🔬 Comparing semantic equivalence...");
 
-    let semantic_comparison = compare_checkpoints_semantic(&checkpoint_path, &temp_export_path)?;
+    let semantic_comparison = compare_checkpoints_semantic(
+        &original_checkpoint,
+        &rehearsal_checkpoint,
+        &checkpoint_dir,
+        &rehearsal_checkpoint_dir,
+    )?;
 
     eprintln!(
         "📊 Semantic comparison: {}",
@@ -240,14 +287,14 @@ pub fn run_recovery_rehearsal() -> Result<RecoveryRehearsalReport> {
         }
     );
 
-    // Step 9: Generate report
-    let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let timestamp = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_string());
 
-    // Note: TempDir cleanup is automatic when dropped, but we keep the path for reporting
     let cleanup_info = CleanupInfo {
         temp_directory_created: true,
         temp_directory_path: Some(temp_path.to_path_buf()),
-        cleanup_successful: true, // TempDir will clean up when dropped
+        cleanup_successful: true, // TempDir cleans up when dropped
         files_remaining: 0,
     };
 
@@ -260,16 +307,19 @@ pub fn run_recovery_rehearsal() -> Result<RecoveryRehearsalReport> {
         cleanup_info,
     };
 
-    // Print summary
     eprintln!("\n=== RECOVERY REHEARSAL SUMMARY ===");
     eprintln!("📅 Timestamp: {}", report.timestamp);
     eprintln!(
-        "📋 Original: {} issues, {} bytes",
-        report.original_checkpoint.issue_count, report.original_checkpoint.size_bytes
+        "📋 Original: {} issues, {} events, {} bytes",
+        report.original_checkpoint.issue_count,
+        report.original_checkpoint.event_count,
+        report.original_checkpoint.size_bytes
     );
     eprintln!(
-        "🔄 Rehearsal: {} issues, {} bytes",
-        report.rehearsal_checkpoint.issue_count, report.rehearsal_checkpoint.size_bytes
+        "🔄 Rehearsal: {} issues, {} events, {} bytes",
+        report.rehearsal_checkpoint.issue_count,
+        report.rehearsal_checkpoint.event_count,
+        report.rehearsal_checkpoint.size_bytes
     );
     eprintln!(
         "🔍 Diagnostics: {} checks, {} errors, {} warnings",
@@ -294,385 +344,149 @@ pub fn run_recovery_rehearsal() -> Result<RecoveryRehearsalReport> {
         }
     );
 
-    // The temp_dir will be automatically cleaned up when this function returns
-    // We don't need to explicitly clean it up - TempDir handles this
-
     Ok(report)
 }
 
-/// Get information about a checkpoint file
-fn get_checkpoint_info(path: &Path) -> Result<CheckpointInfo> {
-    let metadata = fs::metadata(path).context("Failed to get checkpoint metadata")?;
+/// Read a checkpoint directory's own `current.json` pointer for its
+/// authoritative issue/event/receipt counts and content hash, rather than
+/// re-deriving them by parsing every record file by hand.
+fn get_checkpoint_info(checkpoint_dir: &Path) -> Result<CheckpointInfo> {
+    let pointer_path = checkpoint_dir.join("current.json");
+    let raw = fs::read_to_string(&pointer_path).with_context(|| {
+        format!(
+            "Failed to read checkpoint pointer at {}",
+            pointer_path.display()
+        )
+    })?;
+    let pointer: serde_json::Value = serde_json::from_str(&raw).with_context(|| {
+        format!(
+            "Failed to parse checkpoint pointer at {}",
+            pointer_path.display()
+        )
+    })?;
 
-    let file = File::open(path).context("Failed to open checkpoint file")?;
-    let reader = BufReader::new(file);
-    let mut issue_count = 0;
+    let issue_count = pointer
+        .get("issue_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
+    let event_count = pointer
+        .get("event_count")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let receipt_count = pointer
+        .get("receipt_count")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let hash = pointer
+        .get("active_root")
+        .and_then(|r| r.get("sha256"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
 
-    for line in reader.lines() {
-        let line = line.context("Failed to read checkpoint line")?;
-        if !line.trim().is_empty() {
-            issue_count += 1;
-        }
-    }
-
-    let hash = calculate_file_hash(path)?;
+    let size_bytes = dir_size(checkpoint_dir).unwrap_or(0);
 
     Ok(CheckpointInfo {
-        path: path.to_path_buf(),
+        path: checkpoint_dir.to_path_buf(),
         issue_count,
+        event_count,
+        receipt_count,
         hash,
-        size_bytes: metadata.len(),
+        size_bytes,
     })
 }
 
-/// Calculate SHA-256 hash of a file
-fn calculate_file_hash(path: &Path) -> Result<String> {
-    let content = fs::read(path).context("Failed to read file for hashing")?;
-
-    let mut hasher = Sha256::new();
-    hasher.update(&content);
-    let result = hasher.finalize();
-
-    Ok(format!("{:x}", result))
+/// Total size in bytes of every regular file under `dir`, recursively.
+/// Informational only (report display), never used for comparison.
+fn dir_size(dir: &Path) -> std::io::Result<u64> {
+    let mut total = 0u64;
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            total += dir_size(&entry.path())?;
+        } else {
+            total += entry.metadata()?.len();
+        }
+    }
+    Ok(total)
 }
 
-/// Import result
-struct ImportResult {
-    success: bool,
-    issue_count: usize,
-    error_count: usize,
-    warning_count: usize,
-}
-
-/// Run migrations on a connection
-fn run_migrations_on_connection(conn: &Connection) -> Result<()> {
-    // Enable foreign keys
-    conn.execute("PRAGMA foreign_keys = ON", [])
-        .context("Failed to enable foreign keys")?;
-
-    // Enable WAL mode
-    conn.execute("PRAGMA journal_mode = WAL", [])
-        .context("Failed to enable WAL mode")?;
-
-    // Set busy timeout
-    conn.execute_batch("PRAGMA busy_timeout = 5000")
-        .context("Failed to set busy timeout")?;
-
-    // Create schema (simplified version of migration 1)
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS workspace (
-            uuid TEXT PRIMARY KEY,
-            prefix TEXT NOT NULL,
-            layout_version INTEGER NOT NULL,
-            created_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS issues (
-            id TEXT PRIMARY KEY,
-            title TEXT NOT NULL,
-            description TEXT,
-            notes TEXT,
-            priority INTEGER NOT NULL,
-            base_status TEXT NOT NULL,
-            manual_blocked INTEGER NOT NULL DEFAULT 0,
-            assignee TEXT,
-            issue_type TEXT,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            closed_at TEXT,
-            close_reason TEXT,
-            source_repo TEXT,
-            profile TEXT,
-            schema_ref TEXT,
-            revision INTEGER NOT NULL DEFAULT 1
-        );
-        CREATE TABLE IF NOT EXISTS dependencies (
-            blocked_issue_id TEXT NOT NULL,
-            blocker_issue_id TEXT NOT NULL,
-            kind TEXT NOT NULL,
-            PRIMARY KEY (blocked_issue_id, blocker_issue_id, kind),
-            FOREIGN KEY (blocked_issue_id) REFERENCES issues(id) ON DELETE CASCADE,
-            FOREIGN KEY (blocker_issue_id) REFERENCES issues(id) ON DELETE CASCADE
-        );
-        CREATE TABLE IF NOT EXISTS labels (
-            issue_id TEXT NOT NULL,
-            label TEXT NOT NULL,
-            PRIMARY KEY (issue_id, label),
-            FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE
-        );
-        CREATE TABLE IF NOT EXISTS events (
-            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-            issue_id TEXT,
-            kind TEXT NOT NULL,
-            actor TEXT,
-            time TEXT NOT NULL,
-            detail TEXT,
-            FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE
-        );
-        CREATE TABLE IF NOT EXISTS checkpoint_state (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            hash TEXT,
-            covered_event_sequence INTEGER,
-            export_time TEXT
-        );
-        INSERT OR IGNORE INTO workspace (uuid, prefix, layout_version, created_at)
-        VALUES ('rehearsal-temp', 'rehearsal', 1, datetime('now'));",
-    )
-    .context("Failed to create schema")?;
-
+/// Copy every file and subdirectory from `src` into `dst`, creating `dst` if
+/// needed. `dst`'s contents end up looking exactly like `src`'s -- no extra
+/// nesting level.
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let target = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), &target)?;
+        }
+    }
     Ok(())
 }
 
-/// Import checkpoint into temporary workspace
-fn import_checkpoint_to_temp_workspace(
-    checkpoint_path: &Path,
-    conn: &Connection,
-) -> Result<ImportResult> {
-    let file = File::open(checkpoint_path).context("Failed to open checkpoint for import")?;
+/// Read every `issue`-tagged record from a monolithic `forensic.jsonl` file,
+/// keyed by issue id. Returns `None` (not an error) if the checkpoint isn't
+/// monolithic (no `forensic.jsonl` at the top level) -- sharded checkpoints
+/// are fully supported for the actual import/export above (which delegate
+/// discovery to `import_forensic_checkpoint`/`publish_forensic_checkpoint`),
+/// just not for this detailed per-issue diff, which only ever reads the
+/// simple monolithic case.
+fn read_monolithic_issues(checkpoint_dir: &Path) -> Result<Option<BTreeMap<String, Issue>>> {
+    let forensic_path = checkpoint_dir.join("forensic.jsonl");
+    if !forensic_path.exists() {
+        return Ok(None);
+    }
+
+    let file = fs::File::open(&forensic_path)
+        .with_context(|| format!("Failed to open {}", forensic_path.display()))?;
     let reader = BufReader::new(file);
 
-    let mut issue_count = 0;
-    let mut error_count = 0;
-    let warning_count = 0;
-    let mut success = true;
-
+    let mut issues = BTreeMap::new();
     for (line_num, line_result) in reader.lines().enumerate() {
-        let line = line_result.context("Failed to read checkpoint line")?;
-
+        let line = line_result.with_context(|| {
+            format!(
+                "Failed to read {} line {}",
+                forensic_path.display(),
+                line_num + 1
+            )
+        })?;
         if line.trim().is_empty() {
-            continue; // Skip blank lines
-        }
-
-        // Parse JSON line
-        let value: serde_json::Value = serde_json::from_str(&line)
-            .with_context(|| format!("Failed to parse JSON at line {}", line_num + 1))?;
-
-        // Convert to Issue
-        let issue: Issue = serde_json::from_value(value)
-            .with_context(|| format!("Failed to convert issue at line {}", line_num + 1))?;
-
-        // Validate issue
-        if let Err(e) = issue.validate() {
-            error_count += 1;
-            eprintln!("⚠️  Validation error at line {}: {}", line_num + 1, e);
-            success = false;
             continue;
         }
-
-        // Insert issue into database
-        if let Err(e) = insert_issue_to_connection(conn, &issue) {
-            error_count += 1;
-            eprintln!("❌ Failed to insert issue at line {}: {}", line_num + 1, e);
-            success = false;
-        } else {
-            issue_count += 1;
+        let record: CheckpointRecord = serde_json::from_str(&line).with_context(|| {
+            format!(
+                "Failed to parse {} line {}",
+                forensic_path.display(),
+                line_num + 1
+            )
+        })?;
+        if let CheckpointRecord::Issue { issue } = record {
+            issues.insert(issue.id.clone(), issue);
         }
     }
 
-    Ok(ImportResult {
-        success,
-        issue_count,
-        error_count,
-        warning_count,
-    })
+    Ok(Some(issues))
 }
 
-/// Insert an issue into the database connection
-fn insert_issue_to_connection(conn: &Connection, issue: &Issue) -> Result<()> {
-    conn.execute(
-        "INSERT INTO issues (id, title, description, notes, priority, base_status, manual_blocked,
-         assignee, issue_type, created_at, updated_at, closed_at, close_reason, source_repo,
-         profile, schema_ref, revision)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
-        rusqlite::params![
-            &issue.id,
-            &issue.title,
-            issue.description.as_deref(),
-            issue.notes.as_deref(),
-            issue.priority,
-            format!("{:?}", issue.base_status),
-            if issue.manual_blocked.unwrap_or(false) {
-                1
-            } else {
-                0
-            },
-            issue.assignee.as_deref(),
-            issue.issue_type.as_deref(),
-            &issue.created_at,
-            &issue.updated_at,
-            issue.closed_at.as_deref(),
-            issue.close_reason.as_deref(),
-            issue.source_repo.as_deref(),
-            issue.profile.as_deref(),
-            issue.schema_ref.as_deref(),
-            issue.revision.unwrap_or(1)
-        ],
-    )
-    .context("Failed to insert issue")?;
-
-    Ok(())
-}
-
-/// Flush checkpoint to a specific path
-fn flush_checkpoint_to_path(db_path: &Path, export_path: &Path) -> Result<()> {
-    // Reopen the database to get a direct connection
-    let conn = Connection::open(db_path).context("Failed to open database for export")?;
-
-    let issues = list_issues_from_connection(&conn)?;
-
-    let file = fs::File::create(export_path).context("Failed to create export file")?;
-    let mut writer = BufWriter::new(file);
-
-    // Sort by ID for deterministic output
-    let mut sorted_issues: Vec<_> = issues.iter().collect();
-    sorted_issues.sort_by_key(|&a| &a.id);
-
-    for issue in sorted_issues {
-        let json = serde_json::to_string(issue).context("Failed to serialize issue")?;
-        writeln!(writer, "{}", json).context("Failed to write issue line")?;
-    }
-
-    writer.flush().context("Failed to flush writer")?;
-
-    Ok(())
-}
-
-/// List all issues from the database
-fn list_issues_from_connection(conn: &Connection) -> Result<Vec<Issue>> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, title, description, notes, priority, base_status, manual_blocked,
-         assignee, issue_type, created_at, updated_at, closed_at, close_reason, source_repo,
-         profile, schema_ref, revision
-         FROM issues",
-        )
-        .context("Failed to prepare issues query")?;
-
-    let issues = stmt
-        .query_map([], |row| {
-            Ok(Issue {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                description: {
-                    let s: String = row.get(2)?;
-                    if s.is_empty() {
-                        None
-                    } else {
-                        Some(s)
-                    }
-                },
-                notes: {
-                    let s: String = row.get(3)?;
-                    if s.is_empty() {
-                        None
-                    } else {
-                        Some(s)
-                    }
-                },
-                priority: row.get(4)?,
-                base_status: parse_base_status(row.get(5)?),
-                manual_blocked: {
-                    let i: i64 = row.get(6)?;
-                    if i == 0 {
-                        None
-                    } else {
-                        Some(true)
-                    }
-                },
-                assignee: {
-                    let s: String = row.get(7)?;
-                    if s.is_empty() {
-                        None
-                    } else {
-                        Some(s)
-                    }
-                },
-                issue_type: {
-                    let s: String = row.get(8)?;
-                    if s.is_empty() {
-                        None
-                    } else {
-                        Some(s)
-                    }
-                },
-                created_at: row.get(9)?,
-                updated_at: row.get(10)?,
-                closed_at: {
-                    let s: String = row.get(11)?;
-                    if s.is_empty() {
-                        None
-                    } else {
-                        Some(s)
-                    }
-                },
-                close_reason: {
-                    let s: String = row.get(12)?;
-                    if s.is_empty() {
-                        None
-                    } else {
-                        Some(s)
-                    }
-                },
-                source_repo: {
-                    let s: String = row.get(13)?;
-                    if s.is_empty() {
-                        None
-                    } else {
-                        Some(s)
-                    }
-                },
-                profile: {
-                    let s: String = row.get(14)?;
-                    if s.is_empty() {
-                        None
-                    } else {
-                        Some(s)
-                    }
-                },
-                schema_ref: {
-                    let s: String = row.get(15)?;
-                    if s.is_empty() {
-                        None
-                    } else {
-                        Some(s)
-                    }
-                },
-                revision: Some(row.get(16)?),
-                data: None,
-                extensions: HashMap::new(),
-            })
-        })
-        .context("Failed to execute issues query")?
-        .collect::<std::result::Result<Vec<_>, rusqlite::Error>>()
-        .map_err(|e| Error::integrity(format!("Failed to collect issues: {}", e)))?;
-
-    Ok(issues)
-}
-
-/// Parse base status from string
-fn parse_base_status(s: String) -> crate::model::BaseStatus {
-    match s.to_lowercase().as_str() {
-        "open" => crate::model::BaseStatus::Open,
-        "inprogress" => crate::model::BaseStatus::InProgress,
-        "deferred" => crate::model::BaseStatus::Deferred,
-        "closed" => crate::model::BaseStatus::Closed,
-        _ => crate::model::BaseStatus::Open, // Default fallback
-    }
-}
-
-/// Compare semantic equivalence between two checkpoints
+/// Compare semantic equivalence between the original checkpoint and the one
+/// produced by importing it and immediately re-exporting the imported state.
 fn compare_checkpoints_semantic(
-    original_path: &Path,
-    rehearsal_path: &Path,
+    original_info: &CheckpointInfo,
+    rehearsal_info: &CheckpointInfo,
+    original_dir: &Path,
+    rehearsal_dir: &Path,
 ) -> Result<SemanticComparison> {
-    // Read both checkpoint files
-    let original_issues = read_checkpoint_issues(original_path)?;
-    let rehearsal_issues = read_checkpoint_issues(rehearsal_path)?;
+    let issue_count_matches = original_info.issue_count == rehearsal_info.issue_count;
+    let event_count_matches = original_info.event_count == rehearsal_info.event_count;
+    // See CheckpointInfo::hash: every export mints a fresh generation id, so
+    // this is informational, never a requirement for equivalence.
+    let content_hashes_match = original_info.hash == rehearsal_info.hash;
 
-    // Basic comparisons
-    let issue_count_matches = original_issues.len() == rehearsal_issues.len();
-    let issues_match = issue_count_matches;
-
-    // Detailed comparison
     let mut differences = Vec::new();
 
     if !issue_count_matches {
@@ -681,97 +495,87 @@ fn compare_checkpoints_semantic(
             difference_type: "issue_count_mismatch".to_string(),
             description: format!(
                 "Original: {} issues, Rehearsal: {} issues",
-                original_issues.len(),
-                rehearsal_issues.len()
+                original_info.issue_count, rehearsal_info.issue_count
             ),
         });
     }
 
-    // Compare individual issues when counts match
-    if issue_count_matches {
-        for (orig_issue, reh_issue) in original_issues.iter().zip(rehearsal_issues.iter()) {
-            if orig_issue.id != reh_issue.id {
-                differences.push(SemanticDifference {
-                    issue_id: format!("{} vs {}", orig_issue.id, reh_issue.id),
-                    difference_type: "id_mismatch".to_string(),
-                    description: "Issue IDs don't match in sequence".to_string(),
-                });
-            }
+    if !event_count_matches {
+        differences.push(SemanticDifference {
+            issue_id: "N/A".to_string(),
+            difference_type: "event_count_mismatch".to_string(),
+            description: format!(
+                "Original: {} events, Rehearsal: {} events",
+                original_info.event_count, rehearsal_info.event_count
+            ),
+        });
+    }
 
-            // Compare key fields
-            if orig_issue.title != reh_issue.title {
-                differences.push(SemanticDifference {
-                    issue_id: orig_issue.id.clone(),
-                    difference_type: "title_mismatch".to_string(),
-                    description: format!("'{}' vs '{}'", orig_issue.title, reh_issue.title),
-                });
+    // Detailed per-issue diff, monolithic checkpoints only (see
+    // read_monolithic_issues). A missing forensic.jsonl on either side just
+    // skips this section -- the count-based checks above still ran.
+    if let (Some(original_issues), Some(rehearsal_issues)) = (
+        read_monolithic_issues(original_dir)?,
+        read_monolithic_issues(rehearsal_dir)?,
+    ) {
+        for (id, orig_issue) in &original_issues {
+            match rehearsal_issues.get(id) {
+                None => differences.push(SemanticDifference {
+                    issue_id: id.clone(),
+                    difference_type: "missing_in_rehearsal".to_string(),
+                    description: "Issue present in original checkpoint, missing after recovery"
+                        .to_string(),
+                }),
+                Some(reh_issue) => {
+                    if orig_issue.title != reh_issue.title {
+                        differences.push(SemanticDifference {
+                            issue_id: id.clone(),
+                            difference_type: "title_mismatch".to_string(),
+                            description: format!("'{}' vs '{}'", orig_issue.title, reh_issue.title),
+                        });
+                    }
+                    if orig_issue.priority != reh_issue.priority {
+                        differences.push(SemanticDifference {
+                            issue_id: id.clone(),
+                            difference_type: "priority_mismatch".to_string(),
+                            description: format!(
+                                "{} vs {}",
+                                orig_issue.priority, reh_issue.priority
+                            ),
+                        });
+                    }
+                    if orig_issue.base_status != reh_issue.base_status {
+                        differences.push(SemanticDifference {
+                            issue_id: id.clone(),
+                            difference_type: "status_mismatch".to_string(),
+                            description: format!(
+                                "{:?} vs {:?}",
+                                orig_issue.base_status, reh_issue.base_status
+                            ),
+                        });
+                    }
+                }
             }
-
-            if orig_issue.priority != reh_issue.priority {
+        }
+        for id in rehearsal_issues.keys() {
+            if !original_issues.contains_key(id) {
                 differences.push(SemanticDifference {
-                    issue_id: orig_issue.id.clone(),
-                    difference_type: "priority_mismatch".to_string(),
-                    description: format!("{} vs {}", orig_issue.priority, reh_issue.priority),
-                });
-            }
-
-            if orig_issue.base_status != reh_issue.base_status {
-                differences.push(SemanticDifference {
-                    issue_id: orig_issue.id.clone(),
-                    difference_type: "status_mismatch".to_string(),
-                    description: format!(
-                        "{:?} vs {:?}",
-                        orig_issue.base_status, reh_issue.base_status
-                    ),
+                    issue_id: id.clone(),
+                    difference_type: "unexpected_in_rehearsal".to_string(),
+                    description: "Issue present after recovery but not in original checkpoint"
+                        .to_string(),
                 });
             }
         }
     }
 
-    // Calculate content hash comparison
-    let original_hash = calculate_file_hash(original_path)?;
-    let rehearsal_hash = calculate_file_hash(rehearsal_path)?;
-    let content_hashes_match = original_hash == rehearsal_hash;
-
-    let overall_equivalence = issues_match && content_hashes_match && differences.is_empty();
+    let overall_equivalence = issue_count_matches && event_count_matches && differences.is_empty();
 
     Ok(SemanticComparison {
-        issues_match,
         issue_count_matches,
+        event_count_matches,
         content_hashes_match,
         differences,
         overall_equivalence,
     })
-}
-
-/// Read issues from a checkpoint file
-fn read_checkpoint_issues(path: &Path) -> Result<Vec<Issue>> {
-    let file = File::open(path).context("Failed to open checkpoint file")?;
-    let reader = BufReader::new(file);
-
-    let mut issues = Vec::new();
-
-    for (line_num, line_result) in reader.lines().enumerate() {
-        let line = line_result.context("Failed to read checkpoint line")?;
-
-        if line.trim().is_empty() {
-            continue;
-        }
-
-        let value: serde_json::Value = serde_json::from_str(&line)
-            .with_context(|| format!("Failed to parse JSON at line {}", line_num + 1))?;
-
-        let issue: Issue = serde_json::from_value(value)
-            .with_context(|| format!("Failed to convert issue at line {}", line_num + 1))?;
-
-        issues.push(issue);
-    }
-
-    Ok(issues)
-}
-
-/// Test-only function to calculate file hash
-#[allow(dead_code)]
-pub fn calculate_file_hash_for_test(path: &Path) -> String {
-    calculate_file_hash(path).unwrap_or_else(|_| "hash-error".to_string())
 }
