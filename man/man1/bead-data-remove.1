@@ -1,0 +1,35 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead data remove" 1  "bead data remove " 
+.SH NAME
+bead data remove \- Remove a structured data value from an issue
+.SH SYNOPSIS
+\fBbead data remove\fR <\fB\-\-id\fR> <\fB\-\-namespace\fR> [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Remove a structured data value from an issue (idempotent).
+.PP
+Removes the structured data value for the specified namespace and issue.
+If the namespace does not exist, the command succeeds without making changes.
+.PP
+EXAMPLES:
+  bead data remove \-\-id bead\-123abc456789def \-\-namespace config
+  bead data remove \-\-id ID \-\-namespace metrics
+.PP
+IDEMPOTENCY:
+  Removing a non\-existent namespace succeeds without error.
+  This makes structured data management safe and declarative.
+.PP
+ATOMICITY:
+  \- Remove operations are atomic and crash\-safe
+  \- Only affects the specified namespace
+  \- Validates that the issue exists before removal
+.SH OPTIONS
+.TP
+\fB\-\-id\fR=\fIID\fR
+Issue ID
+.TP
+\fB\-\-namespace\fR=\fINAMESPACE\fR
+Data namespace
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

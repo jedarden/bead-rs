@@ -1,10 +1,10 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH remove 1  "remove " 
+.TH "bead dep remove" 1  "bead dep remove " 
 .SH NAME
-remove \- Remove a dependency edge
+bead dep remove \- Remove a dependency edge
 .SH SYNOPSIS
-\fBremove\fR [\fB\-\-kind\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIBLOCKED\fR> <\fIBLOCKER\fR> 
+\fBbead dep remove\fR [\fB\-\-kind\fR] [\fB\-\-dry\-run\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIBLOCKED\fR> <\fIBLOCKER\fR> 
 .SH DESCRIPTION
 Remove a dependency relationship between two issues.
 .PP
@@ -27,8 +27,11 @@ USE CASES:
   \- Cleaning up after issue completion
 .SH OPTIONS
 .TP
-\fB\-\-kind\fR \fI<KIND>\fR
+\fB\-\-kind\fR=\fIKIND\fR
 Dependency kind (optional, removes all kinds if not specified)
+.TP
+\fB\-\-dry\-run\fR
+Dry run: show what would happen without making changes
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

@@ -1,0 +1,31 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead data list" 1  "bead data list " 
+.SH NAME
+bead data list \- List all structured data namespaces for an issue
+.SH SYNOPSIS
+\fBbead data list\fR <\fB\-\-id\fR> [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+List all namespaces and their schema references for an issue.
+.PP
+Shows all structured data namespaces attached to the issue, sorted alphabetically
+by namespace for consistent output. Each entry includes the namespace and its
+governing schema reference.
+.PP
+EXAMPLES:
+  bead data list \-\-id bead\-123abc456789def
+  bead data list \-\-id ID \-\-json
+.PP
+OUTPUT FORMAT:
+  Human\-readable format shows namespace and schema reference for each entry.
+  JSON format provides structured array of objects with namespace and schema_ref.
+.SH OPTIONS
+.TP
+\fB\-\-id\fR=\fIID\fR
+Issue ID
+.TP
+\fB\-\-json\fR
+Output in JSON format
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

@@ -1,0 +1,52 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead create" 1  "bead create " 
+.SH NAME
+bead create \- Create a new issue
+.SH SYNOPSIS
+\fBbead create\fR <\fB\-\-title\fR> [\fB\-\-description\fR] [\fB\-\-priority\fR] [\fB\-\-issue\-type\fR] [\fB\-\-assignee\fR] [\fB\-\-label\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Create a new issue in the workspace.
+.PP
+Creates a new issue with the specified title and optional metadata.
+The issue ID is automatically generated and printed on success.
+Prints only the issue ID followed by a newline on success.
+.PP
+PRIORITIES:
+  0 = urgent (immediate incident, safety, or release\-blocking)
+  1 = critical (essential work preceding ordinary delivery)
+  2 = high (important planned work, default)
+  3 = normal (ordinary work with no elevated urgency)
+  4 = aspirational/backlog (speculative or low\-urgency work)
+.PP
+EXAMPLES:
+  bead create \-\-title "Fix authentication bug" \-\-priority 0
+  bead create \-\-title "Update documentation" \-\-priority 2 \-\-label docs
+  bead create \-\-title "Add search feature" \-\-assignee alice \-\-label feature \-\-label backend
+  bead create \-\-title "Code review PR\-123" \-\-description "Review changes for user auth"
+.PP
+ISSUE TYPES:
+  Common types include: task, bug, feature, improvement, documentation
+  Custom types can be specified as needed (no validation is performed).
+.SH OPTIONS
+.TP
+\fB\-\-title\fR=\fITITLE\fR
+Issue title (required)
+.TP
+\fB\-\-description\fR=\fIDESCRIPTION\fR
+Issue description (optional, defaults to empty)
+.TP
+\fB\-\-priority\fR=\fIPRIORITY\fR [default: 2]
+Issue priority (0\-4, default: 2)
+.TP
+\fB\-\-issue\-type\fR=\fIISSUE_TYPE\fR
+Issue type (default: task)
+.TP
+\fB\-\-assignee\fR=\fIASSIGNEE\fR
+Assignee (optional)
+.TP
+\fB\-\-label\fR=\fILABEL\fR
+Labels to add (can be specified multiple times)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

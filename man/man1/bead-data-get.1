@@ -1,0 +1,33 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead data get" 1  "bead data get " 
+.SH NAME
+bead data get \- Get a structured data value from an issue
+.SH SYNOPSIS
+\fBbead data get\fR <\fB\-\-id\fR> <\fB\-\-namespace\fR> [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Retrieve the JSON value and schema reference for a specific namespace.
+.PP
+Returns both the schema reference and the JSON value for the specified namespace.
+If the namespace does not exist for the issue, returns a not\-found error.
+.PP
+EXAMPLES:
+  bead data get \-\-id bead\-123abc456789def \-\-namespace config
+  bead data get \-\-id ID \-\-namespace metrics \-\-json
+.PP
+OUTPUT FORMAT:
+  Human\-readable format shows the schema reference and formatted JSON value.
+  JSON format provides structured data with schema_ref and value fields.
+.SH OPTIONS
+.TP
+\fB\-\-id\fR=\fIID\fR
+Issue ID
+.TP
+\fB\-\-namespace\fR=\fINAMESPACE\fR
+Data namespace
+.TP
+\fB\-\-json\fR
+Output in JSON format
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

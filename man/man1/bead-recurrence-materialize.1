@@ -1,0 +1,27 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead recurrence materialize" 1  "bead recurrence materialize " 
+.SH NAME
+bead recurrence materialize \- Materialize the next occurrence from a template
+.SH SYNOPSIS
+\fBbead recurrence materialize\fR <\fB\-\-id\fR> [\fB\-\-actor\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Create the next occurrence in the recurrence series as a new issue.
+Each occurrence carries a stable series reference and the created issue ID.
+.PP
+This is an explicit operation \- bead\-rs never automatically creates occurrences on schedules.
+External schedulers should call this command when they want a new occurrence created.
+.PP
+EXAMPLES:
+  bead recurrence materialize \-\-id template\-001
+  bead recurrence materialize \-\-id daily\-review \-\-actor scheduler\-1
+.SH OPTIONS
+.TP
+\fB\-\-id\fR=\fIID\fR
+Template ID
+.TP
+\fB\-\-actor\fR=\fIACTOR\fR
+Actor performing the materialization
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

@@ -1,0 +1,17 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead recurrence delete" 1  "bead recurrence delete " 
+.SH NAME
+bead recurrence delete \- Delete a recurrence template
+.SH SYNOPSIS
+\fBbead recurrence delete\fR <\fB\-\-id\fR> [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Delete a recurrence template and its materialization history.
+This operation is irreversible and will remove all tracking of the template\*(Aqs occurrences.
+.SH OPTIONS
+.TP
+\fB\-\-id\fR=\fIID\fR
+Template ID
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

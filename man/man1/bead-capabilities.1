@@ -1,0 +1,51 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead capabilities" 1  "bead capabilities " 
+.SH NAME
+bead capabilities \- Show capabilities and supported features
+.SH SYNOPSIS
+\fBbead capabilities\fR [\fB\-\-profile\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Display versioned capabilities and supported feature sets.
+.PP
+Outputs machine\-readable capabilities document describing contract version,
+implementation, store layout, supported commands, priorities, statuses,
+checkpoint modes and formats, and schema catalog.
+.PP
+EXAMPLES:
+  bead capabilities                            # Native capabilities as JSON
+  bead capabilities \-\-profile needle\-v1        # NEEDLE v1 contract
+  bead capabilities \-\-profile native\-v1        # Explicit native profile
+.PP
+Output is always JSON on stdout.
+.PP
+CAPABILITY INFORMATION:
+  \- Contract version and implementation identifier
+  \- Store layout version
+  \- Atomic claim support
+  \- Priority range and P4 claimability
+  \- Supported statuses and transitions
+  \- Checkpoint modes and formats
+  \- Schema catalog with validation and operation support
+  \- Complete command inventory
+.PP
+PROFILES:
+  \- native\-v1: Full native capabilities (default)
+  \- needle\-v1: NEEDLE subprocess compatibility contract
+.PP
+SCHEMA CATALOG:
+  Each schema entry shows:
+  \- schema_ref: Immutable schema identifier
+  \- document_kind: Type of document
+  \- validate: Schema available for \*(Aqbead schema show\*(Aq
+  \- consume: Operations accepting this document type
+  \- emit: Operations producing this document type
+.PP
+Use this command for capability negotiation and feature detection.
+.SH OPTIONS
+.TP
+\fB\-\-profile\fR=\fIPROFILE\fR [default: native\-v1]
+Profile for capabilities output
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

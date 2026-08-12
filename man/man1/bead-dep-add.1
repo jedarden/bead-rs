@@ -1,10 +1,10 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH add 1  "add " 
+.TH "bead dep add" 1  "bead dep add " 
 .SH NAME
-add \- Add a dependency edge
+bead dep add \- Add a dependency edge
 .SH SYNOPSIS
-\fBadd\fR [\fB\-\-kind\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIBLOCKED\fR> <\fIBLOCKER\fR> 
+\fBbead dep add\fR [\fB\-\-kind\fR] [\fB\-\-condition\fR] [\fB\-\-dry\-run\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIBLOCKED\fR> <\fIBLOCKER\fR> 
 .SH DESCRIPTION
 Add a dependency relationship between two issues.
 .PP
@@ -42,8 +42,14 @@ ORIENTATION:
   BLOCKER must finish before BLOCKED can be ready
 .SH OPTIONS
 .TP
-\fB\-\-kind\fR \fI<KIND>\fR [default: blocks]
+\fB\-\-kind\fR=\fIKIND\fR [default: blocks]
 Dependency kind (default: blocks)
+.TP
+\fB\-\-condition\fR=\fICONDITION\fR
+Conditional dependency expression as JSON (optional)
+.TP
+\fB\-\-dry\-run\fR
+Dry run: show what would happen without making changes
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

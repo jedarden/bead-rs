@@ -1,0 +1,37 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead label add" 1  "bead label add " 
+.SH NAME
+bead label add \- Add a label to an issue
+.SH SYNOPSIS
+\fBbead label add\fR <\fB\-\-label\fR> [\fB\-h\fR|\fB\-\-help\fR] <\fIID\fR> 
+.SH DESCRIPTION
+Add a label to an issue (idempotent).
+.PP
+Adds the specified label to the issue. If the label already exists,
+the command succeeds without making changes. Labels are optional
+metadata used for categorization and filtering.
+.PP
+EXAMPLES:
+  bead label add bead\-123abc456789def \-\-label bug
+  bead label add ID \-\-label "needs\-review"
+.PP
+LABELS:
+  \- Any non\-empty string is valid
+  \- Labels are case\-sensitive
+  \- Adding an existing label is idempotent (no\-op)
+  \- One label per invocation; run the command again for a second label
+    (`bead create` accepts a repeatable \-\-label at creation time)
+.PP
+Common labels: bug, feature, improvement, documentation, urgent,
+help\-wanted, work\-in\-progress, needs\-review, blocked, etc.
+.SH OPTIONS
+.TP
+\fB\-\-label\fR=\fILABEL\fR
+Label to add
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIID\fR>
+Issue ID

@@ -1,0 +1,38 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead ref" 1  "bead ref " 
+.SH NAME
+bead ref \- Manage external references
+.SH SYNOPSIS
+\fBbead ref\fR [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+Attach namespaced (namespace, key, value) references to issues.
+.PP
+References link a bead to an identifier in another system \-\- a tracker ticket, a
+commit, a pull request \-\- without resolving anything over the network. `ref find`
+locates every issue carrying a given value, which supports cross\-tool dedup.
+.PP
+  bead ref add \-\-id <ID> \-\-namespace <NS> \-\-key <KEY> \-\-value <VALUE>
+  bead ref remove \-\-id <ID> \-\-namespace <NS> \-\-key <KEY>
+  bead ref list \-\-id <ID>
+  bead ref find \-\-namespace <NS> \-\-value <VALUE>
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.SH SUBCOMMANDS
+.TP
+bead ref\-add(1)
+Add an external reference to an issue
+.TP
+bead ref\-remove(1)
+Remove an external reference from an issue
+.TP
+bead ref\-list(1)
+List external references for an issue
+.TP
+bead ref\-find(1)
+Find issues by external reference
+.TP
+bead ref\-help(1)
+Print this message or the help of the given subcommand(s)

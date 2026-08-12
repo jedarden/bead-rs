@@ -1,0 +1,81 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead claim" 1  "bead claim " 
+.SH NAME
+bead claim \- Claim an issue from the ready frontier
+.SH SYNOPSIS
+\fBbead claim\fR <\fB\-\-assignee\fR> [\fB\-\-json\fR] [\fB\-\-why\fR] [\fB\-\-policy\fR] [\fB\-\-lease\-ttl\fR] [\fB\-\-renew\-lease\fR] [\fB\-\-fencing\-token\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Atomically claim and assign one issue from the ready frontier.
+.PP
+Claim performs server\-side selection from ready issues (open, unassigned,
+not manually blocked, no unfinished blockers) using fifo\-v1 policy:
+priority ASC, created_at ASC, id ASC.
+.PP
+Selection and assignment occur in one atomic transaction. With no eligible
+issues, returns exit code 0 and an empty result ({} in JSON mode).
+.PP
+Twenty competing claimants must never receive the same successful issue ID.
+.PP
+EXAMPLES:
+  bead claim \-\-assignee alice \-\-json          # Claim with JSON output
+  bead claim \-\-assignee "Team Backend"       # Claim with team assignee
+  bead claim \-\-assignee worker\-1              # Claim for automated worker
+.PP
+READY FRONTIER:
+  Issues are ready when: base status is open, no assignee, not manually blocked,
+  and no unfinished \*(Aqblocks\*(Aq dependency edges exist.
+.PP
+  Use \*(Aqbead list \-\-ready \-\-json \-\-limit N\*(Aq to inspect ready candidates without
+  reserving them. List uses the same ordering as claim but is read\-only.
+.PP
+LEASED CLAIMS:
+  \-\-lease\-ttl SECONDS enables opt\-in leased claims with fencing tokens.
+  Leased claims expire after the specified seconds, preventing stale workers
+  from mutating work after expiry. Each lease has a monotonically increasing
+  fencing token for safe recovery from crashed or disconnected agents.
+.PP
+  \-\-renew\-lease renews an existing lease instead of claiming new work.
+  This requires the issue to already have an active lease for the assignee.
+.PP
+  \-\-fencing\-token explicitly specifies a fencing token for advanced use cases.
+  Normally fencing tokens are auto\-generated and incremented on each claim/renewal.
+.PP
+  Standard non\-leased claims remain the default and maintain backward compatibility.
+  Leased claims add safety for distributed fleets and crash recovery scenarios.
+.PP
+CLAIM SEMANTICS:
+  \- Atomic: selection, assignment, and audit record are one transaction
+  \- Deterministic: same state always produces same result (fifo\-v1)
+  \- Safe: concurrent claimants never receive duplicate successful IDs
+  \- Empty queue: returns {} with exit 0, not an error
+.PP
+LEASE EXPIRY:
+  Once a lease expires, the assignee cannot update, release, or close the issue
+  until the lease is renewed or a new claim is made. This prevents stale workers
+  from corrupting work that has been reassigned to other agents.
+.SH OPTIONS
+.TP
+\fB\-\-assignee\fR=\fIASSIGNEE\fR
+Assignee name (required)
+.TP
+\fB\-\-json\fR
+Output in JSON format
+.TP
+\fB\-\-why\fR
+Explain the claim decision with a machine\-readable trace
+.TP
+\fB\-\-policy\fR=\fIPOLICY\fR [default: fifo\-v1]
+Scheduling policy for claim selection (fifo\-v1, aging\-v1, impact\-v1, rotation\-v1, balanced\-v1)
+.TP
+\fB\-\-lease\-ttl\fR=\fILEASE_TTL\fR
+Request a leased claim with time\-to\-live in seconds (optional)
+.TP
+\fB\-\-renew\-lease\fR
+Renew an existing lease instead of claiming new work
+.TP
+\fB\-\-fencing\-token\fR=\fIFENCING_TOKEN\fR
+Explicit fencing token for lease validation (advanced usage)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

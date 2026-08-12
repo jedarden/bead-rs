@@ -1,0 +1,29 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead label" 1  "bead label " 
+.SH NAME
+bead label \- Manage labels
+.SH SYNOPSIS
+\fBbead label\fR [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+Add or remove labels on an issue.
+.PP
+Labels are free\-form, case\-sensitive strings used for categorization. Both
+operations are idempotent, so they are safe to run repeatedly.
+.PP
+  bead label add <ID> \-\-label <LABEL>
+  bead label remove <ID> \-\-label <LABEL>
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.SH SUBCOMMANDS
+.TP
+bead label\-add(1)
+Add a label to an issue
+.TP
+bead label\-remove(1)
+Remove a label from an issue
+.TP
+bead label\-help(1)
+Print this message or the help of the given subcommand(s)

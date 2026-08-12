@@ -1,0 +1,68 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead close" 1  "bead close " 
+.SH NAME
+bead close \- Close an issue
+.SH SYNOPSIS
+\fBbead close\fR <\fB\-\-reason\fR> [\fB\-\-if\-revision\fR] [\fB\-\-fencing\-token\fR] [\fB\-\-dry\-run\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIID\fR> 
+.SH DESCRIPTION
+Close an issue with a required reason.
+.PP
+Close transitions an issue to closed status and records the close reason.
+The reason must be non\-empty and is preserved for audit and debugging.
+Closing clears manual blocking and may expose dependent issues.
+.PP
+EXAMPLES:
+  bead close bead\-123abc456789def \-\-reason "Completed successfully"
+  bead close ID \-\-reason "Fixed authentication bug"
+  bead close ID \-\-reason "Duplicate of ID\-456"
+  bead close ID \-\-reason "Done" \-\-if\-revision 3    # With revision guard
+.PP
+SEMANTICS:
+  \- All non\-closed states → closed (semantic close)
+  \- closed with matching reason → no\-op, idempotent
+  \- closed with different reason → conflict (exit 4)
+.PP
+REQUIREMENTS:
+  \-\-reason TEXT must be non\-empty after trimming whitespace
+.PP
+EFFECTS:
+  \- Sets base_status to closed
+  \- Clears manual_blocked flag
+  \- Sets closed_at to current time
+  \- Stores close_reason
+  \- Advances updated_at
+  \- Increments revision
+  \- Appends \*(Aqclosed\*(Aq audit event
+.PP
+REVISION GUARDS:
+  \-\-if\-revision N provides optimistic concurrency control.
+  If the issue\*(Aqs current revision doesn\*(Aqt match N, the close fails with
+  exit code 4 and a conflict message. This prevents silent lost updates
+  when multiple agents or humans modify the same issue concurrently.
+.PP
+IDEMPOTENCY:
+  Repeating the same close command with the same reason is idempotent
+  and does not change timestamps or append duplicate events.
+  Changing the reason is a conflict (use update with new reason if needed).
+.PP
+Dependent issues may become ready when their last blocker is closed.
+.SH OPTIONS
+.TP
+\fB\-\-reason\fR=\fIREASON\fR
+Close reason (required)
+.TP
+\fB\-\-if\-revision\fR=\fIIF_REVISION\fR
+Expected revision for optimistic concurrency control
+.TP
+\fB\-\-fencing\-token\fR=\fIFENCING_TOKEN\fR
+Fencing token for lease validation (advanced usage)
+.TP
+\fB\-\-dry\-run\fR
+Dry run: show what would happen without making changes
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIID\fR>
+Issue ID

@@ -1,0 +1,72 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead doctor" 1  "bead doctor " 
+.SH NAME
+bead doctor \- Diagnose workspace integrity and optionally perform repairs
+.SH SYNOPSIS
+\fBbead doctor\fR [\fB\-\-repair\fR] [\fB\-\-rehearse\fR] [\fB\-\-scope\fR] [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Perform read\-only integrity checks on the workspace.
+.PP
+Doctor validates workspace configuration, database integrity, checkpoint
+state, and filesystem without modifying data. With \-\-repair, performs
+safe automatic repairs for diagnosed issues. With \-\-rehearse, performs
+a disposable recovery rehearsal to verify disaster recovery procedures.
+.PP
+EXAMPLES:
+  bead doctor                           # Read\-only diagnostics
+  bead doctor \-\-repair                  # Diagnose and attempt repairs
+  bead doctor \-\-rehearse                # Test disaster recovery with temporary workspace
+.PP
+CHECKS PERFORMED:
+  \- Workspace configuration and permissions
+  \- Database integrity (SQLite PRAGMA checks)
+  \- Schema version and migration checksums
+  \- Checkpoint state and file consistency
+  \- Lifecycle and timestamp invariants
+  \- Dependency graph (no cycles or dangling references)
+  \- Orphaned temporary files
+.PP
+REPAIRS PERFORMED (with \-\-repair):
+  \- Remove proven\-stale operation\-owned temporary files
+  \- Rebuild checkpoint views from authoritative database state
+  \- Create missing safe indexes
+  \- Repair checkpoint state through atomic flush
+.PP
+RECOVERY REHEARSAL (with \-\-rehearse):
+  \- Create temporary workspace from current checkpoint
+  \- Run full diagnostics on temporary workspace
+  \- Re\-export checkpoint from temporary workspace
+  \- Compare semantic equivalence between original and re\-exported content
+  \- Generate comprehensive report with comparison results
+  \- Clean up only operation\-owned temporary files
+.PP
+DOCTOR OUTPUT:
+  OK  \- Check passed
+  WARN \- Non\-critical issue detected
+  FIXED \- Issue was repaired (with \-\-repair)
+.PP
+EXIT CODES:
+  0 \- All checks passed (or repairs successful)
+  1 \- Internal failure
+  3 \- Workspace not found or inaccessible
+  5 \- Integrity failure detected
+.PP
+Doctor never rewrites user data, drops tables, or performs speculative repairs.
+For serious integrity issues, recommendations are provided for explicit recovery.
+.SH OPTIONS
+.TP
+\fB\-\-repair\fR
+Attempt automatic repairs
+.TP
+\fB\-\-rehearse\fR
+Run disposable recovery rehearsal: create temp workspace, run diagnostics, re\-export, compare semantic equivalence
+.TP
+\fB\-\-scope\fR=\fISCOPE\fR
+Diagnostic scopes: store, backup, schema, dependencies, comments, all (default: all)
+.TP
+\fB\-\-json\fR
+Output diagnostics in JSON format
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

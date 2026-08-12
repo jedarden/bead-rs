@@ -1,0 +1,88 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead sync import-only" 1  "bead sync import-only " 
+.SH NAME
+bead sync import\-only \- Import forensic checkpoint with restore or merge
+.SH SYNOPSIS
+\fBbead sync import\-only\fR <\fB\-\-input\fR> [\fB\-\-profile\fR] [\fB\-\-restore\-into\-empty\fR] [\fB\-\-merge\fR] [\fB\-\-actor\fR] [\fB\-\-dry\-run\fR] [\fB\-\-diagnostics\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Import and validate forensic checkpoint with atomic activation.
+.PP
+Stages and validates complete forensic checkpoint before any state mutation.
+Supports both monolithic and sharded checkpoint\-set formats with full validation.
+.PP
+MODES:
+  Exactly one of \-\-restore\-into\-empty or \-\-merge must be specified.
+.PP
+  \-\-restore\-into\-empty: Restore into empty initialized workspace
+    \- Target must be newly initialized with no semantic mutations
+    \- Adopts checkpoint store UUID and event sequence
+    \- Validates all records: issues, events, receipts, hashes, counts
+    \- Replays events and verifies resulting state matches checkpoint
+    \- Creates durable \*(Aqrestore\*(Aq provenance receipt
+    \- Atomically activates in one transaction
+.PP
+  \-\-merge: Merge checkpoint into existing workspace
+    \- Same\-UUID: extends local history with compatible checkpoint events
+    \- Different\-UUID: merges foreign checkpoint with conflict detection
+    \- Validates event identities, hashes, and continuity
+    \- Handles conflicts via timestamp comparison with rollback
+    \- Creates durable \*(Aqmerge\*(Aq provenance receipt
+    \- Never deletes native issues absent from checkpoint
+.PP
+EXAMPLES:
+  bead sync import\-only \-\-input checkpoint/ \-\-restore\-into\-empty \-\-actor admin
+  bead sync import\-only \-\-input backup.jsonl \-\-merge \-\-actor admin \-\-dry\-run
+  bead sync import\-only \-\-input .beads/checkpoint \-\-merge \-\-actor system
+.PP
+VALIDATION PERFORMED:
+  \- Record type validation (issue, event, provenance_receipt)
+  \- Canonical ordering verification
+  \- Hash and count validation
+  \- UUID continuity checks
+  \- Event replay verification (restore)
+  \- Conflict detection (merge)
+  \- Graph validation (cycles, dangling references)
+.PP
+DRY RUN:
+  With \-\-dry\-run: performs complete validation and reconciliation without
+  activating state. Reports prospective counts, conflicts, and receipt preview.
+.PP
+PROVENANCE:
+  Both operations create immutable receipts stored in database and exported
+  in subsequent checkpoints. Receipts record: operation kind, source/target
+  UUIDs, source root hash, actor, counts, and result.
+.PP
+EXIT CODES:
+  0 \- Successful operation (or successful dry\-run)
+  2 \- CLI usage or validation error
+  3 \- Workspace or file not found
+  4 \- Reconciliation conflict
+  5 \- Malformed input or integrity failure
+.PP
+Use \-\-dry\-run to validate checkpoints before risking database mutation.
+.SH OPTIONS
+.TP
+\fB\-\-input\fR=\fIINPUT\fR
+Input file or directory path
+.TP
+\fB\-\-profile\fR=\fIPROFILE\fR [default: native\-v1]
+Profile for import (default: native\-v1)
+.TP
+\fB\-\-restore\-into\-empty\fR
+Restore checkpoint into empty workspace
+.TP
+\fB\-\-merge\fR
+Merge checkpoint into existing workspace
+.TP
+\fB\-\-actor\fR=\fIACTOR\fR
+Actor performing the import operation (required for restore/merge)
+.TP
+\fB\-\-dry\-run\fR
+Perform dry\-run without activating state
+.TP
+\fB\-\-diagnostics\fR
+Generate complete diagnostic report (R014)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

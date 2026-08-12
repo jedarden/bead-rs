@@ -1,0 +1,38 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead data" 1  "bead data " 
+.SH NAME
+bead data \- Manage structured bead data
+.SH SYNOPSIS
+\fBbead data\fR [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+Attach schema\-governed JSON documents to an issue.
+.PP
+Each document lives under a namespace and declares an immutable schema
+reference, which lets consumers negotiate on content they understand while
+unknown namespaces are preserved untouched through interchange.
+.PP
+  bead data set \-\-id <ID> \-\-namespace <NS> \-\-schema\-ref <REF> \-\-value <JSON>
+  bead data get \-\-id <ID> \-\-namespace <NS>
+  bead data list \-\-id <ID>
+  bead data remove \-\-id <ID> \-\-namespace <NS>
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.SH SUBCOMMANDS
+.TP
+bead data\-set(1)
+Set a structured data value for an issue
+.TP
+bead data\-get(1)
+Get a structured data value from an issue
+.TP
+bead data\-list(1)
+List all structured data namespaces for an issue
+.TP
+bead data\-remove(1)
+Remove a structured data value from an issue
+.TP
+bead data\-help(1)
+Print this message or the help of the given subcommand(s)

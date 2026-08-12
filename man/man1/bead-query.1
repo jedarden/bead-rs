@@ -1,0 +1,82 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead query" 1  "bead query " 
+.SH NAME
+bead query \- Execute safe query language queries
+.SH SYNOPSIS
+\fBbead query\fR [\fB\-\-file\fR] [\fB\-\-json\fR] [\fB\-\-output\-json\fR] [\fB\-\-save\-as\fR] [\fB\-\-list\-views\fR] [\fB\-\-view\fR] [\fB\-\-delete\-view\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Execute queries using the safe query language (R004).
+.PP
+Queries are specified as JSON files with predicates, sorting, and projection.
+This provides a powerful, type\-safe alternative to shell filtering while
+never exposing raw SQL or private schema details.
+.PP
+QUERY LANGUAGE FEATURES:
+  \- Predicates: field comparisons (equals, contains, greater than, etc.)
+  \- Sorting: deterministic multi\-field ordering
+  \- Projection: select specific fields to return
+  \- Versioned grammar: ensures forward compatibility
+  \- Safe execution: only whitelisted fields and operators
+.PP
+SUPPORTED FIELDS:
+  \- id, title, description, notes, priority (0\-4)
+  \- status (open, in_progress, deferred, closed)
+  \- blocked, assignee, type, created, updated, closed, close_reason
+.PP
+EXAMPLES:
+  bead query \-\-file open_high.json                     # Query from a file
+  bead query \-\-json \*(Aq{"version":"v1"}\*(Aq                 # Inline query text
+  bead query \-\-file alice_work.json \-\-output\-json      # Machine\-readable results
+  bead query \-\-file open_high.json \-\-save\-as hot       # Save as a named view
+  bead query \-\-view hot \-\-output\-json                  # Run a saved view
+  bead query \-\-list\-views                              # List saved views
+.PP
+Note: \-\-json supplies the query document itself. Use \-\-output\-json to render
+results as JSON.
+.PP
+QUERY FORMAT:
+  {
+    "version": "v1",
+    "predicates": [
+      {"field": "status", "operator": "=", "value": "open"},
+      {"field": "priority", "operator": ">=", "value": 2}
+    ],
+    "sort": [
+      {"field": "priority", "direction": "asc"}
+    ],
+    "limit": 100
+  }
+.PP
+OPERATORS:
+  \- =, !=, >, <, >=, <=  (numeric and string comparison)
+  \- contains, starts_with, ends_with  (string matching)
+  \- is_null, not_null  (null checking)
+.PP
+The query command never exposes raw SQL or internal schema details.
+All field names are validated against a public whitelist.
+.SH OPTIONS
+.TP
+\fB\-\-file\fR=\fIFILE\fR
+Query specification file (JSON format)
+.TP
+\fB\-\-json\fR=\fIJSON\fR
+Query specification as inline JSON
+.TP
+\fB\-\-output\-json\fR
+Output results in JSON format
+.TP
+\fB\-\-save\-as\fR=\fISAVE_AS\fR
+Save query as a named view
+.TP
+\fB\-\-list\-views\fR
+List all saved views
+.TP
+\fB\-\-view\fR=\fIVIEW\fR
+Execute a saved view
+.TP
+\fB\-\-delete\-view\fR=\fIDELETE_VIEW\fR
+Delete a saved view
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

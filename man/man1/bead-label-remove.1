@@ -1,0 +1,30 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead label remove" 1  "bead label remove " 
+.SH NAME
+bead label remove \- Remove a label from an issue
+.SH SYNOPSIS
+\fBbead label remove\fR <\fB\-\-label\fR> [\fB\-h\fR|\fB\-\-help\fR] <\fIID\fR> 
+.SH DESCRIPTION
+Remove a label from an issue (idempotent).
+.PP
+Removes the specified label from the issue. If the label does not exist,
+the command succeeds without making changes.
+.PP
+EXAMPLES:
+  bead label remove bead\-123abc456789def \-\-label bug
+  bead label remove ID \-\-label urgent
+.PP
+IDEMPOTENCY:
+  Removing a non\-existent label succeeds without error.
+  This makes label management safe and declarative.
+.SH OPTIONS
+.TP
+\fB\-\-label\fR=\fILABEL\fR
+Label to remove
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIID\fR>
+Issue ID

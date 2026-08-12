@@ -1,0 +1,36 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead policy check" 1  "bead policy check " 
+.SH NAME
+bead policy check \- Validate workspace policy and scheduling configuration
+.SH SYNOPSIS
+\fBbead policy check\fR [\fB\-\-format\fR] [\fB\-\-policy\fR] [\fB\-\-policy\-version\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Diagnose contradictory, unreachable, redundant, and ineffective scheduling
+or retention configuration without making any changes to the workspace.
+.PP
+This command performs comprehensive validation of:
+  \- Scheduling policy configuration and parameters
+  \- Retention and aging settings
+  \- Dependency and readiness rules
+  \- Version compatibility issues
+.PP
+Policy lint is purely advisory and will never make a bead eligible or ineligible.
+It only identifies potential configuration issues that may affect behavior.
+.PP
+EXAMPLES:
+  bead policy check
+  bead policy check \-\-format json
+.SH OPTIONS
+.TP
+\fB\-\-format\fR=\fIFORMAT\fR [default: text]
+Output format (text or json)
+.TP
+\fB\-\-policy\fR=\fIPOLICY\fR
+Scheduling policy to validate (defaults to current workspace policy)
+.TP
+\fB\-\-policy\-version\fR=\fIPOLICY_VERSION\fR
+Policy version to validate (defaults to current workspace version)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

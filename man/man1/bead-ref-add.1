@@ -1,0 +1,55 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead ref add" 1  "bead ref add " 
+.SH NAME
+bead ref add \- Add an external reference to an issue
+.SH SYNOPSIS
+\fBbead ref add\fR <\fB\-\-id\fR> <\fB\-\-namespace\fR> <\fB\-\-key\fR> <\fB\-\-value\fR> [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Add a namespaced external reference to an issue (idempotent).
+.PP
+Adds a generic (namespace, key, value) reference such as tracker IDs or
+commit identifiers. Does not replace native bead IDs or resolve anything
+over the network. Namespace\-scoped uniqueness supports reliable deduplication
+and cross\-tool recognition.
+.PP
+EXAMPLES:
+  bead ref add \-\-id bead\-123abc456789def \-\-namespace github \-\-key issue\-number \-\-value 12345
+  bead ref add \-\-id ID \-\-namespace gitlab \-\-key mr\-iid \-\-value 42
+  bead ref add \-\-id ID \-\-namespace jira \-\-key ticket \-\-value PROJ\-001
+.PP
+NAMING RULES:
+  \- Namespace: 1\-64 chars, lowercase letters/numbers/hyphens/underscores, must start with letter
+  \- Key: 1\-128 chars, no control characters
+  \- Value: 1\-512 chars, no control characters
+.PP
+COMMON NAMESPACES:
+  \- github: GitHub issues, PRs, commits
+  \- gitlab: GitLab merge requests, issues
+  \- jira: JIRA tickets
+  \- tracker: Generic issue trackers
+  \- vcs: Version control systems
+.PP
+USE CASES:
+  \- Link issues to external tracker tickets
+  \- Reference commit hashes or PR numbers
+  \- Cross\-tool issue correlation and deduplication
+  \- External system integration without network dependencies
+.PP
+The command validates all inputs and creates the reference atomically.
+.SH OPTIONS
+.TP
+\fB\-\-id\fR=\fIID\fR
+Issue ID
+.TP
+\fB\-\-namespace\fR=\fINAMESPACE\fR
+Reference namespace (e.g., github, gitlab, jira)
+.TP
+\fB\-\-key\fR=\fIKEY\fR
+Reference key (e.g., issue\-number, mr\-id, ticket)
+.TP
+\fB\-\-value\fR=\fIVALUE\fR
+Reference value (e.g., 12345, abc123, PROJ\-001)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

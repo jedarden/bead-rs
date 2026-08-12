@@ -1,0 +1,53 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead data set" 1  "bead data set " 
+.SH NAME
+bead data set \- Set a structured data value for an issue
+.SH SYNOPSIS
+\fBbead data set\fR <\fB\-\-id\fR> <\fB\-\-namespace\fR> <\fB\-\-schema\-ref\fR> <\fB\-\-value\fR> [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Set or replace a JSON value for a specific namespace with schema governance.
+.PP
+Sets or replaces the structured data value for the specified namespace and issue.
+Each namespace is governed by its own immutable schema reference, enabling controlled
+extension of issue data without arbitrary field proliferation.
+.PP
+EXAMPLES:
+  bead data set \-\-id bead\-123abc456789def \-\-namespace config \-\-schema\-ref schema:v1 \-\-value \*(Aq{"setting": "value"}\*(Aq
+  bead data set \-\-id ID \-\-namespace metrics \-\-schema\-ref schema:metrics \-\-value \*(Aq{"count": 42}\*(Aq
+.PP
+SCHEMA GOVERNANCE:
+  \- Each namespace has an immutable schema reference identifier
+  \- Unknown schemas are preserved for interchange but fail closed for mutation
+  \- Schema references enable validation and consumer negotiation
+.PP
+NAMING RULES:
+  \- Namespace: 1\-64 chars, lowercase letters/numbers/hyphens/underscores, must start with letter
+  \- Schema reference: 1\-512 chars, non\-empty
+.PP
+ATOMICITY:
+  \- Set operations are atomic and crash\-safe
+  \- Replaces existing values for the same namespace
+  \- Validates that the issue exists before setting data
+.PP
+USE CASES:
+  \- Add structured configuration data to issues
+  \- Store metrics and measurements
+  \- Attach schema\-governed metadata
+  \- Extend issue data without API changes
+.SH OPTIONS
+.TP
+\fB\-\-id\fR=\fIID\fR
+Issue ID
+.TP
+\fB\-\-namespace\fR=\fINAMESPACE\fR
+Data namespace (e.g., config, metrics, state)
+.TP
+\fB\-\-schema\-ref\fR=\fISCHEMA_REF\fR
+Schema reference (immutable identifier for the data schema)
+.TP
+\fB\-\-value\fR=\fIVALUE\fR
+JSON value to set
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

@@ -1,0 +1,43 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead recurrence" 1  "bead recurrence " 
+.SH NAME
+bead recurrence \- Manage recurrence templates
+.SH SYNOPSIS
+\fBbead recurrence\fR [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+Define templates that mint repeat issues on demand.
+.PP
+bead\-rs never creates occurrences on a schedule of its own. An external
+scheduler calls `recurrence materialize` when it wants the next one, and each
+occurrence records its series reference and sequence number.
+.PP
+  bead recurrence create \-\-id <ID> \-\-title <T> \-\-base\-title\-template <T {n}>
+  bead recurrence materialize \-\-id <ID> [\-\-actor <WHO>]
+  bead recurrence list | show \-\-id <ID> | history \-\-id <ID> | delete \-\-id <ID>
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.SH SUBCOMMANDS
+.TP
+bead recurrence\-create(1)
+Create a new recurrence template
+.TP
+bead recurrence\-show(1)
+Show a recurrence template
+.TP
+bead recurrence\-list(1)
+List all recurrence templates
+.TP
+bead recurrence\-delete(1)
+Delete a recurrence template
+.TP
+bead recurrence\-materialize(1)
+Materialize the next occurrence from a template
+.TP
+bead recurrence\-history(1)
+Show materialization history for a template
+.TP
+bead recurrence\-help(1)
+Print this message or the help of the given subcommand(s)

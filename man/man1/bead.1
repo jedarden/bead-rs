@@ -9,16 +9,17 @@ bead \- Clean\-room task coordination for agent fleets
 bead\-rs is an independent Rust task\-coordination system.
 .PP
 The intended workflow is:
-  init workspace \-> create/import beads \-> add blocking relationships
-  \-> inspect ready work \-> claim \-> update/release \-> close \-> flush JSONL backup
+  init workspace \-> create beads \-> add blocking relationships
+  \-> inspect ready work \-> claim \-> update/release \-> close \-> flush checkpoint
 .PP
 The ready frontier can be inspected with `bead list \-\-ready \-\-json \-\-limit N`,
 which uses claim order but does not reserve the displayed beads. Use `bead claim`
 to atomically assign work.
 .PP
-SQLite is the authoritative live state between flushes. The JSONL checkpoint is
-the portable backup and should be flushed with `bead sync \-\-flush\-only` before
-committing the repository.
+SQLite (.beads/beads.db) is the authoritative live state between flushes, and is
+not committed. The checkpoint under .beads/checkpoint/ is the portable, durable
+copy and is what Git tracks; flush it with `bead sync flush\-only` before
+committing the repository. Mutating commands never flush implicitly.
 .PP
 Lifecycle transitions:
   \- open beads may be ready if unassigned and not manually blocked
@@ -28,7 +29,15 @@ Lifecycle transitions:
   \- close requires a reason and may expose dependents
   \- reopen restores a closed bead to open
 .PP
-Use `bead \-\-help` to see all available commands.
+EXIT CODES:
+  0  success
+  1  internal failure
+  2  CLI usage or validation error
+  3  workspace, issue, or file not found
+  4  conflict (invalid transition, revision guard, cycle)
+  5  malformed input or integrity failure
+.PP
+Run `bead <COMMAND> \-\-help` for the full description of any command.
 .SH OPTIONS
 .TP
 \fB\-h\fR, \fB\-\-help\fR
@@ -71,6 +80,9 @@ Manage labels
 bead\-dep(1)
 Manage dependencies
 .TP
+bead\-ref(1)
+Manage external references
+.TP
 bead\-sync(1)
 Synchronize checkpoint operations
 .TP
@@ -80,8 +92,29 @@ Diagnose workspace integrity and optionally perform repairs
 bead\-capabilities(1)
 Show capabilities and supported features
 .TP
-bead\-unimplemented(1)
-Not yet implemented
+bead\-query(1)
+Execute safe query language queries
+.TP
+bead\-changes(1)
+Access cursor\-based change feed for incremental local synchronization
+.TP
+bead\-why(1)
+Explain issue state, readiness, blockers, and legal operations
+.TP
+bead\-compare(1)
+Compare issue representation across two profiles
+.TP
+bead\-data(1)
+Manage structured bead data
+.TP
+bead\-recurrence(1)
+Manage recurrence templates
+.TP
+bead\-policy(1)
+Validate workspace policy and scheduling configuration
+.TP
+bead\-migrate(1)
+Migrate checkpoints between profiles with dry\-run and receipt support
 .TP
 bead\-help(1)
 Print this message or the help of the given subcommand(s)

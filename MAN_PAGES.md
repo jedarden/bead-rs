@@ -14,9 +14,16 @@ cargo run --bin generate-man-pages
 cargo run --bin generate-man-pages -- /custom/path
 ```
 
-The generated man pages follow the naming convention:
+Pages are named by their full command path with hyphens, the same convention
+`git` uses for `git-commit.1`:
+
 - Root command: `bead.1`
-- Subcommands: `init.1`, `create.1`, `claim.1`, etc.
+- Subcommands: `bead-init.1`, `bead-create.1`, `bead-claim.1`
+- Nested subcommands: `bead-sync-flush-only.1`, `bead-recurrence-create.1`
+
+Naming pages by the bare leaf name instead loses them to collisions: `create`,
+`list`, `show`, `add`, `remove`, `set`, `get`, `delete`, `find`, `check`,
+`history`, and `materialize` each appear under more than one parent.
 
 ## Installing Man Pages
 
@@ -72,16 +79,17 @@ Once installed, you can access man pages using the `man` command:
 man bead
 
 # Specific commands
-man init
-man create
-man claim
-man sync
+man bead-init
+man bead-create
+man bead-claim
+man bead-sync
 ```
 
-For subcommands like `sync flush-only`, use:
+For nested subcommands, join the path with hyphens:
 
 ```bash
-man flush-only
+man bead-sync-flush-only
+man bead-recurrence-materialize
 ```
 
 ## Man Page Contents
@@ -126,11 +134,27 @@ If man pages are not found, check:
 
 ## Development
 
-When adding new commands to `src/cli.rs`, the man pages are automatically regenerated. The `generate-man-pages` binary:
+Man pages are generated from the clap command tree, so they inherit whatever
+`src/cli.rs` declares. The `generate-man-pages` binary:
 
 1. Parses the clap command tree
-2. Generates man pages for all non-hidden commands
-3. Creates proper man page formatting with sections
-4. Handles subcommands recursively
+2. Generates a page for every non-hidden command, named by its full path
+3. Renders each page under its fully-qualified name, so `NAME` reads
+   `bead recurrence create` rather than an ambiguous `create`
+4. Recurses into subcommands, skipping clap's built-in `help` pseudo-command
 
-Run the generation step after CLI changes to ensure man pages stay in sync with the command interface.
+They are **not** regenerated automatically. Run the generation step after any
+CLI change and commit the result:
+
+```bash
+cargo run --bin generate-man-pages
+```
+
+Because the pages come from the command tree, help text defects propagate into
+them. Two unit tests in `src/docs.rs` guard the source:
+
+- `test_long_help_is_reachable` fails if a subcommand's long help is shadowed by
+  a variant doc comment, which would otherwise reduce its page to a one-line
+  description.
+- `test_man_pages_do_not_collide` fails if two commands would write the same
+  file.

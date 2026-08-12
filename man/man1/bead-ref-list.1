@@ -1,0 +1,32 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead ref list" 1  "bead ref list " 
+.SH NAME
+bead ref list \- List external references for an issue
+.SH SYNOPSIS
+\fBbead ref list\fR <\fB\-\-id\fR> [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+List all external references for an issue.
+.PP
+Shows all namespaced external references attached to the issue, sorted
+by namespace and key for consistent output.
+.PP
+EXAMPLES:
+  bead ref list \-\-id bead\-123abc456789def
+  bead ref list \-\-id ID \-\-json
+.PP
+OUTPUT FORMAT:
+  Human\-readable format shows namespace, key, and value for each reference.
+  JSON format provides structured data for automation.
+.PP
+  \-\-json: Output in compact JSON format
+.SH OPTIONS
+.TP
+\fB\-\-id\fR=\fIID\fR
+Issue ID
+.TP
+\fB\-\-json\fR
+Output in JSON format
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

@@ -1,0 +1,28 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead init" 1  "bead init " 
+.SH NAME
+bead init \- Initialize a new workspace
+.SH SYNOPSIS
+\fBbead init\fR [\fB\-\-prefix\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Initialize a new bead workspace in the current directory.
+.PP
+Creates a .beads directory with SQLite database and configuration.
+Repeated initialization with the same prefix is safe and deterministic.
+The workspace prefix is used as the default prefix for generated bead IDs.
+.PP
+EXAMPLES:
+  bead init                          # Use default prefix \*(Aqbead\*(Aq
+  bead init \-\-prefix myteam          # Use custom prefix \*(Aqmyteam\*(Aq
+  bead init \-\-prefix taskforce       # Use custom prefix \*(Aqtaskforce\*(Aq
+.PP
+The workspace must be initialized before creating or managing issues.
+Once initialized, all bead commands will operate on this workspace.
+.SH OPTIONS
+.TP
+\fB\-\-prefix\fR=\fIPREFIX\fR [default: bead]
+Custom prefix for bead IDs (default: bead)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

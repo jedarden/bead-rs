@@ -1,0 +1,80 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead update" 1  "bead update " 
+.SH NAME
+bead update \- Update an issue
+.SH SYNOPSIS
+\fBbead update\fR [\fB\-\-status\fR] [\fB\-\-assignee\fR] [\fB\-\-clear\-assignee\fR] [\fB\-\-notes\fR] [\fB\-\-if\-revision\fR] [\fB\-\-fencing\-token\fR] [\fB\-\-dry\-run\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIID\fR> 
+.SH DESCRIPTION
+Update issue fields atomically.
+.PP
+Updates one or more issue fields in a single atomic transaction.
+All validations and mutations occur together; any failure leaves the
+issue unchanged. Changing status to \*(Aqclosed\*(Aq requires the \*(Aqclose\*(Aq command
+instead. Use \*(Aqreopen\*(Aq to transition from closed to open.
+.PP
+EXAMPLES:
+  bead update ID \-\-status in_progress                # Start working on an issue
+  bead update ID \-\-assignee alice                    # Assign to alice
+  bead update ID \-\-notes "Investigated root cause"   # Add investigation notes
+  bead update ID \-\-clear\-assignee                    # Clear assignment (open only)
+  bead update ID \-\-status in_progress \-\-if\-revision 3 # With revision guard
+.PP
+STATUS TRANSITIONS:
+  Valid transitions depend on the current base status:
+  \- open can transition to: in_progress, deferred
+  \- in_progress can transition to: open, deferred, closed (via \*(Aqclose\*(Aq command)
+  \- deferred can transition to: open, closed (via \*(Aqclose\*(Aq command)
+  \- closed can only transition to: open (via \*(Aqreopen\*(Aq command)
+.PP
+FIELDS THIS COMMAND DOES NOT CHANGE:
+  Title, description, priority, issue type, and labels are not editable here.
+  Set them at creation time with \*(Aqbead create\*(Aq, and use \*(Aqbead label add\*(Aq or
+  \*(Aqbead label remove\*(Aq for labels. Passing \-\-priority or \-\-title is a usage error.
+.PP
+ASSIGNMENT:
+  \-\-assignee and \-\-clear\-assignee are mutually exclusive.
+  \-\-clear\-assignee only works for open assigned issues.
+  For in_progress issues, use \*(Aqbead release\*(Aq to return to open/unassigned.
+.PP
+BLOCKED STATUS:
+  Setting \-\-status blocked sets manual_blocked=true and retains base status.
+  Setting \-\-status open clears manual blocking and sets base status to open.
+  Closed issues cannot use \-\-status open (use \*(Aqreopen\*(Aq instead).
+.PP
+REVISION GUARDS:
+  \-\-if\-revision N provides optimistic concurrency control.
+  If the issue\*(Aqs current revision doesn\*(Aqt match N, the update fails with
+  exit code 4 and a conflict message. This prevents silent lost updates
+  when multiple agents or humans modify the same issue concurrently.
+.PP
+All updates are atomic. Invalid transitions or conflicts exit with code 4
+without changing any fields or timestamps.
+.SH OPTIONS
+.TP
+\fB\-\-status\fR=\fISTATUS\fR
+New status
+.TP
+\fB\-\-assignee\fR=\fIASSIGNEE\fR
+New assignee
+.TP
+\fB\-\-clear\-assignee\fR
+Clear assignee (only for open assigned issues)
+.TP
+\fB\-\-notes\fR=\fINOTES\fR
+New notes
+.TP
+\fB\-\-if\-revision\fR=\fIIF_REVISION\fR
+Expected revision for optimistic concurrency control
+.TP
+\fB\-\-fencing\-token\fR=\fIFENCING_TOKEN\fR
+Fencing token for lease validation (advanced usage)
+.TP
+\fB\-\-dry\-run\fR
+Dry run: show what would happen without making changes
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIID\fR>
+Issue ID

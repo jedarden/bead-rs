@@ -1,0 +1,40 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead ref find" 1  "bead ref find " 
+.SH NAME
+bead ref find \- Find issues by external reference
+.SH SYNOPSIS
+\fBbead ref find\fR <\fB\-\-namespace\fR> <\fB\-\-value\fR> [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Find issues that have a specific external reference value.
+.PP
+Supports cross\-tool recognition by finding all issues that reference the
+same external identifier. This enables deduplication and correlation across
+different tools and namespaces.
+.PP
+EXAMPLES:
+  bead ref find \-\-namespace github \-\-value 12345
+  bead ref find \-\-namespace jira \-\-value PROJ\-001 \-\-json
+.PP
+CROSS\-TOOL RECOGNITION:
+  \- Multiple issues can reference the same external identifier
+  \- Enables detection of duplicate work across systems
+  \- Supports correlation without network access
+  \- Namespace\-scoped to avoid false matches
+.PP
+OUTPUT:
+  Returns a list of issue IDs that have the specified reference.
+  Empty list if no matching issues are found.
+.SH OPTIONS
+.TP
+\fB\-\-namespace\fR=\fINAMESPACE\fR
+Reference namespace
+.TP
+\fB\-\-value\fR=\fIVALUE\fR
+Reference value
+.TP
+\fB\-\-json\fR
+Output in JSON format
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

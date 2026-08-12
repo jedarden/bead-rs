@@ -1,0 +1,34 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead compare" 1  "bead compare " 
+.SH NAME
+bead compare \- Compare issue representation across two profiles
+.SH SYNOPSIS
+\fBbead compare\fR <\fB\-\-id\fR> <\fB\-\-source\fR> <\fB\-\-target\fR> [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Compare how an issue is represented in two different profiles.
+Reports preserved, transformed, omitted, and unsupported semantic fields.
+This is a read\-only operation that never writes to the database.
+.PP
+EXAMPLES:
+  bead compare \-\-id bead\-1234567890abcdef \-\-source native\-v1 \-\-target needle\-v1
+  bead compare \-\-id bead\-1234567890abcdef \-\-source native\-v1 \-\-target bf\-v1 \-\-json
+.PP
+The command fails with exit code 3 if the issue is not found,
+or exit code 2 if either profile is not supported.
+.SH OPTIONS
+.TP
+\fB\-\-id\fR=\fIID\fR
+Issue ID to compare
+.TP
+\fB\-\-source\fR=\fISOURCE\fR
+Source profile name
+.TP
+\fB\-\-target\fR=\fITARGET\fR
+Target profile name
+.TP
+\fB\-\-json\fR
+Output in JSON format
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

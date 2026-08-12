@@ -1,0 +1,43 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead why" 1  "bead why " 
+.SH NAME
+bead why \- Explain issue state, readiness, blockers, and legal operations
+.SH SYNOPSIS
+\fBbead why\fR <\fB\-\-id\fR> [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Provide comprehensive explanation of why an issue is in its current state,
+what operations are legal, and what factors affect its claim ranking.
+.PP
+This command gives humans and agents one entry point for understanding issue state,
+readiness, active blockers, claim\-ranking factors, and legal next operations. It calls
+the same domain evaluators and reason codes used by R001 (decision traces) and
+R019 (intelligent scheduling) to ensure consistency across all diagnostic interfaces.
+.PP
+EXAMPLES:
+  bead why \-\-id bead\-123abc456789def           # Human\-readable explanation
+  bead why \-\-id bead\-123abc456789def \-\-json    # Machine\-readable JSON output
+.PP
+EXPLANATION COVERAGE:
+  \- Effective vs base status (blocked vs open/in_progress/closed)
+  \- Ready frontier analysis (unassigned, no manual block, no active blockers)
+  \- Active blocker analysis with blocker details
+  \- Claim ranking factors (priority, age, rotation, attempt tier, graph impact)
+  \- Legal operations list with validity checks and command examples
+  \- Reuse of R001 reason codes and R019 scheduling metrics
+.PP
+OUTPUT FORMAT:
+  Human\-readable: Multi\-section text with clear headers and actionable insights
+  JSON (\-\-json): Structured WhyExplanation with all analysis components
+.PP
+The command fails with exit code 3 if the issue is not found.
+.SH OPTIONS
+.TP
+\fB\-\-id\fR=\fIID\fR
+Issue ID to explain
+.TP
+\fB\-\-json\fR
+Output in JSON format
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

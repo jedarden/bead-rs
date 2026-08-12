@@ -1,0 +1,53 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead show" 1  "bead show " 
+.SH NAME
+bead show \- Show a single issue
+.SH SYNOPSIS
+\fBbead show\fR [\fB\-\-json\fR] [\fB\-\-comments\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIID\fR> 
+.SH DESCRIPTION
+Display detailed information about a single issue.
+.PP
+Shows complete issue details including dependencies, labels, and optionally
+comments. Output format depends on \-\-json flag.
+.PP
+EXAMPLES:
+  bead show bead\-123abc456789def                    # Human\-readable output
+  bead show ID \-\-json                                # JSON output for NEEDLE
+  bead show ID \-\-comments unresolved                 # With unresolved comments
+  bead show ID \-\-comments all \-\-json                 # Full issue with all comments
+.PP
+OUTPUT FORMAT:
+  Without \-\-json: Human\-readable detailed view
+  With \-\-json: One\-element JSON array for NEEDLE v1 compatibility
+.PP
+COMMENT PROJECTION:
+  \-\-comments none         Show only counts and resolution metadata (default)
+  \-\-comments unresolved   Include bodies for unresolved comments only
+  \-\-comments all          Include all comment bodies in canonical order
+.PP
+NEEDLE COMPATIBILITY:
+  JSON output format is a one\-element array containing the issue object.
+  This matches NEEDLE v1 expectations for subprocess output.
+.PP
+ISSUE DETAILS INCLUDE:
+  \- Basic fields: id, title, description, priority, status
+  \- Assignment: assignee (if any)
+  \- Timestamps: created_at, updated_at, closed_at (if closed)
+  \- Dependencies: blocked_by (blocking issues), blocking (issues this blocks)
+  \- Labels: all assigned labels
+  \- Comments: based on \-\-comments projection
+  \- Metadata: issue_type, manual_blocked flag, close_reason (if closed)
+.SH OPTIONS
+.TP
+\fB\-\-json\fR
+Output in JSON format
+.TP
+\fB\-\-comments\fR=\fICOMMENTS\fR [default: none]
+Comment projection: none, unresolved, or all (default: none)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIID\fR>
+Issue ID

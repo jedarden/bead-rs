@@ -1,0 +1,59 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead release" 1  "bead release " 
+.SH NAME
+bead release \- Release a claimed issue
+.SH SYNOPSIS
+\fBbead release\fR [\fB\-\-if\-revision\fR] [\fB\-\-fencing\-token\fR] [\fB\-\-dry\-run\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIID\fR> 
+.SH DESCRIPTION
+Atomically release a claimed issue back to open/unassigned status.
+.PP
+The release command returns an in_progress issue to open and unassigned state.
+This is the proper way to stop working on an issue without closing it.
+For open assigned issues, use \*(Aqupdate \-\-clear\-assignee\*(Aq instead.
+.PP
+EXAMPLES:
+  bead release bead\-123abc456789def    # Release claimed issue
+  bead release ID                       # Release by issue ID
+  bead release ID \-\-if\-revision 4       # With revision guard
+.PP
+SEMANTICS:
+  \- in_progress → open, unassigned (semantic release)
+  \- open/unassigned → no\-op, idempotent
+  \- Other states → conflict (exit 4)
+.PP
+REVISION GUARDS:
+  \-\-if\-revision N provides optimistic concurrency control.
+  If the issue\*(Aqs current revision doesn\*(Aqt match N, the release fails with
+  exit code 4 and a conflict message. This prevents silent lost updates
+  when multiple agents or humans modify the same issue concurrently.
+.PP
+Release is atomic with proper audit event recording. The prior assignee
+and resulting state are recorded in the \*(Aqreleased\*(Aq audit event.
+The issue\*(Aqs updated_at timestamp advances on semantic release.
+.PP
+Use release when:
+  \- You need to return a claimed issue to the ready frontier
+  \- Work was started but won\*(Aqt continue (not completed)
+  \- You want another agent/worker to be able to claim the issue
+.PP
+Use close when:
+  \- The work is complete and verified
+  \- The issue should be removed from the active frontier
+  \- Dependent issues can now become unblocked
+.SH OPTIONS
+.TP
+\fB\-\-if\-revision\fR=\fIIF_REVISION\fR
+Expected revision for optimistic concurrency control
+.TP
+\fB\-\-fencing\-token\fR=\fIFENCING_TOKEN\fR
+Fencing token for lease validation (advanced usage)
+.TP
+\fB\-\-dry\-run\fR
+Dry run: show what would happen without making changes
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIID\fR>
+Issue ID

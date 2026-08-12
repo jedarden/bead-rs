@@ -1,0 +1,37 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead ref remove" 1  "bead ref remove " 
+.SH NAME
+bead ref remove \- Remove an external reference from an issue
+.SH SYNOPSIS
+\fBbead ref remove\fR <\fB\-\-id\fR> <\fB\-\-namespace\fR> <\fB\-\-key\fR> [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Remove a namespaced external reference from an issue (idempotent).
+.PP
+Removes the specified external reference from the issue. If the reference
+does not exist, the command succeeds without making changes.
+.PP
+EXAMPLES:
+  bead ref remove \-\-id bead\-123abc456789def \-\-namespace github \-\-key issue\-number
+  bead ref remove \-\-id ID \-\-namespace gitlab \-\-key mr\-id
+.PP
+IDEMPOTENCY:
+  Removing a non\-existent reference succeeds without error.
+  This makes external reference management safe and declarative.
+.PP
+NAMESPACE\-SCOPED:
+  References are identified by (issue_id, namespace, key) combination.
+  The same namespace can have different keys for the same issue.
+.SH OPTIONS
+.TP
+\fB\-\-id\fR=\fIID\fR
+Issue ID
+.TP
+\fB\-\-namespace\fR=\fINAMESPACE\fR
+Reference namespace
+.TP
+\fB\-\-key\fR=\fIKEY\fR
+Reference key
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

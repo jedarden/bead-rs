@@ -1,0 +1,43 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead changes" 1  "bead changes " 
+.SH NAME
+bead changes \- Access cursor\-based change feed for incremental local synchronization
+.SH SYNOPSIS
+\fBbead changes\fR [\fB\-\-since\fR] [\fB\-\-latest\fR] [\fB\-\-snapshot\fR] [\fB\-\-validate\fR] [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Read the append\-only change feed so a consumer can catch up incrementally.
+.PP
+Each mutation appends an event with a monotonically increasing sequence number.
+A cursor records how far a consumer has read, so it can resume without rescanning
+the whole workspace. Cursors are only meaningful against the snapshot identity
+that issued them; if the workspace is restored from a checkpoint the identity
+changes and old cursors must be revalidated.
+.PP
+EXAMPLES:
+  bead changes \-\-latest                  # Current cursor position
+  bead changes \-\-since 42 \-\-json         # Events after sequence 42
+  bead changes \-\-snapshot                # Snapshot identity of this workspace
+  bead changes \-\-validate <CURSOR>       # Check a cursor for gaps
+.PP
+Exactly one of \-\-latest, \-\-since, \-\-snapshot, or \-\-validate is expected.
+This feed is local to the workspace; bead\-rs performs no network access.
+.SH OPTIONS
+.TP
+\fB\-\-since\fR=\fISINCE\fR
+Get changes since this cursor position (sequence number or cursor string)
+.TP
+\fB\-\-latest\fR
+Get the latest cursor position for tracking
+.TP
+\fB\-\-snapshot\fR
+Get the current snapshot identity
+.TP
+\fB\-\-validate\fR=\fIVALIDATE\fR
+Validate a cursor and check for gaps
+.TP
+\fB\-\-json\fR
+Output in JSON format
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
