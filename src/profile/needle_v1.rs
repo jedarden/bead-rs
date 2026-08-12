@@ -60,6 +60,23 @@ impl ProfileAdapter for NeedleV1Adapter {
     }
 
     fn native_to_profile(&self, issue: &Issue) -> Result<TransformResult> {
+        self.native_record_to_profile(issue, &[], &[])
+    }
+
+    fn native_record_to_profile(
+        &self,
+        issue: &Issue,
+        labels: &[String],
+        dependencies: &[(String, String, String)],
+    ) -> Result<TransformResult> {
+        let dependency_values: Vec<Value> = dependencies
+            .iter()
+            .map(|(_blocked, blocker, kind)| serde_json::json!({"blocker": blocker, "kind": kind}))
+            .collect();
+
+        let mut sorted_labels = labels.to_vec();
+        sorted_labels.sort();
+
         let mut obj = serde_json::json!({
             "id": issue.id,
             "title": issue.title,
@@ -67,10 +84,10 @@ impl ProfileAdapter for NeedleV1Adapter {
             "priority": issue.priority,
             "status": self.native_status_to_needle(&issue.base_status),
             "assignee": issue.assignee,
-            "dependencies": [],
+            "dependencies": dependency_values,
             "created_at": issue.created_at,
             "updated_at": issue.updated_at,
-            "labels": [],
+            "labels": sorted_labels,
             "issue_type": issue.issue_type.as_ref().unwrap_or(&"task".to_string())
         });
 
@@ -82,10 +99,6 @@ impl ProfileAdapter for NeedleV1Adapter {
                 obj_map.insert("notes".to_string(), Value::String(notes.clone()));
             }
         }
-
-        // Transform dependencies to needle-v1 format
-        // Note: In a full implementation, we'd query dependencies here
-        // For now, we provide the basic structure
 
         Ok(TransformResult {
             data: obj,

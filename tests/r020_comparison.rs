@@ -462,3 +462,99 @@ fn test_comparison_read_only_operation() {
         "Comparison should not modify issue state"
     );
 }
+
+#[test]
+#[serial]
+fn test_comparison_reports_real_dependencies_and_labels() {
+    // Regression test: `compare_issue_profiles` used to call the base,
+    // record-less `native_to_profile(&issue)` trait method on both sides,
+    // which every adapter either hardcodes empty dependencies/labels for
+    // (needle-v1) or can only fill from a `native_record_to_profile` call
+    // it never received (native-v1, bf-v1) -- so `compare` always reported
+    // every real dependency/label as "Added in target" with an empty
+    // value, regardless of which profiles were compared or what data the
+    // issue actually had.
+    let temp_dir = tempfile::tempdir().unwrap();
+    let workspace_dir = temp_dir.path();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .arg("init")
+        .current_dir(workspace_dir)
+        .env("HOME", workspace_dir.to_str().unwrap())
+        .assert()
+        .success();
+
+    let blocker_id = Command::cargo_bin("bead")
+        .unwrap()
+        .args(["create", "--title", "Blocker"])
+        .current_dir(workspace_dir)
+        .env("HOME", workspace_dir.to_str().unwrap())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let blocker_id = String::from_utf8_lossy(&blocker_id).trim().to_string();
+
+    let blocked_id = Command::cargo_bin("bead")
+        .unwrap()
+        .args(["create", "--title", "Blocked"])
+        .current_dir(workspace_dir)
+        .env("HOME", workspace_dir.to_str().unwrap())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let blocked_id = String::from_utf8_lossy(&blocked_id).trim().to_string();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["dep", "add", &blocked_id, &blocker_id, "--kind", "blocks"])
+        .current_dir(workspace_dir)
+        .env("HOME", workspace_dir.to_str().unwrap())
+        .assert()
+        .success();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["label", "add", &blocked_id, "--label", "urgent"])
+        .current_dir(workspace_dir)
+        .env("HOME", workspace_dir.to_str().unwrap())
+        .assert()
+        .success();
+
+    let output = Command::cargo_bin("bead")
+        .unwrap()
+        .args([
+            "compare",
+            "--id",
+            &blocked_id,
+            "--source",
+            "native-v1",
+            "--target",
+            "needle-v1",
+        ])
+        .current_dir(workspace_dir)
+        .env("HOME", workspace_dir.to_str().unwrap())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let output = String::from_utf8_lossy(&output);
+
+    assert!(
+        output.contains(&blocker_id),
+        "compare output should contain the real blocker id, not an empty dependencies array:\n{output}"
+    );
+    assert!(
+        output.contains("urgent"),
+        "compare output should contain the real label, not an empty labels array:\n{output}"
+    );
+    assert!(
+        output.contains("[dependencies] Preserved") || output.contains("[dependencies] Transformed"),
+        "dependencies should be reported as Preserved/Transformed, not Added/Omitted, once both sides receive real record data:\n{output}"
+    );
+}

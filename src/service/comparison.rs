@@ -88,6 +88,28 @@ pub fn compare_issue_profiles(
         .with_context(|| format!("Failed to retrieve issue {}", issue_id))?
         .ok_or_else(|| anyhow::anyhow!("Issue {} not found", issue_id))?;
 
+    // Load the issue's real labels and dependencies too -- comparing via
+    // the record-less `native_to_profile` alone silently reported every
+    // dependency/label as absent from the source and empty in the target,
+    // regardless of what profiles were being compared, because neither
+    // side ever saw the relational data. Query pattern matches checkpoint
+    // export's enrichment in `service/checkpoint.rs`.
+    let mut label_stmt =
+        conn.prepare("SELECT label FROM labels WHERE issue_id = ?1 ORDER BY label")?;
+    let labels = label_stmt
+        .query_map([&issue.id], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut dependency_stmt = conn.prepare(
+        "SELECT blocked_issue_id, blocker_issue_id, kind FROM dependencies \
+         WHERE blocked_issue_id = ?1 ORDER BY blocker_issue_id, kind",
+    )?;
+    let dependencies = dependency_stmt
+        .query_map([&issue.id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
     // Get both profile adapters
     let registry = ProfileRegistry::new();
     let source_adapter = registry
@@ -97,9 +119,9 @@ pub fn compare_issue_profiles(
         .get_adapter(target_profile)
         .map_err(|e| anyhow::anyhow!("Target profile '{}' error: {}", target_profile, e))?;
 
-    // Render the issue through both profiles
-    let source_result = source_adapter.native_to_profile(&issue)?;
-    let target_result = target_adapter.native_to_profile(&issue)?;
+    // Render the issue through both profiles, including relationship data.
+    let source_result = source_adapter.native_record_to_profile(&issue, &labels, &dependencies)?;
+    let target_result = target_adapter.native_record_to_profile(&issue, &labels, &dependencies)?;
 
     // Extract the actual JSON values from TransformResult
     let source_value = source_result.data;
