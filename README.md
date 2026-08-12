@@ -136,18 +136,18 @@ omits, or cannot represent. Unknown fields survive round trips.
 See [interoperability notes](docs/notes/interoperability-architecture.md) and
 [NEEDLE compatibility](docs/notes/needle-compatibility.md).
 
-## Differences from `bf`
+## CLI conventions worth knowing
 
-bead-rs is a clean-room implementation, not a drop-in replacement. If you are
-coming from `bf`, these differ:
+bead-rs is an independent implementation, not a drop-in replacement for any
+other task tracker. These conventions catch people out:
 
-| `bf` | `bead-rs` |
+| | |
 | --- | --- |
-| `bf` | `bead` |
-| `bf create "Title"` | `bead create --title "Title"` |
-| `bf ready` | `bead list --ready` |
-| `bf sync --flush-only` | `bead sync flush-only` (a subcommand, not a flag) |
-| `--json` emits an array | `--json` emits NDJSON |
+| The binary is `bead` | not the crate name `bead-rs` |
+| `create` takes a flag | `bead create --title "Title"`, not a positional title |
+| Ready work is a filter | `bead list --ready`, not a `ready` command |
+| `flush-only` is a subcommand | `bead sync flush-only`, not `bead sync --flush-only` |
+| `--json` emits NDJSON | one object per line, not an array (except `show`, which emits a one-element array) |
 
 ## Documentation
 
@@ -184,7 +184,7 @@ depending on it for anything critical.
 specifications committed to this repository. Clean-room contributors must
 follow [AGENTS.md](AGENTS.md) and [PROVENANCE.md](PROVENANCE.md).
 
-`bead-rs` is not affiliated with or endorsed by `beads_rust` or `bead-forge`.
+`bead-rs` is not affiliated with or endorsed by any other bead implementation.
 
 ## License
 

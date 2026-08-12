@@ -8,9 +8,8 @@ carefully as its correctness.
 - Implement only from files under `research/specs/`, independently authored
   fixtures under `research/fixtures/`, public standards, and dependency API
   documentation.
-- Do not inspect, copy, translate, paraphrase, or diff source code from
-  `beads_rust`, `bead-forge`, or another bead implementation while authoring
-  implementation code.
+- Do not inspect, copy, translate, paraphrase, or diff source code from any
+  other bead implementation while authoring implementation code.
 - Do not copy their tests, fixtures, SQL, comments, help prose, error prose, or
   internal names.
 - Observable behavior may be recorded by a separate specification activity.

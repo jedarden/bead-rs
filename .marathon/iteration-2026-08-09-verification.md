@@ -77,7 +77,7 @@ According to feature ledger rules: "After F001-F017 pass, materialize R001-R024 
 ### Clean-Room Boundary Verification
 
 ✅ **All implementation independently authored** from specifications in `research/specs/`
-✅ **No inspection** of upstream beads_rust, bead-forge, or other bead implementations
+✅ **No inspection** of any other bead implementation
 ✅ **External dependencies properly documented** in `docs/traceability/external-dependencies.md`
 ✅ **Independent review processes** defined and awaiting external assignment
 ✅ **No gate weakening**, scope reduction, or bypass of blocking requirements

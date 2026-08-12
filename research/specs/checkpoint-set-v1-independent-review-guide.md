@@ -29,7 +29,7 @@ Validate that `checkpoint-set-v1.md` contains all required elements for a normat
 ### 2. Clean-Room Boundary Validation
 Confirm no contamination from existing bead implementations:
 
-- [ ] **No Source Inspection**: Specification contains no SQL, schema names, or internal structures from beads_rust or bead-forge
+- [ ] **No Source Inspection**: Specification contains no SQL, schema names, or internal structures from any other bead implementation
 - [ ] **Independent Terminology**: Uses bead-rs native terminology, not copied from upstream
 - [ ] **Original Design**: Sharding, pointer, and manifest designs are independent implementations
 - [ ] **No Test Copying**: Fixtures and test scenarios are independently conceived
@@ -144,7 +144,7 @@ Identify and resolve any ambiguous or incomplete specification elements:
 - [ ] **Not the Original Implementer**: Different person than F017 implementation author
 - [ ] **Not the Specification Author**: Different person than checkpoint-set-v1.md author
 - [ ] **No Implementation Knowledge**: Reviewer has not examined F017 implementation code before specification review
-- [ ] **No Upstream Access**: Reviewer has not inspected beads_rust or bead-forge implementations
+- [ ] **No Upstream Access**: Reviewer has not inspected any other bead implementation
 - [ ] **No Coaching**: Reviewer has not received guidance from implementation author
 
 ### Review Process Requirements:

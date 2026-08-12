@@ -33,7 +33,7 @@
 **Required**: Independent completion and review of external profile specifications
 
 1. **br-v1-profile.md**: Currently a TEMPLATE requiring:
-   - External author with knowledge of br-v1 (bead-rust v1) format
+   - External author with knowledge of the br-v1 format
    - Complete field presence matrix
    - Status value mappings
    - Dependency direction declarations  
@@ -42,7 +42,7 @@
    - Independent fixture creation and review
 
 2. **bf-v1-profile.md**: Currently a TEMPLATE requiring:
-   - External author with knowledge of bf-v1 (bead-forge v1) format
+   - External author with knowledge of the bf-v1 format
    - Complete field presence matrix
    - Status value mappings
    - Dependency direction declarations (including special syntax like `dep add BLOCKER --blocks BLOCKED`)

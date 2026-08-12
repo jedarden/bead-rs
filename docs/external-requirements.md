@@ -48,8 +48,8 @@ Version 0.1 implementation is blocked on two features that require external auth
 - Loss report requirements
 
 **Clean-Room Requirements**:
-- Fixtures created without inspection of beads_rust source code
-- Fixtures created without copying beads_rust tests
+- Fixtures created without inspection of any other implementation's source code
+- Fixtures created without copying any other implementation's tests
 - Only public br-v1 CLI behavior observed
 - No internal documentation consulted
 - Sanitized behavioral facts recorded only
@@ -89,8 +89,8 @@ Location: `research/fixtures/br-v1/`
 - Data structure variations (field naming, array/object organization)
 
 **Clean-Room Requirements**:
-- Fixtures created without inspection of bead-forge source code
-- Fixtures created without copying bead-forge tests
+- Fixtures created without inspection of any other implementation's source code
+- Fixtures created without copying any other implementation's tests
 - Only public bf-v1 CLI behavior observed
 - No internal documentation consulted
 - Sanitized behavioral facts recorded only

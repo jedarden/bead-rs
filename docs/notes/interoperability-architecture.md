@@ -9,10 +9,10 @@ tools through versioned JSONL and CLI compatibility profiles. It never mutates
 another implementation's database.
 
 ```text
-beads_rust checkpoint ---- br-v1 adapter --+
-                                           +-- canonical model -- native store
-bead-forge checkpoint ---- bf-v1 adapter --+
-                                           +-- NEEDLE CLI contract
+external checkpoint ---- br-v1 adapter --+
+                                          +-- canonical model -- native store
+external checkpoint ---- bf-v1 adapter --+
+                                          +-- NEEDLE CLI contract
 ```
 
 Each adapter performs parse, validate, normalize, and emit operations. The

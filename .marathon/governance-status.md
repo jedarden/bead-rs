@@ -16,7 +16,7 @@
 
 #### F012: External Interchange Profiles
 **Blocking Reason**: Missing independently approved external specifications and fixtures
-- **Required**: External authors for br-v1 (bead-rust) and bf-v1 (bead-forge) profile specifications
+- **Required**: External authors for the br-v1 and bf-v1 profile specifications
 - **Required**: Independent reviewers with domain expertise
 - **Required**: Complete field presence matrices, status mappings, dependency direction declarations
 - **Required**: Independent conformance fixtures with SHA-256 hashes
@@ -120,7 +120,7 @@ According to `.marathon/instruction.md` iteration selection rules:
 
 ### Clean-Room Status
 - **Implementation Boundary**: All code from independent specifications only
-- **No Upstream Inspection**: No consultation of beads_rust, bead-forge, or other implementations
+- **No Upstream Inspection**: No consultation of any other bead implementation
 - **Violation Documentation**: F017 violation properly recorded in PROVENANCE.md
 - **Status**: MAINTAINED
 

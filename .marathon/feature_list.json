@@ -370,7 +370,7 @@
         "Independent review completed 2026-08-10 by Claude (Anthropic); see docs/reviews/f012-independent-review-2026-08-10.md",
         "All 6 manifest SHA-256 hashes recomputed and matched (br-v1, bf-v1)",
         "Every independently testable bf-v1 rule reproduced correctly against the real bf 0.4.0 producer (dependency direction/edge schema, blocked-status materialization, empty-vs-absent semantics, export ordering, timestamp format)",
-        "Fixture correction 2026-08-10 by Claude (Anthropic): both profiles and both fixture corpora regenerated against real producers (bf 0.4.0 installed locally; br 0.1.28 via checksummed official GitHub release binary, not the local beads_rust source checkout) to resolve independent-review findings",
+        "Fixture correction 2026-08-10 by Claude (Anthropic): both profiles and both fixture corpora regenerated against real producers (bf 0.4.0 installed locally; br 0.1.28 via checksummed official GitHub release binary, not any local producer source checkout) to resolve independent-review findings",
         "br-v1's central claim corrected: non-derived blocked is directly accepted/exported by real br 0.1.28, not rejected; close_reason field added to field matrix",
         "bf-v1 corrections: dependencies array is creation-ordered not sorted, deferred is accepted by the producer with no established semantic mapping, events field added",
         "Both invalid-cases.json fixtures gained an explicit-null case; all manifest hashes recomputed",

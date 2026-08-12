@@ -12,7 +12,7 @@ verified increments until full-project completion.
    `research/fixtures/`, public standards, and ordinary dependency docs.
 3. Never inspect, search for, clone, fetch, or request source, tests, fixtures,
    SQL, prompts, transcripts, or implementation documentation from
-   `beads_rust`, `bead-forge`, or another bead implementation.
+   any other bead implementation.
 4. Never use CASS, cross-session search, inherited Claude history, or global
    memory to recover implementation ideas.
 5. If prohibited material becomes visible, stop work on that component and

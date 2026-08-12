@@ -25,7 +25,7 @@ commit were verified before review.
 I read `AGENTS.md`, the round-two request, `research/specs/clean-room-protocol.md`,
 and `PROVENANCE.md` before reviewing the two profiles and fixture directories.
 I did not read or build source, tests, fixtures, SQLite schemas, or internal
-documentation from beads_rust, bead-forge, or another producer. I did not use
+documentation from any other producer. I did not use
 the existing `src/profile` code or its tests as evidence and did not modify any
 reviewed specification or fixture. All producer records below were invented in
 fresh directories under `/home/coding/scratch`.
@@ -62,8 +62,8 @@ checksum files and the downloaded archive gave:
 
 The extracted x86-64 Linux binary reported `br 0.1.28`; its SHA-256 was
 `0da57fc213165e876cd6f0d9a1ffc23ebe27408afba60119137681289d740707`.
-The acquisition URL was the official GitHub release asset under
-`Dicklesworthstone/beads_rust/releases/download/v0.1.28/`.
+The acquisition URL was the producer project's official GitHub release asset
+for `v0.1.28`.
 
 In a fresh `br init --prefix r2` workspace, public CLI operations created
 literal `blocked`, `deferred`, and invented `future_state` statuses; labels in
@@ -73,11 +73,11 @@ was inspected as JSONL.
 
 ### bf 0.4.0
 
-`/home/coding/.cargo/bin/bf` reported `bf 0.4.0`; its SHA-256 was
+The installed `bf` reported `bf 0.4.0`; its SHA-256 was
 `696019aeaaeee50ce1fc62fe2407e73892caf9818e54f434f5e22b0dad81018e`
 (6,395,912-byte x86-64 ELF). Cargo's local installation registry identifies it
-as `bead-forge 0.4.0 (path+file:///home/coding/bead-forge)`. I did not open or
-inspect that source path.
+as the producer package at version 0.4.0, installed from a local path. I did
+not open or inspect that source path.
 
 This proves the exact executable and version exercised, but not an independent
 public-release acquisition/checksum chain. The review boundary permits public

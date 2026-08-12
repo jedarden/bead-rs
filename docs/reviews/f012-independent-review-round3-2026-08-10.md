@@ -98,12 +98,12 @@ Every manifest entry also matched:
 Disposition: **approved for the narrow request only**.
 
 At `2026-08-10T03:18:52Z` through `2026-08-10T03:19:40Z`, I checked the public
-GitHub mirror release API and pages for `jedarden/bead-forge`, the direct
+GitHub mirror release API and pages for the `bf` producer project, the direct
 `v0.4.0` release URL, crates.io's package/version API and page, and the public
 Forgejo release URLs. GitHub returned an empty release list and 404 for the tag;
 crates.io had no package/version page (the API denied anonymous automation and
 the page returned 404); Forgejo redirected anonymous access to sign-in. General
-public web searches likewise found no bead-forge 0.4.0 compiled release. No
+public web searches likewise found no 0.4.0 compiled release. No
 official compiled artifact, publisher checksum, signature, SBOM, or attestation
 was found. The public Forgejo API was authentication-gated, so this is an
 approval of the documented provisional exception, not proof that no private or
@@ -114,8 +114,8 @@ It was 6,395,912 bytes, a stripped dynamically linked x86-64 Linux PIE ELF,
 with SHA-256
 `696019aeaaeee50ce1fc62fe2407e73892caf9818e54f434f5e22b0dad81018e`
 and GNU build ID `58f50ef6ce07b6385d837ff37df3032803210b39`. Local Cargo install metadata
-identified `bead-forge 0.4.0 (path+file:///home/coding/bead-forge)` and binary
-`bf`; the referenced checkout was not opened or inspected.
+identified the producer package at version 0.4.0, installed from a local path,
+providing binary `bf`; the referenced checkout was not opened or inspected.
 
 In fresh workspace `/home/coding/scratch/f012-r3-bf.44dyd3`, public CLI calls
 reproduced all required load-bearing facts:

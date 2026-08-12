@@ -31,10 +31,9 @@ not obtain, before F012 unblocks.
    claims, so bf-v1 could be cross-checked directly. This machine's `br`
    command is a documented deprecated shim that execs `bf` (`br --version`
    reports `bf 0.4.0`, not a standalone `br 0.1.28`), so br-v1 could not be
-   cross-checked the same way. A real `beads_rust` (the `br` source project)
-   checkout exists on this machine at `~/beads_rust`, including a `v0.1.28`
-   tag; this review deliberately did not clone, build, or run it, and did not
-   open any file in it. Standing up a fresh independent producer observation
+   cross-checked the same way. A checkout of the `br` producer project exists on
+   this machine, including a `v0.1.28` tag; this review deliberately did not
+   clone, build, or run it, and did not open any file in it. Standing up a fresh independent producer observation
    is specification-role work with its own authorship and attestation, not
    something a review pass should backfill by improvising against the one
    named-prohibited source repository, even at the compiled-binary layer.
@@ -160,7 +159,7 @@ to get backwards.
    claim #4 shows has no fixture coverage either. This review had no way to
    independently reproduce it: the only `br` on this machine is the
    documented shim to `bf`, and this review deliberately did not stand up
-   the real `beads_rust` project present on this machine to check it (see
+   the `br` producer project present on this machine to check it (see
    Method). This is the highest-priority open risk in the candidate as it
    stands — it's the one place a fabrication or misremembering would be both
    easiest to introduce and hardest to catch, and nothing in this repository

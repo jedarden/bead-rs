@@ -36,8 +36,8 @@ standards, and public dependency API documentation.
 `research/specs/observed-behavior-v1.md` contains sanitized process-boundary
 facts. It does not authorize inspection or reproduction of another
 implementation's source, tests, fixtures, SQL, schema, internal names, help
-prose, or error prose. Implementation work must not inspect `beads_rust`,
-`bead-forge`, or another bead implementation. If prohibited material becomes
+prose, or error prose. Implementation work must not inspect any other bead
+implementation. If prohibited material becomes
 visible, stop the affected component and append the exposure to
 `PROVENANCE.md` before proceeding.
 

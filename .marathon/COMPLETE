@@ -180,7 +180,7 @@ git log --oneline -3
 The bead-rs implementation maintained strict clean-room boundaries throughout:
 - All implementation work based only on normative specifications in `research/specs/`
 - Independent fixture creation in `research/fixtures/`
-- No inspection of prohibited upstream implementations (beads_rust, bead-forge)
+- No inspection of any other bead implementation
 - PROVENANCE.md maintained throughout documenting all decisions and external inputs
 - Independent reviews conducted for F017 checkpoint specification and F012 external profiles
 - No prohibited material exposure events recorded

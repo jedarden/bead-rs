@@ -12,7 +12,7 @@ activation rejected pending conformance work
 
 The reviewer did not author either `research/specs/checkpoint-set-v1.md` or the
 F017 implementation and did not inspect source, tests, fixtures, SQL, or internal
-documentation from bead-forge, beads_rust, or another bead implementation. The
+documentation from any other bead implementation. The
 review used only this repository. No evidence of upstream contamination was
 found.
 

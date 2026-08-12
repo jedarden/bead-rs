@@ -18,9 +18,9 @@ functional specifications and independently created conformance fixtures.
 
 ## Prohibited implementation inputs
 
-- Source, tests, fixtures, SQL, comments, or internal documentation from
-  `beads_rust` or `bead-forge`.
-- The existing `bead-forge` implementation or its implementation plans.
+- Source, tests, fixtures, SQL, comments, or internal documentation from any
+  other bead implementation.
+- Any pre-existing bead implementation or its implementation plans.
 - Code-level diffs or translations of another bead implementation.
 
 ## Decision log
@@ -105,10 +105,10 @@ session, using this repository plus a fresh disposable workspace run against
 the real `bf 0.4.0` binary installed on the review machine (the same
 producer version bf-v1 claims). `br 0.1.28` could not be similarly
 cross-checked: the review machine's `br` command is a documented shim that
-execs `bf`, and the review deliberately did not build or run the real
-`beads_rust` project also present on that machine rather than have a review
-pass improvise a fresh producer observation against the one
-named-prohibited source repository.
+execs `bf`, and the review deliberately did not build or run the `br`
+producer project also present on that machine rather than have a review
+pass improvise a fresh producer observation against a
+prohibited source repository.
 
 All six manifest SHA-256 hashes were recomputed and matched. Every
 independently testable bf-v1 mechanical rule (dependency direction and edge
@@ -154,7 +154,7 @@ exact order — and `deferred` is accepted and exported by the producer
 still has no established bf-v1 lifecycle semantics.
 
 For br-v1, no standalone `br 0.1.28` binary was available locally (the
-machine's `br` command execs `bf`). Rather than build the real `beads_rust`
+machine's `br` command execs `bf`). Rather than build the `br` producer
 source project also present on the machine, this pass downloaded the
 official `br-v0.1.28-linux_amd64.tar.gz` release asset from the upstream
 project's public GitHub Releases page and verified it against its published

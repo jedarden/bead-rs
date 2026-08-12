@@ -23,8 +23,8 @@ The exercised executable reports `bf 0.4.0` and has:
 - size: 6,395,912 bytes;
 - format: stripped x86-64 Linux PIE ELF, dynamically linked;
 - GNU build ID: `58f50ef6ce07b6385d837ff37df3032803210b39`; and
-- local Cargo install record: `bead-forge v0.4.0
-  (/home/coding/bead-forge)` with binary `bf`.
+- local Cargo install record: producer package v0.4.0, installed from a
+  local path, providing binary `bf`.
 
 These facts let another reviewer identify byte equality or distinguish a
 different build without consulting producer source. They do not prove who
