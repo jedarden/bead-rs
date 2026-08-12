@@ -1,232 +1,515 @@
 # Native field guide contract v1
 
-Status: proposed normative specification; awaiting independent approval.
+Status: corrected proposed normative specification; awaiting independent
+re-review.
 
-Author: OpenAI Codex interactive session, 2026-08-12.
+Original author and correction author: OpenAI Codex interactive session,
+2026-08-12.
 
-Independent reviewer: not yet assigned.
+Original independent review: Claude (Anthropic), rejection recorded in
+`docs/reviews/adr-002-field-guide-independent-review-2026-08-12.md`.
 
 Artifact identity: `urn:bead-rs:schema:field-guide:native-v1`.
 
-This specification defines the complete public, agent-facing meaning of a
-native bead. It is an implementation input for `bead schema explain`, not an
-authorization to inspect or edit `.beads/beads.db`. Implementation may begin
-only after a reviewer who did not author this artifact records an acceptance
-decision against its exact content hash.
+This specification defines the public, agent-facing documents and behavior of
+a native bead. It distinguishes the issue projection returned by interactive
+CLI reads from the richer issue and event records published in a checkpoint.
+It never describes or authorizes access to the private SQLite layout.
 
-## Required interface
+Implementation may begin only after a reviewer who authored neither this
+original artifact nor this correction records an acceptance decision against
+the corrected file's exact SHA-256.
 
-`bead schema explain urn:bead-rs:schema:issue:native-v1 --format json` returns
-one typed field-guide document whose `schema_ref` is the artifact identity
-above and whose `describes_schema_ref` is the native issue identity. Markdown
-is a deterministic rendering of that same typed source. `schema list`
-advertises both identities; `schema show` returns their immutable JSON Schema
-Draft 2020-12 documents. Unsupported identifiers fail closed.
+## 1. Required schema interface and typed guide document
 
-Completeness tests compare the typed guide with the public issue schema and
-fail if a public field or lifecycle value is missing, duplicated, or stale.
+The interface is:
 
-## Ownership vocabulary
+```text
+bead schema list --format json
+bead schema show SCHEMA_REF --format json
+bead schema explain SCHEMA_REF --format json|markdown
+```
+
+Unsupported identifiers are usage failures (exit 2). Missing workspaces or
+documents are not-found failures (exit 3). State conflicts are exit 4;
+malformed or integrity-invalid documents are exit 5.
+
+`schema list` returns catalog entries containing `schema_ref`,
+`document_kind`, and the supported `validate`, `consume`, and `emit`
+operations. `schema show` returns the exact immutable JSON Schema Draft
+2020-12 document whose `$id` equals `SCHEMA_REF`.
+
+`schema explain urn:bead-rs:schema:issue:native-v1 --format json` returns this
+typed document:
+
+```json
+{
+  "schema_ref": "urn:bead-rs:schema:field-guide:native-v1",
+  "guide_version": 1,
+  "describes_schema_refs": [
+    "urn:bead-rs:schema:issue:native-v1",
+    "urn:bead-rs:schema:event:native-v1"
+  ],
+  "documents": [],
+  "fields": [],
+  "additional_properties": {},
+  "lifecycle": {},
+  "derived_state": {},
+  "events": {},
+  "operations": [],
+  "rehydration": {},
+  "known_implementation_deviations": []
+}
+```
+
+The field-guide schema requires exactly those top-level members.
+`schema_ref` is the artifact identity; `guide_version` is integer `1`;
+`describes_schema_refs` is a unique, sorted array of absolute schema URIs.
+`documents`, `fields`, `operations`, and `known_implementation_deviations` are
+arrays; the other named sections are objects. Each `fields` entry requires:
+
+```json
+{
+  "document": "checkpoint_issue",
+  "name": "priority",
+  "json_type": "integer",
+  "nullable": false,
+  "presence": "required",
+  "has_default": true,
+  "default": 2,
+  "ownership": "caller",
+  "operations": ["create"],
+  "invariants": ["integer from 0 through 4"],
+  "example": 2,
+  "common_mistake": "Treating P3 as the native default."
+}
+```
+
+`document`, `name`, `json_type`, `nullable`, `presence`, `has_default`, `default`,
+`ownership`, `operations`, `invariants`, `example`, and `common_mistake` are
+required. `has_default` distinguishes no default (`false`, with `default` null
+as a placeholder) from an actual null default (`true`, `default` null).
+`default` and `example` may otherwise contain any JSON value. Field entries are
+uniquely keyed by `(document, name)`. Markdown output is a deterministic
+rendering of this same typed value: fixed section order, fields in document
+order, operations lexicographically sorted, LF line endings, and no generated
+timestamp.
+
+Each `documents` entry is an object with required string `name`, `schema_ref`,
+`document_kind`, `transport`, and `member_source`, plus required sorted string
+array `members`. `additional_properties` requires boolean `allowed`, string
+`ownership`, and string-array `rules`. `lifecycle` requires string arrays
+`base_values` and `allowed_transitions`. `derived_state` requires objects
+`status`, `ready`, `blocked_by`, and `blocking`, each with string `ownership`
+and string-array `rules`. `events` requires string `envelope_member`, string
+`schema_ref_member`, and string arrays `identity` and `ordering`.
+
+Each `operations` entry requires string `name`, string `ownership_effect`,
+integer `success_exit`, integer array `failure_exits`, string array
+`affected_fields`, and string-array `rules`. `rehydration` requires string
+`source_mode`, string array `allowed_writes`, string array `forbidden_writes`,
+and string-array `verification`. Each `known_implementation_deviations` entry
+requires string `id`, `severity`, `behavior`, and `required_disposition`.
+Unknown members in the guide document itself are rejected. Arrays described as
+sorted contain unique values. URI-valued strings are absolute URIs.
+
+Completeness tests compare `fields` with every declared member of both public
+issue documents and the event document. They fail on a missing, duplicate, or
+stale field or lifecycle value. They separately compare
+`additional_properties` with the checkpoint issue schema's
+`additionalProperties`; unknown members are not a fictitious field named
+`extensions`.
+
+## 2. Ownership vocabulary and JSON presence
 
 - **caller**: supplied through a public mutating command.
 - **system**: generated or maintained by bead-rs; callers never synthesize it.
-- **derived**: computed from stored issue and graph state; never authoritative
-  imported state.
-- **preserved**: accepted as opaque input and emitted unchanged without
-  implying understood semantics.
+- **derived**: computed from durable issue or graph state and never imported as
+  authoritative state.
+- **preserved**: retained byte-semantically as opaque JSON without implying
+  that bead-rs understands it.
 
-Absent optional fields and JSON `null` have the same native meaning unless a
-schema-bound extension states otherwise. Empty strings are values, not null,
-except where the rules below reject them.
+Member absence, explicit JSON `null`, an empty string, and an empty collection
+are distinct representations. Producers and consumers preserve that
+distinction where the document schema permits it. A projection may deliberately
+materialize a default, but that projection does not rewrite checkpoint
+presence. Unknown extension values retain their exact JSON type and presence.
 
-## Public issue fields
+All timestamps below are RFC 3339 UTC strings with nanosecond precision, for
+example `2026-08-12T22:51:52.301697398Z`.
 
-Each entry states type, nullability/default, ownership, owning operations,
-invariants, and a common mistake.
+## 3. The two public issue documents
+
+### 3.1 Interactive CLI issue projection
+
+`bead list --json` and `bead show --json` emit one compact JSON object per
+line. The public projection has exactly these members in v0.1:
+
+`id`, `title`, `description`, `priority`, `status`, `assignee`,
+`dependencies`, `created_at`, `updated_at`, `labels`, and `revision`.
+
+It does not expose `notes`, `manual_blocked`, `issue_type`, `closed_at`,
+`close_reason`, `source_repo`, `profile`, `schema_ref`, structured `data`, or
+unknown checkpoint members. Omission from this projection is not data loss in
+the live store or checkpoint.
+
+`status` is the agent-facing projection of native state. Its intended mapping
+is `blocked` when `manual_blocked` is true on non-closed work, otherwise the
+string form of `base_status`: `open`, `in_progress`, `deferred`, or `closed`.
+Readiness is stricter than `status == open`, because assignment and graph
+blockers also apply. The current v0.1 implementation projects `base_status`
+without applying the manual-blocked overlay; this is a known producer defect,
+not permission for consumers to treat `blocked` as a stored base value.
+
+The projected dependency objects contain `blocker` and `kind`; `labels` and
+`dependencies` are arrays. `description` is materialized as `""` when the
+checkpoint member is absent, `assignee` is emitted as explicit null when
+unassigned, and `revision` is materialized as `1` only when an older in-memory
+value lacks it.
+
+### 3.2 Native checkpoint issue record
+
+Every checkpoint issue is carried in this envelope:
+
+```json
+{"record_type":"issue","issue":{"schema_ref":"urn:bead-rs:schema:issue:native-v1"}}
+```
+
+The `issue` object declares these named members: `id`, `title`, `revision`,
+`description`, `notes`, `priority`, `base_status`, `manual_blocked`,
+`assignee`, `issue_type`, `created_at`, `updated_at`, `closed_at`,
+`close_reason`, `source_repo`, `profile`, `schema_ref`, and `data`. It may also
+contain unknown additional properties governed by section 5. It never stores a
+member named `status`, `ready`, or `blocked_by`.
+
+Checkpoint issue records use `schema_ref`; event records currently use
+`$schema`. This inconsistency with `schema-identification-v1.md` is explicit
+v0.1 behavior. Schema implementation must document it and must not silently
+rename either member; resolving it requires a separately versioned schema
+decision.
+
+### 3.3 Projection mapping
+
+The CLI copies `id`, `title`, `priority`, `assignee`, `created_at`,
+`updated_at`, and `revision`; it materializes absent `description` as `""`;
+maps `base_status` plus `manual_blocked` to `status`; and joins the public label
+and dependency projections. All other checkpoint issue members are omitted.
+
+## 4. Field semantics
+
+Each subsection supplies the required example and common mistake as well as
+type, presence, default, ownership, operations, and invariants.
 
 ### `id`
 
-String; non-null; no default; system-generated by `bead create`, or preserved
-by native restore. Read by all issue commands and immutable. It is 1–255 UTF-8
-bytes, with no leading/trailing whitespace, path separator, NUL, or disallowed
-control character. Never manufacture one during rehydration or infer time or
-repository identity from its spelling.
+Checkpoint and CLI: required non-null string, no default, system-owned by
+`create` and preserved by native restore. Example: `"bead-18409c0e"`.
+Length is 1–255 UTF-8 bytes; leading/trailing whitespace, `/`, `\\`, NUL, and
+control characters other than tab, LF, and CR are forbidden. It is immutable.
+Mistake: manufacturing an ID or inferring chronology from its spelling.
 
 ### `title`
 
-String; non-null; no default; caller-owned by `create` and `update`; 1–4096
-UTF-8 bytes. It summarizes work and is not an identifier.
+Checkpoint and CLI: required non-null string, no default, caller-owned by
+`create` only. Example: `"Verify restore invariants"`. Length is 1–4096 UTF-8
+bytes. Mistake: attempting `update --title`, which is a usage error.
 
 ### `revision`
 
-Integer; nullable on older native input, otherwise system-owned and
-monotonically increased after semantic mutations. Read by `show` and `list`.
-A caller may echo a previously read revision as an optimistic-concurrency
-guard, but never chooses the next value or treats it as a timestamp.
+Checkpoint and CLI: integer, system-owned, initial/default value `1`, increased
+by semantic mutations. Example: `4`. `update`, `release`, `close`, and `reopen`
+accept a previously read value through `--if-revision`; `claim` does not.
+Mistake: choosing the next revision or treating it as time. Known defect:
+v0.1 checkpoint export/restore resets revisions to 1 (`bf-4hr30`).
 
 ### `description`
 
-String; nullable, default absent; caller-owned by `create` and `update`; at
-most 4 MiB. Absence does not mean the title should be copied into it.
+Checkpoint: optional nullable string whose creation default is empty text; an
+empty default may be omitted from the checkpoint. CLI: required projection
+string, materialized as `""`. Caller-owned by `create` only, maximum 4 MiB.
+Example: `"Rehearse flush and restore."`. Mistake: treating absent checkpoint
+description, explicit null, and projected empty text as interchangeable.
 
 ### `notes`
 
-String; nullable, default absent; caller-owned by `create` and `update`; at
-most 4 MiB. Notes are public checkpoint content, not a secret store.
+Checkpoint only: optional nullable string with live default `""`,
+caller-owned by `update --notes` only, maximum 4 MiB. Example:
+`"Reproduction captured in the reconciliation report."`. Notes are checkpoint
+content, not a secret store. Mistake: expecting `create --notes` or assuming
+notes are private.
 
 ### `priority`
 
-Integer; non-null; default supplied by `create`; caller-owned by `create` and
-`update`. Values are 0–4, lower being more urgent: P0 urgent, P1 high, P2
-normal, P3 low, P4 aspirational/backlog. Never reverse the order.
+Checkpoint and CLI: required non-null integer, caller-owned by `create` only;
+default and example `2`. Values are P0 urgent, P1 critical, P2 high (native
+default), P3 normal, and P4 aspirational/backlog. Lower is more urgent.
+Mistake: calling P2 normal or reversing the ordering.
 
 ### `base_status`
 
-String enum; non-null; default `open`; owned by `claim`, `update`, `release`,
-`close`, and `reopen`. Values are `open`, `in_progress`, `deferred`, and
-`closed`. `blocked` and `ready` are derived presentations, never stored here.
+Checkpoint only: required non-null enum, system-mediated by `claim`, `update`,
+`release`, `close`, and `reopen`; default and example `"open"`. Values are
+`open`, `in_progress`, `deferred`, and `closed`. Mistake: storing `blocked` or
+`ready` as a base value.
+
+### `status`
+
+CLI only: required non-null derived string, no caller-set default; example
+`"blocked"`. It is the projection described in section 3.1. Mistake: assuming
+`status == open` proves readiness or that a `status` member exists in a native
+checkpoint issue.
 
 ### `manual_blocked`
 
-Boolean; nullable, default false; caller-owned through `update`. True removes
-otherwise eligible open work from readiness. False does not prove readiness;
-assignment and dependency blockers also apply. Never encode graph edges here.
+Checkpoint only: optional nullable boolean, effective default and example
+`false`, caller-owned through `update --status blocked|open`; `close` and
+`reopen` clear it. True prevents readiness. Mistake: encoding graph blocking in
+this flag or assuming false proves readiness.
 
 ### `assignee`
 
-String; nullable, default absent; caller-owned through `claim`, `update`, and
-`release`; nonempty when present. It is coordination metadata, not access
-control. Claim assigns and enters `in_progress`; release clears and reopens.
+Checkpoint and CLI: optional nullable string, default/example null,
+caller-owned by `create --assignee`, `claim --assignee`, `update --assignee`,
+`update --clear-assignee`, and `release`; nonempty when present. Claim assigns
+and enters `in_progress`. Release applies to `in_progress` work; an open
+assigned bead uses `update --clear-assignee`. Mistake: treating assignment as
+authorization.
 
 ### `issue_type`
 
-String; nullable with effective default `task`; caller-owned by `create` and
-`update`; nonempty when present. It is classification, not lifecycle.
+Checkpoint only: optional nullable string, effective default and example
+`"task"`, caller-owned by `create` only. It is a free nonempty string with no
+enumerated value validation. Mistake: attempting to update it or treating the
+examples in CLI help as an exhaustive enum.
 
 ### `created_at`
 
-Timestamp string; non-null; system-owned at creation and immutable. Native
-restore preserves it. Rehydration must let `bead create` generate native time.
+Checkpoint and CLI: required non-null timestamp, system-owned by `create`,
+immutable, and preserved by native restore. Example:
+`"2026-08-12T22:51:52.301697398Z"`. Mistake: synthesizing a source tracker's
+time as a native creation instant during rehydration.
 
 ### `updated_at`
 
-Timestamp string; non-null; system-owned and changed by semantic mutation.
-Native restore preserves it. It is not a revision guard.
+Checkpoint and CLI: required non-null timestamp, system-owned, advanced by
+semantic mutation, and preserved by native restore. Example:
+`"2026-08-12T22:53:00.000000000Z"`. Mistake: using it as an optimistic
+concurrency token; use `revision`.
 
 ### `closed_at`
 
-Timestamp string; nullable; system-owned by `close` and cleared by `reopen`.
-It is present exactly when `base_status` is `closed`.
+Checkpoint only: optional nullable timestamp, default/example null,
+system-owned by `close` and cleared by `reopen`. Normative invariant: present
+exactly when `base_status` is `closed`. Known defect: v0.1 `update --status
+closed` can violate this invariant and still pass doctor/restore (`bf-3siqo`).
+Mistake: closing via generic update.
 
 ### `close_reason`
 
-String; nullable; caller-supplied to `close` and cleared by `reopen`. It is
-required and nonempty exactly for closed issues.
+Checkpoint only: optional nullable string, default/example null,
+caller-supplied by `close --reason` and cleared by `reopen`. It is nonempty for
+closed issues and has no length bound. Mistake: omitting `--reason` or closing
+through generic update.
 
 ### `source_repo`
 
-String; nullable, default absent; public provenance descriptor supplied only
-where a public operation permits. It is never resolved over a network. During
-rehydration, repository/commit evidence belongs primarily in the separate
-reconciliation report; never inject it by editing checkpoint JSON.
+Checkpoint only: optional nullable string, default/example null. It is
+preserved native content but has no public writer in v0.1 and is therefore
+unreachable through normal creation. It is never network-resolved. Mistake:
+editing checkpoint JSON to inject source provenance; use external references
+and the separate reconciliation report.
 
 ### `profile`
 
-String; nullable with effective native value `native-v1`; system-owned for
-native creation/checkpoints. Version 0.1 accepts no external checkpoint
-profile. Never relabel foreign records as native.
+Checkpoint only: optional nullable string with effective default/example
+`"native-v1"`, system-owned by native checkpoint operations. Version 0.1
+accepts no external checkpoint profile. Mistake: relabeling foreign records as
+native.
 
 ### `schema_ref`
 
-Absolute-URI string; nullable only for older accepted native records; new
-records use `urn:bead-rs:schema:issue:native-v1`. It is system-owned and
-immutable. It identifies a public document schema, not SQLite layout. Never
-synthesize or silently replace an unknown reference.
+Checkpoint only: required non-null absolute URI, system-owned and immutable;
+default/example `"urn:bead-rs:schema:issue:native-v1"`. Every native-v1 issue
+record carries it. It identifies the public document schema, not SQLite.
+Mistake: silently replacing an unknown reference.
 
 ### `data`
 
-JSON object; nullable, default absent; caller-owned only through `bead data
-set|get|list|remove`. Each namespace carries a JSON value and immutable schema
-reference. Unknown namespaces are preserved. Never edit the aggregate through
-issue update or discard an unrecognized namespace.
+Checkpoint only: optional nullable JSON object, default/example null,
+caller-owned through `bead data set|get|list|remove`. Each namespace has an
+immutable schema reference and arbitrary JSON value; unknown namespaces are
+preserved. Mistake: editing the aggregate through issue update. Known defect:
+v0.1 checkpoint restore loses data content (`bf-xq4ds`).
 
-### `extensions`
+### `labels`
 
-Zero or more otherwise-unknown JSON members; default empty; preserved
-ownership. They round-trip without becoming native fields. Defined-field name
-collisions are not extensions. Consumers never normalize, invent, or discard
-unknown members.
+CLI projection and checkpoint graph projection: required array where emitted,
+default/example `[]`, caller-owned by idempotent `label add|remove` and by
+`create --label`. Values are case-sensitive strings. Mistake: treating a label
+as lifecycle state.
 
-## Adjacent public projections
+### `dependencies`
 
-- **labels** are case-sensitive strings owned by `bead label add|remove`;
-  operations are idempotent and do not alter lifecycle themselves.
-- **dependencies** are directed edges owned by `bead dep add|remove`. `bead
-  dep add BLOCKED BLOCKER --kind blocks` means BLOCKER must close before
-  BLOCKED can be ready. `blocks` rejects self-edges and cycles; `relates_to` is
-  informational. Never reverse endpoint positions during rehydration.
-- **external references** are namespaced links owned by `bead ref
-  add|remove|list|find`. They neither replace native IDs nor resolve over a
-  network, and are the public mechanism for source tracker IDs.
-- **comments**, when advertised by the public schema and command set, are
-  append-oriented attributed text with system identity/time. Until a public
-  command is advertised, an agent cannot rehydrate them into native state.
+CLI projection and checkpoint graph projection: required array where emitted,
+default/example `[]`, caller-owned by idempotent `dep add|remove`. A CLI entry
+example is `{"blocker":"bead-a","kind":"blocks"}`. Checkpoint edges retain
+blocked ID, blocker ID, kind, and optional condition. Mistake: reversing the
+blocked-first direction.
 
-## Lifecycle and derived state
+## 5. Unknown additional properties
 
-Allowed base transitions are: `open` to `in_progress`, `deferred`, or `closed`;
-`in_progress` to `open`, `deferred`, or `closed`; `deferred` to `open` or
-`closed`; and `closed` to `open` only through `reopen`. Same-state updates are
-idempotent where the owning command permits.
+The checkpoint issue object may contain unknown JSON members as
+`additionalProperties`; there is no serialized member named `extensions`.
+Each unknown member is preserved with exact name, JSON value, and
+null-versus-absence semantics through native round trips. A name colliding with
+a defined member is not an extension. Example: `"vendor.example/trace": null`.
+Mistake: normalizing or dropping an unrecognized member.
 
-`claim` atomically assigns eligible work, enters `in_progress`, and honors a
-revision guard. `release` clears assignment and returns to `open`. `close`
-requires a reason and sets close metadata; `reopen` clears it.
+## 6. Events
 
-An issue is **ready** exactly when base status is `open`, it is not manually
-blocked, it has no assignee, and it has no active unfinished `blocks` blocker.
-**Blocked** is a derived presentation caused by manual or graph blocking.
-Neither is a base lifecycle value. Closing a blocker can expose dependents;
-reopening it can remove them from readiness.
+Every checkpoint contains durable event envelopes:
 
-## Minimal example
-
-```text
-bead create --title "Verify migration rehearsal"
-bead dep add BLOCKED_ID BLOCKER_ID --kind blocks
+```json
+{"record_type":"event","event":{"$schema":"urn:bead-rs:schema:event:native-v1","origin_store_uuid":"workspace-uuid","origin_event_sequence":1,"issue_id":"bead-18409c0e","kind":"created","actor":"system","time":"2026-08-12T22:51:52.301697398Z","detail":{}}}
 ```
 
-Creation generates the ID, timestamps, revision, defaults, and native schema
-identity. Reversing the dependency arguments reverses the graph.
+Event members are: required non-null `$schema`, `origin_store_uuid`,
+`origin_event_sequence`, `kind`, `actor`, `time`, and `detail`; plus nullable
+`issue_id`. `$schema` has the event identity; the sequence is a positive,
+monotonically contiguous integer within the origin store; `time` uses the
+timestamp format in section 2; `detail` is a JSON value and defaults to `{}`.
+Events are system-owned audit facts appended by semantic mutations. They are
+ordered by `(origin_store_uuid, origin_event_sequence)`, never rewritten as
+issue state, and never synthesized by a rehydrating agent. Native restore
+preserves their origin identity. Mistake: deriving authoritative current state
+solely by replaying a partial event projection or manufacturing events in
+checkpoint JSON.
 
-## Agent-guided rehydration boundary
+The typed guide contains one `fields` entry for each event member:
 
-The source tracker/repository remain read-only. An agent initializes a fresh
-native workspace and reconstructs selected work through public `bead` commands
-only. It never writes SQLite, manufactures checkpoint JSONL, copies
-system-owned fields, or claims a source lifecycle value is native.
+- `$schema`: required non-null URI string, system-owned, example
+  `"urn:bead-rs:schema:event:native-v1"`; mistake: replacing it with the issue
+  record's `schema_ref` spelling.
+- `origin_store_uuid`: required non-null string, system-owned, example
+  `"workspace-uuid"`; mistake: substituting the destination store identity on
+  restore.
+- `origin_event_sequence`: required non-null positive integer, system-owned,
+  initial example `1`; mistake: renumbering origin events after restore.
+- `issue_id`: nullable string, system-owned, default/example null for a
+  workspace event; mistake: assuming every event belongs to an issue.
+- `kind`: required nonempty string, system-owned, example `"created"`;
+  mistake: treating an unknown kind as permission to discard the event.
+- `actor`: required string, system-owned from operation context, example
+  `"system"`; mistake: treating it as proof of authentication.
+- `time`: required non-null timestamp, system-owned, example
+  `"2026-08-12T22:51:52.301697398Z"`; mistake: using it as event identity.
+- `detail`: required JSON value, system-owned, default/example `{}`; mistake:
+  interpreting arbitrary detail keys as durable issue fields.
+
+## 7. Dependencies, readiness, and lifecycle
+
+`bead dep add BLOCKED BLOCKER --kind blocks` means BLOCKER must close before
+BLOCKED can be ready. `blocks` edges reject self-edges and cycles;
+`relates_to` is informational. `--condition` attaches a bounded declarative
+predicate. An active blocker is unfinished exactly when its base status is not
+`closed`; a deferred blocker still blocks. `blocked_by` and `blocking` are
+derived graph arrays exposed by human/diagnostic views, never stored lifecycle
+fields.
+
+Allowed transitions are: `open` to `in_progress`, `deferred`, or `closed`;
+`in_progress` to `open`, `deferred`, or `closed`; `deferred` to `open` or
+`closed`; and `closed` to `open` only through `reopen`. Same-state behavior is
+command-specific and may be idempotent.
+
+An issue is ready exactly when base status is `open`, it is not manually
+blocked, it has no assignee, and it has no active unfinished `blocks` blocker.
+`list --ready` inspects this frontier without reservation. Closing the last
+blocker can expose a dependent; reopening it can remove the dependent again.
+
+`claim` performs atomic selection, assignment, and transition to
+`in_progress`. Default `fifo-v1` orders candidates by priority ascending,
+creation time ascending, then ID ascending. R019 policies (`aging-v1`,
+`impact-v1`, `rotation-v1`, and `balanced-v1`) may alter ranking but never the
+readiness predicate. Claim has no revision guard; its atomic transaction and
+optional lease fencing provide concurrency safety.
+
+`release` semantically applies to `in_progress -> open` and clears assignment;
+other non-idempotent states conflict. `close` requires a reason, clears manual
+blocking, sets close metadata, and may expose dependents. `reopen` clears close
+metadata and manual blocking and returns closed work to open.
+
+## 8. Leases, change feeds, comments, references, and recurrence
+
+A leased claim returns a fencing token and expiry. After expiry, that assignee
+cannot `update`, `release`, or `close` until renewal or a new claim establishes
+a current lease. A stale or mismatched token is an exit-4 conflict. Tokens are
+coordination guards, not issue revisions.
+
+`bead changes` exposes a cursor-based event feed bound to a snapshot/store
+identity. Native restore can establish a different identity and invalidates
+old cursors; consumers restart from a fresh cursor rather than guessing an
+offset.
+
+Comments are publicly readable through `list --comments` and `show --comments
+none|unresolved|all`, but v0.1 has no public command to create them. They do not
+alter readiness. The current flags are known to be inert in v0.1; consumers
+must not claim comment-body preservation from interactive output alone.
+
+External references are namespaced key/value links owned by `ref
+add|remove|list|find`. They neither replace native IDs nor resolve over a
+network and are the public mechanism for source tracker identifiers.
+
+Recurrence templates are public definitions. They mint occurrences only when
+an external caller invokes `recurrence materialize`; bead-rs has no autonomous
+scheduler. Materialized occurrences are ordinary native issues with series
+metadata governed by the recurrence interface.
+
+## 9. Minimal examples and rehydration boundary
+
+```text
+bead create --title "Verify restore rehearsal" --priority 2
+bead ref add --id TARGET_ID --namespace source --key issue-id --value SOURCE_ID
+bead dep add BLOCKED_ID BLOCKER_ID --kind blocks
+bead list --ready --json --limit 20
+```
+
+The source tracker and repository remain read-only. An agent initializes a
+fresh native workspace and reconstructs selected work only through public
+`bead` commands. It never writes SQLite, manufactures checkpoint JSONL, copies
+system-owned fields/events, or claims that a source lifecycle value is native.
 
 A separate reconciliation report gives every source ID a target native ID or
 exactly one disposition: `omitted`, `merged`, or `unresolved`, with rationale.
-External references bind created beads to source IDs. Rehearsal occurs in a
+External references bind native beads to source IDs. Rehearsal occurs in a
 disposable workspace and compares counts, field/lifecycle intent, dependency
 direction, and ready-frontier intent; then runs `bead doctor`, flushes a native
 checkpoint, restores into a fresh empty workspace, and archives source input.
-The report is review evidence, never checkpoint input.
+The report is evidence, never checkpoint input.
 
-## Review checklist
+Fleet rehydration must not proceed while restore silently loses revisions or
+structured data, or while invalid closed records are accepted. The P0 defects
+`bf-4hr30`, `bf-xq4ds`, and `bf-3siqo` are therefore operational cutover gates
+even though they are not prerequisites for reviewing this specification.
 
-The independent reviewer records this file's exact hash and verifies:
+## 10. Independent review protocol
 
-1. every public issue field appears exactly once;
-2. every type, nullability, default, owner, operation, invariant, example, and
-   mistake agrees with independently authored native specifications;
-3. lifecycle values/transitions, dependency direction, revision behavior,
-   derived states, extensions, and no-synthesis rules are complete;
-4. no private storage layout or behavior sourced from another implementation
-   appears; and
-5. one typed source can generate both output formats without guessing.
+The reviewer must have authored neither the original specification nor the
+correction under review, and must not be the schema implementation author.
+They verify clean-room provenance and all field/document/operation coverage,
+then create a dated findings document under `docs/reviews/` and append (never
+rewrite) a disposition to `PROVENANCE.md`. Both record the exact Git commit,
+SHA-256 algorithm, full file digest, reviewer identity, and one outcome:
 
-Rejection keeps implementation and migration blocked. Any accepted correction
-must receive a new reviewed hash; incompatible released semantics require a
-new schema identity.
+1. accepted;
+2. accepted with required revisions (implementation may use only the explicitly
+   accepted baseline and must track the revisions);
+3. rejected with concrete corrections; or
+4. rejected as non-reviewable.
+
+The status header becomes `accepted normative specification` only after an
+unconditional acceptance against that exact hash. Every public issue member,
+event member, lifecycle value, derived state, owner, operation, invariant,
+example, and common mistake must be represented in the typed source and both
+renderings. Rejection keeps schema implementation and fleet rehydration
+blocked; a corrected artifact receives a new hash and review. Incompatible
+semantics after release require a new schema identity.

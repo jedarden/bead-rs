@@ -505,3 +505,17 @@ artifact receives a new hash and a review by a reviewer who authored neither the
 original nor the correction. Full findings, including eight implementation
 defects discovered during verification, are in
 `docs/reviews/adr-002-field-guide-independent-review-2026-08-12.md`.
+
+## ADR-002 native field-guide correction (2026-08-12)
+
+OpenAI Codex corrected `research/specs/native-field-guide-v1.md` against every
+blocking and non-blocking finding in the independent review at commit
+`0009b32`. The correction distinguishes the interactive CLI projection from
+checkpoint issue/event envelopes, defines their projection mapping and the
+typed guide document, corrects field defaults/ownership/operations, specifies
+events and adjacent public surfaces, records verified implementation
+deviations, and strengthens the review protocol. It used only this repository's
+independently authored specifications and public native source/CLI surface; no
+other bead implementation material was consulted. This entry is correction
+provenance, not approval. Schema implementation and fleet rehydration remain
+blocked pending independent review of the corrected file's new SHA-256.
