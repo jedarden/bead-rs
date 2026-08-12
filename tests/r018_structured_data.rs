@@ -603,19 +603,59 @@ fn test_data_help() {
     let temp_dir = TempDir::new().unwrap();
     let workspace_dir = temp_dir.path();
 
-    // Test that data commands have help text
-    let stdout = run_bead_command(&["data", "--help"], workspace_dir);
-    assert!(stdout.contains("Manage structured bead data"));
+    // `-h` shows each command's summary.
+    let summaries = [
+        (vec!["data", "-h"], "Manage structured bead data"),
+        (vec!["data", "set", "-h"], "Set a structured data value"),
+        (vec!["data", "get", "-h"], "Get a structured data value"),
+        (
+            vec!["data", "list", "-h"],
+            "List all structured data namespaces",
+        ),
+        (
+            vec!["data", "remove", "-h"],
+            "Remove a structured data value",
+        ),
+    ];
+    for (args, expected) in summaries {
+        let stdout = run_bead_command(&args, workspace_dir);
+        assert!(
+            stdout.contains(expected),
+            "`bead {}` is missing its summary {expected:?}",
+            args.join(" ")
+        );
+    }
 
-    let stdout = run_bead_command(&["data", "set", "--help"], workspace_dir);
-    assert!(stdout.contains("Set a structured data value"));
-
-    let stdout = run_bead_command(&["data", "get", "--help"], workspace_dir);
-    assert!(stdout.contains("Get a structured data value"));
-
-    let stdout = run_bead_command(&["data", "list", "--help"], workspace_dir);
-    assert!(stdout.contains("List all structured data namespaces"));
-
-    let stdout = run_bead_command(&["data", "remove", "--help"], workspace_dir);
-    assert!(stdout.contains("Remove a structured data value"));
+    // `--help` shows the long description, which must be distinct from the
+    // summary -- if the two are identical the long help has been shadowed.
+    let long_help = [
+        (
+            vec!["data", "--help"],
+            "Attach schema-governed JSON documents to an issue",
+        ),
+        (
+            vec!["data", "set", "--help"],
+            "Set or replace a JSON value for a specific namespace",
+        ),
+        (
+            vec!["data", "get", "--help"],
+            "Retrieve the JSON value and schema reference",
+        ),
+        (
+            vec!["data", "list", "--help"],
+            "List all namespaces and their schema references",
+        ),
+        (
+            vec!["data", "remove", "--help"],
+            "Remove a structured data value from an issue (idempotent)",
+        ),
+    ];
+    for (args, expected) in long_help {
+        let stdout = run_bead_command(&args, workspace_dir);
+        assert!(
+            stdout.contains(expected),
+            "`bead {}` is missing its long help {expected:?}",
+            args.join(" ")
+        );
+    }
 }

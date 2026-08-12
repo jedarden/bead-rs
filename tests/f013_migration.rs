@@ -94,14 +94,27 @@ fn calculate_file_hash(path: &PathBuf) -> String {
 
 #[test]
 fn test_migration_help_available() {
+    // `-h` shows the summary.
+    Command::new(env!("CARGO_BIN_EXE_bead"))
+        .arg("migrate")
+        .arg("-h")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "Migrate checkpoints between profiles",
+        ));
+
+    // `--help` shows the long description, which must be distinct from the
+    // summary -- if the two are identical the long help has been shadowed.
     Command::new(env!("CARGO_BIN_EXE_bead"))
         .arg("migrate")
         .arg("--help")
         .assert()
         .success()
         .stdout(predicates::str::contains(
-            "Migrate checkpoints between profiles",
+            "Transform checkpoint data between interchange profiles",
         ))
+        .stdout(predicates::str::contains("EXAMPLES:"))
         .stdout(predicates::str::contains("dry-run"))
         .stdout(predicates::str::contains("--from"))
         .stdout(predicates::str::contains("--to"))

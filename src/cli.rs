@@ -9,21 +9,22 @@ use clap::{Parser, Subcommand};
 #[command(name = "bead")]
 #[command(
     author = "Jed Arden <github@jedarden.com>",
-    version = "0.1.0",
+    version = env!("CARGO_PKG_VERSION"),
     about = "Clean-room task coordination for agent fleets",
     long_about = "bead-rs is an independent Rust task-coordination system.
 
 The intended workflow is:
-  init workspace -> create/import beads -> add blocking relationships
-  -> inspect ready work -> claim -> update/release -> close -> flush JSONL backup
+  init workspace -> create beads -> add blocking relationships
+  -> inspect ready work -> claim -> update/release -> close -> flush checkpoint
 
 The ready frontier can be inspected with `bead list --ready --json --limit N`,
 which uses claim order but does not reserve the displayed beads. Use `bead claim`
 to atomically assign work.
 
-SQLite is the authoritative live state between flushes. The JSONL checkpoint is
-the portable backup and should be flushed with `bead sync --flush-only` before
-committing the repository.
+SQLite (.beads/beads.db) is the authoritative live state between flushes, and is
+not committed. The checkpoint under .beads/checkpoint/ is the portable, durable
+copy and is what Git tracks; flush it with `bead sync flush-only` before
+committing the repository. Mutating commands never flush implicitly.
 
 Lifecycle transitions:
   - open beads may be ready if unassigned and not manually blocked
@@ -33,7 +34,15 @@ Lifecycle transitions:
   - close requires a reason and may expose dependents
   - reopen restores a closed bead to open
 
-Use `bead --help` to see all available commands."
+EXIT CODES:
+  0  success
+  1  internal failure
+  2  CLI usage or validation error
+  3  workspace, issue, or file not found
+  4  conflict (invalid transition, revision guard, cycle)
+  5  malformed input or integrity failure
+
+Run `bead <COMMAND> --help` for the full description of any command."
 )]
 #[command(propagate_version = true)]
 pub struct Cli {
@@ -45,84 +54,144 @@ pub struct Cli {
 /// Available commands
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Initialize a new workspace
     Init(InitOptions),
 
-    /// Create a new issue
     Create(CreateOptions),
 
-    /// List issues
     List(ListOptions),
 
-    /// Show a single issue
     Show(ShowOptions),
 
-    /// Update an issue
     Update(UpdateOptions),
 
-    /// Release a claimed issue
     Release(ReleaseOptions),
 
-    /// Close an issue
     Close(CloseOptions),
 
-    /// Reopen a closed issue
     Reopen(ReopenOptions),
 
-    /// Claim an issue from the ready frontier
     Claim(ClaimOptions),
 
     /// Manage labels
-    #[command(subcommand)]
+    #[command(
+        subcommand,
+        long_about = "Add or remove labels on an issue.
+
+Labels are free-form, case-sensitive strings used for categorization. Both
+operations are idempotent, so they are safe to run repeatedly.
+
+  bead label add <ID> --label <LABEL>
+  bead label remove <ID> --label <LABEL>"
+    )]
     Label(LabelCommand),
 
     /// Manage dependencies
-    #[command(subcommand)]
+    #[command(
+        subcommand,
+        long_about = "Add or remove dependency edges between issues.
+
+An edge is written blocked-first: `bead dep add <BLOCKED> <BLOCKER>` means
+BLOCKER must close before BLOCKED can become ready. `blocks` edges affect the
+ready frontier and may not form cycles; `relates_to` edges are informational
+only and may.
+
+  bead dep add <BLOCKED> <BLOCKER> [--kind blocks|relates_to]
+  bead dep remove <BLOCKED> <BLOCKER> [--kind KIND]"
+    )]
     Dep(DepCommand),
 
     /// Manage external references
-    #[command(subcommand)]
+    #[command(
+        subcommand,
+        long_about = "Attach namespaced (namespace, key, value) references to issues.
+
+References link a bead to an identifier in another system -- a tracker ticket, a
+commit, a pull request -- without resolving anything over the network. `ref find`
+locates every issue carrying a given value, which supports cross-tool dedup.
+
+  bead ref add --id <ID> --namespace <NS> --key <KEY> --value <VALUE>
+  bead ref remove --id <ID> --namespace <NS> --key <KEY>
+  bead ref list --id <ID>
+  bead ref find --namespace <NS> --value <VALUE>"
+    )]
     Ref(RefCommand),
 
     /// Synchronize checkpoint operations
-    #[command(subcommand)]
+    #[command(
+        subcommand,
+        long_about = "Publish and ingest the durable checkpoint.
+
+SQLite holds live state and is not committed; the checkpoint under
+.beads/checkpoint/ is what Git tracks. Nothing flushes implicitly, so a
+checkpoint is only as current as the last explicit flush.
+
+  bead sync flush-only                                 # database -> checkpoint
+  bead sync import-only --input <PATH> --restore-into-empty --actor <WHO>
+  bead sync import-only --input <PATH> --merge --actor <WHO>
+
+Recovering a fresh clone is `bead init` then `import-only --restore-into-empty`."
+    )]
     Sync(SyncCommand),
 
-    /// Diagnose workspace integrity and optionally perform repairs
     Doctor(DoctorOptions),
 
-    /// Show capabilities and supported features
     Capabilities(CapabilitiesOptions),
 
-    /// Execute safe query language queries
     Query(QueryOptions),
 
-    /// Access cursor-based change feed for incremental local synchronization
     Changes(ChangesOptions),
 
-    /// Explain issue state, readiness, blockers, and legal operations
     Why(WhyOptions),
 
-    /// Compare issue representation across two profiles
     Compare(CompareOptions),
 
     /// Manage structured bead data
-    #[command(subcommand)]
+    #[command(
+        subcommand,
+        long_about = "Attach schema-governed JSON documents to an issue.
+
+Each document lives under a namespace and declares an immutable schema
+reference, which lets consumers negotiate on content they understand while
+unknown namespaces are preserved untouched through interchange.
+
+  bead data set --id <ID> --namespace <NS> --schema-ref <REF> --value <JSON>
+  bead data get --id <ID> --namespace <NS>
+  bead data list --id <ID>
+  bead data remove --id <ID> --namespace <NS>"
+    )]
     Data(DataCommand),
 
     /// Manage recurrence templates
-    #[command(subcommand)]
+    #[command(
+        subcommand,
+        long_about = "Define templates that mint repeat issues on demand.
+
+bead-rs never creates occurrences on a schedule of its own. An external
+scheduler calls `recurrence materialize` when it wants the next one, and each
+occurrence records its series reference and sequence number.
+
+  bead recurrence create --id <ID> --title <T> --base-title-template <T {n}>
+  bead recurrence materialize --id <ID> [--actor <WHO>]
+  bead recurrence list | show --id <ID> | history --id <ID> | delete --id <ID>"
+    )]
     Recurrence(RecurrenceCommand),
 
     /// Validate workspace policy and scheduling configuration
-    #[command(subcommand)]
+    #[command(
+        subcommand,
+        long_about = "Lint scheduling and retention configuration.
+
+Policy lint is advisory only: it reports contradictory, unreachable, redundant,
+or ineffective settings and never changes whether a bead is claimable.
+
+  bead policy check [--format text|json]"
+    )]
     Policy(PolicyCommand),
 
-    /// Migrate checkpoints between profiles with dry-run and receipt support
     Migrate(MigrateOptions),
 
-    /// Not yet implemented
-    #[command(subcommand)]
+    /// Reserved for commands that are specified but not yet implemented
+    #[command(subcommand, hide = true)]
     #[allow(clippy::enum_variant_names)]
     Unimplemented(UnimplementedCommand),
 }
@@ -422,6 +491,11 @@ STATUS TRANSITIONS:
   - deferred can transition to: open, closed (via 'close' command)
   - closed can only transition to: open (via 'reopen' command)
 
+FIELDS THIS COMMAND DOES NOT CHANGE:
+  Title, description, priority, issue type, and labels are not editable here.
+  Set them at creation time with 'bead create', and use 'bead label add' or
+  'bead label remove' for labels. Passing --priority or --title is a usage error.
+
 ASSIGNMENT:
   --assignee and --clear-assignee are mutually exclusive.
   --clear-assignee only works for open assigned issues.
@@ -669,44 +743,49 @@ pub enum SyncCommand {
     #[command(
         name = "flush-only",
         about = "Flush checkpoint to JSONL file",
-        long_about = "Atomically publish checkpoint from current database state.
+        long_about = "Atomically publish a checkpoint from the current database state.
 
 Captures one committed snapshot and writes deterministically ordered JSONL.
-Pre-F017: writes issue-only checkpoint to .beads/issues.jsonl.
-Post-F017: writes forensic checkpoint set with events and history.
-
-The operation is crash-safe: writes to temporary file, verifies, then
-atomically renames. Updates checkpoint state only after successful flush.
+The operation is crash-safe: it writes to a temporary file, verifies it, then
+atomically renames. Checkpoint state is updated only after a successful flush.
 
 EXAMPLES:
-  bead sync --flush-only                                    # Flush to default location
-  bead sync --flush-only --output /path/to/backup.jsonl     # Export to specific path
-  bead sync --flush-only --profile native-v1                # Explicit profile
-
-CHECKPOINT FRESHNESS:
-  The checkpoint represents the database state at flush time, not current time.
-  Any commits after flush make the checkpoint stale.
-  Use 'bead sync --status --format json' to check freshness.
+  bead sync flush-only                                  # Flush the workspace checkpoint
+  bead sync flush-only --output /path/to/backup.jsonl   # Export a copy elsewhere
+  bead sync flush-only --profile needle-v1              # Export under another profile
 
 OUTPUT:
-  Without --output: writes to .beads/issues.jsonl (pre-F017) or forensic checkpoint
-  With --output: exports to specified path (must not exist, must be outside .beads/)
+  Without --output, writes the forensic checkpoint set into .beads/checkpoint/:
+    current.json            pointer to the active generation, plus counts
+    forensic.jsonl          or objects/ + manifests/ when sharded
+  The forensic checkpoint carries issues, events, provenance receipts, and the
+  dependency and label graph. This is the directory Git should track.
+
+  With --output, exports an issue-only JSONL copy to the given path. The path
+  must not already exist and must be outside .beads/. This is a side export; it
+  does not update the workspace checkpoint or its freshness state.
+
+CHECKPOINT FRESHNESS:
+  A checkpoint represents the database as of flush time. Any mutation afterwards
+  makes it stale, and nothing flushes implicitly. Flush before committing, and
+  periodically during long sessions -- otherwise a fresh clone of the repository
+  reproduces the last flushed state, not the current one.
 
 PROFILES:
-  - native-v1: Full native checkpoint (default before F017)
-  - needle-v1: Issue-only compatibility checkpoint
-  - Other profiles: External compatibility formats (post-F012)
+  - native-v1: full native checkpoint (default)
+  - needle-v1: issue-only NEEDLE compatibility checkpoint
+  - br-v1, bf-v1: external compatibility formats
 
 ATOMICITY:
-  - Read transaction captures snapshot
-  - Temporary file written and verified
-  - Atomic rename replaces old checkpoint
-  - Database state updated in same transaction
+  - A read transaction captures the snapshot
+  - The temporary file is written and verified
+  - An atomic rename replaces the previous checkpoint
+  - Checkpoint state advances in the same transaction
 
-Git Integration:
-  Checkpoint files are designed to be Git-tracked.
-  Run 'bead sync --flush-only' before committing the repository.
-  bead-rs never runs Git commands automatically."
+GIT INTEGRATION:
+  Run 'bead sync flush-only' before committing the repository. bead-rs never
+  runs Git commands itself. Restore a fresh clone with
+  'bead init' followed by 'bead sync import-only --restore-into-empty'."
     )]
     FlushOnly(SyncFlushOptions),
 
@@ -739,9 +818,9 @@ MODES:
     - Never deletes native issues absent from checkpoint
 
 EXAMPLES:
-  bead sync --import-only --input checkpoint/ --restore-into-empty --actor admin
-  bead sync --import-only --input backup.jsonl --merge --actor admin --dry-run
-  bead sync --import-only --input .beads/checkpoint --merge --actor system
+  bead sync import-only --input checkpoint/ --restore-into-empty --actor admin
+  bead sync import-only --input backup.jsonl --merge --actor admin --dry-run
+  bead sync import-only --input .beads/checkpoint --merge --actor system
 
 VALIDATION PERFORMED:
   - Record type validation (issue, event, provenance_receipt)
@@ -780,7 +859,7 @@ pub struct SyncFlushOptions {
     #[arg(long, default_value = "native-v1")]
     pub profile: String,
 
-    /// Output path (default: .beads/issues.jsonl)
+    /// Export an issue-only copy to this path instead of only updating .beads/checkpoint/
     #[arg(long)]
     pub output: Option<String>,
 }
@@ -847,15 +926,14 @@ metadata used for categorization and filtering.
 
 EXAMPLES:
   bead label add bead-123abc456789def --label bug
-  bead label add ID --label urgent --label feature
   bead label add ID --label \"needs-review\"
 
 LABELS:
   - Any non-empty string is valid
   - Labels are case-sensitive
-  - Multiple labels can be added in one command
   - Adding an existing label is idempotent (no-op)
-  - Use with list filtering: --label flag
+  - One label per invocation; run the command again for a second label
+    (`bead create` accepts a repeatable --label at creation time)
 
 Common labels: bug, feature, improvement, documentation, urgent,
 help-wanted, work-in-progress, needs-review, blocked, etc."
@@ -1085,9 +1163,11 @@ implementation, store layout, supported commands, priorities, statuses,
 checkpoint modes and formats, and schema catalog.
 
 EXAMPLES:
-  bead capabilities --format json              # Native capabilities
-  bead capabilities --profile needle-v1       # NEEDLE v1 capabilities
-  bead capabilities --format json --profile native-v1  # Explicit profile
+  bead capabilities                            # Native capabilities as JSON
+  bead capabilities --profile needle-v1        # NEEDLE v1 contract
+  bead capabilities --profile native-v1        # Explicit native profile
+
+Output is always JSON on stdout.
 
 CAPABILITY INFORMATION:
   - Contract version and implementation identifier
@@ -1142,12 +1222,15 @@ SUPPORTED FIELDS:
   - blocked, assignee, type, created, updated, closed, close_reason
 
 EXAMPLES:
-  # Find all open issues with priority >= 2
-  bead query --file open_high.json
-  # Find issues assigned to alice
-  bead query --file alice_work.json --json
-  # Simple field projection
-  bead query --file titles_only.json
+  bead query --file open_high.json                     # Query from a file
+  bead query --json '{\"version\":\"v1\"}'                 # Inline query text
+  bead query --file alice_work.json --output-json      # Machine-readable results
+  bead query --file open_high.json --save-as hot       # Save as a named view
+  bead query --view hot --output-json                  # Run a saved view
+  bead query --list-views                              # List saved views
+
+Note: --json supplies the query document itself. Use --output-json to render
+results as JSON.
 
 QUERY FORMAT:
   {
@@ -1202,6 +1285,25 @@ pub struct QueryOptions {
 
 /// Options for the changes command
 #[derive(Parser, Debug)]
+#[command(
+    about = "Access cursor-based change feed for incremental local synchronization",
+    long_about = "Read the append-only change feed so a consumer can catch up incrementally.
+
+Each mutation appends an event with a monotonically increasing sequence number.
+A cursor records how far a consumer has read, so it can resume without rescanning
+the whole workspace. Cursors are only meaningful against the snapshot identity
+that issued them; if the workspace is restored from a checkpoint the identity
+changes and old cursors must be revalidated.
+
+EXAMPLES:
+  bead changes --latest                  # Current cursor position
+  bead changes --since 42 --json         # Events after sequence 42
+  bead changes --snapshot                # Snapshot identity of this workspace
+  bead changes --validate <CURSOR>       # Check a cursor for gaps
+
+Exactly one of --latest, --since, --snapshot, or --validate is expected.
+This feed is local to the workspace; bead-rs performs no network access."
+)]
 pub struct ChangesOptions {
     /// Get changes since this cursor position (sequence number or cursor string)
     #[arg(long)]
@@ -1237,9 +1339,8 @@ the same domain evaluators and reason codes used by R001 (decision traces) and
 R019 (intelligent scheduling) to ensure consistency across all diagnostic interfaces.
 
 EXAMPLES:
-  bead why bead-123abc456789def              # Human-readable explanation
-  bead why bead-123abc456789def --json   # Machine-readable JSON output
-  bead why bead-123abc456789def          # Comprehensive state analysis
+  bead why --id bead-123abc456789def           # Human-readable explanation
+  bead why --id bead-123abc456789def --json    # Machine-readable JSON output
 
 EXPLANATION COVERAGE:
   - Effective vs base status (blocked vs open/in_progress/closed)
@@ -1312,9 +1413,9 @@ over the network. Namespace-scoped uniqueness supports reliable deduplication
 and cross-tool recognition.
 
 EXAMPLES:
-  bead ref add bead-123abc456789def --namespace github --key issue-number --value 12345
-  bead ref add ID --namespace gitlab --key mr-iid --value 42
-  bead ref add ID --namespace jira --key ticket --value PROJ-001
+  bead ref add --id bead-123abc456789def --namespace github --key issue-number --value 12345
+  bead ref add --id ID --namespace gitlab --key mr-iid --value 42
+  bead ref add --id ID --namespace jira --key ticket --value PROJ-001
 
 NAMING RULES:
   - Namespace: 1-64 chars, lowercase letters/numbers/hyphens/underscores, must start with letter
@@ -1347,8 +1448,8 @@ Removes the specified external reference from the issue. If the reference
 does not exist, the command succeeds without making changes.
 
 EXAMPLES:
-  bead ref remove bead-123abc456789def --namespace github --key issue-number
-  bead ref remove ID --namespace gitlab --key mr-id
+  bead ref remove --id bead-123abc456789def --namespace github --key issue-number
+  bead ref remove --id ID --namespace gitlab --key mr-id
 
 IDEMPOTENCY:
   Removing a non-existent reference succeeds without error.
@@ -1369,8 +1470,8 @@ Shows all namespaced external references attached to the issue, sorted
 by namespace and key for consistent output.
 
 EXAMPLES:
-  bead ref list bead-123abc456789def
-  bead ref list ID --json
+  bead ref list --id bead-123abc456789def
+  bead ref list --id ID --json
 
 OUTPUT FORMAT:
   Human-readable format shows namespace, key, and value for each reference.
@@ -1473,16 +1574,12 @@ pub struct RefFindOptions {
 /// Structured data commands
 #[derive(Subcommand, Debug)]
 pub enum DataCommand {
-    /// Set a structured data value for an issue
     Set(DataSetOptions),
 
-    /// Get a structured data value from an issue
     Get(DataGetOptions),
 
-    /// List all structured data namespaces for an issue
     List(DataListOptions),
 
-    /// Remove a structured data value from an issue
     Remove(DataRemoveOptions),
 }
 
@@ -1497,8 +1594,8 @@ Each namespace is governed by its own immutable schema reference, enabling contr
 extension of issue data without arbitrary field proliferation.
 
 EXAMPLES:
-  bead data set bead-123abc456789def --namespace config --schema-ref schema:v1 --value '{\"setting\": \"value\"}'
-  bead data set ID --namespace metrics --schema-ref schema:metrics --value '{\"count\": 42}'
+  bead data set --id bead-123abc456789def --namespace config --schema-ref schema:v1 --value '{\"setting\": \"value\"}'
+  bead data set --id ID --namespace metrics --schema-ref schema:metrics --value '{\"count\": 42}'
 
 SCHEMA GOVERNANCE:
   - Each namespace has an immutable schema reference identifier
@@ -1548,8 +1645,8 @@ Returns both the schema reference and the JSON value for the specified namespace
 If the namespace does not exist for the issue, returns a not-found error.
 
 EXAMPLES:
-  bead data get bead-123abc456789def --namespace config
-  bead data get ID --namespace metrics --json
+  bead data get --id bead-123abc456789def --namespace config
+  bead data get --id ID --namespace metrics --json
 
 OUTPUT FORMAT:
   Human-readable format shows the schema reference and formatted JSON value.
@@ -1580,8 +1677,8 @@ by namespace for consistent output. Each entry includes the namespace and its
 governing schema reference.
 
 EXAMPLES:
-  bead data list bead-123abc456789def
-  bead data list ID --json
+  bead data list --id bead-123abc456789def
+  bead data list --id ID --json
 
 OUTPUT FORMAT:
   Human-readable format shows namespace and schema reference for each entry.
@@ -1607,8 +1704,8 @@ Removes the structured data value for the specified namespace and issue.
 If the namespace does not exist, the command succeeds without making changes.
 
 EXAMPLES:
-  bead data remove bead-123abc456789def --namespace config
-  bead data remove ID --namespace metrics
+  bead data remove --id bead-123abc456789def --namespace config
+  bead data remove --id ID --namespace metrics
 
 IDEMPOTENCY:
   Removing a non-existent namespace succeeds without error.
@@ -1632,22 +1729,16 @@ pub struct DataRemoveOptions {
 /// Recurrence template commands
 #[derive(Subcommand, Debug)]
 pub enum RecurrenceCommand {
-    /// Create a new recurrence template
     Create(RecurrenceCreateOptions),
 
-    /// Show a recurrence template
     Show(RecurrenceShowOptions),
 
-    /// List all recurrence templates
     List(RecurrenceListOptions),
 
-    /// Delete a recurrence template
     Delete(RecurrenceDeleteOptions),
 
-    /// Materialize the next occurrence from a template
     Materialize(RecurrenceMaterializeOptions),
 
-    /// Show materialization history for a template
     History(RecurrenceHistoryOptions),
 }
 
@@ -1763,8 +1854,8 @@ issue type, and labels. Individual occurrences are created explicitly through th
 command, not automatically on schedules.
 
 EXAMPLES:
-  bead recurrence create template-001 --title 'Daily Review' --base-title-template 'Daily Review {n}' --priority 2
-  bead recurrence create weekly-planning --title 'Weekly Planning' --base-title-template 'Week {n} Planning' --labels 'weekly,planning'"
+  bead recurrence create --id template-001 --title 'Daily Review' --base-title-template 'Daily Review {n}' --priority 2
+  bead recurrence create --id weekly-planning --title 'Weekly Planning' --base-title-template 'Week {n} Planning' --labels 'weekly,planning'"
 )]
 pub struct RecurrenceCreateOptions {
     /// Template ID
@@ -1854,8 +1945,8 @@ This is an explicit operation - bead-rs never automatically creates occurrences 
 External schedulers should call this command when they want a new occurrence created.
 
 EXAMPLES:
-  bead recurrence materialize template-001
-  bead recurrence materialize daily-review --actor scheduler-1"
+  bead recurrence materialize --id template-001
+  bead recurrence materialize --id daily-review --actor scheduler-1"
 )]
 pub struct RecurrenceMaterializeOptions {
     /// Template ID
@@ -1884,11 +1975,12 @@ pub struct RecurrenceHistoryOptions {
     pub json: bool,
 }
 
-/// Placeholder for unimplemented commands
+/// Placeholder for commands that are specified but not yet implemented.
+///
+/// `migrate` was previously listed here; it is now a real top-level command.
 #[derive(Subcommand, Debug)]
 pub enum UnimplementedCommand {
     Schema,
-    Migrate,
 }
 
 #[cfg(test)]

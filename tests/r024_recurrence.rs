@@ -573,15 +573,22 @@ fn test_recurrence_delete_nonexistent_template() {
 fn test_recurrence_help() {
     let temp_dir = create_test_workspace();
 
-    let output = run_bead_command(&["recurrence", "--help"], temp_dir.path());
+    // `-h` shows the summary.
+    let short = run_bead_command(&["recurrence", "-h"], temp_dir.path());
+    assert!(short.contains("Manage recurrence templates"));
 
-    assert!(output.contains("Manage recurrence templates"));
-    assert!(output.contains("create"));
-    assert!(output.contains("show"));
-    assert!(output.contains("list"));
-    assert!(output.contains("delete"));
-    assert!(output.contains("materialize"));
-    assert!(output.contains("history"));
+    // `--help` shows the long description, which must be distinct from the
+    // summary -- if the two are identical the long help has been shadowed.
+    let output = run_bead_command(&["recurrence", "--help"], temp_dir.path());
+    assert!(output.contains("Define templates that mint repeat issues on demand"));
+    assert!(!output.contains("Manage recurrence templates"));
+
+    for subcommand in ["create", "show", "list", "delete", "materialize", "history"] {
+        assert!(
+            output.contains(subcommand),
+            "`bead recurrence --help` does not list `{subcommand}`"
+        );
+    }
 }
 
 #[test]
