@@ -473,3 +473,35 @@ internal names from another bead implementation were consulted. The artifact
 is deliberately proposed and cannot authorize implementation or fleet
 migration until a different reviewer records acceptance against its exact
 content hash. This is authorship evidence, not self-approval.
+
+## ADR-002 native field-guide independent review disposition (2026-08-12)
+
+Claude (Anthropic) reviewed `research/specs/native-field-guide-v1.md`
+independently from the OpenAI Codex 2026-08-12 authoring session, using only
+this repository, its installed `bead 0.1.1` binary, and disposable scratch
+workspaces. The reviewed specification hash is
+`32dea9411f49a2897ac72e3df0ebdfda35b819bc5af159794daf92b14d50fa52` at commit
+`f4a31c8`.
+
+No evidence of clean-room contamination was found. Every defect is a
+specification accuracy or completeness problem, not a provenance problem.
+
+**The specification is rejected as written.** Its structural defect is that it
+claims to define the complete public agent-facing meaning of a native bead while
+describing only the checkpoint issue record; the CLI projection agents actually
+consume carries `status`, not the documented `base_status`, and omits ten of the
+nineteen documented fields. Six further blocking findings cover priority level
+names, `description`/`notes` defaults, null-versus-absence, five fields with
+incorrect owning operations, a revision guard attributed to `claim` that does
+not exist, and the complete absence of events, which ADR-002 requires.
+
+Dependency orientation, the readiness predicate, the base status enum, the
+transition graph, the identifier and title limits, and the rehydration boundary
+were each independently verified correct and are recorded as such so a revision
+does not regress them.
+
+`bead schema *` implementation and fleet rehydration remain blocked. A corrected
+artifact receives a new hash and a review by a reviewer who authored neither the
+original nor the correction. Full findings, including eight implementation
+defects discovered during verification, are in
+`docs/reviews/adr-002-field-guide-independent-review-2026-08-12.md`.
