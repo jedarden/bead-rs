@@ -555,3 +555,18 @@ review.
 The status header does not become `accepted normative specification`; that
 requires unconditional acceptance against a later hash. Full findings are in
 `docs/reviews/adr-002-field-guide-independent-review-round-2-2026-08-12.md`.
+
+## ADR-002 native field-guide required revisions after round 2 (2026-08-12)
+
+OpenAI Codex applied R1 through R11 from the independently authored round-two
+review to `research/specs/native-field-guide-v1.md`. The revision corrects
+list/show framing, checkpoint graph members, event optionality/kinds/defaults,
+the status projection deviation, description and defined-optional presence,
+claim output, provenance receipts and advertised-schema behavior, normative
+document names, and schema catalog readability/writability. It also reconciles
+the `2ce61ce` lifecycle/doctor fix while retaining required handling for
+pre-existing invalid rows and diagnostics-import behavior. Only this
+repository's accepted baseline, review findings, and public native sources were
+used. This is correction provenance, not unconditional acceptance; a targeted
+independent verification must record the new SHA-256 before the status header
+changes or excluded sections become an implementation baseline.

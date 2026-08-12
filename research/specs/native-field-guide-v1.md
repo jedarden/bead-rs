@@ -35,9 +35,11 @@ documents are not-found failures (exit 3). State conflicts are exit 4;
 malformed or integrity-invalid documents are exit 5.
 
 `schema list` returns catalog entries containing `schema_ref`,
-`document_kind`, and the supported `validate`, `consume`, and `emit`
-operations. `schema show` returns the exact immutable JSON Schema Draft
-2020-12 document whose `$id` equals `SCHEMA_REF`.
+`document_kind`, `readable`, `writable`, and the supported `validate`,
+`consume`, and `emit` operations. The readable/writable booleans intentionally
+match the capability catalog rather than defining a divergent schema catalog.
+`schema show` returns the exact immutable JSON Schema Draft 2020-12 document
+whose `$id` equals `SCHEMA_REF`.
 
 `schema explain urn:bead-rs:schema:issue:native-v1 --format json` returns this
 typed document:
@@ -48,7 +50,8 @@ typed document:
   "guide_version": 1,
   "describes_schema_refs": [
     "urn:bead-rs:schema:issue:native-v1",
-    "urn:bead-rs:schema:event:native-v1"
+    "urn:bead-rs:schema:event:native-v1",
+    "urn:bead-rs:schema:provenance-receipt:native-v1"
   ],
   "documents": [],
   "fields": [],
@@ -95,6 +98,8 @@ rendering of this same typed value: fixed section order, fields in document
 order, operations lexicographically sorted, LF line endings, and no generated
 timestamp.
 
+The normative document names are `cli_issue`, `checkpoint_issue`,
+`claim_result`, `checkpoint_event`, and `checkpoint_provenance_receipt`.
 Each `documents` entry is an object with required string `name`, `schema_ref`,
 `document_kind`, `transport`, and `member_source`, plus required sorted string
 array `members`. `additional_properties` requires boolean `allowed`, string
@@ -113,9 +118,10 @@ requires string `id`, `severity`, `behavior`, and `required_disposition`.
 Unknown members in the guide document itself are rejected. Arrays described as
 sorted contain unique values. URI-valued strings are absolute URIs.
 
-Completeness tests compare `fields` with every declared member of both public
-issue documents and the event document. They fail on a missing, duplicate, or
-stale field or lifecycle value. They separately compare
+Completeness tests compare `fields` with every declared member of the CLI
+issue projection, claim result, checkpoint issue, checkpoint event, and
+checkpoint provenance-receipt documents. They fail on a missing, duplicate,
+or stale field or lifecycle value. They separately compare
 `additional_properties` with the checkpoint issue schema's
 `additionalProperties`; unknown members are not a fictitious field named
 `extensions`.
@@ -142,8 +148,9 @@ example `2026-08-12T22:51:52.301697398Z`.
 
 ### 3.1 Interactive CLI issue projection
 
-`bead list --json` and `bead show --json` emit one compact JSON object per
-line. The public projection has exactly these members in v0.1:
+`bead list --json` emits one compact JSON object per line. `bead show --json`
+emits a JSON array containing exactly one such object. The issue object has
+exactly these members in v0.1:
 
 `id`, `title`, `description`, `priority`, `status`, `assignee`,
 `dependencies`, `created_at`, `updated_at`, `labels`, and `revision`.
@@ -178,9 +185,11 @@ Every checkpoint issue is carried in this envelope:
 The `issue` object declares these named members: `id`, `title`, `revision`,
 `description`, `notes`, `priority`, `base_status`, `manual_blocked`,
 `assignee`, `issue_type`, `created_at`, `updated_at`, `closed_at`,
-`close_reason`, `source_repo`, `profile`, `schema_ref`, and `data`. It may also
-contain unknown additional properties governed by section 5. It never stores a
-member named `status`, `ready`, or `blocked_by`.
+`close_reason`, `source_repo`, `profile`, `schema_ref`, `data`, `labels`, and
+`dependencies`. Labels and dependencies reach the serialized object through
+the flattened representation, but they are known graph projections, not
+unknown extensions. It may also contain unknown additional properties governed
+by section 5. It never stores `status`, `ready`, or `blocked_by`.
 
 Checkpoint issue records use `schema_ref`; event records currently use
 `$schema`. This inconsistency with `schema-identification-v1.md` is explicit
@@ -190,10 +199,20 @@ decision.
 
 ### 3.3 Projection mapping
 
-The CLI copies `id`, `title`, `priority`, `assignee`, `created_at`,
+The normative projection copies `id`, `title`, `priority`, `assignee`, `created_at`,
 `updated_at`, and `revision`; it materializes absent `description` as `""`;
 maps `base_status` plus `manual_blocked` to `status`; and joins the public label
 and dependency projections. All other checkpoint issue members are omitted.
+Current v0.1 code does not apply the manual-blocked overlay and instead maps
+`base_status` alone; that deviation is the one recorded in section 3.1.
+
+### 3.4 Claim result projection
+
+`bead claim --json` emits a JSON object distinct from an issue projection. It
+identifies the selected issue as `bead_id`, includes `assignee`, and may include
+a `lease` object with `issue_id`, `assignee`, `fencing_token`, and `expires_at`.
+An empty queue returns an object without a nonempty `bead_id`. This guide does
+not rename `bead_id` to `id`.
 
 ## 4. Field semantics
 
@@ -224,9 +243,10 @@ v0.1 checkpoint export/restore resets revisions to 1 (`bf-4hr30`).
 
 ### `description`
 
-Checkpoint: optional nullable string whose creation default is empty text; an
-empty default may be omitted from the checkpoint. CLI: required projection
-string, materialized as `""`. Caller-owned by `create` only, maximum 4 MiB.
+Checkpoint: optional nullable string with no creation default; absent when
+`create` omits `--description`. CLI: required projection string, materialized
+as `""` from an absent checkpoint member. Caller-owned by `create` only,
+maximum 4 MiB.
 Example: `"Rehearse flush and restore."`. Mistake: treating absent checkpoint
 description, explicit null, and projected empty text as interchangeable.
 
@@ -255,9 +275,10 @@ Checkpoint only: required non-null enum, system-mediated by `claim`, `update`,
 ### `status`
 
 CLI only: required non-null derived string, no caller-set default; example
-`"blocked"`. It is the projection described in section 3.1. Mistake: assuming
-`status == open` proves readiness or that a `status` member exists in a native
-checkpoint issue.
+`"open"`. It is the projection described in section 3.1. The post-fix target
+may emit `"blocked"` for manual blocking, but v0.1 cannot currently produce
+that value. Mistake: assuming `status == open` proves readiness or that a
+`status` member exists in a native checkpoint issue.
 
 ### `manual_blocked`
 
@@ -268,12 +289,13 @@ this flag or assuming false proves readiness.
 
 ### `assignee`
 
-Checkpoint and CLI: optional nullable string, default/example null,
-caller-owned by `create --assignee`, `claim --assignee`, `update --assignee`,
-`update --clear-assignee`, and `release`; nonempty when present. Claim assigns
-and enters `in_progress`. Release applies to `in_progress` work; an open
-assigned bead uses `update --clear-assignee`. Mistake: treating assignment as
-authorization.
+Checkpoint: optional nullable string with no default; when unset the member is
+absent, and an imported explicit null reserializes as absence. CLI: required
+nullable member with default/example null. Caller-owned by `create --assignee`,
+`claim --assignee`, `update --assignee`, `update --clear-assignee`, and
+`release`; nonempty when present. Claim assigns and enters `in_progress`.
+Release applies to `in_progress` work; an open assigned bead uses `update
+--clear-assignee`. Mistake: treating assignment as authorization.
 
 ### `issue_type`
 
@@ -298,25 +320,27 @@ concurrency token; use `revision`.
 
 ### `closed_at`
 
-Checkpoint only: optional nullable timestamp, default/example null,
-system-owned by `close` and cleared by `reopen`. Normative invariant: present
-exactly when `base_status` is `closed`. Known defect: v0.1 `update --status
-closed` can violate this invariant and still pass doctor/restore (`bf-3siqo`).
-Mistake: closing via generic update.
+Checkpoint only: optional nullable timestamp with no default; absent on active
+work, example `"2026-08-12T23:00:00.000000000Z"` when closed. System-owned by
+`close` and cleared to absence by `reopen`. Normative invariant: present exactly
+when `base_status` is `closed`. Main commit `2ce61ce` rejects generic update to
+closed and makes doctor detect inconsistent existing rows, but does not repair
+them; released 0.1.1 remains vulnerable and diagnostics import can skip rather
+than fail invalid records. Mistake: assuming detection repaired legacy rows.
 
 ### `close_reason`
 
-Checkpoint only: optional nullable string, default/example null,
-caller-supplied by `close --reason` and cleared by `reopen`. It is nonempty for
-closed issues and has no length bound. Mistake: omitting `--reason` or closing
-through generic update.
+Checkpoint only: optional nullable string with no default; absent on active
+work, example `"Completed and verified"` when closed. Caller-supplied by `close
+--reason` and cleared to absence by `reopen`. It is nonempty for closed issues
+and has no length bound. Mistake: omitting `--reason`.
 
 ### `source_repo`
 
-Checkpoint only: optional nullable string, default/example null. It is
-preserved native content but has no public writer in v0.1 and is therefore
-unreachable through normal creation. It is never network-resolved. Mistake:
-editing checkpoint JSON to inject source provenance; use external references
+Checkpoint only: optional nullable string with no default; absent normally,
+example `"forgejo:jedarden/project"` when preserved. It has no public writer in
+v0.1 and is unreachable through normal creation. It is never network-resolved.
+Mistake: editing checkpoint JSON to inject provenance; use external references
 and the separate reconciliation report.
 
 ### `profile`
@@ -335,11 +359,12 @@ Mistake: silently replacing an unknown reference.
 
 ### `data`
 
-Checkpoint only: optional nullable JSON object, default/example null,
-caller-owned through `bead data set|get|list|remove`. Each namespace has an
-immutable schema reference and arbitrary JSON value; unknown namespaces are
-preserved. Mistake: editing the aggregate through issue update. Known defect:
-v0.1 checkpoint restore loses data content (`bf-xq4ds`).
+Checkpoint only: optional nullable JSON object with no default; absent when no
+data exists, example `{"example":{"schema_ref":"urn:example:v1","value":{}}}`
+when present. Caller-owned through `bead data set|get|list|remove`. Each
+namespace has an immutable schema reference and arbitrary JSON value. Mistake:
+editing the aggregate through issue update. Known defect: v0.1 checkpoint
+restore loses data content (`bf-xq4ds`).
 
 ### `labels`
 
@@ -365,20 +390,32 @@ null-versus-absence semantics through native round trips. A name colliding with
 a defined member is not an extension. Example: `"vendor.example/trace": null`.
 Mistake: normalizing or dropping an unrecognized member.
 
+For defined optional `Issue` members, explicit JSON null deserializes to
+`Option::None` and reserializes as absence because the producer skips `None`.
+Exact null-versus-absence preservation therefore applies to unknown extension
+members, not to defined optional members.
+
 ## 6. Events
 
-Every checkpoint contains durable event envelopes:
+Checkpoints may contain zero or more durable event envelopes. A create-only
+workspace has none. When present, their shape is:
 
 ```json
-{"record_type":"event","event":{"$schema":"urn:bead-rs:schema:event:native-v1","origin_store_uuid":"workspace-uuid","origin_event_sequence":1,"issue_id":"bead-18409c0e","kind":"created","actor":"system","time":"2026-08-12T22:51:52.301697398Z","detail":{}}}
+{"record_type":"event","event":{"$schema":"urn:bead-rs:schema:event:native-v1","origin_store_uuid":"workspace-uuid","origin_event_sequence":1,"issue_id":"bead-18409c0e","kind":"updated","actor":"system","time":"2026-08-12T22:51:52.301697398Z","detail":{}}}
 ```
 
 Event members are: required non-null `$schema`, `origin_store_uuid`,
-`origin_event_sequence`, `kind`, `actor`, `time`, and `detail`; plus nullable
-`issue_id`. `$schema` has the event identity; the sequence is a positive,
+`origin_event_sequence`, `kind`, `time`, and `detail`; plus nullable
+`issue_id` and import-tolerated nullable `actor`. Native producers emit a
+non-null actor, but the import representation does not enforce it. `$schema`
+has the event identity; the sequence is a positive,
 monotonically contiguous integer within the origin store; `time` uses the
-timestamp format in section 2; `detail` is a JSON value and defaults to `{}`.
-Events are system-owned audit facts appended by semantic mutations. They are
+timestamp format in section 2. `detail` is a JSON value: deserialization
+defaults an absent member to null, while current producers emit `{}`. The
+complete v0.1 kind set is `updated`, `claimed`, `released`, `reopened`,
+`closed`, and `assignment_cleared`. Create, dependency, and label mutations do
+not append events; this is an explicit audit-coverage gap. Events are
+system-owned audit facts appended by the operations that support them. They are
 ordered by `(origin_store_uuid, origin_event_sequence)`, never rewritten as
 issue state, and never synthesized by a rehydrating agent. Native restore
 preserves their origin identity. Mistake: deriving authoritative current state
@@ -397,14 +434,36 @@ The typed guide contains one `fields` entry for each event member:
   initial example `1`; mistake: renumbering origin events after restore.
 - `issue_id`: nullable string, system-owned, default/example null for a
   workspace event; mistake: assuming every event belongs to an issue.
-- `kind`: required nonempty string, system-owned, example `"created"`;
+- `kind`: required nonempty string, system-owned, example `"updated"`;
   mistake: treating an unknown kind as permission to discard the event.
-- `actor`: required string, system-owned from operation context, example
-  `"system"`; mistake: treating it as proof of authentication.
+- `actor`: producer-required but import-nullable string, system-owned from
+  operation context, example `"system"`; mistake: treating it as proof of
+  authentication or assuming import rejects null.
 - `time`: required non-null timestamp, system-owned, example
   `"2026-08-12T22:51:52.301697398Z"`; mistake: using it as event identity.
-- `detail`: required JSON value, system-owned, default/example `{}`; mistake:
-  interpreting arbitrary detail keys as durable issue fields.
+- `detail`: required in producer output but import-defaulted JSON value;
+  deserialization default null and producer example `{}`; mistake:
+  interpreting arbitrary detail keys as durable issue fields or conflating the
+  producer example with the import default.
+
+## 6.1 Provenance receipts and other advertised schemas
+
+The third checkpoint envelope is
+`{"record_type":"provenance_receipt","provenance_receipt":{...}}`, governed
+by `urn:bead-rs:schema:provenance-receipt:native-v1`. Its members are
+`$schema`, `receipt_id`, `kind`, `source_store_uuid`, `target_store_uuid`,
+`source_root_sha256`, `actor`, `created_at`, `counts`, `result`, nullable
+`summary_event_identity`, and `receipt_sha256`. It records system-owned restore
+or merge provenance and is not issue state.
+
+The capability catalog also advertises checkpoint pointer, checkpoint
+manifest, capabilities, issue, event, provenance-receipt, and field-guide
+schema identities. `schema show` supports every identity advertised with
+`validate: true`. `schema explain` returns the native field guide for issue,
+event, and provenance-receipt identities described here; for other advertised
+identities it returns a concise typed explanation of that document rather than
+treating the identifier as unsupported. Only an identifier absent from the
+catalog is an exit-2 unsupported-schema error.
 
 ## 7. Dependencies, readiness, and lifecycle
 
@@ -487,9 +546,12 @@ checkpoint, restores into a fresh empty workspace, and archives source input.
 The report is evidence, never checkpoint input.
 
 Fleet rehydration must not proceed while restore silently loses revisions or
-structured data, or while invalid closed records are accepted. The P0 defects
-`bf-4hr30`, `bf-xq4ds`, and `bf-3siqo` are therefore operational cutover gates
-even though they are not prerequisites for reviewing this specification.
+structured data. P0 defects `bf-4hr30` and `bf-xq4ds` remain operational
+cutover gates. The `bf-3siqo` generic-update path and doctor detection were
+fixed on main at `2ce61ce`, but existing inconsistent rows are not repaired and
+diagnostics import can skip them; cutover validation must explicitly reject or
+remediate such rows before restore. These implementation gates are independent
+of review of this specification.
 
 ## 10. Independent review protocol
 
