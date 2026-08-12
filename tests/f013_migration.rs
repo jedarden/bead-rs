@@ -476,3 +476,157 @@ fn test_migration_receipt_equals_stdout() {
     );
     assert!(receipt["successful"].as_bool().unwrap());
 }
+
+/// A bf-v1-shaped input file (the actual wire format `bf`/`bead-forge`
+/// writes), including a "blocked" status and a real dependency edge.
+fn create_bf_v1_issues_file(dir: &Path) -> PathBuf {
+    let file_path = dir.join("bf-v1-issues.jsonl");
+    let mut file = File::create(&file_path).unwrap();
+
+    let issues = vec![
+        serde_json::json!({
+            "id": "bf-blocker",
+            "title": "Blocker issue",
+            "description": "",
+            "design": "",
+            "acceptance_criteria": "",
+            "notes": "",
+            "status": "open",
+            "priority": 2,
+            "issue_type": "task",
+            "created_at": "2026-08-10T00:00:00Z",
+            "updated_at": "2026-08-10T00:00:00Z",
+            "events": [],
+            "labels": [],
+            "dependencies": []
+        }),
+        serde_json::json!({
+            "id": "bf-blocked",
+            "title": "Blocked issue",
+            "description": "",
+            "design": "",
+            "acceptance_criteria": "",
+            "notes": "",
+            "status": "blocked",
+            "priority": 2,
+            "issue_type": "task",
+            "created_at": "2026-08-10T00:00:00Z",
+            "updated_at": "2026-08-10T00:00:00Z",
+            "events": [],
+            "labels": ["urgent"],
+            "dependencies": [
+                {"issue_id": "bf-blocked", "depends_on_id": "bf-blocker", "type": "blocks"}
+            ]
+        }),
+    ];
+
+    for issue in issues {
+        writeln!(file, "{}", serde_json::to_string(&issue).unwrap()).unwrap();
+    }
+
+    file_path
+}
+
+#[test]
+fn test_migration_bf_v1_to_native_v1_uses_the_bf_v1_adapter() {
+    // Regression test: `read_input_file` used to always parse the input
+    // through the native-v1 adapter regardless of `--from`, so it required
+    // a literal `base_status` key on the wire -- every real bf-v1 file
+    // (which has `status`, not `base_status`) failed immediately with
+    // "missing field `base_status`", and the bf-v1 import adapter
+    // (`profile_to_native` in `src/profile/bf_v1.rs`) was never reached.
+    let temp_dir = TempDir::new().unwrap();
+    let input_file = create_bf_v1_issues_file(temp_dir.path());
+    let output_file = temp_dir.path().join("migrated.jsonl");
+
+    Command::new(env!("CARGO_BIN_EXE_bead"))
+        .arg("migrate")
+        .arg("--from")
+        .arg("bf-v1")
+        .arg("--to")
+        .arg("native-v1")
+        .arg("--input")
+        .arg(input_file.to_str().unwrap())
+        .arg("--output")
+        .arg(output_file.to_str().unwrap())
+        .assert()
+        .success();
+
+    let output_content = fs::read_to_string(&output_file).unwrap();
+    let lines: Vec<&str> = output_content.lines().collect();
+    assert_eq!(lines.len(), 2);
+
+    let blocked: Value = serde_json::from_str(
+        lines
+            .iter()
+            .find(|l| l.contains("bf-blocked"))
+            .expect("migrated output should contain bf-blocked"),
+    )
+    .unwrap();
+
+    // bf-v1 "blocked" maps to native base_status "open" + manual_blocked
+    // true (see BfV1Adapter::bf_status_to_native).
+    assert_eq!(blocked["base_status"], "open");
+    assert_eq!(blocked["manual_blocked"], true);
+}
+
+#[test]
+fn test_migration_bf_v1_round_trip_preserves_status_and_dependencies() {
+    // Regression test covering a second bug this fix exposed: migrating
+    // bf-v1 -> native-v1 -> bf-v1 used to fail with "known extension
+    // collision for bf-v1 field 'dependencies'" on the return leg, because
+    // BfV1Adapter::profile_to_native additionally wrote a bare, unprefixed
+    // "dependencies"/"labels" convenience key directly onto the serialized
+    // native JSON (alongside the authoritative `__profile_dependencies__`
+    // stash extension), and NativeV1Adapter::profile_to_native captured
+    // that bare key as an ordinary extension on re-import -- colliding
+    // with the stash the next time it was exported back to bf-v1.
+    let temp_dir = TempDir::new().unwrap();
+    let input_file = create_bf_v1_issues_file(temp_dir.path());
+    let native_file = temp_dir.path().join("native.jsonl");
+    let roundtrip_file = temp_dir.path().join("roundtrip.jsonl");
+
+    Command::new(env!("CARGO_BIN_EXE_bead"))
+        .arg("migrate")
+        .arg("--from")
+        .arg("bf-v1")
+        .arg("--to")
+        .arg("native-v1")
+        .arg("--input")
+        .arg(input_file.to_str().unwrap())
+        .arg("--output")
+        .arg(native_file.to_str().unwrap())
+        .assert()
+        .success();
+
+    Command::new(env!("CARGO_BIN_EXE_bead"))
+        .arg("migrate")
+        .arg("--from")
+        .arg("native-v1")
+        .arg("--to")
+        .arg("bf-v1")
+        .arg("--input")
+        .arg(native_file.to_str().unwrap())
+        .arg("--output")
+        .arg(roundtrip_file.to_str().unwrap())
+        .assert()
+        .success();
+
+    let roundtrip_content = fs::read_to_string(&roundtrip_file).unwrap();
+    let blocked: Value = serde_json::from_str(
+        roundtrip_content
+            .lines()
+            .find(|l| l.contains("\"id\":\"bf-blocked\""))
+            .expect("round-tripped output should contain bf-blocked"),
+    )
+    .unwrap();
+
+    assert_eq!(blocked["status"], "blocked");
+    assert_eq!(blocked["labels"], serde_json::json!(["urgent"]));
+    assert_eq!(
+        blocked["dependencies"],
+        serde_json::json!([
+            {"issue_id": "bf-blocked", "depends_on_id": "bf-blocker", "type": "blocks"}
+        ])
+    );
+}

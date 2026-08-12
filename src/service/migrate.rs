@@ -15,9 +15,7 @@ use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
 // Import profile types - available in both library and binary contexts
-use crate::profile::{
-    get_adapter, is_supported, native_v1, LossSeverity, ProfileAdapter, TransformResult,
-};
+use crate::profile::{get_adapter, is_supported, LossSeverity, ProfileAdapter, TransformResult};
 
 const MAX_ISSUE_RECORDS: usize = 1_000_000;
 const MAX_BYTES_PER_LINE: usize = 16 * 1024 * 1024; // 16 MiB
@@ -174,13 +172,14 @@ pub fn run_migration(opts: MigrationOptions) -> Result<MigrationReceipt> {
     // Calculate input hash
     let input_sha256 = calculate_file_hash(&opts.input_path)?;
 
-    // Read and parse input
-    let (issues, stats) = read_input_file(&opts.input_path)?;
+    // Read and parse input using the SOURCE profile's adapter, so a bf-v1
+    // (or br-v1/needle-v1) input file is actually interpreted in its own
+    // shape rather than assumed to already be native-v1.
+    let (issues, stats) = read_input_file(&opts.input_path, source_adapter)?;
 
-    // Transform issues
+    // Transform the now-native issues to the target profile.
     let (transformed_issues, warnings, transform_stats) = transform_issues(
         &issues,
-        source_adapter,
         target_adapter,
         &opts.from_profile,
         &opts.to_profile,
@@ -231,8 +230,13 @@ pub fn run_migration(opts: MigrationOptions) -> Result<MigrationReceipt> {
     Ok(receipt)
 }
 
-/// Read and parse input file
-fn read_input_file(path: &Path) -> Result<(Vec<Issue>, RecordCounts)> {
+/// Read and parse input file, interpreting each line through the given
+/// SOURCE profile adapter (e.g. bf-v1, br-v1, needle-v1, native-v1) rather
+/// than assuming the input is already native-v1-shaped.
+fn read_input_file(
+    path: &Path,
+    source_adapter: &dyn ProfileAdapter,
+) -> Result<(Vec<Issue>, RecordCounts)> {
     let file = File::open(path).context("Failed to open input file")?;
     let reader = BufReader::new(file);
     let lines = reader.lines();
@@ -281,9 +285,12 @@ fn read_input_file(path: &Path) -> Result<(Vec<Issue>, RecordCounts)> {
             bail!("Line {} is not a JSON object", line_num);
         }
 
-        // Use native adapter to parse
-        let adapter = native_v1::NativeV1Adapter::new();
-        let transform_result = adapter.profile_to_native(&value)?;
+        // Use the source profile's adapter to parse this line into native
+        // shape. Using a hardcoded native adapter here (as opposed to
+        // `source_adapter`) was the root cause of every non-native `--from`
+        // failing: it required `base_status` on the wire regardless of what
+        // profile the input was actually written in.
+        let transform_result = source_adapter.profile_to_native(&value)?;
 
         if !transform_result.successful {
             malformed_lines += 1;
@@ -315,10 +322,17 @@ fn read_input_file(path: &Path) -> Result<(Vec<Issue>, RecordCounts)> {
     Ok((issues, stats))
 }
 
-/// Transform issues between profiles
+/// Transform (already-native) issues to the target profile.
+///
+/// `issues` have already been converted to native shape by
+/// `read_input_file` using the SOURCE profile's adapter -- only the
+/// native -> target leg remains here. (An earlier version of this function
+/// re-ran the source adapter's `profile_to_native` a second time, against
+/// data `read_input_file` had already converted to native shape; for any
+/// non-native source profile that fed it native-shaped JSON where it
+/// expected the profile's own wire shape, which always failed.)
 fn transform_issues(
     issues: &[Issue],
-    source_adapter: &dyn ProfileAdapter,
     target_adapter: &dyn ProfileAdapter,
     source_profile: &str,
     target_profile: &str,
@@ -329,24 +343,14 @@ fn transform_issues(
     let mut total_loss_entries = 0;
 
     for issue in issues {
-        // Transform from source to native if not native
-        let native_result = if source_profile != "native-v1" {
-            let issue_value = serde_json::to_value(issue)?;
-            source_adapter.profile_to_native(&issue_value)?
+        let final_result = if target_profile != "native-v1" {
+            target_adapter.native_to_profile(issue)?
         } else {
             TransformResult {
                 data: serde_json::to_value(issue)?,
                 losses: vec![],
                 successful: true,
             }
-        };
-
-        // Transform from native to target if not native
-        let final_result = if target_profile != "native-v1" {
-            target_adapter
-                .native_to_profile(&serde_json::from_value(native_result.data.clone())?)?
-        } else {
-            native_result
         };
 
         total_transformations += 1;

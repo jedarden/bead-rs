@@ -162,7 +162,9 @@ impl ProfileAdapter for BfV1Adapter {
             bf_obj.insert("assignee".to_string(), Value::String(assignee.clone()));
         }
 
-        if !labels.is_empty() {
+        if let Some(raw_labels) = issue.extensions.get("__profile_labels__") {
+            bf_obj.insert("labels".to_string(), raw_labels.clone());
+        } else if !labels.is_empty() {
             let mut labels = labels.to_vec();
             labels.sort();
             bf_obj.insert(
@@ -228,7 +230,7 @@ impl ProfileAdapter for BfV1Adapter {
             if key.starts_with("__profile_empty_array__:")
                 || matches!(
                     key.as_str(),
-                    "__profile_status__" | "__profile_dependencies__"
+                    "__profile_status__" | "__profile_dependencies__" | "__profile_labels__"
                 )
             {
                 continue;
@@ -276,7 +278,7 @@ impl ProfileAdapter for BfV1Adapter {
         if let Some(field) = obj.keys().find(|field| {
             matches!(
                 field.as_str(),
-                "__profile_status__" | "__profile_dependencies__"
+                "__profile_status__" | "__profile_dependencies__" | "__profile_labels__"
             ) || field.starts_with("__profile_null__:")
                 || field.starts_with("__profile_empty_array__:")
         }) {
@@ -485,6 +487,15 @@ impl ProfileAdapter for BfV1Adapter {
                 "__profile_dependencies__".to_string(),
                 raw_dependencies.clone(),
             );
+        }
+        // Labels have no home on `Issue` itself (they're relational, like
+        // dependencies) and no live DB to re-query them from when this
+        // profile is round-tripped through a flat file (`bead migrate`,
+        // not a live workspace) -- stash them the same way dependencies
+        // are stashed, so a later export back to bf-v1 can recover them
+        // exactly rather than silently dropping them.
+        if let Some(raw_labels) = obj.get("labels") {
+            extensions_map.insert("__profile_labels__".to_string(), raw_labels.clone());
         }
 
         // Build native issue

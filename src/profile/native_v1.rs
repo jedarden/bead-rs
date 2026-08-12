@@ -34,12 +34,48 @@ impl ProfileAdapter for NativeV1Adapter {
     }
 
     fn native_to_profile(&self, issue: &Issue) -> Result<TransformResult> {
-        // Native format is a direct pass-through with no transformation
+        self.native_record_to_profile(issue, &[], &[])
+    }
+
+    fn native_record_to_profile(
+        &self,
+        issue: &Issue,
+        labels: &[String],
+        dependencies: &[(String, String, String)],
+    ) -> Result<TransformResult> {
+        // Native format is a direct pass-through with no transformation.
+        // `Issue` itself carries no labels/dependencies (those are
+        // relational, stored outside the issues row), so embed them the
+        // same way checkpoint export's `build_enriched_issue_object` does,
+        // when the caller has real record data to provide.
         let data = serde_json::to_value(issue)
             .map_err(|e| anyhow!("Failed to serialize native issue: {}", e))?;
+        let mut obj = data
+            .as_object()
+            .ok_or_else(|| anyhow!("Serialized native issue must be an object"))?
+            .clone();
+
+        if !dependencies.is_empty() {
+            let deps: Vec<Value> = dependencies
+                .iter()
+                .map(|(_blocked, blocker, kind)| {
+                    serde_json::json!({"blocker": blocker, "kind": kind})
+                })
+                .collect();
+            obj.insert("dependencies".to_string(), Value::Array(deps));
+        }
+
+        if !labels.is_empty() {
+            let mut labels = labels.to_vec();
+            labels.sort();
+            obj.insert(
+                "labels".to_string(),
+                Value::Array(labels.into_iter().map(Value::String).collect()),
+            );
+        }
 
         Ok(TransformResult {
-            data,
+            data: Value::Object(obj),
             losses: vec![],
             successful: true,
         })
@@ -47,8 +83,22 @@ impl ProfileAdapter for NativeV1Adapter {
 
     fn profile_to_native(&self, data: &Value) -> Result<TransformResult> {
         // Deserialize directly to native format
-        let issue: Issue = serde_json::from_value(data.clone())
+        let mut issue: Issue = serde_json::from_value(data.clone())
             .map_err(|e| anyhow!("Failed to deserialize to native issue: {}", e))?;
+
+        // `Issue` has no `dependencies`/`labels` fields of its own, so a
+        // bare top-level "dependencies"/"labels" key (the convenience
+        // projection some source adapters, e.g. bf-v1's profile_to_native,
+        // additionally write onto the native JSON alongside the
+        // authoritative `__profile_dependencies__`/`__profile_empty_array__:*`
+        // extension keys) would otherwise land in `extensions` as an
+        // ordinary, unprefixed entry. That collides with the authoritative
+        // stash the next time this issue is exported to a profile that
+        // reads real relationship data (e.g. bf-v1 again): both the stash
+        // and this stray passthrough try to populate the same output key.
+        // Drop it -- it duplicates, never adds to, the stash.
+        issue.extensions.remove("dependencies");
+        issue.extensions.remove("labels");
 
         let serialized = serde_json::to_value(&issue)
             .map_err(|e| anyhow!("Failed to re-serialize native issue: {}", e))?;
