@@ -463,3 +463,13 @@ round-four artifact baseline and exact implementation commit `99be5a7`, plus
 successful current and Rust 1.75 release-floor verification. The ledger keeps
 all earlier rejected and governance-violation evidence and appends superseding
 acceptance evidence rather than rewriting history. F012 is now `passes: true`.
+
+## ADR-002 native field-guide proposal (2026-08-12)
+
+OpenAI Codex authored `research/specs/native-field-guide-v1.md` solely from
+this repository's plan, independently authored specifications, and public
+native model and CLI surface. No source, tests, fixtures, SQL, help prose, or
+internal names from another bead implementation were consulted. The artifact
+is deliberately proposed and cannot authorize implementation or fleet
+migration until a different reviewer records acceptance against its exact
+content hash. This is authorship evidence, not self-approval.
