@@ -7,7 +7,14 @@ whole workspace to deterministic JSONL that Git can track.
 
 The installed binary is named `bead`.
 
-![The bead-rs lifecycle: beads, a blocking edge, the ready frontier, an atomic claim, and the checkpoint](docs/img/bead-lifecycle.gif)
+<picture>
+  <source media="(prefers-reduced-motion: reduce)" srcset="docs/img/bead-lifecycle-static.png">
+  <img alt="Six stages of the bead-rs lifecycle. Three beads are created; a blocks edge makes store wait on design; design and docs are ready while store is blocked; a worker claims design, which becomes in progress; closing design satisfies the edge and store becomes ready; a flush copies SQLite to the checkpoint." src="docs/img/bead-lifecycle.gif">
+</picture>
+
+*The animation plays twice and stops. If your system asks for reduced motion
+you get the [static storyboard](docs/img/bead-lifecycle-static.png) instead,
+which shows the same six stages.*
 
 Work items form a directed acyclic graph. The **ready frontier** is the set of
 beads with nothing left blocking them — open, unassigned, not manually blocked,
@@ -186,10 +193,18 @@ visibly fails.
 
 The lifecycle animation is timed against the classical animation principles,
 used to carry meaning rather than decoration — the claim fires in 0.2s against
-0.4–0.6s elsewhere because atomicity is the point; staging dims whatever the
-current beat is not about; and closing `design` sends a ripple along the edge
-so that `store` turning ready reads as a consequence rather than a coincidence.
-The generator documents the mapping in full.
+0.4–0.6s elsewhere because atomicity is the point, and closing `design` sends a
+ripple along the edge so that `store` turning ready reads as a consequence
+rather than a coincidence.
+
+It also targets WCAG 2.1 AA. Every colour holding text clears 4.5:1 and every
+meaningful graphic clears 3:1, asserted at generation time so the palette
+cannot regress; state is never colour-only, since each bead carries a text tag;
+the animation plays a fixed number of times rather than looping forever; and a
+`prefers-reduced-motion` source serves the static storyboard instead. Emphasis
+is carried by scale and stroke weight rather than by dimming, because a dim
+deep enough to read as staging takes text below the contrast floor. The
+generator documents both mappings in full.
 
 Every `bead ...` example printed in the help text is parsed by the real CLI in
 the test suite, so a documented invocation cannot drift from the interface it
