@@ -519,3 +519,39 @@ independently authored specifications and public native source/CLI surface; no
 other bead implementation material was consulted. This entry is correction
 provenance, not approval. Schema implementation and fleet rehydration remain
 blocked pending independent review of the corrected file's new SHA-256.
+
+## ADR-002 native field-guide independent review, round 2 (2026-08-12)
+
+Claude (Anthropic) reviewed the corrected `research/specs/native-field-guide-v1.md`
+at commit `5c45293`, SHA-256
+`3a5a5228b1d2a7f38cb281733c4f9e0443970e5eabe3ebcd0a8829b7626e087d`. The reviewer
+authored neither the original artifact nor the correction, and is not the schema
+implementation author.
+
+Decision: **accepted with required revisions**. The structural defect behind the
+round-1 rejection is resolved — the artifact now distinguishes the interactive
+CLI projection from the checkpoint issue and event records, defines the
+projection mapping, and specifies the typed guide document. Blocking findings
+B2, B5, and B6 are fully closed, correction items 1 through 11 are closed or
+substantially closed, and all four process findings are closed.
+
+Eleven required revisions remain, led by two that reproduce the round-1 failure
+mode at smaller scale: the checkpoint issue member list omits `labels` and
+`dependencies`, which the producer emits and the importer reads by name, and the
+events section opens with a universality claim that a create-only checkpoint
+falsifies while using an event kind (`created`) that v0.1 never emits. Because
+section 1 keys the completeness test to those lists, the test must not be
+authored from the current text. Section 3.2's member list and section 6's
+universality claim, kind examples, and `detail` default are excluded from the
+accepted baseline; the remainder may be implemented against while the revisions
+are tracked.
+
+The artifact is also already stale against `main`: `2ce61ce` fixed `bf-3siqo`
+two minutes after the reviewed commit, so section 4's `closed_at` deviation and
+section 9's cutover-gate list need re-stating. `bf-4hr30` and `bf-xq4ds` were
+reconfirmed live and continue to block fleet rehydration independently of this
+review.
+
+The status header does not become `accepted normative specification`; that
+requires unconditional acceptance against a later hash. Full findings are in
+`docs/reviews/adr-002-field-guide-independent-review-round-2-2026-08-12.md`.
