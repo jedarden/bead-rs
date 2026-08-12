@@ -1865,8 +1865,8 @@ fn import_issues(tx: &Transaction, staging: &ForensicStaging) -> Result<usize> {
             "INSERT INTO issues (
                 id, title, description, notes, priority, issue_type, base_status,
                 manual_blocked, assignee, created_at, updated_at, closed_at,
-                close_reason, source_repo, profile, schema_ref
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                close_reason, source_repo, profile, schema_ref, revision
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 &issue.id,
                 &issue.title,
@@ -1884,6 +1884,7 @@ fn import_issues(tx: &Transaction, staging: &ForensicStaging) -> Result<usize> {
                 &issue.source_repo,
                 &issue.profile,
                 &issue.schema_ref,
+                &issue.revision.unwrap_or(1),
             ],
         )?;
 
@@ -2084,8 +2085,8 @@ fn reconcile_and_merge(
                     "INSERT INTO issues (
                         id, title, description, notes, priority, issue_type, base_status,
                         manual_blocked, assignee, created_at, updated_at, closed_at,
-                        close_reason, source_repo, profile, schema_ref
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                        close_reason, source_repo, profile, schema_ref, revision
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
                     params![
                         &issue.id,
                         &issue.title,
@@ -2103,6 +2104,7 @@ fn reconcile_and_merge(
                         &issue.source_repo,
                         &issue.profile,
                         &issue.schema_ref,
+                        &issue.revision.unwrap_or(1),
                     ],
                 )?;
 
@@ -2134,8 +2136,8 @@ fn reconcile_and_merge(
                             issue_type = ?5, base_status = ?6, manual_blocked = ?7,
                             assignee = ?8, updated_at = ?9, closed_at = ?10,
                             close_reason = ?11, source_repo = ?12, profile = ?13,
-                            schema_ref = ?14
-                         WHERE id = ?15",
+                            schema_ref = ?14, revision = ?15
+                         WHERE id = ?16",
                         params![
                             &issue.title,
                             &issue.description.as_deref().unwrap_or(""),
@@ -2151,6 +2153,7 @@ fn reconcile_and_merge(
                             &issue.source_repo,
                             &issue.profile,
                             &issue.schema_ref,
+                            &issue.revision.unwrap_or(1),
                             &id,
                         ],
                     )?;
@@ -2929,8 +2932,8 @@ fn activate_import(store: &mut SqliteStore, staging: &ImportStaging) -> Result<(
             "INSERT INTO issues (
                 id, title, description, notes, priority, issue_type, base_status,
                 manual_blocked, assignee, created_at, updated_at, closed_at, close_reason,
-                source_repo, profile, schema_ref
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                source_repo, profile, schema_ref, revision
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 &issue.id,
                 &issue.title,
@@ -2952,6 +2955,7 @@ fn activate_import(store: &mut SqliteStore, staging: &ImportStaging) -> Result<(
                 &issue.source_repo,
                 &issue.profile,
                 &issue.schema_ref,
+                &issue.revision.unwrap_or(1),
             ],
         )?;
 
@@ -4255,7 +4259,7 @@ fn read_all_issues(tx: &Transaction) -> Result<Vec<Issue>> {
     let mut issue_stmt = tx.prepare(
         "SELECT id, title, description, notes, priority, issue_type, base_status,
                 manual_blocked, assignee, created_at, updated_at, closed_at, close_reason,
-                source_repo, profile, schema_ref
+                source_repo, profile, schema_ref, revision
          FROM issues",
     )?;
 
@@ -4277,6 +4281,7 @@ fn read_all_issues(tx: &Transaction) -> Result<Vec<Issue>> {
             row.get::<_, Option<String>>("source_repo")?,
             row.get::<_, Option<String>>("profile")?,
             row.get::<_, Option<String>>("schema_ref")?,
+            row.get::<_, i64>("revision")?,
         ))
     })?;
 
@@ -4298,6 +4303,7 @@ fn read_all_issues(tx: &Transaction) -> Result<Vec<Issue>> {
             source_repo,
             profile,
             schema_ref,
+            revision,
         ) = row?;
 
         // Load extensions for this issue
@@ -4334,7 +4340,7 @@ fn read_all_issues(tx: &Transaction) -> Result<Vec<Issue>> {
             source_repo,
             profile: profile.or(Some(String::from("native-v1"))),
             schema_ref: schema_ref.or(Some(String::from("urn:bead-rs:schema:issue:native-v1"))),
-            revision: Some(1), // Imported issues start at revision 1
+            revision: Some(revision),
             data: None,
             extensions,
         };
