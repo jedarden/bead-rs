@@ -203,11 +203,11 @@ fn update_issue_impl(
 
     // Handle status update
     if let Some(new_status) = status {
-        let target_status = BaseStatus::parse(new_status)?;
-
-        // Special handling for "blocked" status
+        // Special handling for "blocked" status: it is not a BaseStatus
+        // variant (BaseStatus::parse would always reject it), it's an
+        // overlay flag on top of whatever base_status the issue already
+        // has. Must be checked before parsing as a BaseStatus.
         if new_status.eq_ignore_ascii_case("blocked") {
-            // "blocked" is not a base status - it sets manual_blocked flag
             if issue.base_status == BaseStatus::Closed {
                 return Err(Error::conflict(
                     "Cannot set manual blocked flag on closed issue",
@@ -216,6 +216,8 @@ fn update_issue_impl(
             sql_parts.push("manual_blocked = 1");
             needs_update = true;
         } else {
+            let target_status = BaseStatus::parse(new_status)?;
+
             // Validate transition
             if !issue.base_status.can_transition_to(&target_status) {
                 return Err(Error::conflict(format!(
@@ -233,6 +235,11 @@ fn update_issue_impl(
 
             sql_parts.push("base_status = ?");
             params.push(new_status.to_string());
+            // An explicit non-blocked status transition clears any manual
+            // block, mirroring close/reopen's existing manual_blocked = 0
+            // reset -- otherwise "blocked" would be settable but never
+            // clearable via `update`.
+            sql_parts.push("manual_blocked = 0");
             needs_update = true;
         }
     }

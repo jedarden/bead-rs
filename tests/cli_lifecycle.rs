@@ -763,3 +763,80 @@ fn test_complete_lifecycle_workflow() {
         .stdout(predicate::str::contains("\"status\":\"open\""))
         .stdout(predicate::str::contains("\"assignee\":\"worker-2\""));
 }
+
+#[test]
+fn test_update_status_blocked_excludes_from_ready_and_is_reversible() {
+    // Regression test: `BaseStatus::parse(new_status)?` used to run before
+    // the "blocked" special-case check, and BaseStatus has no Blocked
+    // variant, so `update --status blocked` always failed with
+    // "Unknown status: blocked" -- even though `bead capabilities`
+    // advertised "blocked" as a supported status.
+    let workspace = setup_workspace();
+    let issue_id = create_issue(workspace.path(), "Test Issue");
+
+    // Ready before blocking.
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["list", "--ready", "--json"])
+        .current_dir(workspace.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(issue_id.clone()));
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["update", &issue_id, "--status", "blocked"])
+        .current_dir(workspace.path())
+        .assert()
+        .success();
+
+    // A manually-blocked issue must not appear in the ready frontier.
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["list", "--ready", "--json"])
+        .current_dir(workspace.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(issue_id.clone()).not());
+
+    // An explicit non-blocked status transition must clear the manual
+    // block and restore the issue to the ready frontier -- otherwise
+    // "blocked" would be settable but never clearable via `update`.
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["update", &issue_id, "--status", "open"])
+        .current_dir(workspace.path())
+        .assert()
+        .success();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["list", "--ready", "--json"])
+        .current_dir(workspace.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(issue_id.clone()));
+}
+
+#[test]
+fn test_update_status_blocked_rejected_on_closed_issue() {
+    let workspace = setup_workspace();
+    let issue_id = create_issue(workspace.path(), "Test Issue");
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["close", &issue_id, "--reason", "done"])
+        .current_dir(workspace.path())
+        .assert()
+        .success();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["update", &issue_id, "--status", "blocked"])
+        .current_dir(workspace.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "Cannot set manual blocked flag on closed issue",
+        ));
+}
