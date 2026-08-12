@@ -7,7 +7,7 @@ whole workspace to deterministic JSONL that Git can track.
 
 The installed binary is named `bead`.
 
-![How bead-rs works](docs/img/how-bead-rs-works.png)
+![The bead-rs lifecycle: beads, a blocking edge, the ready frontier, an atomic claim, and the checkpoint](docs/img/bead-lifecycle.gif)
 
 Work items form a directed acyclic graph. The **ready frontier** is the set of
 beads with nothing left blocking them — open, unassigned, not manually blocked,
@@ -45,6 +45,12 @@ bead list --ready                       # store has now joined the frontier
 
 bead sync flush-only                    # write the checkpoint Git will track
 ```
+
+![Terminal recording of the quick start: init, three beads, a dependency, the ready frontier, a claim, a close, and a checkpoint flush](docs/img/bead-workflow.gif)
+
+That recording is the sequence above, run against the real binary — note that
+`store` is absent from the first `list --ready` because it is blocked, and
+present in the second because closing `design` satisfied its only edge.
 
 `bead why --id <ID>` explains any bead's state: whether it is ready, what is
 blocking it, how it ranks for claiming, and which operations are currently
@@ -103,6 +109,8 @@ Exit codes are stable across every command:
 
 ## Coordinating a fleet
 
+![Many agents claiming from one ready frontier, backed by SQLite and a checkpoint](docs/img/how-bead-rs-works.png)
+
 - **Atomic claim.** Selection and assignment share one transaction under the
   `fifo-v1` policy (priority ASC, created_at ASC, id ASC). `aging-v1`,
   `impact-v1`, `rotation-v1`, and `balanced-v1` are also available via
@@ -160,6 +168,21 @@ other task tracker. These conventions catch people out:
   lifecycle, dependency, checkpoint, CLI, and verification design.
 - Post-0.1 candidates and rejected alternatives live in the
   [ideas ledger](docs/notes/ideas-ledger.md).
+
+Both animations are generated from committed sources, so they can be refreshed
+rather than redrawn:
+
+```bash
+# lifecycle animation (needs cairosvg + Pillow)
+python3 docs/img/generate-lifecycle-animation.py
+
+# terminal screencast (needs vhs, which needs ttyd + ffmpeg)
+cargo install --path . && vhs docs/img/bead-workflow.tape
+```
+
+The screencast drives the real binary, so it cannot quietly disagree with the
+CLI: if behaviour changes, re-running the tape either shows the change or
+visibly fails.
 
 Every `bead ...` example printed in the help text is parsed by the real CLI in
 the test suite, so a documented invocation cannot drift from the interface it
