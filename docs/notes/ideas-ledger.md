@@ -763,3 +763,41 @@ Product decision on 2026-08-08:
   already required dry-run for migration/import analysis, but not for ordinary
   update, lifecycle, or dependency mutations.
 - No F001-F014 pass state changed.
+
+## 2026-08-12 — field observation: inverted verification gates
+
+Not an ideation run. This entry records the provenance of R025, which came from
+measured defects in two live workspaces built on a different bead
+implementation rather than from a generated idea pool.
+
+Observation: a dependency graph can be acyclic, internally consistent, and
+still order work so it cannot execute — a bead that *verifies* some work
+recorded as the blocker of the bead that *performs* it. "Add tilde expansion
+helper function" blocked by "Run clippy and fix warnings".
+
+Measured 2026-08-12:
+
+- Workspace A: 21 such edges, appearing at a steady 4-6% of newly created beads
+  across three months. A persistent authoring slip, not a migration artifact.
+- Workspace B: 24 such edges plus 7 cycles, found on a detector's first run.
+  Several were two-node rings that were both a cycle and an inversion.
+
+Why this is not already covered here: `bead-rs` rejects cycles at insertion
+(§3.4), derives readiness from authoritative rows rather than a stored status,
+and embeds the blocker test in the eligibility query — so it is immune to the
+three neighbouring defect classes. Inversion is not one of them. An inverted
+gate is normally acyclic, so insertion-time cycle rejection accepts it, and
+readiness then correctly reports a bead that can never become ready.
+
+- **Adopted:** R025, declared `verifies` edge kind plus advisory inverted-gate
+  diagnosis in the dependencies doctor scope. Authorized by ADR-001.
+- **Rejected:** the title-prefix heuristic that detected these in the
+  originating workspaces. It works, and it is the wrong mechanism here — the
+  store commits to cross-tool recognition without title heuristics, and prefix
+  matching misclassifies titles that merely contain a verification noun ("Add
+  logging verification and run test suite"). Cost of the structural
+  alternative, recorded honestly: coverage is opt-in and starts at zero.
+- **Rejected:** rejecting inverted edges at insertion, as cycles are rejected.
+  A deliberate "prove the baseline green before touching it" gate is legitimate
+  and structurally identical to the error.
+- No F001-F017 pass state changed. R025 is post-0.1 and sequenced after R017.

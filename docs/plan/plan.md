@@ -1923,7 +1923,7 @@ G5 permits the version 0.1 milestone but not full-project
 
 ### Phase 6: complete the adopted post-0.1 roadmap under Marathon
 
-R001-R024 become executable after G5 in their listed order subject to explicit
+R001-R025 become executable after G5 in their listed order subject to explicit
 dependencies and required specifications/ADRs. Core-incorporated items receive
 verified dispositions tied to their owning F-feature rather than duplicate
 implementations. Marathon records each roadmap item in the release ledger,
@@ -2281,6 +2281,35 @@ receipt. Core `bead-rs` never wakes, polls, interprets wall-clock schedules, or
 creates work autonomously; an external caller may decide when to invoke the
 operation.
 
+### R025 — Declared verification edges and inverted-gate diagnosis
+
+Add a third dependency kind, `verifies`. A `verifies` edge from V to I records
+that V checks the work I performs; like `relates_to` it never affects
+readiness, and cycles among `verifies` edges alone are permitted. Unknown kinds
+stay preservable for interchange and fail closed for native mutation, as R018
+requires of unknown schemas.
+
+With the relationship declared, an inverted verification gate becomes decidable
+rather than guessed: a `blocks` edge whose blocker also `verifies` its blocked
+bead states that the check must close before the work it checks may start,
+which no execution can satisfy. Report each such pair from the existing
+dependencies doctor scope that already performs cycle detection. Cycle
+rejection does not cover this case — an inverted gate is normally acyclic, so
+§3.4's insertion-time check accepts it and readiness then correctly reports a
+bead that can never become ready.
+
+The diagnosis is advisory and never rejects the edge, matching R021: a
+deliberate "prove the baseline green before touching it" ordering is
+legitimate and structurally identical to the error, so only the author can
+distinguish them. Never infer the relationship from issue titles. Title shape
+is not a stable cross-tool signal, and prefix matching misclassifies titles
+that merely contain a verification noun; the declared edge exists precisely so
+that no such inference is needed. R023 reports a `verifies`-shaped blocker as a
+distinct reason code rather than an ordinary blocker, since "blocked by the
+bead that verifies it" is the answer that identifies the fault. Sequence after
+R017, whose conditional edges must treat `verifies` consistently in cycle
+analysis. Authorized by ADR-001.
+
 ## 13. Release gates
 
 ### Bootstrap and handoff gates
@@ -2359,14 +2388,14 @@ Before declaring version 0.1 complete:
 
 Before `.marathon/COMPLETE`:
 
-- every R001-R024 item has a ledger entry with either verified
+- every R001-R025 item has a ledger entry with either verified
   core-incorporated evidence or a passing extension implementation;
 - every roadmap specification, ADR, migration, conformance scenario, and
   documentation requirement is satisfied at the final commit;
 - formatting, Clippy, the complete test suite, package installation, recovery,
   stress/capacity, recursive help/man-page, provenance, and consumer-side
   NEEDLE compatibility gates are rerun against the final artifact;
-- the release-evidence report covers F001-F017 and R001-R024 and passes the
+- the release-evidence report covers F001-F017 and R001-R025 and passes the
   noninteractive verifier with exact commit and artifact hashes;
 - the working tree is clean and every coherent increment is pushed to
   Forgejo `origin/main`; and

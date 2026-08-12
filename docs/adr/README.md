@@ -35,3 +35,4 @@ Use the template in `000-template.md` for new ADRs. Each ADR should include:
 
 | ADR | Title | Status | Date |
 |-----|-------|--------|------|
+| [001](001-declared-verification-edges-over-title-heuristics.md) | Diagnose inverted verification gates from a declared edge kind, not from issue titles | Proposed | 2026-08-12 |
