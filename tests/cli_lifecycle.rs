@@ -840,3 +840,25 @@ fn test_update_status_blocked_rejected_on_closed_issue() {
             "Cannot set manual blocked flag on closed issue",
         ));
 }
+
+#[test]
+fn test_update_status_closed_requires_close_command_and_preserves_issue() {
+    let workspace = setup_workspace();
+    let id = create_issue(workspace.path(), "Cannot bypass close metadata");
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["update", &id, "--status", "closed"])
+        .current_dir(workspace.path())
+        .assert()
+        .code(4)
+        .stderr(predicate::str::contains("Use 'close' command"));
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["show", &id, "--json"])
+        .current_dir(workspace.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"status\":\"open\""));
+}

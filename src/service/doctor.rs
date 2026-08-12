@@ -624,6 +624,28 @@ fn check_schema_validity(store: &impl Store) -> Result<String> {
         ));
     }
 
+    // Closed state and its audit metadata are a bidirectional invariant.
+    // Detect both an incompletely closed issue and stale close metadata on
+    // active work; either form makes checkpoint recovery ambiguous.
+    let invalid_close_metadata_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM issues
+             WHERE (base_status = 'closed'
+                    AND (closed_at IS NULL OR close_reason IS NULL OR trim(close_reason) = ''))
+                OR (base_status != 'closed'
+                    AND (closed_at IS NOT NULL OR close_reason IS NOT NULL))",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    if invalid_close_metadata_count > 0 {
+        issues.push(format!(
+            "Found {} issues with inconsistent closed status metadata",
+            invalid_close_metadata_count
+        ));
+    }
+
     // Check for foreign key violations in dependencies
     let mut stmt = conn
         .prepare(

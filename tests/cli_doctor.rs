@@ -177,3 +177,38 @@ fn test_doctor_after_flush() {
         .success()
         .stderr(predicates::str::contains("OK"));
 }
+
+#[test]
+#[serial]
+fn test_doctor_rejects_inconsistent_close_metadata() {
+    let temp = tempfile::tempdir().unwrap();
+    std::env::set_current_dir(temp.path()).unwrap();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["init", "--prefix", "test"])
+        .assert()
+        .success();
+    let output = Command::cargo_bin("bead")
+        .unwrap()
+        .args(["create", "--title", "Corrupt close metadata probe"])
+        .output()
+        .unwrap();
+    let id = String::from_utf8(output.stdout).unwrap();
+
+    let conn = rusqlite::Connection::open(temp.path().join(".beads/beads.db")).unwrap();
+    conn.execute(
+        "UPDATE issues SET base_status = 'closed', closed_at = NULL, close_reason = NULL WHERE id = ?1",
+        [id.trim()],
+    )
+    .unwrap();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["doctor"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "inconsistent closed status metadata",
+        ));
+}

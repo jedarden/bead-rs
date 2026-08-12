@@ -218,6 +218,15 @@ fn update_issue_impl(
         } else {
             let target_status = BaseStatus::parse(new_status)?;
 
+            // Closing has mandatory audit metadata and must go through the
+            // dedicated close operation. Allowing generic update to select
+            // Closed would bypass closed_at and close_reason invariants.
+            if target_status == BaseStatus::Closed {
+                return Err(Error::conflict(
+                    "Use 'close' command to transition an issue to closed",
+                ));
+            }
+
             // Validate transition
             if !issue.base_status.can_transition_to(&target_status) {
                 return Err(Error::conflict(format!(
