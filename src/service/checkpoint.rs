@@ -292,7 +292,7 @@ pub struct SerializedEvent {
 /// Serialized provenance receipt for forensic import
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SerializedReceipt {
-    #[serde(rename = "schema_ref")]
+    #[serde(rename = "$schema", alias = "schema_ref")]
     pub schema_ref: String,
     #[serde(rename = "receipt_id")]
     pub receipt_id: String,

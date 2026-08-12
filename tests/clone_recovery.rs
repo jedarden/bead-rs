@@ -323,3 +323,117 @@ fn flushed_checkpoint_round_trips_through_import() {
         );
     }
 }
+
+/// A checkpoint that itself contains a provenance receipt (because the
+/// workspace it was flushed from had already done a restore or merge) must
+/// still be importable. `ProvenanceReceipt` (the write side, used by
+/// `flush-only`) and `SerializedReceipt` (the read side, used by
+/// `import-only`) are separate structs describing the same JSON shape, and
+/// they disagreed on the schema field's wire name (`$schema` vs a literal
+/// `schema_ref`) -- so any checkpoint containing a receipt could be flushed
+/// but never re-imported, failing with "invalid receipt: missing field
+/// `schema_ref`". No prior test exercised a receipt through this path at
+/// all: every existing checkpoint fixture in this file contains only issues
+/// and events. This is the regression test for that gap.
+#[test]
+#[serial]
+fn restore_into_empty_survives_a_checkpoint_containing_a_provenance_receipt() {
+    let source = populated_workspace();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["sync", "flush-only"])
+        .current_dir(source.path())
+        .env("HOME", source.path().to_str().unwrap())
+        .assert()
+        .success();
+    let source_checkpoint = source.path().join(".beads/checkpoint/forensic.jsonl");
+
+    // First restore: an ordinary receipt-free checkpoint into an empty
+    // workspace. This is the scenario every other test in this file covers,
+    // and it also leaves a provenance_receipt row in `middle`'s own store --
+    // exactly the real-world situation this test exists to reproduce (e.g. a
+    // workspace that was itself restored once before being flushed again).
+    let middle = tempfile::tempdir().unwrap();
+    Command::cargo_bin("bead")
+        .unwrap()
+        .arg("init")
+        .current_dir(middle.path())
+        .env("HOME", middle.path().to_str().unwrap())
+        .assert()
+        .success();
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args([
+            "sync",
+            "import-only",
+            "--input",
+            source_checkpoint.to_str().unwrap(),
+            "--restore-into-empty",
+            "--actor",
+            "regression-test",
+        ])
+        .current_dir(middle.path())
+        .env("HOME", middle.path().to_str().unwrap())
+        .assert()
+        .success();
+
+    // Flushing `middle` now produces a checkpoint that includes the
+    // provenance_receipt the restore above just created.
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["sync", "flush-only"])
+        .current_dir(middle.path())
+        .env("HOME", middle.path().to_str().unwrap())
+        .assert()
+        .success();
+    let middle_checkpoint = middle.path().join(".beads/checkpoint/forensic.jsonl");
+    let contents = std::fs::read_to_string(&middle_checkpoint).unwrap();
+    assert!(
+        contents
+            .lines()
+            .any(|line| line.contains("\"record_type\":\"provenance_receipt\"")),
+        "fixture must actually produce a receipt record to exercise the bug: {contents}"
+    );
+
+    // Second restore: into a fresh workspace, from a checkpoint that itself
+    // contains a receipt. This is the exact step that failed before the fix.
+    let restore = tempfile::tempdir().unwrap();
+    Command::cargo_bin("bead")
+        .unwrap()
+        .arg("init")
+        .current_dir(restore.path())
+        .env("HOME", restore.path().to_str().unwrap())
+        .assert()
+        .success();
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args([
+            "sync",
+            "import-only",
+            "--input",
+            middle_checkpoint.to_str().unwrap(),
+            "--restore-into-empty",
+            "--actor",
+            "regression-test-2",
+        ])
+        .current_dir(restore.path())
+        .env("HOME", restore.path().to_str().unwrap())
+        .assert()
+        .success();
+
+    let assert = Command::cargo_bin("bead")
+        .unwrap()
+        .arg("list")
+        .current_dir(restore.path())
+        .env("HOME", restore.path().to_str().unwrap())
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    for title in ["First bead", "Second bead", "Third bead"] {
+        assert!(
+            stdout.contains(title),
+            "restored workspace missing {title}: {stdout}"
+        );
+    }
+}
