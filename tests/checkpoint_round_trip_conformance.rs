@@ -57,6 +57,30 @@ fn extract_bead_id(output: &str) -> String {
     id
 }
 
+/// Model a checkpoint emitted by 0.1.1, which had no collection projections.
+fn remove_projected_collections(checkpoint: &Path) {
+    let pointer: Value =
+        serde_json::from_str(&fs::read_to_string(checkpoint.join("current.json")).unwrap())
+            .unwrap();
+    let relative = pointer["active_root"]["path"].as_str().unwrap();
+    let generation = checkpoint.join(relative);
+    let rewritten = fs::read_to_string(&generation)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let mut record: Value = serde_json::from_str(line).unwrap();
+            if let Some(issue) = record.get_mut("issue").and_then(Value::as_object_mut) {
+                issue.remove("data");
+                issue.remove("external_references");
+                issue.remove("comments");
+            }
+            serde_json::to_string(&record).unwrap()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(generation, format!("{rewritten}\n")).unwrap();
+}
+
 /// Compare all issues between two workspaces for complete equality
 fn assert_issues_equal(workspace1: &Path, workspace2: &Path) {
     let db1 = workspace1.join(".beads/beads.db");
@@ -968,6 +992,7 @@ fn test_checkpoint_merge_advances_revision_when_replacing_newer_live_content() {
         .current_dir(source.path())
         .assert()
         .success();
+    remove_projected_collections(&source.path().join(".beads/checkpoint"));
 
     let target = create_workspace();
     let checkpoint = source.path().join(".beads/checkpoint");
@@ -1177,4 +1202,67 @@ fn test_checkpoint_merge_replaces_projected_collections_when_present() {
     assert_eq!(data_namespace, "incoming");
     assert_eq!(reference_value, "source-7");
     assert_eq!(comment_id, "incoming-comment");
+    drop(conn);
+
+    // A later full checkpoint repeats the identical event prefix, adds a new
+    // suffix event, and explicitly carries empty collection projections so
+    // source-side deletions propagate.
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["data", "remove", "--id", &id, "--namespace", "incoming"])
+        .current_dir(source.path())
+        .assert()
+        .success();
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args([
+            "ref",
+            "remove",
+            "--id",
+            &id,
+            "--namespace",
+            "tracker",
+            "--key",
+            "source-id",
+        ])
+        .current_dir(source.path())
+        .assert()
+        .success();
+    rusqlite::Connection::open(&source_db)
+        .unwrap()
+        .execute("DELETE FROM comments WHERE issue_id = ?1", [&id])
+        .unwrap();
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["update", &id, "--notes", "second merge suffix"])
+        .current_dir(source.path())
+        .assert()
+        .success();
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["sync", "flush-only"])
+        .current_dir(source.path())
+        .assert()
+        .success();
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args([
+            "sync",
+            "import-only",
+            "--input",
+            source.path().join(".beads/checkpoint").to_str().unwrap(),
+            "--merge",
+            "--actor",
+            "collection-merge-test-2",
+        ])
+        .current_dir(target.path())
+        .assert()
+        .success();
+
+    let conn = rusqlite::Connection::open(&target_db).unwrap();
+    for table in ["issue_data", "external_references", "comments"] {
+        let sql = format!("SELECT COUNT(*) FROM {table} WHERE issue_id = ?1");
+        let count: i64 = conn.query_row(&sql, [&id], |row| row.get(0)).unwrap();
+        assert_eq!(count, 0, "second merge did not propagate {table} deletion");
+    }
 }

@@ -66,7 +66,7 @@ use crate::model::Issue;
 use crate::profile::ProfileLossReport;
 use crate::store::SqliteStore;
 use anyhow::{anyhow, bail, Result};
-use rusqlite::{params, Transaction};
+use rusqlite::{params, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -1435,6 +1435,12 @@ fn validate_forensic_checkpoint(
     store: &mut SqliteStore,
     _dry_run: bool,
 ) -> Result<()> {
+    for issue in &staging.issues {
+        issue
+            .validate()
+            .map_err(|error| anyhow!("Issue '{}' failed validation: {}", issue.id, error))?;
+    }
+
     // Validate canonical ordering
     validate_canonical_ordering(staging)?;
 
@@ -1657,61 +1663,49 @@ fn validate_merge_constraints(store: &mut SqliteStore, staging: &ForensicStaging
 
 /// Validate same-UUID merge constraints
 fn validate_same_uuid_merge(store: &mut SqliteStore, staging: &ForensicStaging) -> Result<()> {
-    let conn = store.conn();
-
-    // Get max local event sequence for this origin
-    let max_local_sequence: i64 = conn
-        .query_row(
-            "SELECT COALESCE(MAX(origin_event_sequence), 0)
-             FROM events
-             WHERE origin_store_uuid = ?1",
-            [&staging.store_uuid],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
-
-    // All checkpoint events must be new (sequences > max_local_sequence)
-    // or match existing events exactly (hash equality)
-
-    // For now, require that checkpoint extends existing history
-    if !staging.events.is_empty() && staging.events[0].origin_event_sequence <= max_local_sequence {
-        bail!(
-            "Same-UUID merge requires checkpoint to extend existing history. \
-             Checkpoint starts at sequence {}, but local has {}",
-            staging.events[0].origin_event_sequence,
-            max_local_sequence
-        );
-    }
-
-    Ok(())
+    validate_event_prefix(store.conn(), staging)
 }
 
 /// Validate different-UUID merge constraints
 fn validate_different_uuid_merge(store: &mut SqliteStore, staging: &ForensicStaging) -> Result<()> {
-    let conn = store.conn();
+    validate_event_prefix(store.conn(), staging)
+}
 
-    // Check that no event identities conflict
+/// Existing event identities are an accepted replay prefix only when their
+/// complete public content is identical. New suffix events remain importable.
+fn validate_event_prefix(conn: &rusqlite::Connection, staging: &ForensicStaging) -> Result<()> {
     for event in &staging.events {
-        let conflict_count: i64 = conn
+        let existing = conn
             .query_row(
-                "SELECT COUNT(*) FROM events
-                 WHERE origin_store_uuid = ?1
-                 AND origin_event_sequence = ?2",
-                [
-                    &event.origin_store_uuid,
-                    &event.origin_event_sequence.to_string(),
-                ],
-                |row| row.get(0),
+                "SELECT issue_id, kind, actor, time, detail FROM events
+                 WHERE origin_store_uuid = ?1 AND origin_event_sequence = ?2",
+                params![&event.origin_store_uuid, event.origin_event_sequence],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
             )
-            .unwrap_or(0);
+            .optional()?;
 
-        if conflict_count > 0 {
-            // Conflict: need to check hash equality
-            bail!(
-                "Different-UUID merge has event identity conflict: ({}, {}) already exists",
-                event.origin_store_uuid,
-                event.origin_event_sequence
-            );
+        if let Some((issue_id, kind, actor, time, detail)) = existing {
+            let detail: serde_json::Value = serde_json::from_str(&detail)?;
+            if issue_id != event.issue_id
+                || kind != event.kind
+                || actor != event.actor
+                || time != event.time
+                || detail != event.detail
+            {
+                bail!(
+                    "Event identity conflict: ({}, {}) has different content",
+                    event.origin_store_uuid,
+                    event.origin_event_sequence
+                );
+            }
         }
     }
 
@@ -1944,7 +1938,7 @@ fn import_labels(tx: &Transaction, staging: &ForensicStaging) -> Result<()> {
 fn import_events(tx: &Transaction, staging: &ForensicStaging) -> Result<()> {
     for event in &staging.events {
         tx.execute(
-            "INSERT INTO events (
+            "INSERT OR IGNORE INTO events (
                 issue_id, kind, actor, time, detail,
                 origin_store_uuid, origin_event_sequence
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -4521,12 +4515,10 @@ fn read_all_issues(tx: &Transaction) -> Result<Vec<Issue>> {
         for reference in reference_rows {
             references.push(reference?);
         }
-        if !references.is_empty() {
-            extensions.insert(
-                "external_references".to_string(),
-                serde_json::Value::Array(references),
-            );
-        }
+        extensions.insert(
+            "external_references".to_string(),
+            serde_json::Value::Array(references),
+        );
 
         let mut comments = Vec::new();
         let mut comment_stmt = tx.prepare(
@@ -4546,9 +4538,7 @@ fn read_all_issues(tx: &Transaction) -> Result<Vec<Issue>> {
         for comment in comment_rows {
             comments.push(comment?);
         }
-        if !comments.is_empty() {
-            extensions.insert("comments".to_string(), serde_json::Value::Array(comments));
-        }
+        extensions.insert("comments".to_string(), serde_json::Value::Array(comments));
 
         // Convert to Issue model
         let mut data = serde_json::Map::new();
@@ -4598,7 +4588,7 @@ fn read_all_issues(tx: &Transaction) -> Result<Vec<Issue>> {
             profile: profile.or(Some(String::from("native-v1"))),
             schema_ref: schema_ref.or(Some(String::from("urn:bead-rs:schema:issue:native-v1"))),
             revision: Some(revision),
-            data: (!data.is_empty()).then_some(serde_json::Value::Object(data)),
+            data: Some(serde_json::Value::Object(data)),
             extensions,
         };
 
