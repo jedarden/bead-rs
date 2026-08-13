@@ -125,16 +125,35 @@ fn schema_explain_json_and_markdown_are_deterministic() {
         .clone();
     let explanation: Value = serde_json::from_slice(&json_output).unwrap();
     assert_eq!(explanation["guide_version"], 1);
-    assert_eq!(explanation["describes_schema_refs"][0], schema_ref);
+    assert!(explanation["describes_schema_refs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value == schema_ref));
     assert!(!explanation["fields"].as_array().unwrap().is_empty());
+    let documents = explanation["documents"].as_array().unwrap();
+    assert_eq!(documents.len(), 5);
+    let expected_fields: usize = documents
+        .iter()
+        .map(|document| document["members"].as_array().unwrap().len())
+        .sum();
+    assert_eq!(
+        explanation["fields"].as_array().unwrap().len(),
+        expected_fields
+    );
+    assert!(explanation["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|field| field["json_type"] != "any"));
 
     Command::cargo_bin("bead")
         .unwrap()
         .args(["schema", "explain", schema_ref, "--format", "markdown"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("# issue"))
-        .stdout(predicate::str::contains("`priority`"));
+        .stdout(predicate::str::contains("# Native field guide v1"))
+        .stdout(predicate::str::contains("checkpoint_issue.priority"));
 }
 
 #[test]

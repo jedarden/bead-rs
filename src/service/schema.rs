@@ -60,7 +60,7 @@ const DESCRIPTORS: &[Descriptor] = &[
         document_kind: "field_guide",
         readable: true,
         writable: true,
-        validate: false,
+        validate: true,
         consume: &[],
         emit: &["schema.explain"],
     },
@@ -124,8 +124,8 @@ fn descriptor(schema_ref: &str) -> Result<&'static Descriptor> {
         .ok_or_else(|| Error::cli_usage(format!("Unsupported schema identity: {schema_ref}")))
 }
 
-fn properties_for(kind: &str) -> Map<String, Value> {
-    let names: &[&str] = match kind {
+fn names(kind: &str) -> &'static [&'static str] {
+    match kind {
         "issue" => &[
             "id",
             "title",
@@ -190,18 +190,34 @@ fn properties_for(kind: &str) -> Map<String, Value> {
             "commands",
         ],
         "checkpoint_pointer" => &[
-            "$schema",
+            "schema_version",
+            "generation_id",
             "mode",
             "store_uuid",
             "snapshot_sequence",
             "active_root",
+            "added_paths",
+            "replaced_paths",
+            "deleted_paths",
+            "issue_count",
+            "event_count",
+            "receipt_count",
+            "total_record_count",
+            "created_at",
         ],
         "checkpoint_manifest" => &[
-            "$schema",
-            "mode",
+            "format",
+            "schema_version",
             "store_uuid",
             "snapshot_sequence",
-            "shards",
+            "max_local_ingestion_sequence",
+            "created_at",
+            "profile",
+            "partition_algorithm",
+            "partition_thresholds",
+            "issue_shards",
+            "event_shards",
+            "receipt_shards",
         ],
         "field_guide" => &[
             "schema_ref",
@@ -218,17 +234,134 @@ fn properties_for(kind: &str) -> Map<String, Value> {
             "known_implementation_deviations",
         ],
         _ => &[],
-    };
-    names
+    }
+}
+
+fn property_schema(kind: &str, name: &str) -> Value {
+    let timestamp = || json!({"type":"string", "format":"date-time"});
+    match (kind, name) {
+        (_, "$schema") | (_, "schema_ref") => json!({"type":"string", "format":"uri"}),
+        ("issue", "id") => json!({"type":"string", "minLength":1, "maxLength":255}),
+        ("issue", "title") => json!({"type":"string", "minLength":1, "maxLength":4096}),
+        ("issue", "revision") => json!({"type":"integer", "minimum":1, "default":1}),
+        ("issue", "description") | ("issue", "notes") => {
+            json!({"type":["string","null"], "maxLength":4194304})
+        }
+        ("issue", "priority") => json!({"type":"integer", "minimum":0, "maximum":4, "default":2}),
+        ("issue", "base_status") => {
+            json!({"type":"string", "enum":["open","in_progress","deferred","closed"], "default":"open"})
+        }
+        ("issue", "manual_blocked") => json!({"type":["boolean","null"], "default":false}),
+        ("issue", "assignee")
+        | ("issue", "issue_type")
+        | ("issue", "close_reason")
+        | ("issue", "source_repo")
+        | ("issue", "profile") => json!({"type":["string","null"]}),
+        ("issue", "created_at") | ("issue", "updated_at") => timestamp(),
+        ("issue", "closed_at") => json!({"type":["string","null"], "format":"date-time"}),
+        ("issue", "data") => json!({"type":["object","null"]}),
+        ("issue", "labels")
+        | ("issue", "dependencies")
+        | ("issue", "comments")
+        | ("issue", "external_references") => json!({"type":"array"}),
+        ("audit_event", "origin_event_sequence") => json!({"type":"integer", "minimum":1}),
+        ("audit_event", "issue_id") | ("audit_event", "actor") => json!({"type":["string","null"]}),
+        ("audit_event", "time") => timestamp(),
+        ("audit_event", "detail") => json!({}),
+        ("audit_event", "kind") => {
+            json!({"type":"string", "enum":["updated","claimed","released","reopened","closed","assignment_cleared"]})
+        }
+        ("provenance_receipt", "summary_event_identity") => json!({"type":["string","null"]}),
+        ("provenance_receipt", "counts") => {
+            json!({"type":"object", "required":["issues","events","provenance_receipts"], "properties":{"issues":{"type":"integer","minimum":0},"events":{"type":"integer","minimum":0},"provenance_receipts":{"type":"integer","minimum":0}}, "additionalProperties":false})
+        }
+        ("checkpoint_pointer", "schema_version") => json!({"const":1}),
+        ("checkpoint_pointer", "snapshot_sequence")
+        | ("checkpoint_pointer", "issue_count")
+        | ("checkpoint_pointer", "event_count")
+        | ("checkpoint_pointer", "receipt_count")
+        | ("checkpoint_pointer", "total_record_count") => json!({"type":"integer", "minimum":0}),
+        ("checkpoint_pointer", "mode") => json!({"type":"string", "enum":["monolithic","sharded"]}),
+        ("checkpoint_pointer", "active_root") => {
+            json!({"type":"object", "required":["path","sha256"], "properties":{"path":{"type":"string"},"sha256":{"type":"string"}}, "additionalProperties":false})
+        }
+        ("checkpoint_pointer", "added_paths")
+        | ("checkpoint_pointer", "replaced_paths")
+        | ("checkpoint_pointer", "deleted_paths") => {
+            json!({"type":"array", "items":{"type":"string"}})
+        }
+        ("checkpoint_manifest", "schema_version") => json!({"const":1}),
+        ("checkpoint_manifest", "snapshot_sequence")
+        | ("checkpoint_manifest", "max_local_ingestion_sequence") => {
+            json!({"type":"integer", "minimum":0})
+        }
+        ("checkpoint_manifest", "issue_shards")
+        | ("checkpoint_manifest", "event_shards")
+        | ("checkpoint_manifest", "receipt_shards") => json!({"type":"array"}),
+        ("checkpoint_manifest", "partition_thresholds") => json!({"type":"object"}),
+        ("capabilities", "store_layout") => json!({"type":"integer", "minimum":1}),
+        ("capabilities", "atomic_claim") | ("capabilities", "logical_revision") => {
+            json!({"type":"boolean"})
+        }
+        ("capabilities", "statuses")
+        | ("capabilities", "checkpoint_modes")
+        | ("capabilities", "checkpoint_formats")
+        | ("capabilities", "schemas")
+        | ("capabilities", "commands") => json!({"type":"array"}),
+        ("capabilities", "priorities") => json!({"type":"object"}),
+        ("field_guide", "guide_version") => json!({"const":1}),
+        ("field_guide", "describes_schema_refs")
+        | ("field_guide", "documents")
+        | ("field_guide", "fields")
+        | ("field_guide", "operations")
+        | ("field_guide", "known_implementation_deviations") => json!({"type":"array"}),
+        ("field_guide", _) => json!({"type":"object"}),
+        (_, "created_at") => timestamp(),
+        (_, _) => json!({"type":"string"}),
+    }
+}
+
+fn properties_for(kind: &str) -> Map<String, Value> {
+    names(kind)
         .iter()
-        .map(|name| ((*name).to_string(), json!({})))
+        .map(|name| ((*name).to_string(), property_schema(kind, name)))
+        .collect()
+}
+
+fn required_for(kind: &str) -> Vec<String> {
+    let optional: &[&str] = match kind {
+        "issue" => &[
+            "revision",
+            "description",
+            "notes",
+            "manual_blocked",
+            "assignee",
+            "issue_type",
+            "closed_at",
+            "close_reason",
+            "source_repo",
+            "profile",
+            "data",
+            "labels",
+            "dependencies",
+            "comments",
+            "external_references",
+        ],
+        "audit_event" => &["issue_id", "actor"],
+        "provenance_receipt" => &["summary_event_identity"],
+        _ => &[],
+    };
+    names(kind)
+        .iter()
+        .filter(|name| !optional.contains(name))
+        .map(|name| (*name).to_string())
         .collect()
 }
 
 pub fn schema_document(schema_ref: &str) -> Result<Value> {
     let descriptor = descriptor(schema_ref)?;
     let properties = properties_for(descriptor.document_kind);
-    let required: Vec<String> = properties.keys().cloned().collect();
+    let required = required_for(descriptor.document_kind);
     Ok(json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": descriptor.schema_ref,
@@ -240,8 +373,270 @@ pub fn schema_document(schema_ref: &str) -> Result<Value> {
     }))
 }
 
+fn guide_documents() -> Vec<Value> {
+    let docs: &[(&str, &str, &str, &[&str])] = &[
+        (
+            "cli_issue",
+            "urn:bead-rs:schema:issue:native-v1",
+            "issue",
+            &[
+                "assignee",
+                "created_at",
+                "dependencies",
+                "description",
+                "id",
+                "labels",
+                "priority",
+                "revision",
+                "status",
+                "title",
+                "updated_at",
+            ],
+        ),
+        (
+            "checkpoint_issue",
+            "urn:bead-rs:schema:issue:native-v1",
+            "issue",
+            names("issue"),
+        ),
+        (
+            "claim_result",
+            "urn:bead-rs:schema:issue:native-v1",
+            "claim_result",
+            &["assignee", "bead_id", "lease"],
+        ),
+        (
+            "checkpoint_event",
+            "urn:bead-rs:schema:event:native-v1",
+            "audit_event",
+            names("audit_event"),
+        ),
+        (
+            "checkpoint_provenance_receipt",
+            "urn:bead-rs:schema:provenance-receipt:native-v1",
+            "provenance_receipt",
+            names("provenance_receipt"),
+        ),
+    ];
+    docs.iter().map(|(name, schema_ref, kind, members)| {
+        let mut members: Vec<&str> = members.to_vec();
+        members.sort_unstable();
+        json!({"name":name,"schema_ref":schema_ref,"document_kind":kind,"transport":"public JSON","member_source":"native typed model","members":members})
+    }).collect()
+}
+
+fn guide_field(document: &str, name: &str) -> Value {
+    let checkpoint_kind = match document {
+        "checkpoint_event" => "audit_event",
+        "checkpoint_provenance_receipt" => "provenance_receipt",
+        _ => "issue",
+    };
+    let schema = if document == "cli_issue" && name == "status" {
+        json!({"type":"string"})
+    } else if document == "claim_result" {
+        match name {
+            "lease" => json!({"type":["object","null"]}),
+            _ => json!({"type":["string","null"]}),
+        }
+    } else {
+        property_schema(checkpoint_kind, name)
+    };
+    let json_type = schema
+        .get("type")
+        .and_then(|value| {
+            value.as_str().or_else(|| {
+                value.as_array()?.iter().find_map(|kind| {
+                    let kind = kind.as_str()?;
+                    (kind != "null").then_some(kind)
+                })
+            })
+        })
+        .unwrap_or_else(|| {
+            if schema.get("const").is_some() {
+                "integer"
+            } else {
+                "json"
+            }
+        });
+    let nullable = schema
+        .get("type")
+        .and_then(Value::as_array)
+        .is_some_and(|types| types.iter().any(|value| value == "null"));
+    let required = match document {
+        "cli_issue" => true,
+        "claim_result" => name != "lease",
+        _ => required_for(checkpoint_kind)
+            .iter()
+            .any(|required| required == name),
+    };
+    let (ownership, operations, default, has_default, example, mistake): (
+        &str,
+        Vec<&str>,
+        Value,
+        bool,
+        Value,
+        &str,
+    ) = match name {
+        "id" => (
+            "system",
+            vec!["create", "sync.import-only"],
+            Value::Null,
+            false,
+            json!("bead-18409c0e"),
+            "Manufacturing an ID or inferring chronology from its spelling.",
+        ),
+        "title" => (
+            "caller",
+            vec!["create"],
+            Value::Null,
+            false,
+            json!("Verify restore invariants"),
+            "Attempting update --title, which is a usage error.",
+        ),
+        "revision" => (
+            "system",
+            vec!["close", "release", "reopen", "update"],
+            json!(1),
+            true,
+            json!(4),
+            "Choosing the next revision or treating it as time.",
+        ),
+        "description" => (
+            "caller",
+            vec!["create"],
+            if document == "cli_issue" {
+                json!("")
+            } else {
+                Value::Null
+            },
+            document == "cli_issue",
+            json!("Rehearse flush and restore."),
+            "Treating absence, null, and projected empty text as interchangeable.",
+        ),
+        "notes" => (
+            "caller",
+            vec!["update"],
+            json!(""),
+            true,
+            json!("Reproduction captured."),
+            "Expecting create --notes or assuming notes are private.",
+        ),
+        "priority" => (
+            "caller",
+            vec!["create"],
+            json!(2),
+            true,
+            json!(2),
+            "Treating P2 as normal or reversing priority order.",
+        ),
+        "base_status" => (
+            "system",
+            vec!["claim", "close", "release", "reopen", "update"],
+            json!("open"),
+            true,
+            json!("open"),
+            "Storing blocked or ready as a base value.",
+        ),
+        "status" => (
+            "derived",
+            vec!["list", "show"],
+            Value::Null,
+            false,
+            json!("open"),
+            "Assuming status open proves readiness.",
+        ),
+        "manual_blocked" => (
+            "caller",
+            vec!["close", "reopen", "update"],
+            json!(false),
+            true,
+            json!(false),
+            "Encoding graph blocking in this flag.",
+        ),
+        "assignee" => (
+            "caller",
+            vec!["claim", "create", "release", "update"],
+            Value::Null,
+            document == "cli_issue",
+            Value::Null,
+            "Treating assignment as authorization.",
+        ),
+        "labels" => (
+            "caller",
+            vec!["create", "label.add", "label.remove"],
+            json!([]),
+            true,
+            json!([]),
+            "Treating a label as lifecycle state.",
+        ),
+        "dependencies" => (
+            "caller",
+            vec!["dep.add", "dep.remove"],
+            json!([]),
+            true,
+            json!([]),
+            "Reversing the blocked-first direction.",
+        ),
+        "$schema" | "schema_ref" => (
+            "system",
+            vec![],
+            Value::Null,
+            false,
+            json!("urn:bead-rs:schema:issue:native-v1"),
+            "Confusing a public schema identity with private storage layout.",
+        ),
+        _ => (
+            "system",
+            vec![],
+            Value::Null,
+            false,
+            Value::Null,
+            "Inferring semantics from the member name instead of the governing schema.",
+        ),
+    };
+    json!({
+        "document":document,"name":name,"json_type":json_type,"nullable":nullable,
+        "presence":if required {"required"} else {"optional"},"has_default":has_default,
+        "default":default,"ownership":ownership,"operations":operations,"invariants":[],
+        "example":example,"common_mistake":mistake
+    })
+}
+
+fn native_field_guide() -> Value {
+    let documents = guide_documents();
+    let fields: Vec<Value> = documents
+        .iter()
+        .flat_map(|document| {
+            let name = document["name"].as_str().unwrap();
+            document["members"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(move |member| guide_field(name, member.as_str().unwrap()))
+        })
+        .collect();
+    json!({
+        "schema_ref":"urn:bead-rs:schema:field-guide:native-v1","guide_version":1,
+        "describes_schema_refs":["urn:bead-rs:schema:event:native-v1","urn:bead-rs:schema:issue:native-v1","urn:bead-rs:schema:provenance-receipt:native-v1"],
+        "documents":documents,"fields":fields,
+        "additional_properties":{"allowed":true,"ownership":"preserved","rules":["Unknown checkpoint issue members retain exact JSON name, type, value, and null-versus-absence presence."]},
+        "lifecycle":{"base_values":["closed","deferred","in_progress","open"],"allowed_transitions":["closed->open","deferred->closed","deferred->open","in_progress->closed","in_progress->deferred","in_progress->open","open->closed","open->deferred","open->in_progress"]},
+        "derived_state":{"status":{"ownership":"derived","rules":["manual_blocked overlays non-closed base status as blocked"]},"ready":{"ownership":"derived","rules":["base status is open, not manually blocked, unassigned, and has no unfinished blocks blocker"]},"blocked_by":{"ownership":"derived","rules":["derived from incoming blocks edges"]},"blocking":{"ownership":"derived","rules":["derived from outgoing blocks edges"]}},
+        "events":{"envelope_member":"event","schema_ref_member":"$schema","identity":["origin_store_uuid","origin_event_sequence"],"ordering":["origin_store_uuid","origin_event_sequence"]},
+        "operations":[],
+        "rehydration":{"source_mode":"read-only","allowed_writes":["public bead commands in a separate destination"],"forbidden_writes":["foreign SQLite","native SQLite","synthetic checkpoint JSON"],"verification":["issue reconciliation","dependency orientation","ready frontier","fresh restore"]},
+        "known_implementation_deviations":[{"id":"manual-blocked-cli-projection","severity":"known","behavior":"v0.1 CLI projections expose base_status without the manual_blocked overlay","required_disposition":"Consumers must not infer readiness from status alone."}]
+    })
+}
+
 pub fn schema_explanation(schema_ref: &str) -> Result<Value> {
     let descriptor = descriptor(schema_ref)?;
+    if matches!(
+        descriptor.document_kind,
+        "issue" | "audit_event" | "provenance_receipt"
+    ) {
+        return Ok(native_field_guide());
+    }
     let schema = schema_document(schema_ref)?;
     let members: Vec<String> = schema["properties"]
         .as_object()
@@ -313,14 +708,39 @@ pub fn schema_explanation(schema_ref: &str) -> Result<Value> {
 }
 
 pub fn schema_explanation_markdown(explanation: &Value) -> String {
-    let document = &explanation["documents"][0];
     let mut output = format!(
-        "# {}\n\nSchema: `{}`\n\n## Members\n\n",
-        document["document_kind"].as_str().unwrap_or("document"),
-        document["schema_ref"].as_str().unwrap_or("")
+        "# Native field guide v{}\n\nSchema: `{}`\n\n",
+        explanation["guide_version"].as_i64().unwrap_or(1),
+        explanation["schema_ref"].as_str().unwrap_or("")
     );
-    for member in document["members"].as_array().into_iter().flatten() {
-        output.push_str(&format!("- `{}`\n", member.as_str().unwrap_or("")));
+    output.push_str("## Documents\n\n");
+    for document in explanation["documents"].as_array().into_iter().flatten() {
+        output.push_str(&format!(
+            "### {}\n\nSchema: `{}`\n\nMembers:\n\n",
+            document["name"].as_str().unwrap_or("document"),
+            document["schema_ref"].as_str().unwrap_or("")
+        ));
+        for member in document["members"].as_array().into_iter().flatten() {
+            output.push_str(&format!("- `{}`\n", member.as_str().unwrap_or("")));
+        }
+        output.push('\n');
+    }
+    output.push_str("## Fields\n\n");
+    for field in explanation["fields"].as_array().into_iter().flatten() {
+        output.push_str(&format!(
+            "### {}.{}\n\n- Type: `{}`{}\n- Presence: `{}`\n- Ownership: `{}`\n- Common mistake: {}\n\n",
+            field["document"].as_str().unwrap_or("document"),
+            field["name"].as_str().unwrap_or("member"),
+            field["json_type"].as_str().unwrap_or("json"),
+            if field["nullable"].as_bool().unwrap_or(false) {
+                " (nullable)"
+            } else {
+                ""
+            },
+            field["presence"].as_str().unwrap_or("unknown"),
+            field["ownership"].as_str().unwrap_or("unknown"),
+            field["common_mistake"].as_str().unwrap_or("")
+        ));
     }
     output
 }

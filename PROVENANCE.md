@@ -776,3 +776,15 @@ unrecognized subcommand. This acceptance discharges the approval half only.
 
 Full findings are in
 `docs/reviews/adr-002-field-guide-independent-review-round-6-2026-08-13.md`.
+
+## ADR-002 field-guide status promotion (2026-08-13)
+
+Following the unconditional round-six acceptance above, the artifact status
+header was changed only from `corrected proposed normative specification;
+awaiting independent re-review` to `accepted normative specification`. The
+accepted content is otherwise unchanged. The promoted artifact has algorithm
+SHA-256 and full-file digest
+`016f16c37dc5b9c10af14e8f57b01163508fcbe5feadcbdb6d715e9a20117d13`.
+This header-only promotion cites and does not supersede the independent
+acceptance of digest
+`8d26bb1297d91e147cb60a230a2f3653bed6b78d4518b5bc02c3d2d07834ad0e`.

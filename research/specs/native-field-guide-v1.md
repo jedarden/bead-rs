@@ -1,7 +1,6 @@
 # Native field guide contract v1
 
-Status: corrected proposed normative specification; awaiting independent
-re-review.
+Status: accepted normative specification.
 
 Original author and correction author: OpenAI Codex interactive session,
 2026-08-12.
