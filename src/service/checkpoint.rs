@@ -2077,11 +2077,11 @@ fn reconcile_and_merge(
 
     for issue in &staging.issues {
         // Check if issue exists
-        let existing: Option<(String, String)> = tx
+        let existing: Option<(String, String, i64)> = tx
             .query_row(
-                "SELECT id, updated_at FROM issues WHERE id = ?1",
+                "SELECT id, updated_at, revision FROM issues WHERE id = ?1",
                 [&issue.id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .ok();
 
@@ -2140,9 +2140,20 @@ fn reconcile_and_merge(
 
                 inserted += 1;
             }
-            Some((id, existing_updated_at)) => {
+            Some((id, existing_updated_at, existing_revision)) => {
                 // Compare timestamps
                 if issue.updated_at > existing_updated_at {
+                    // A merge that replaces scalar content is itself a new
+                    // revision when the target token is at least as new as
+                    // the incoming token. This prevents an existing
+                    // --if-revision holder from mutating silently replaced
+                    // content with a stale token.
+                    let incoming_revision = issue.revision.unwrap_or(1);
+                    let resulting_revision = if existing_revision >= incoming_revision {
+                        existing_revision + 1
+                    } else {
+                        incoming_revision
+                    };
                     // Update issue
                     tx.execute(
                         "UPDATE issues SET
@@ -2150,7 +2161,7 @@ fn reconcile_and_merge(
                             issue_type = ?5, base_status = ?6, manual_blocked = ?7,
                             assignee = ?8, updated_at = ?9, closed_at = ?10,
                             close_reason = ?11, source_repo = ?12, profile = ?13,
-                            schema_ref = ?14, revision = MAX(revision, ?15)
+                            schema_ref = ?14, revision = ?15
                          WHERE id = ?16",
                         params![
                             &issue.title,
@@ -2167,7 +2178,7 @@ fn reconcile_and_merge(
                             &issue.source_repo,
                             &issue.profile,
                             &issue.schema_ref,
-                            &issue.revision.unwrap_or(1),
+                            &resulting_revision,
                             &id,
                         ],
                     )?;
@@ -2178,15 +2189,24 @@ fn reconcile_and_merge(
                         [&issue.id],
                     )?;
 
-                    tx.execute("DELETE FROM issue_data WHERE issue_id = ?1", [&issue.id])?;
-                    import_issue_data(tx, issue)?;
-                    tx.execute(
-                        "DELETE FROM external_references WHERE issue_id = ?1",
-                        [&issue.id],
-                    )?;
-                    import_external_references(tx, issue)?;
-                    tx.execute("DELETE FROM comments WHERE issue_id = ?1", [&issue.id])?;
-                    import_comments(tx, issue)?;
+                    // Projected collections use replace-when-present semantics.
+                    // Absence means an older producer did not describe the
+                    // collection and must never erase live target state.
+                    if issue.data.is_some() {
+                        tx.execute("DELETE FROM issue_data WHERE issue_id = ?1", [&issue.id])?;
+                        import_issue_data(tx, issue)?;
+                    }
+                    if issue.extensions.contains_key("external_references") {
+                        tx.execute(
+                            "DELETE FROM external_references WHERE issue_id = ?1",
+                            [&issue.id],
+                        )?;
+                        import_external_references(tx, issue)?;
+                    }
+                    if issue.extensions.contains_key("comments") {
+                        tx.execute("DELETE FROM comments WHERE issue_id = ?1", [&issue.id])?;
+                        import_comments(tx, issue)?;
+                    }
 
                     for (key, value) in &issue.extensions {
                         if is_known_issue_projection(key) {

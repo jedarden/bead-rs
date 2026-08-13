@@ -747,7 +747,6 @@ fn test_checkpoint_round_trip_fidelity_comprehensive() {
         ),
     )
     .unwrap();
-
     conn.execute(
         "INSERT INTO comments (id, issue_id, author, body, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -948,7 +947,7 @@ fn test_checkpoint_round_trip_fidelity_comprehensive() {
 }
 
 #[test]
-fn test_checkpoint_merge_never_rolls_revision_backward() {
+fn test_checkpoint_merge_advances_revision_when_replacing_newer_live_content() {
     let source = create_workspace();
     let output = Command::cargo_bin("bead")
         .unwrap()
@@ -983,6 +982,25 @@ fn test_checkpoint_merge_never_rolls_revision_backward() {
         [&id],
     )
     .unwrap();
+    conn.execute(
+        "INSERT INTO issue_data (issue_id, namespace, schema_ref, value)
+         VALUES (?1, 'live', 'urn:test:live', '{\"preserve\":true}')",
+        [&id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO external_references (issue_id, namespace, key, value)
+         VALUES (?1, 'legacy', 'source-id', 'legacy-42')",
+        [&id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO comments (id, issue_id, author, body, created_at)
+         VALUES ('live-comment', ?1, 'operator', 'preserve me',
+                 '2000-01-01T00:00:00.000000000Z')",
+        [&id],
+    )
+    .unwrap();
     assert_eq!(
         conn.query_row("SELECT revision FROM issues WHERE id = ?1", [&id], |row| {
             row.get::<_, i64>(0)
@@ -1013,5 +1031,150 @@ fn test_checkpoint_merge_never_rolls_revision_backward() {
             row.get::<_, i64>(0)
         })
         .unwrap();
-    assert_eq!(revision, 4, "merge rolled the live revision backward");
+    assert_eq!(
+        revision, 5,
+        "merge did not invalidate the token for replaced live content"
+    );
+    for table in ["issue_data", "external_references", "comments"] {
+        let sql = format!("SELECT COUNT(*) FROM {table} WHERE issue_id = ?1");
+        let count: i64 = conn.query_row(&sql, [&id], |row| row.get(0)).unwrap();
+        assert_eq!(
+            count, 1,
+            "merge erased {table} omitted by the incoming checkpoint"
+        );
+    }
+}
+
+#[test]
+fn test_checkpoint_merge_replaces_projected_collections_when_present() {
+    let source = create_workspace();
+    let output = Command::cargo_bin("bead")
+        .unwrap()
+        .args(["create", "--title", "Incoming collection owner"])
+        .current_dir(source.path())
+        .assert()
+        .success();
+    let id = extract_bead_id(&String::from_utf8_lossy(&output.get_output().stdout));
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args([
+            "data",
+            "set",
+            "--id",
+            &id,
+            "--namespace",
+            "incoming",
+            "--schema-ref",
+            "urn:test:incoming",
+            "--value",
+            "{\"source\":true}",
+        ])
+        .current_dir(source.path())
+        .assert()
+        .success();
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args([
+            "ref",
+            "add",
+            "--id",
+            &id,
+            "--namespace",
+            "tracker",
+            "--key",
+            "source-id",
+            "--value",
+            "source-7",
+        ])
+        .current_dir(source.path())
+        .assert()
+        .success();
+    let source_db = source.path().join(".beads/beads.db");
+    rusqlite::Connection::open(&source_db)
+        .unwrap()
+        .execute(
+            "INSERT INTO comments (id, issue_id, author, body, created_at)
+             VALUES ('incoming-comment', ?1, 'source', 'incoming body',
+                     '2026-08-13T00:00:00.000000000Z')",
+            [&id],
+        )
+        .unwrap();
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["sync", "flush-only"])
+        .current_dir(source.path())
+        .assert()
+        .success();
+
+    let target = create_workspace();
+    let target_db = target.path().join(".beads/beads.db");
+    let conn = rusqlite::Connection::open(&target_db).unwrap();
+    conn.execute(
+        "INSERT INTO issues
+         (id, title, priority, base_status, created_at, updated_at, revision)
+         VALUES (?1, 'Old target', 2, 'open',
+                 '2000-01-01T00:00:00.000000000Z',
+                 '2000-01-01T00:00:00.000000000Z', 1)",
+        [&id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO issue_data VALUES (?1, 'old', 'urn:test:old', '{\"old\":true}')",
+        [&id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO external_references VALUES (?1, 'tracker', 'source-id', 'old-1')",
+        [&id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO comments (id, issue_id, author, body, created_at)
+         VALUES ('old-comment', ?1, 'target', 'old body',
+                 '2000-01-01T00:00:00.000000000Z')",
+        [&id],
+    )
+    .unwrap();
+    drop(conn);
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args([
+            "sync",
+            "import-only",
+            "--input",
+            source.path().join(".beads/checkpoint").to_str().unwrap(),
+            "--merge",
+            "--actor",
+            "collection-merge-test",
+        ])
+        .current_dir(target.path())
+        .assert()
+        .success();
+
+    let conn = rusqlite::Connection::open(&target_db).unwrap();
+    let data_namespace: String = conn
+        .query_row(
+            "SELECT namespace FROM issue_data WHERE issue_id = ?1",
+            [&id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let reference_value: String = conn
+        .query_row(
+            "SELECT value FROM external_references WHERE issue_id = ?1",
+            [&id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let comment_id: String = conn
+        .query_row(
+            "SELECT id FROM comments WHERE issue_id = ?1",
+            [&id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(data_namespace, "incoming");
+    assert_eq!(reference_value, "source-7");
+    assert_eq!(comment_id, "incoming-comment");
 }

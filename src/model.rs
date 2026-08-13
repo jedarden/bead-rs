@@ -299,6 +299,10 @@ impl Issue {
                     "Closed issues must have a closed_at timestamp",
                 ));
             }
+        } else if self.closed_at.is_some() || self.close_reason.is_some() {
+            return Err(Error::validation(
+                "Non-closed issues must not have closed_at or close_reason",
+            ));
         }
 
         // Validate issue_type if present
@@ -623,8 +627,13 @@ mod tests {
         issue.close_reason = None;
         assert!(issue.validate().is_err());
 
-        // Test empty assignee
+        // Test stale close metadata on an active issue
         issue.base_status = BaseStatus::Open;
+        issue.closed_at = Some("2026-08-08T12:01:00Z".to_string());
+        issue.close_reason = Some("Stale".to_string());
+        assert!(issue.validate().is_err());
+
+        // Test empty assignee
         issue.closed_at = None;
         issue.close_reason = None;
         issue.assignee = Some("".to_string());
