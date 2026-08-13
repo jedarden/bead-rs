@@ -677,3 +677,51 @@ history prefixes while importing new suffixes, emits explicit empty projected
 collections so deletions propagate, and retains legacy omission compatibility.
 The guide describes those verified semantics. This entry records correction
 provenance only and does not assert independent acceptance.
+
+## ADR-002 native field-guide independent review, round 5 — targeted (2026-08-13)
+
+Claude (Anthropic) reviewed `research/specs/native-field-guide-v1.md` at commit
+`805c7de`. Algorithm SHA-256, full file digest
+`8d26bb1297d91e147cb60a230a2f3653bed6b78d4518b5bc02c3d2d07834ad0e`. The reviewer
+authored neither the original artifact nor any correction, is not the schema
+implementation author, and did not author the checkpoint fixes offered as
+evidence. Scope was targeted to round-four R15, R16 and R17 and to
+implementation commit `92701b7`; no other section was re-reviewed and every
+prior closure stands as recorded.
+
+Decision: **accepted with required revisions**. R15 and R17 are closed. R15:
+`validate_forensic_checkpoint` now validates every staged issue before
+activation, and both directions of the closed-metadata invariant were rejected
+at exit 0 issues written, on both `--restore-into-empty` and `--merge`. R17: the
+exporter now emits `data`, `external_references` and `comments`
+unconditionally, so a source-side deletion propagates to a merge target, while a
+checkpoint that omits them still preserves live target state and advances scalar
+content. Repeated merges over an identical event prefix no longer fail, and a
+prefix entry whose content differs is rejected with the target left unchanged.
+Repository state at review: working tree clean, `HEAD` = `origin/main` =
+`805c7de`, Forgejo divergence `0 0`, `cargo fmt --check` clean, `cargo clippy
+--all-targets -- -D warnings` clean, `cargo test` exit 0 with 635 passed, 0
+failed, 0 ignored across 36 suites.
+
+One required revision remains. R18: section 4's claim that repeated merges
+"import only its new suffix" is false. `import_events` relies on `INSERT OR
+IGNORE`, but the `events` table's only uniqueness is its autoincrement primary
+key and `(origin_store_uuid, origin_event_sequence)` carries a non-unique index,
+so nothing is ever ignored and every merge re-imports the whole prefix. Measured
+across three merges of a three-event source: 6 rows carrying an origin identity
+for 3 distinct identities, sequence 1 present three times, and
+`bead changes --since 0` reporting each duplicate as its own mutation. This also
+falsifies section 6's origin-identity ordering and contiguity statements in a
+merge target. The fix is a partial unique index plus a dedupe migration, or
+skipping the identities `validate_event_prefix` already matched, plus an event
+count assertion in the conformance suite.
+
+Excluded from the accepted baseline: the section 4 clause "and import only its
+new suffix". Everything else is accepted, and all round-two, round-three and
+round-four carve-outs are lifted, including the round-four exclusions on the
+section 4 `closed_at` sentence and the section 9 bidirectional-validation
+clause.
+
+The status header does not become `accepted normative specification`; that
+requires unconditional acceptance against a later hash. Full findings are in
+`docs/reviews/adr-002-field-guide-independent-review-round-5-2026-08-13.md`.
