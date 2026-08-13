@@ -1205,12 +1205,42 @@ pub enum SchemaCommand {
         long_about = "List every supported public document schema as deterministic JSON.\n\nEntries are sorted by exact schema identity and include document kind, readability, writability, validation support, and consuming or emitting operations."
     )]
     List(SchemaListOptions),
+    #[command(
+        about = "Show a public JSON Schema",
+        long_about = "Emit the immutable JSON Schema Draft 2020-12 document for an exact catalog identity.\n\nSchema resolution is workspace-independent. Unknown identities are usage errors."
+    )]
+    Show(SchemaShowOptions),
+    #[command(
+        about = "Explain a public schema",
+        long_about = "Explain an exact public schema identity as deterministic typed JSON or Markdown.\n\nThe explanation describes ownership, transport, supported operations, and the schema's public members."
+    )]
+    Explain(SchemaExplainOptions),
 }
 
 #[derive(Parser, Debug)]
 pub struct SchemaListOptions {
     /// Output format
     #[arg(long, value_parser = ["json"], default_value = "json")]
+    pub format: String,
+}
+
+#[derive(Parser, Debug)]
+pub struct SchemaShowOptions {
+    /// Exact schema identity
+    pub schema_ref: String,
+
+    /// Output format
+    #[arg(long, value_parser = ["json"], default_value = "json")]
+    pub format: String,
+}
+
+#[derive(Parser, Debug)]
+pub struct SchemaExplainOptions {
+    /// Exact schema identity
+    pub schema_ref: String,
+
+    /// Output format
+    #[arg(long, value_parser = ["json", "markdown"], default_value = "json")]
     pub format: String,
 }
 

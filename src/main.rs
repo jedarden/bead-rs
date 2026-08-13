@@ -1347,6 +1347,23 @@ fn cmd_schema(command: cli::SchemaCommand) -> Result<()> {
             );
             Ok(())
         }
+        cli::SchemaCommand::Show(opts) => {
+            debug_assert_eq!(opts.format, "json");
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&service::schema_document(&opts.schema_ref)?)?
+            );
+            Ok(())
+        }
+        cli::SchemaCommand::Explain(opts) => {
+            let explanation = service::schema_explanation(&opts.schema_ref)?;
+            if opts.format == "markdown" {
+                print!("{}", service::schema_explanation_markdown(&explanation));
+            } else {
+                println!("{}", serde_json::to_string_pretty(&explanation)?);
+            }
+            Ok(())
+        }
     }
 }
 

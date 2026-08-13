@@ -58,7 +58,9 @@ pub use recurrence::{
     materialize_next_occurrence,
 };
 pub use rehearsal::run_recovery_rehearsal;
-pub use schema::schema_catalog;
+pub use schema::{
+    schema_catalog, schema_document, schema_explanation, schema_explanation_markdown,
+};
 // Scheduling types are part of R019 public API but may show as unused during compilation
 #[allow(unused_imports)]
 pub use comparison::{

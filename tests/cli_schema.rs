@@ -81,3 +81,70 @@ fn schema_list_rejects_unsupported_format_as_usage_error() {
         .code(2)
         .stderr(predicate::str::contains("invalid value"));
 }
+
+#[test]
+fn schema_show_resolves_every_catalog_identity() {
+    let catalog: Vec<Value> = serde_json::from_slice(
+        &Command::cargo_bin("bead")
+            .unwrap()
+            .args(["schema", "list"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    for entry in catalog {
+        let schema_ref = entry["schema_ref"].as_str().unwrap();
+        let output = Command::cargo_bin("bead")
+            .unwrap()
+            .args(["schema", "show", schema_ref, "--format", "json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let schema: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(schema["$id"], schema_ref);
+        assert_eq!(
+            schema["$schema"],
+            "https://json-schema.org/draft/2020-12/schema"
+        );
+    }
+}
+
+#[test]
+fn schema_explain_json_and_markdown_are_deterministic() {
+    let schema_ref = "urn:bead-rs:schema:issue:native-v1";
+    let json_output = Command::cargo_bin("bead")
+        .unwrap()
+        .args(["schema", "explain", schema_ref, "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let explanation: Value = serde_json::from_slice(&json_output).unwrap();
+    assert_eq!(explanation["guide_version"], 1);
+    assert_eq!(explanation["describes_schema_refs"][0], schema_ref);
+    assert!(!explanation["fields"].as_array().unwrap().is_empty());
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["schema", "explain", schema_ref, "--format", "markdown"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("# issue"))
+        .stdout(predicate::str::contains("`priority`"));
+}
+
+#[test]
+fn schema_show_and_explain_reject_unknown_identity() {
+    for operation in ["show", "explain"] {
+        Command::cargo_bin("bead")
+            .unwrap()
+            .args(["schema", operation, "urn:unknown:schema"])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("Unsupported schema identity"));
+    }
+}
