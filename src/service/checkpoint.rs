@@ -1937,8 +1937,19 @@ fn import_labels(tx: &Transaction, staging: &ForensicStaging) -> Result<()> {
 /// Import events into database
 fn import_events(tx: &Transaction, staging: &ForensicStaging) -> Result<()> {
     for event in &staging.events {
+        let already_imported: bool = tx.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM events
+                 WHERE origin_store_uuid = ?1 AND origin_event_sequence = ?2
+             )",
+            params![&event.origin_store_uuid, event.origin_event_sequence],
+            |row| row.get(0),
+        )?;
+        if already_imported {
+            continue;
+        }
         tx.execute(
-            "INSERT OR IGNORE INTO events (
+            "INSERT INTO events (
                 issue_id, kind, actor, time, detail,
                 origin_store_uuid, origin_event_sequence
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",

@@ -1265,4 +1265,25 @@ fn test_checkpoint_merge_replaces_projected_collections_when_present() {
         let count: i64 = conn.query_row(&sql, [&id], |row| row.get(0)).unwrap();
         assert_eq!(count, 0, "second merge did not propagate {table} deletion");
     }
+    let origin_event_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE origin_store_uuid IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let distinct_origin_events: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM (
+                 SELECT DISTINCT origin_store_uuid, origin_event_sequence
+                 FROM events WHERE origin_store_uuid IS NOT NULL
+             )",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        origin_event_rows, distinct_origin_events,
+        "repeated merge duplicated an identical event-history prefix"
+    );
 }
