@@ -619,3 +619,48 @@ and committed conformance coverage exercises present and absent projections.
 It also records bidirectional closed-metadata validation and all-or-nothing
 diagnostic activation. This entry records correction provenance only and does
 not assert independent acceptance.
+
+## ADR-002 native field-guide independent review, round 4 (2026-08-13)
+
+Claude (Anthropic) reviewed `research/specs/native-field-guide-v1.md` at commit
+`9953b66`. Algorithm SHA-256, full file digest
+`819fd3c16ff1e298dad1c4b2254aad61a76208196e839b09984b365cfd5bde27`. The reviewer
+authored neither the original artifact nor any correction, is not the schema
+implementation author, and did not author the checkpoint fixes offered as
+evidence.
+
+Decision: **accepted with required revisions**. Round-three findings R12, R13 and
+R14 are closed and independently reproduced. Implementation commit `0375fdc` did
+not merely document the merge defect, it fixed it: merge now preserves
+structured data, external references and comments that an incoming record omits,
+replacement advances the live revision token so a pre-merge `--if-revision`
+holder cannot mutate replaced content, and the committed conformance suite
+covers both the present and absent projection cases. Repository state at review:
+working tree clean, `HEAD` = `origin/main` = `9953b66`, Forgejo divergence `0 0`,
+`cargo fmt --check` clean, `cargo clippy --all-targets -- -D warnings` clean,
+`cargo test` exit 0 with 635 passed, 0 failed, 0 ignored across 36 suites, and no
+`#[ignore]` anywhere in the tree.
+
+Three required revisions remain. R15: section 4's claim that "import validation
+rejects the invariant in both directions" is false for `sync import-only` —
+`Issue::validate()` is reached only from `stage_import` and
+`stage_import_with_diagnostics`, while the forensic path stages through
+`stage_forensic_checkpoint` and validates no issue-level invariant; both
+directions of an invalid closed record restored cleanly at exit 0, and
+`--diagnostics` is never passed through on that command. R16: a second merge
+from the same origin store fails with an event-identity conflict at exit 1,
+because a full checkpoint always re-emits from sequence 1 — the second iteration
+of any realistic fleet loop. R17: deletion of a projected collection cannot
+propagate through merge, the direct consequence of preserve-when-absent, and the
+cross-cutting merge rules are stated only inside the `external_references` field
+entry.
+
+Excluded from the accepted baseline: the section 4 `closed_at` sentence
+beginning "Import validation rejects the invariant in both directions" and the
+section 9 clause "import validation is bidirectional and diagnostic activation
+is all-or-nothing". Everything else in the artifact is accepted; R16 and R17
+require additive text only. All round-two and round-three carve-outs are lifted.
+
+The status header does not become `accepted normative specification`; that
+requires unconditional acceptance against a later hash. Full findings are in
+`docs/reviews/adr-002-field-guide-independent-review-round-4-2026-08-13.md`.
