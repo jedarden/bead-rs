@@ -186,10 +186,11 @@ The `issue` object declares these named members: `id`, `title`, `revision`,
 `description`, `notes`, `priority`, `base_status`, `manual_blocked`,
 `assignee`, `issue_type`, `created_at`, `updated_at`, `closed_at`,
 `close_reason`, `source_repo`, `profile`, `schema_ref`, `data`, `labels`, and
-`dependencies`. Labels and dependencies reach the serialized object through
-the flattened representation, but they are known graph projections, not
-unknown extensions. It may also contain unknown additional properties governed
-by section 5. It never stores `status`, `ready`, or `blocked_by`.
+`dependencies`, `comments`, and `external_references`. Those four collection
+projections reach the serialized object through the flattened representation,
+but are known public projections, not unknown extensions. It may also contain
+unknown additional properties governed by section 5. It never stores `status`,
+`ready`, or `blocked_by`.
 
 Checkpoint issue records use `schema_ref`; event records currently use
 `$schema`. This inconsistency with `schema-identification-v1.md` is explicit
@@ -239,7 +240,10 @@ Checkpoint and CLI: integer, system-owned, initial/default value `1`, increased
 by semantic mutations. Example: `4`. `update`, `release`, `close`, and `reopen`
 accept a previously read value through `--if-revision`; `claim` does not.
 Mistake: choosing the next revision or treating it as time. Known defect:
-v0.1 checkpoint export/restore resets revisions to 1 (`bf-4hr30`).
+released v0.1.1 reset revisions to 1. Main commit `02d4d62` preserves revision
+through export, restore, and merge insertion. Merge update uses the maximum of
+the live and incoming revision so a stale checkpoint cannot roll the
+optimistic-concurrency token backward.
 
 ### `description`
 
@@ -363,8 +367,9 @@ Checkpoint only: optional nullable JSON object with no default; absent when no
 data exists, example `{"example":{"schema_ref":"urn:example:v1","value":{}}}`
 when present. Caller-owned through `bead data set|get|list|remove`. Each
 namespace has an immutable schema reference and arbitrary JSON value. Mistake:
-editing the aggregate through issue update. Known defect: v0.1 checkpoint
-restore loses data content (`bf-xq4ds`).
+editing the aggregate through issue update. Released v0.1.1 lost this table;
+main commit `1943551` preserves each namespace, schema reference, and exact JSON
+value through export and activation.
 
 ### `labels`
 
@@ -380,6 +385,26 @@ default/example `[]`, caller-owned by idempotent `dep add|remove`. A CLI entry
 example is `{"blocker":"bead-a","kind":"blocks"}`. Checkpoint edges retain
 blocked ID, blocker ID, kind, and optional condition. Mistake: reversing the
 blocked-first direction.
+
+### `comments`
+
+Checkpoint known projection: optional array, absent when empty. Each entry
+contains `id`, `author`, `body`, nullable `reply_to_id`, nullable
+`resolution_state`, and `created_at`; issue ownership comes from the enclosing
+record. Checkpoint order is creation time then ID. Interactive reads expose
+only the projection selected by `--comments`. Mistake: treating comments as
+unknown extensions or assuming an interactive omission means no durable
+comments exist.
+
+### `external_references`
+
+Checkpoint known projection: optional array, absent when empty. Each entry has
+required non-null strings `namespace`, `key`, and `value`; the enclosing issue
+provides `issue_id`. Caller-owned through `ref add|remove`; example
+`{"namespace":"source","key":"issue-id","value":"bf-123"}`. Main
+checkpoint code preserves the collection transactionally on restore and merge.
+Mistake: confusing these tracker/commit bindings with structured-data
+`schema_ref` values.
 
 ## 5. Unknown additional properties
 
@@ -545,13 +570,13 @@ direction, and ready-frontier intent; then runs `bead doctor`, flushes a native
 checkpoint, restores into a fresh empty workspace, and archives source input.
 The report is evidence, never checkpoint input.
 
-Fleet rehydration must not proceed while restore silently loses revisions or
-structured data. P0 defects `bf-4hr30` and `bf-xq4ds` remain operational
-cutover gates. The `bf-3siqo` generic-update path and doctor detection were
-fixed on main at `2ce61ce`, but existing inconsistent rows are not repaired and
-diagnostics import can skip them; cutover validation must explicitly reject or
-remediate such rows before restore. These implementation gates are independent
-of review of this specification.
+Main now preserves revisions, structured data, external references, and durable
+comments through the native checkpoint. The committed comprehensive
+round-trip conformance test is the cutover evidence for those surfaces. The
+`bf-3siqo` generic-update path and doctor detection were fixed at `2ce61ce`, but
+existing inconsistent rows are not repaired and diagnostics import can skip
+them; cutover validation must explicitly reject or remediate such rows before
+restore. Full release gates remain independent of review of this specification.
 
 ## 10. Independent review protocol
 

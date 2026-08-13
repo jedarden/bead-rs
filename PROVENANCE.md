@@ -570,3 +570,15 @@ repository's accepted baseline, review findings, and public native sources were
 used. This is correction provenance, not unconditional acceptance; a targeted
 independent verification must record the new SHA-256 before the status header
 changes or excluded sections become an implementation baseline.
+
+## ADR-002 native field-guide round-three reconciliation (2026-08-13)
+
+OpenAI Codex reconciled `research/specs/native-field-guide-v1.md` with the
+checkpoint fixes that landed after the prior artifact hash. The revision no
+longer reports revision or structured-data loss as current, defines the known
+`external_references` and `comments` checkpoint projections, records monotonic
+merge-revision semantics, and points cutover evidence at the committed active
+comprehensive round-trip test. The corresponding implementation preserves all
+four projections while excluding their flattened wire keys from unknown
+extension storage. This entry records correction provenance only; unconditional
+acceptance still requires independent verification of the new SHA-256.
