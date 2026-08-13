@@ -304,3 +304,20 @@ structure. A revision addressing the three receives a new SHA-256, a new
 `PROVENANCE.md` entry, and an unconditional-acceptance review scoped to those
 three items. On the evidence of this round the artifact is one text pass from
 acceptance; the implementation behind it is materially sound.
+
+## Addendum — concurrent version bump during the review
+
+Recorded for accuracy. A concurrent session committed `5d85ccd chore(release):
+prepare v0.1.2` at 10:11:49 while this review was in progress, between the
+reviewed commit and the commit that records this document. The reviewed artifact
+is byte-identical across it — `git diff 9953b66 HEAD --
+research/specs/native-field-guide-v1.md` is empty and the file still hashes to
+`819fd3c16ff1e298dad1c4b2254aad61a76208196e839b09984b365cfd5bde27`.
+
+`5d85ccd` touches only `Cargo.toml`, `Cargo.lock`, the version string in
+`src/service/capabilities.rs`, and the matching assertion in
+`tests/cli_capabilities.rs`. The lint and test runs reported above therefore
+executed against `9953b66` plus that version bump; the empirical probes used a
+binary built at the boundary. No finding, closure, or verification in this
+review depends on the version string, and the decision is unchanged. The
+decision remains scoped to the artifact at `9953b66` and the hash above.
