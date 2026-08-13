@@ -95,7 +95,7 @@ pub fn generate_capabilities(profile: &str) -> Result<Capabilities> {
     Ok(Capabilities {
         contract,
         implementation: "bead-rs".to_string(),
-        version: "0.1.0".to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
         store_layout: 1,
         atomic_claim: true,
         priorities: Priorities {

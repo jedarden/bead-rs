@@ -56,7 +56,7 @@ fn test_capabilities_native_profile() {
     // Verify structure
     assert_eq!(caps["contract"], "native-v1");
     assert_eq!(caps["implementation"], "bead-rs");
-    assert_eq!(caps["version"], "0.1.0");
+    assert_eq!(caps["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(caps["store_layout"], 1);
     assert_eq!(caps["atomic_claim"], true);
     assert_eq!(caps["priorities"]["min"], 0);
