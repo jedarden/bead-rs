@@ -241,9 +241,10 @@ by semantic mutations. Example: `4`. `update`, `release`, `close`, and `reopen`
 accept a previously read value through `--if-revision`; `claim` does not.
 Mistake: choosing the next revision or treating it as time. Known defect:
 released v0.1.1 reset revisions to 1. Main commit `02d4d62` preserves revision
-through export, restore, and merge insertion. Merge update uses the maximum of
-the live and incoming revision so a stale checkpoint cannot roll the
-optimistic-concurrency token backward.
+through export, restore, and merge insertion. On merge update, an incoming
+revision newer than the live token is retained; otherwise replacement advances
+the live token by one. Thus a stale checkpoint cannot roll the token backward
+and a holder of the pre-merge token cannot mutate replaced content.
 
 ### `description`
 
@@ -328,9 +329,11 @@ Checkpoint only: optional nullable timestamp with no default; absent on active
 work, example `"2026-08-12T23:00:00.000000000Z"` when closed. System-owned by
 `close` and cleared to absence by `reopen`. Normative invariant: present exactly
 when `base_status` is `closed`. Main commit `2ce61ce` rejects generic update to
-closed and makes doctor detect inconsistent existing rows, but does not repair
-them; released 0.1.1 remains vulnerable and diagnostics import can skip rather
-than fail invalid records. Mistake: assuming detection repaired legacy rows.
+closed and makes doctor detect inconsistent existing rows. Import validation
+rejects the invariant in both directions and diagnostic activation remains a
+no-op when any invalid record is reported. Doctor does not guess repairs for
+legacy rows; operators must explicitly remediate them before cutover. Released
+v0.1.1 remains vulnerable. Mistake: assuming detection repaired legacy rows.
 
 ### `close_reason`
 
@@ -402,7 +405,12 @@ Checkpoint known projection: optional array, absent when empty. Each entry has
 required non-null strings `namespace`, `key`, and `value`; the enclosing issue
 provides `issue_id`. Caller-owned through `ref add|remove`; example
 `{"namespace":"source","key":"issue-id","value":"bf-123"}`. Main
-checkpoint code preserves the collection transactionally on restore and merge.
+checkpoint code preserves the collection transactionally on restore. Merge
+uses replace-when-present and preserve-when-absent semantics for external
+references, comments, and structured data. This lets checkpoints from older
+producers omit unsupported projections without deleting live target state.
+Labels and dependencies merge additively. Scalar issue content follows the
+newer `updated_at`, with revision behavior defined above.
 Mistake: confusing these tracker/commit bindings with structured-data
 `schema_ref` values.
 
@@ -571,11 +579,13 @@ checkpoint, restores into a fresh empty workspace, and archives source input.
 The report is evidence, never checkpoint input.
 
 Main now preserves revisions, structured data, external references, and durable
-comments through the native checkpoint. The committed comprehensive
-round-trip conformance test is the cutover evidence for those surfaces. The
-`bf-3siqo` generic-update path and doctor detection were fixed at `2ce61ce`, but
-existing inconsistent rows are not repaired and diagnostics import can skip
-them; cutover validation must explicitly reject or remediate such rows before
+comments through native restore and merge. The committed comprehensive
+conformance test covers restore fidelity, merge replacement when projections
+are present, preservation when they are absent, and revision-token
+monotonicity. The `bf-3siqo` generic-update path and doctor detection were fixed
+at `2ce61ce`; import validation is bidirectional and diagnostic activation is
+all-or-nothing. Existing inconsistent rows are detected but not guessed at by
+repair, so cutover validation must reject or explicitly remediate them before
 restore. Full release gates remain independent of review of this specification.
 
 ## 10. Independent review protocol

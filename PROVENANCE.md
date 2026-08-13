@@ -604,3 +604,18 @@ for every checkpoint released `0.1.1` can produce — the scope of the conforman
 test cited as cutover evidence, and undocumented asymmetric merge semantics. The
 status header stays `corrected proposed`; unconditional acceptance requires a
 later hash.
+## ADR-002 native field-guide post-finding correction (2026-08-13)
+
+Author: OpenAI Codex session operating under the repository clean-room rules.
+Artifact: `research/specs/native-field-guide-v1.md`. Algorithm SHA-256, full
+file digest
+`819fd3c16ff1e298dad1c4b2254aad61a76208196e839b09984b365cfd5bde27`.
+
+This correction follows implementation commit `0375fdc` and resolves the
+round-three R12-R14 findings: projected checkpoint collections now have
+explicit replace-when-present and preserve-when-absent merge semantics; merge
+content replacement advances a live optimistic-concurrency token when needed;
+and committed conformance coverage exercises present and absent projections.
+It also records bidirectional closed-metadata validation and all-or-nothing
+diagnostic activation. This entry records correction provenance only and does
+not assert independent acceptance.
