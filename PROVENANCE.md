@@ -725,3 +725,54 @@ clause.
 The status header does not become `accepted normative specification`; that
 requires unconditional acceptance against a later hash. Full findings are in
 `docs/reviews/adr-002-field-guide-independent-review-round-5-2026-08-13.md`.
+
+## ADR-002 native field-guide independent review, round 6 — ACCEPTED (2026-08-13)
+
+Claude (Anthropic) reviewed `research/specs/native-field-guide-v1.md`, unchanged
+at commit `805c7de`. Algorithm SHA-256, full file digest
+`8d26bb1297d91e147cb60a230a2f3653bed6b78d4518b5bc02c3d2d07834ad0e`. The reviewer
+authored neither the original artifact nor any correction, is not the schema
+implementation author, and did not author the checkpoint fixes offered as
+evidence. Scope was R18 only; every closure recorded in rounds 2 through 5
+stands.
+
+Decision: **accepted**. Unconditional, with no carve-outs and no tracked
+revisions. This satisfies section 10 and section 19-21 of the artifact: a
+reviewer who authored neither the artifact nor any correction has recorded an
+acceptance decision against the file's exact SHA-256. Schema implementation may
+proceed against the whole artifact.
+
+R18 is closed. Implementation commit `1873da2` replaced the inert `INSERT OR
+IGNORE` in `import_events` with an explicit existence check on
+`(origin_store_uuid, origin_event_sequence)` that skips an already-present
+identity, fixing the behavior rather than weakening the claim and thereby
+keeping section 6's identity and contiguity statements true. Measured on a build
+of `1873da2`, one source merged three times into one target as it gained one
+event per round: 1 / 2 / 3 origin events, one row per identity, against round
+five's 1 / 3 / 6. Origin identity is now unique in a merge target — the partial
+unique index that could not be created on the round-five data now creates
+cleanly — distinct origin sequences are contiguous at `1,2,3`, and
+`bead changes --since 0` reports 6 mutations with no duplicates where round five
+reported 9. The count-equality assertion added to the conformance suite guards
+the regression. Scalar merge content still advances across every merge, and the
+round-five closures for content-conflict rejection, forensic issue validation,
+explicit-empty deletion propagation, and legacy omission preservation were all
+re-verified on the same build.
+
+Repository state at review: working tree clean, `HEAD` = `origin/main` =
+`1873da2`, Forgejo divergence `0 0`, `cargo fmt --check` clean, `cargo clippy
+--all-targets -- -D warnings` clean, `cargo test` exit 0 with 635 passed, 0
+failed, 0 ignored across 36 suites, and no `#[ignore]` anywhere.
+
+Two notes. The artifact's status header still reads `corrected proposed
+normative specification; awaiting independent re-review`; this acceptance is
+bound to the digest above, so editing the header to `accepted normative
+specification` changes the digest. Record that edit here as a header-only change
+citing this acceptance and giving the new digest — it does not require another
+review round, and it must not silently supersede the accepted hash. Separately,
+`bf-57wtd` is not complete: it also covers implementing `schema
+list|show|explain` and updating capabilities, and `bead schema` remains an
+unrecognized subcommand. This acceptance discharges the approval half only.
+
+Full findings are in
+`docs/reviews/adr-002-field-guide-independent-review-round-6-2026-08-13.md`.
