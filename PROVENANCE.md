@@ -664,3 +664,16 @@ require additive text only. All round-two and round-three carve-outs are lifted.
 The status header does not become `accepted normative specification`; that
 requires unconditional acceptance against a later hash. Full findings are in
 `docs/reviews/adr-002-field-guide-independent-review-round-4-2026-08-13.md`.
+## ADR-002 native field-guide final finding correction (2026-08-13)
+
+Author: OpenAI Codex session operating under the repository clean-room rules.
+Artifact: `research/specs/native-field-guide-v1.md`. Algorithm SHA-256, full
+file digest
+`8d26bb1297d91e147cb60a230a2f3653bed6b78d4518b5bc02c3d2d07834ad0e`.
+
+This correction follows the round-four R15-R17 findings. The implementation now
+validates every forensic issue before restore or merge, accepts identical event
+history prefixes while importing new suffixes, emits explicit empty projected
+collections so deletions propagate, and retains legacy omission compatibility.
+The guide describes those verified semantics. This entry records correction
+provenance only and does not assert independent acceptance.

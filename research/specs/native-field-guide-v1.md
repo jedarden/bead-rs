@@ -366,9 +366,10 @@ Mistake: silently replacing an unknown reference.
 
 ### `data`
 
-Checkpoint only: optional nullable JSON object with no default; absent when no
-data exists, example `{"example":{"schema_ref":"urn:example:v1","value":{}}}`
-when present. Caller-owned through `bead data set|get|list|remove`. Each
+Checkpoint only: optional nullable JSON object for legacy input and required in
+new native output, where no namespaces serialize as `{}`. Example
+`{"example":{"schema_ref":"urn:example:v1","value":{}}}` when populated.
+Caller-owned through `bead data set|get|list|remove`. Each
 namespace has an immutable schema reference and arbitrary JSON value. Mistake:
 editing the aggregate through issue update. Released v0.1.1 lost this table;
 main commit `1943551` preserves each namespace, schema reference, and exact JSON
@@ -391,7 +392,8 @@ blocked-first direction.
 
 ### `comments`
 
-Checkpoint known projection: optional array, absent when empty. Each entry
+Checkpoint known projection: optional array for legacy inputs and required in
+new native output, where an empty collection is emitted as `[]`. Each entry
 contains `id`, `author`, `body`, nullable `reply_to_id`, nullable
 `resolution_state`, and `created_at`; issue ownership comes from the enclosing
 record. Checkpoint order is creation time then ID. Interactive reads expose
@@ -401,7 +403,8 @@ comments exist.
 
 ### `external_references`
 
-Checkpoint known projection: optional array, absent when empty. Each entry has
+Checkpoint known projection: optional array for legacy inputs and required in
+new native output, where an empty collection is emitted as `[]`. Each entry has
 required non-null strings `namespace`, `key`, and `value`; the enclosing issue
 provides `issue_id`. Caller-owned through `ref add|remove`; example
 `{"namespace":"source","key":"issue-id","value":"bf-123"}`. Main
@@ -409,6 +412,10 @@ checkpoint code preserves the collection transactionally on restore. Merge
 uses replace-when-present and preserve-when-absent semantics for external
 references, comments, and structured data. This lets checkpoints from older
 producers omit unsupported projections without deleting live target state.
+New producers emit explicit empty arrays/objects, so a source-side deletion
+replaces the target collection with empty state. Repeated merges accept an
+identical event-history prefix and import only its new suffix; an identity with
+different content is a conflict and leaves the target unchanged.
 Labels and dependencies merge additively. Scalar issue content follows the
 newer `updated_at`, with revision behavior defined above.
 Mistake: confusing these tracker/commit bindings with structured-data
@@ -581,12 +588,13 @@ The report is evidence, never checkpoint input.
 Main now preserves revisions, structured data, external references, and durable
 comments through native restore and merge. The committed comprehensive
 conformance test covers restore fidelity, merge replacement when projections
-are present, preservation when they are absent, and revision-token
-monotonicity. The `bf-3siqo` generic-update path and doctor detection were fixed
-at `2ce61ce`; import validation is bidirectional and diagnostic activation is
-all-or-nothing. Existing inconsistent rows are detected but not guessed at by
+are present, preservation of legacy omissions, explicit deletion propagation,
+repeated event-prefix merges, and revision-token monotonicity. The `bf-3siqo`
+generic-update path and doctor detection were fixed at `2ce61ce`; every native
+forensic restore and merge now performs bidirectional issue validation before
+activation. Existing inconsistent live rows are detected but not guessed at by
 repair, so cutover validation must reject or explicitly remediate them before
-restore. Full release gates remain independent of review of this specification.
+flush. Full release gates remain independent of review of this specification.
 
 ## 10. Independent review protocol
 
