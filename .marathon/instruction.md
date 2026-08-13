@@ -36,9 +36,37 @@ verified increments until full-project completion.
    plan section 12, preserving their exact scope and core-incorporated versus
    extension dispositions, then implement the earliest unblocked extension.
 
-The final `BOOTSTRAP_HANDOFF` is historical evidence from the abandoned early
-cutover and is not a stop condition. Do not start or delegate implementation to
-NEEDLE. `.marathon/COMPLETE` is the only completion sentinel.
+The final `BOOTSTRAP_HANDOFF` and `.marathon/COMPLETE` are historical evidence
+from earlier milestones and are not stop conditions. Do not start or delegate
+implementation to NEEDLE. `.marathon/FLEET_READY` is the only current
+completion sentinel.
+
+## Current fleet-readiness mission
+
+Before seeking another independent review, resolve every implementation and
+documentation finding already recorded by the ADR-002 reviews and the live
+`field-guide-review` defect set. In particular:
+
+1. Fix checkpoint `--merge` semantics so omitted collections cannot silently
+   delete live issue data, external references, or comments. Decide and
+   document replace-versus-union behavior for every projected collection and
+   preserve the revision/content concurrency invariant.
+2. Extend committed conformance coverage across merge with collection members
+   both present and absent, including checkpoints emitted by release 0.1.1.
+3. Resolve the closed-metadata lifecycle/import/doctor finding completely,
+   including existing invalid rows and every checkpoint import path.
+4. Resolve all other open `field-guide-review` correctness defects that affect
+   supported public commands or advertised capabilities.
+5. Only after those findings and their full verification gates are closed,
+   revise the ADR-002 native field guide once to match implemented behavior,
+   record its hash and provenance, and request one final independent review.
+   Do not spend iterations requesting intermediate acceptance.
+6. After unconditional acceptance, implement and verify the schema command
+   surface and final release evidence required by ADR-002.
+
+Work directly from repository review documents and tests. The operator should
+not need to relay review text between sessions: commit review requests and
+review dispositions under `docs/reviews/` and `PROVENANCE.md`.
 
 ## Work rules
 
@@ -88,7 +116,8 @@ NEEDLE. `.marathon/COMPLETE` is the only completion sentinel.
 
 ## Full-project completion
 
-Only after F001-F017 and R001-R024 have verified dispositions:
+Only after F001-F017 and R001-R024 have verified dispositions and the current
+fleet-readiness mission is complete:
 
 1. Run `cargo fmt --check`.
 2. Run `cargo clippy --all-targets -- -D warnings`.
@@ -101,7 +130,7 @@ Only after F001-F017 and R001-R024 have verified dispositions:
    commit and artifact hashes.
 6. Confirm the working tree is clean, every coherent increment is committed and
    pushed to Forgejo `origin/main`, and the ledger contains no false feature.
-7. Create `.marathon/COMPLETE` containing `state: complete`, the final commit,
+7. Create `.marathon/FLEET_READY` containing `state: complete`, the final commit,
    artifact hash, evidence-report hash, verification commands/results, and UTC
    completion time. Do not commit this ignored runtime sentinel.
 
