@@ -582,3 +582,25 @@ comprehensive round-trip test. The corresponding implementation preserves all
 four projections while excluding their flattened wire keys from unknown
 extension storage. This entry records correction provenance only; unconditional
 acceptance still requires independent verification of the new SHA-256.
+
+## ADR-002 native field-guide round-three independent review disposition (2026-08-13)
+
+Reviewer: Claude (Anthropic), author of the round-1 and round-2 reviews, author
+of neither the original artifact nor any correction, not the schema
+implementation author, and not the author of the checkpoint fixes offered as
+evidence. Artifact: `research/specs/native-field-guide-v1.md` at commit
+`e5141b9`. Algorithm SHA-256, full file digest
+`6b7c6da0e99cd38350664a6b1484d563428a72f7703e4ae45bb8bc2fb923309f`.
+
+Outcome: **accepted with required revisions**. Findings recorded in
+`docs/reviews/adr-002-field-guide-independent-review-round-3-2026-08-13.md`. All
+eleven round-two required revisions are closed and both round-two carve-outs are
+lifted; the restore-path fidelity claims for revision, structured data, external
+references, and comments were independently reproduced against a build of
+`e5141b9`. Three new required revisions (R12-R14) cover section 4 and section 9
+claims that `--merge` preserves external references, comments, and structured
+data — it deletes them when the incoming record omits those members, including
+for every checkpoint released `0.1.1` can produce — the scope of the conformance
+test cited as cutover evidence, and undocumented asymmetric merge semantics. The
+status header stays `corrected proposed`; unconditional acceptance requires a
+later hash.
