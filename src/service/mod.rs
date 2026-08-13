@@ -22,6 +22,7 @@ pub mod query;
 pub mod recurrence;
 pub mod rehearsal;
 pub mod scheduling;
+pub mod schema;
 pub mod why;
 
 pub use capabilities::generate_capabilities;
@@ -57,6 +58,7 @@ pub use recurrence::{
     materialize_next_occurrence,
 };
 pub use rehearsal::run_recovery_rehearsal;
+pub use schema::schema_catalog;
 // Scheduling types are part of R019 public API but may show as unused during compilation
 #[allow(unused_imports)]
 pub use comparison::{

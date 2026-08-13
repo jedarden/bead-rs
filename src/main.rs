@@ -52,6 +52,7 @@ fn execute_command(cli: Cli) -> Result<()> {
         Command::Sync(opts) => cmd_sync(opts),
         Command::Doctor(opts) => cmd_doctor(opts),
         Command::Capabilities(opts) => cmd_capabilities(opts),
+        Command::Schema(opts) => cmd_schema(opts),
         Command::Query(opts) => cmd_query(opts),
         Command::Changes(opts) => cmd_changes(opts),
         Command::Data(opts) => cmd_data(opts),
@@ -59,9 +60,6 @@ fn execute_command(cli: Cli) -> Result<()> {
         Command::Compare(opts) => cmd_compare(opts),
         Command::Recurrence(opts) => cmd_recurrence(opts),
         Command::Policy(opts) => cmd_policy(opts),
-        Command::Unimplemented(_) => Err(Error::cli_usage(
-            "This command is not yet implemented. See `bead --help` for available commands.",
-        )),
     }
 }
 
@@ -1331,6 +1329,25 @@ fn cmd_capabilities(opts: cli::CapabilitiesOptions) -> Result<()> {
     println!("{}", output);
 
     Ok(())
+}
+
+fn cmd_schema(command: cli::SchemaCommand) -> Result<()> {
+    match command {
+        cli::SchemaCommand::List(opts) => {
+            debug_assert_eq!(opts.format, "json");
+            let catalog = service::schema_catalog()?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&catalog).map_err(|error| {
+                    Error::Internal(anyhow::anyhow!(
+                        "Failed to serialize schema catalog: {}",
+                        error
+                    ))
+                })?
+            );
+            Ok(())
+        }
+    }
 }
 
 fn cmd_query(opts: cli::QueryOptions) -> Result<()> {

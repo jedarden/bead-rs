@@ -137,6 +137,13 @@ Recovering a fresh clone is `bead init` then `import-only --restore-into-empty`.
 
     Capabilities(CapabilitiesOptions),
 
+    #[command(
+        subcommand,
+        about = "Inspect public schemas",
+        long_about = "Inspect the immutable public document-schema catalog.\n\nThe catalog is workspace-independent and is the same typed registry returned by `bead capabilities`."
+    )]
+    Schema(SchemaCommand),
+
     Query(QueryOptions),
 
     Changes(ChangesOptions),
@@ -187,11 +194,6 @@ or ineffective settings and never changes whether a bead is claimable.
   bead policy check [--format text|json]"
     )]
     Policy(PolicyCommand),
-
-    /// Reserved for commands that are specified but not yet implemented
-    #[command(subcommand, hide = true)]
-    #[allow(clippy::enum_variant_names)]
-    Unimplemented(UnimplementedCommand),
 }
 
 /// Options for workspace initialization
@@ -1196,6 +1198,22 @@ pub struct CapabilitiesOptions {
     pub profile: String,
 }
 
+#[derive(Subcommand, Debug)]
+pub enum SchemaCommand {
+    #[command(
+        about = "List public schemas",
+        long_about = "List every supported public document schema as deterministic JSON.\n\nEntries are sorted by exact schema identity and include document kind, readability, writability, validation support, and consuming or emitting operations."
+    )]
+    List(SchemaListOptions),
+}
+
+#[derive(Parser, Debug)]
+pub struct SchemaListOptions {
+    /// Output format
+    #[arg(long, value_parser = ["json"], default_value = "json")]
+    pub format: String,
+}
+
 /// Options for query language execution
 #[derive(Parser, Debug)]
 #[command(
@@ -1911,15 +1929,6 @@ pub struct RecurrenceHistoryOptions {
     /// Output in JSON format
     #[arg(long)]
     pub json: bool,
-}
-
-/// Placeholder for commands that are specified but not yet implemented.
-///
-/// `migrate` was briefly a real top-level command; ADR-002 removed it in
-/// favor of a native field guide and agent-guided rehydration.
-#[derive(Subcommand, Debug)]
-pub enum UnimplementedCommand {
-    Schema,
 }
 
 #[cfg(test)]
