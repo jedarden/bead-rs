@@ -1870,7 +1870,7 @@ fn import_issues(tx: &Transaction, staging: &ForensicStaging) -> Result<usize> {
             params![
                 &issue.id,
                 &issue.title,
-                &issue.description.as_deref().unwrap_or(""),
+                &issue.description,
                 &issue.notes.as_deref().unwrap_or(""),
                 &issue.priority,
                 &issue.issue_type.as_deref().unwrap_or("task"),
@@ -1889,9 +1889,14 @@ fn import_issues(tx: &Transaction, staging: &ForensicStaging) -> Result<usize> {
         )?;
 
         import_issue_data(tx, issue)?;
+        import_external_references(tx, issue)?;
+        import_comments(tx, issue)?;
 
         // Insert extensions (unknown fields)
         for (key, value) in &issue.extensions {
+            if is_known_issue_projection(key) {
+                continue;
+            }
             let value_str = serde_json::to_string(value)
                 .map_err(|e| anyhow!("Failed to serialize extension '{}': {}", key, e))?;
             tx.execute(
@@ -2092,7 +2097,7 @@ fn reconcile_and_merge(
                     params![
                         &issue.id,
                         &issue.title,
-                        &issue.description.as_deref().unwrap_or(""),
+                        &issue.description,
                         &issue.notes.as_deref().unwrap_or(""),
                         &issue.priority,
                         &issue.issue_type.as_deref().unwrap_or("task"),
@@ -2111,9 +2116,14 @@ fn reconcile_and_merge(
                 )?;
 
                 import_issue_data(tx, issue)?;
+                import_external_references(tx, issue)?;
+                import_comments(tx, issue)?;
 
                 // Insert extensions (unknown fields)
                 for (key, value) in &issue.extensions {
+                    if is_known_issue_projection(key) {
+                        continue;
+                    }
                     let value_str = serde_json::to_string(value)
                         .map_err(|e| anyhow!("Failed to serialize extension '{}': {}", key, e))?;
                     tx.execute(
@@ -2140,11 +2150,11 @@ fn reconcile_and_merge(
                             issue_type = ?5, base_status = ?6, manual_blocked = ?7,
                             assignee = ?8, updated_at = ?9, closed_at = ?10,
                             close_reason = ?11, source_repo = ?12, profile = ?13,
-                            schema_ref = ?14, revision = ?15
+                            schema_ref = ?14, revision = MAX(revision, ?15)
                          WHERE id = ?16",
                         params![
                             &issue.title,
-                            &issue.description.as_deref().unwrap_or(""),
+                            &issue.description,
                             &issue.notes.as_deref().unwrap_or(""),
                             &issue.priority,
                             &issue.issue_type.as_deref().unwrap_or("task"),
@@ -2170,8 +2180,18 @@ fn reconcile_and_merge(
 
                     tx.execute("DELETE FROM issue_data WHERE issue_id = ?1", [&issue.id])?;
                     import_issue_data(tx, issue)?;
+                    tx.execute(
+                        "DELETE FROM external_references WHERE issue_id = ?1",
+                        [&issue.id],
+                    )?;
+                    import_external_references(tx, issue)?;
+                    tx.execute("DELETE FROM comments WHERE issue_id = ?1", [&issue.id])?;
+                    import_comments(tx, issue)?;
 
                     for (key, value) in &issue.extensions {
+                        if is_known_issue_projection(key) {
+                            continue;
+                        }
                         let value_str = serde_json::to_string(value).map_err(|e| {
                             anyhow!("Failed to serialize extension '{}': {}", key, e)
                         })?;
@@ -2240,6 +2260,93 @@ fn import_issue_data(tx: &Transaction, issue: &Issue) -> Result<()> {
             "INSERT INTO issue_data (issue_id, namespace, schema_ref, value)
              VALUES (?1, ?2, ?3, ?4)",
             params![&issue.id, namespace, schema_ref, value],
+        )?;
+    }
+
+    Ok(())
+}
+
+fn is_known_issue_projection(key: &str) -> bool {
+    matches!(
+        key,
+        "labels" | "dependencies" | "external_references" | "comments"
+    )
+}
+
+fn import_external_references(tx: &Transaction, issue: &Issue) -> Result<()> {
+    let Some(references) = issue.extensions.get("external_references") else {
+        return Ok(());
+    };
+    let references = references.as_array().ok_or_else(|| {
+        anyhow!(
+            "Issue '{}' external_references must be a JSON array",
+            issue.id
+        )
+    })?;
+
+    for reference in references {
+        let reference = reference
+            .as_object()
+            .ok_or_else(|| anyhow!("Issue '{}' external reference must be an object", issue.id))?;
+        let member = |name: &str| -> Result<&str> {
+            reference
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "Issue '{}' external reference requires string '{}'",
+                        issue.id,
+                        name
+                    )
+                })
+        };
+        tx.execute(
+            "INSERT INTO external_references (issue_id, namespace, key, value)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                &issue.id,
+                member("namespace")?,
+                member("key")?,
+                member("value")?
+            ],
+        )?;
+    }
+
+    Ok(())
+}
+
+fn import_comments(tx: &Transaction, issue: &Issue) -> Result<()> {
+    let Some(comments) = issue.extensions.get("comments") else {
+        return Ok(());
+    };
+    let comments = comments
+        .as_array()
+        .ok_or_else(|| anyhow!("Issue '{}' comments must be a JSON array", issue.id))?;
+
+    for comment in comments {
+        let comment = comment
+            .as_object()
+            .ok_or_else(|| anyhow!("Issue '{}' comment must be an object", issue.id))?;
+        let required = |name: &str| -> Result<&str> {
+            comment
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| anyhow!("Issue '{}' comment requires '{}'", issue.id, name))
+        };
+        let optional = |name: &str| comment.get(name).and_then(serde_json::Value::as_str);
+        tx.execute(
+            "INSERT INTO comments
+             (id, issue_id, author, body, reply_to_id, resolution_state, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                required("id")?,
+                &issue.id,
+                required("author")?,
+                required("body")?,
+                optional("reply_to_id"),
+                optional("resolution_state"),
+                required("created_at")?
+            ],
         )?;
     }
 
@@ -3011,9 +3118,14 @@ fn activate_import(store: &mut SqliteStore, staging: &ImportStaging) -> Result<(
         )?;
 
         import_issue_data(&tx, issue)?;
+        import_external_references(&tx, issue)?;
+        import_comments(&tx, issue)?;
 
         // Insert extensions (unknown fields)
         for (key, value) in &issue.extensions {
+            if is_known_issue_projection(key) {
+                continue;
+            }
             let value_str = serde_json::to_string(value)
                 .map_err(|e| anyhow!("Failed to serialize extension '{}': {}", key, e))?;
             tx.execute(
@@ -4372,6 +4484,50 @@ fn read_all_issues(tx: &Transaction) -> Result<Vec<Issue>> {
             let value = serde_json::from_str(&value_str)
                 .map_err(|e| anyhow!("Failed to parse extension '{}': {}", key, e))?;
             extensions.insert(key, value);
+        }
+
+        let mut references = Vec::new();
+        let mut reference_stmt = tx.prepare(
+            "SELECT namespace, key, value FROM external_references
+             WHERE issue_id = ?1 ORDER BY namespace, key, value",
+        )?;
+        let reference_rows = reference_stmt.query_map([&id], |row| {
+            Ok(serde_json::json!({
+                "namespace": row.get::<_, String>("namespace")?,
+                "key": row.get::<_, String>("key")?,
+                "value": row.get::<_, String>("value")?,
+            }))
+        })?;
+        for reference in reference_rows {
+            references.push(reference?);
+        }
+        if !references.is_empty() {
+            extensions.insert(
+                "external_references".to_string(),
+                serde_json::Value::Array(references),
+            );
+        }
+
+        let mut comments = Vec::new();
+        let mut comment_stmt = tx.prepare(
+            "SELECT id, author, body, reply_to_id, resolution_state, created_at
+             FROM comments WHERE issue_id = ?1 ORDER BY created_at, id",
+        )?;
+        let comment_rows = comment_stmt.query_map([&id], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>("id")?,
+                "author": row.get::<_, String>("author")?,
+                "body": row.get::<_, String>("body")?,
+                "reply_to_id": row.get::<_, Option<String>>("reply_to_id")?,
+                "resolution_state": row.get::<_, Option<String>>("resolution_state")?,
+                "created_at": row.get::<_, String>("created_at")?,
+            }))
+        })?;
+        for comment in comment_rows {
+            comments.push(comment?);
+        }
+        if !comments.is_empty() {
+            extensions.insert("comments".to_string(), serde_json::Value::Array(comments));
         }
 
         // Convert to Issue model
