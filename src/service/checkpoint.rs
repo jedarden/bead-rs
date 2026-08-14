@@ -1855,6 +1855,14 @@ fn import_issues(tx: &Transaction, staging: &ForensicStaging) -> Result<usize> {
     let mut inserted = 0;
 
     for issue in &staging.issues {
+        // Validate the issue before importing (F017)
+        issue.validate().map_err(|e| {
+            anyhow!(
+                "Issue {} failed validation during import: {}. A restore is the last point where an invalid record can be rejected before it becomes indistinguishable from legitimate history.",
+                issue.id, e
+            )
+        })?;
+
         tx.execute(
             "INSERT INTO issues (
                 id, title, description, notes, priority, issue_type, base_status,
