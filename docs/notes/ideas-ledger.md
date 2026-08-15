@@ -1073,6 +1073,8 @@ Product decision on 2026-08-15:
   (R031), `beadrs-57f9ef2f` (R032), `beadrs-e854d52a` (R033),
   `beadrs-90c9afc9` (R034), under genesis `beadrs-d6f98dab`.
 - Separately requested, outside this run's pool: an assessment of upgrading
-  bead-rs from the Rust 1.75 MSRV to current stable (investigation first, not
-  yet a roadmap item).
+  bead-rs from the Rust 1.75 MSRV to current stable. Assessed and adopted the
+  same day as ADR-004 (MSRV 1.85 + edition 2024 + CI-enforced floor + scoped
+  dependency refresh), plan revision 7, beads `beadrs-e3ff78f3`,
+  `beadrs-dd914e5b`, `beadrs-c0e4fb66` under genesis `beadrs-c69cd4c2`.
 - No F001-F017 pass state changed.

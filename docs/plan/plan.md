@@ -1,8 +1,15 @@
 # bead-rs 0.1 implementation plan
 
-Plan revision: 6
+Plan revision: 7
 
 As of: 2026-08-15
+
+Revision 7 change: ADR-004 raises the MSRV from Rust 1.75 to 1.85 with
+edition 2024, corrects the section 8 dependency-verification wording and the
+section 10 risk-register lane to cite it, and requires a pinned MSRV
+verification lane in CI. Bootstrap-era 1.75 references in provenance and
+review records remain as history. Migration is tracked by beads;
+`Cargo.toml` stays authoritative for the shipped floor until they close.
 
 Revision 6 change: adopts the run-4 ideation tranche R027-R034 (multi-clone
 transport, checkpoint archaeology, self-defending discovery, resource locks,
@@ -1702,7 +1709,8 @@ benches/
 research/fixtures/    independent fixtures and manifests
 ```
 
-Suggested dependencies, subject to Rust 1.75 verification:
+Suggested dependencies, subject to MSRV verification (Rust 1.75 at
+bootstrap; Rust 1.85 per ADR-004 as of 2026-08-15):
 
 - `clap` 4 with derive;
 - `clap_mangen` or an equivalently bounded roff generator sharing the `clap`
@@ -1718,6 +1726,14 @@ Suggested dependencies, subject to Rust 1.75 verification:
 Commit `Cargo.lock` because this package ships a binary. Verify selected
 versions on Rust 1.75 before accepting F001. Put
 `#![forbid(unsafe_code)]` in project crates.
+
+ADR-004 (2026-08-15) raises the MSRV to Rust 1.85 with edition 2024. The
+1.75 references above record the bootstrap-era floor and its discharged F001
+verification. `Cargo.toml` remains authoritative for the shipped floor until
+the ADR-004 migration beads close, the CI MSRV lane must pin the same version
+the manifest declares, and every forward-looking MSRV statement changes in
+the same commit that flips the manifest. A future MSRV advance requires a
+plan revision citing a new or revised ADR; the floor never moves silently.
 
 ## 9. Verification design
 
@@ -2058,7 +2074,7 @@ convenient.
 | Oversized F017 hides progress or failure | Reviewed sub-gates with independent evidence and capability invalidation | Any failed sub-gate leaves F017 false and rolls back only its bounded migration/activation step | F017 owner + recovery reviewer / sub-gate evidence |
 | Packaged binary differs from tested binary | Pin commit and artifact hash; run tests from installed path | Hash mismatch invalidates all canary evidence and returns to G2 packaging | Release owner / artifact manifest |
 | Checkpoint or cutover recovery fails | Verified pre-canary checkpoint and rehearsed empty-target restore | Failed restore blocks handoff/release and preserves source workspace for diagnosis | Recovery owner / restore-equivalence report |
-| MSRV or dependency drift | Lockfile, Rust 1.75 lane, dependency verification at F001 and final package | MSRV failure blocks artifact promotion; choose compatible dependency through ADR if architectural | Build owner / G2 and G5 package evidence |
+| MSRV or dependency drift | Lockfile, pinned MSRV lane (1.85 per ADR-004; 1.75 at bootstrap), dependency verification at F001 and final package | MSRV failure blocks artifact promotion; choose compatible dependency through ADR if architectural | Build owner / G2 and G5 package evidence |
 
 Roles may be held by agents or humans, but the accountable role and independent
 review evidence must be named before its gate can pass. Dates are optional;
