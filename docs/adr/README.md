@@ -37,3 +37,4 @@ Use the template in `000-template.md` for new ADRs. Each ADR should include:
 |-----|-------|--------|------|
 | [001](001-declared-verification-edges-over-title-heuristics.md) | Diagnose inverted verification gates from a declared edge kind, not from issue titles | Proposed | 2026-08-12 |
 | [002](002-agent-guided-rehydration-over-cross-tool-migration.md) | Prefer agent-guided rehydration over cross-tool schema migration | Accepted | 2026-08-12 |
+| [003](003-automatic-checkpoint-flush-gated-on-incremental-publication.md) | Make checkpoint flush automatic on mutation, gated on incremental publication | Proposed | 2026-08-15 |

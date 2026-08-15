@@ -1,8 +1,13 @@
 # bead-rs 0.1 implementation plan
 
-Plan revision: 4
+Plan revision: 5
 
-As of: 2026-08-12
+As of: 2026-08-15
+
+Revision 5 change: ADR-003 adopts automatic checkpoint flush on successful
+mutation as the eventual default, adds section 6.2.1 and R026, and gates
+activation on four prerequisites that make checkpoint publication incremental.
+Explicit `sync flush-only` remains the default until that gate passes.
 
 Revision 4 change: ADR-002 removes cross-tool profiles and migration tooling
 and replaces them with a native field guide plus agent-guided rehydration.
@@ -800,9 +805,10 @@ Human output may evolve; named-profile machine output is stable.
 | `bead close ID --reason TEXT` | finish with retained reason |
 | `bead label add ID --label L` | idempotent presence |
 | `bead label remove ID --label L` | idempotent absence |
-| `bead dep add BLOCKED BLOCKER --type KIND` | add canonical edge |
-| `bead dep remove BLOCKED BLOCKER [--type KIND]` | remove matching edge(s) |
-| `bead sync --flush-only [--profile P] [--output PATH]` | before F017, atomically publish issue-only `.beads/issues.jsonl` when output is omitted or export that issue-only format to a new explicit path; after F017, use the upgraded forensic publication/export contract in section 6 |
+| `bead dep add BLOCKED BLOCKER --kind KIND` | add canonical edge |
+| `bead dep remove BLOCKED BLOCKER [--kind KIND]` | remove matching edge(s) |
+| `bead sync --flush-only [--profile P] [--output PATH]` | before F017, atomically publish issue-only `.beads/issues.jsonl` when output is omitted or export that issue-only format to a new explicit path; after F017, use the upgraded forensic publication/export contract in section 6; under the R026 automatic default it remains supported and is idempotent against a clean checkpoint |
+| `--no-auto-flush` (global) | suppress R026 automatic post-commit publication for one invocation, leaving the checkpoint dirty; inert while explicit flush is the default; overrides the `checkpoint.auto_flush` workspace configuration key |
 | `bead sync --import-only --input PATH [--profile P] [--dry-run]` | before F017, stage and transactionally replace an empty store from exactly one explicitly named issue-only JSONL file; after F017, this base grammar is extended with the required `(--restore-into-empty\|--merge) --actor ACTOR` forensic semantics in section 6.3 |
 | `bead sync --status --format json` | before F017, issue-only checkpoint hash, covered/live sequence, time, and dirty state; after F017, the richer root/mode/changed-path status in section 6.2 |
 | `bead doctor [--repair]` | diagnose; optionally perform safe repairs |
@@ -910,6 +916,14 @@ links each lifecycle operation to its command page.
 Root help also states that checkpoint files are designed to be Git-tracked and
 that users or automation should run `bead sync --flush-only` before committing
 the repository. It must not imply that `bead-rs` performs the commit or push.
+
+When R026 activates, this help text, the workflow summary above, the generated
+man pages, and the README reverse together in the same release: the closing
+step becomes automatic publication rather than a remembered command, and
+`sync --flush-only` is described as an explicit idempotent check plus the
+`--no-auto-flush` escape hatch. Documentation must never describe a flush
+default the shipped binary does not have; the never-implicit-flush wording
+stands until the R026 gate passes, and no partial reversal is permitted.
 
 Generate section-1 manual pages from that same command tree and structured
 long-form documentation. Ship `bead(1)` plus one page for every public command
@@ -1310,6 +1324,85 @@ run `sync --flush-only`, and include every reported path in the same Git commit
 as the related project change. This workflow preserves forensic material on the
 remote history without making the bead CLI a Git client.
 
+### 6.2.1 Automatic flush on mutation
+
+Authorized by ADR-003. Every successful semantic mutation publishes a
+checkpoint generation covering its own committed sequence, so the durable
+checkpoint is never silently behind the database. `bead-rs` still never invokes
+Git: automatic flush writes the working tree, and committing remains the
+caller's responsibility.
+
+This default is **gated**. Until every prerequisite below is satisfied and its
+gate evidence recorded, the shipped default is explicit `sync flush-only`,
+automatic flush is neither enabled nor advertised, and the section 6.2
+never-implicit-flush contract stands unchanged. The prerequisites are not
+optional performance work; a full-workspace flush per mutation writes bytes
+quadratic in mutation count into a Git-tracked directory.
+
+- **P1 — content-addressed roots.** The monolithic root object is named by its
+  content SHA-256, as section 6.1.1 already requires, not by generation
+  identity. Two flushes producing identical bytes reuse one object. The
+  monolithic writer currently names the root from the generation ID, so
+  identical content is never reused.
+- **P2 — applied tombstones.** Step 6 of section 6.2 is implemented: after the
+  pointer commits, pointer-declared tombstones are removed, `current.json` is
+  never itself declared deleted, and the retained object set is bounded by the
+  generations `current.json` and `previous.json` reference. Unresolved
+  tombstones keep `sync --status` not ready to commit.
+- **P3 — sound dirtiness signal.** Every committed semantic mutation appends an
+  audit event, so the live event sequence advances for issue creation,
+  dependency, label, external-reference, and structured-data mutations as well
+  as lifecycle and claim transitions. Automatic flush is skipped only when the
+  covered sequence already equals the live sequence, so an unrecorded mutation
+  would otherwise publish nothing and report success.
+- **P4 — incremental publication.** Sharded mode is reachable and selected from
+  the recorded section 6.1.1 thresholds rather than hardcoded to monolithic, so
+  a single mutation rewrites one issue shard, appends one sealed event tail
+  object, and publishes a new manifest and pointer. Publication cost tracks the
+  delta, not the workspace.
+
+Once gated in, the contract is:
+
+1. Automatic flush runs **after** the mutation's transaction commits, never
+   inside it. A publication failure must not roll back committed work.
+2. It runs from one shared post-commit chokepoint, not per call site, so every
+   present and future mutating command inherits identical behavior. Read-only
+   commands never publish.
+3. It is skipped when the checkpoint already covers the live event sequence, so
+   a no-op mutation publishes no generation and creates no object.
+4. Publication is serialized by a checkpoint lock distinct from the SQLite
+   write path. A concurrent worker that finds a newer generation already
+   published for a sequence at or beyond its own treats that as success, not
+   conflict. A lost race never leaves a torn pointer or a partially applied
+   tombstone set.
+5. A mutation that commits and then fails to publish reports the split
+   explicitly: the mutation's own success output is preserved, the publication
+   failure goes to stderr, and the process exits 1. Machine consumers must be
+   able to distinguish "the mutation did not happen" from "the mutation
+   happened and the checkpoint did not advance." Exit 1 never implies the
+   mutation was rolled back.
+6. Automatic flush is silent on success. `bead create` still prints only the
+   new ID plus LF, and no other machine-output contract in section 5.1 gains a
+   field or a line.
+7. `--no-auto-flush` suppresses publication for one invocation and the
+   workspace configuration key `checkpoint.auto_flush` suppresses it durably;
+   the flag wins over configuration. Either leaves the checkpoint dirty exactly
+   as today, and `sync --status` reports it.
+8. `bead sync flush-only` remains a supported explicit operation and is
+   idempotent under the automatic default: with a clean checkpoint it publishes
+   no new generation and exits 0.
+9. `sync --import-only` publishes on the same rule as any other mutation.
+   Standalone `--output` export is unchanged and never satisfies or disturbs
+   automatic publication state.
+
+The capability document advertises the resolved behavior so a fleet can detect
+it rather than infer it from version numbers, and section 3.5.10's rapid-fire
+lifecycle benchmarks bound the acceptable per-mutation publication cost: the
+automatic default may not regress them beyond the recorded budget.
+
+Explicit-flush workspaces remain fully supported. Automatic flush changes which
+behavior is the default, not which behaviors exist.
+
 ### 6.3 Import reconciliation
 
 `sync --import-only` requires `--input PATH`, `--actor ACTOR`, and exactly one
@@ -1467,7 +1560,7 @@ be overridden. Native envelope JSONL is self-describing as `native-v1` only
 after the exact envelope and payload schemas validate. Missing or conflicting
 identification fails closed. `--profile` cannot reinterpret an artifact or
 bypass its declared schema. Native and NEEDLE dependency syntax remains
-`dep add BLOCKED BLOCKER --type blocks`.
+`dep add BLOCKED BLOCKER --kind blocks`.
 
 Each emitted native bead includes its `schema_ref`. Profiles explicitly map,
 preserve, or reject the reference according to their native/NEEDLE contract.
@@ -1905,8 +1998,10 @@ G5 permits the version 0.1 milestone but not full-project
 
 ### Phase 6: complete the adopted post-0.1 roadmap under Marathon
 
-R001-R025 become executable after G5 in their listed order subject to explicit
-dependencies and required specifications/ADRs. Core-incorporated items receive
+R001-R026 become executable after G5 in their listed order subject to explicit
+dependencies and required specifications/ADRs. R026 is further gated on its own
+section 13 activation gate and sequences after the `checkpoint-set-v1`
+acceptance that blocks F017. Core-incorporated items receive
 verified dispositions tied to their owning F-feature rather than duplicate
 implementations. Marathon records each roadmap item in the release ledger,
 implements every remaining extension, and continues until full-project gates
@@ -1925,7 +2020,8 @@ beads, and superseding ADRs.
 
 Seed ADRs for SQLite live authority with JSONL recovery; the staged native
 NEEDLE backend; the bootstrap/full-0.1 boundary; Marathon-to-native-beads-to-
-NEEDLE authority transfer; ADR-002 agent-guided rehydration; and F017 placement.
+NEEDLE authority transfer; ADR-002 agent-guided rehydration; ADR-003 automatic
+checkpoint flush gated on incremental publication; and F017 placement.
 Record rejected alternatives rather than silently reopening them, including
 native SQLite backup, mandatory file-intent gates, live upstream database
 adapters, automatic Git publication, daemon/network authority, and arbitrary
@@ -2013,6 +2109,16 @@ final implementation actually validates, consumes, or emits, following the exact
 normative names and support semantics. F010 tests this provisional document;
 the final F017/release tests replace the expected catalog with the normative
 one and fail if the shipped checkpoint grammar or schema resolver is omitted.
+
+R026 adds one additive boolean, `auto_flush`, reporting whether this binary
+publishes a checkpoint generation after every successful semantic mutation
+(section 6.2.1). It is absent until the R026 gate passes and is then always
+present, so a fleet detects the behavior by handshake rather than inferring it
+from a version number. The field reports the compiled default; a workspace that
+disables publication through `checkpoint.auto_flush`, and an invocation that
+passes `--no-auto-flush`, do not change what the binary advertises. Consumers
+that require a current checkpoint must still read `sync --status`, which
+remains the only authority on whether this workspace is actually clean.
 
 Schema catalog entries sort lexically by exact identity and are duplicate-free.
 `validate` means `schema show` supplies the schema and the implementation can
@@ -2292,6 +2398,36 @@ bead that verifies it" is the answer that identifies the fault. Sequence after
 R017, whose conditional edges must treat `verifies` consistently in cycle
 analysis. Authorized by ADR-001.
 
+### R026 — Automatic checkpoint flush on mutation (extension)
+
+Make a successful semantic mutation publish a checkpoint generation covering
+its own committed sequence, replacing explicit `sync flush-only` as the
+default. The normative contract is section 6.2.1; `bead-rs` still never invokes
+Git, and automatic Git publication remains rejected.
+
+The item is gated on four prerequisites, each of which is the implementation
+converging on section 6.1.1 and 6.2 as already written rather than new scope:
+content-addressed monolithic roots (P1), applied pointer-declared tombstones
+(P2), an audit event for every committed semantic mutation so the event
+sequence is a sound dirtiness signal (P3), and reachable sharded publication so
+flush cost tracks the delta rather than the workspace (P4). Sequence P1-P4
+after the normative `research/specs/checkpoint-set-v1.md` acceptance that
+already blocks F017, since all three of P1, P2, and P4 are constrained by it.
+
+Without those prerequisites the feature is actively harmful rather than merely
+slow: publication is linear in workspace size, each generation leaks a
+full-size immutable object that is never collected, and most mutation kinds do
+not advance the sequence that would tell the implementation a flush was needed.
+Per-mutation publication multiplies all three by the mutation rate, inside a
+directory whose contents are Git-tracked.
+
+Then deliver the automatic path itself: one shared post-commit publication
+chokepoint, defined split-failure semantics with the mutation preserved and
+exit 1, a checkpoint publication lock separate from the SQLite write path,
+`--no-auto-flush` and `checkpoint.auto_flush`, an `auto_flush` capability
+field, and the documentation reversal across README, root help, generated man
+pages, and `AGENTS.md`. Authorized by ADR-003.
+
 ## 13. Release gates
 
 ### Bootstrap and handoff gates
@@ -2366,18 +2502,63 @@ Before declaring version 0.1 complete:
 - compatibility claims name exact profiles and known losses;
 - publication remains separately human-authorized.
 
+### R026 automatic-flush activation gate
+
+The automatic flush default of section 6.2.1 may ship only when all of the
+following hold at one commit. Until then the binary keeps the explicit-flush
+default and the documentation that describes it.
+
+- **Bounded objects.** A scripted run of at least 1,000 mutate-and-publish
+  cycles leaves the retained object set bounded by the generations
+  `current.json` and `previous.json` reference. Checkpoint bytes are within a
+  recorded constant factor of the live workspace and do not grow with the
+  number of publications. Two publications of identical content produce one
+  object, verified by count.
+- **Applied tombstones.** After that run every path declared in
+  `deleted_paths` is absent from disk, `current.json` never declares itself
+  deleted, and `sync --status` reports no unresolved tombstones.
+- **Sound dirtiness.** For every mutating command in the section 5 contract,
+  a single invocation advances the live event sequence, and a publication
+  immediately afterward reports a covered sequence equal to it. A test
+  enumerates the command tree so a newly added mutating command cannot ship
+  without an event.
+- **Incremental cost.** Publication after one mutation writes bytes
+  proportional to the changed shard and event tail, not to the workspace,
+  demonstrated across at least two workspace sizes an order of magnitude
+  apart. Section 3.5.10's rapid-fire lifecycle benchmarks pass within their
+  recorded budget with the automatic default enabled.
+- **Concurrency.** Bounded concurrent workers mutating one workspace produce
+  no torn pointer, no partially applied tombstone set, and no lost mutation;
+  each worker's committed sequence is covered by some published generation at
+  quiesce. A worker that loses a publication race exits 0.
+- **Split-failure semantics.** With publication forced to fail, the mutation
+  remains committed and visible, the failure is reported on stderr, and the
+  process exits 1. A test asserts the mutation is not rolled back.
+- **Escape hatches.** `--no-auto-flush` and `checkpoint.auto_flush` each
+  suppress publication, the flag wins over configuration, and a suppressed
+  workspace is reported dirty by `sync --status`.
+- **Recovery equivalence.** `doctor --rehearse` passes against a workspace
+  built entirely through automatic publication, and a restore from its
+  checkpoint into an empty store is semantically equivalent to the source.
+- **Handshake and documentation.** `capabilities` advertises `auto_flush`,
+  and README, root help, generated man pages, and `AGENTS.md` describe the
+  automatic default in the same commit that flips it, with no surviving
+  never-implicit-flush wording.
+
 ### Full-project Marathon gates
 
 Before `.marathon/COMPLETE`:
 
-- every R001-R025 item has a ledger entry with either verified
+- every R001-R026 item has a ledger entry with either verified
   core-incorporated evidence or a passing extension implementation;
+- R026 additionally satisfies its own gate below, or is recorded as
+  deliberately not activated with the explicit-flush default intact;
 - every roadmap specification, ADR, migration, conformance scenario, and
   documentation requirement is satisfied at the final commit;
 - formatting, Clippy, the complete test suite, package installation, recovery,
   stress/capacity, recursive help/man-page, provenance, and consumer-side
   NEEDLE compatibility gates are rerun against the final artifact;
-- the release-evidence report covers F001-F017 and R001-R025 and passes the
+- the release-evidence report covers F001-F017 and R001-R026 and passes the
   noninteractive verifier with exact commit and artifact hashes;
 - the working tree is clean and every coherent increment is pushed to
   Forgejo `origin/main`; and
