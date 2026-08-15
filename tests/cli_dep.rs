@@ -100,6 +100,33 @@ fn test_dep_add_with_kind() {
 
 #[test]
 #[serial]
+fn test_dep_add_invalid_kind_returns_exit_code_4() {
+    let temp = tempfile::tempdir().unwrap();
+    std::env::set_current_dir(temp.path()).unwrap();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["init", "--prefix", "test"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args([
+            "dep",
+            "add",
+            "test-blocked",
+            "test-blocker",
+            "--kind",
+            "parent-child",
+        ])
+        .assert()
+        .code(4)
+        .stderr(predicate::str::contains("parent-child"));
+}
+
+#[test]
+#[serial]
 fn test_dep_add_idempotent() {
     let temp = tempfile::tempdir().unwrap();
     std::env::set_current_dir(temp.path()).unwrap();

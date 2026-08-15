@@ -6,6 +6,14 @@
 use std::path::PathBuf;
 use thiserror::Error;
 
+/// Structured validation failures that have an operation-specific exit code.
+#[derive(Error, Debug, PartialEq, Eq)]
+pub enum ValidationError {
+    /// The dependency kind is not supported by the native dependency graph.
+    #[error("Invalid dependency kind: {kind}")]
+    InvalidKind { kind: String },
+}
+
 /// Main error type for bead-rs operations
 #[derive(Error, Debug)]
 pub enum Error {
@@ -21,6 +29,10 @@ pub enum Error {
     #[error("Conflict: {0}")]
     #[allow(dead_code)]
     Conflict(String),
+
+    /// Structured validation failure (exit 4)
+    #[error("Validation error: {0}")]
+    Validation(#[from] ValidationError),
 
     /// Lease expiry or conflict (exit 4)
     #[error("Lease error: {0}")]
@@ -71,7 +83,10 @@ impl Error {
         match self {
             Error::CliUsage(_) | Error::Model(_) => 2,
             Error::Workspace(_) => 3,
-            Error::Conflict(_) | Error::LeaseExpired(_) | Error::LeaseConflict(_) => 4,
+            Error::Conflict(_)
+            | Error::Validation(_)
+            | Error::LeaseExpired(_)
+            | Error::LeaseConflict(_) => 4,
             Error::Integrity(_) => 5,
             Error::DatabaseBusy(_) => 6,
             _ => 1,

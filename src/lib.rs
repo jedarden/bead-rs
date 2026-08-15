@@ -8,5 +8,5 @@ pub mod profile;
 pub mod service;
 pub mod store;
 
-pub use error::{Error, Result};
+pub use error::{Error, Result, ValidationError};
 pub use store::Store;

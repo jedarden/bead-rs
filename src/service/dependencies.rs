@@ -1,6 +1,6 @@
 //! Labels and dependency graph operations.
 
-use crate::error::Error;
+use crate::error::{Error, ValidationError};
 use crate::service::conditions::{evaluate_condition, ConditionExpr, IssueContext};
 use crate::store::SqliteStore;
 use rusqlite::Connection;
@@ -74,6 +74,13 @@ pub fn add_dependency(
     kind: &str,
     condition: Option<&ConditionExpr>,
 ) -> Result<(), Error> {
+    if !is_valid_kind(kind) {
+        return Err(ValidationError::InvalidKind {
+            kind: kind.to_string(),
+        }
+        .into());
+    }
+
     let conn = store.conn();
     let tx = conn.unchecked_transaction()?;
 
@@ -103,14 +110,6 @@ pub fn add_dependency(
         return Err(Error::Conflict(
             "Self-edge: blocked and blocker cannot be the same issue".to_string(),
         ));
-    }
-
-    // Validate dependency kind
-    if kind != "blocks" && kind != "relates_to" {
-        return Err(Error::validation(format!(
-            "Invalid dependency kind '{}': must be 'blocks' or 'relates_to'",
-            kind
-        )));
     }
 
     // Validate condition fields if provided
@@ -146,6 +145,11 @@ pub fn add_dependency(
 
     tx.commit()?;
     Ok(())
+}
+
+/// Returns whether `kind` is supported by the dependency graph.
+fn is_valid_kind(kind: &str) -> bool {
+    matches!(kind, "blocks" | "relates_to")
 }
 
 /// Removes a dependency edge.
@@ -525,7 +529,19 @@ mod tests {
         create_test_issue(&mut store, "issue-2", "Blocker Issue");
 
         let result = add_dependency(&mut store, "issue-1", "issue-2", "parent-child", None);
-        assert!(matches!(result, Err(Error::CliUsage(_))));
+        assert!(matches!(
+            result,
+            Err(Error::Validation(ValidationError::InvalidKind { kind }))
+                if kind == "parent-child"
+        ));
+
+        assert_eq!(
+            Error::Validation(ValidationError::InvalidKind {
+                kind: "parent-child".to_string(),
+            })
+            .exit_code(),
+            4
+        );
 
         // Verify no dependency was added
         let conn = store.conn();
@@ -534,6 +550,14 @@ mod tests {
             .unwrap();
 
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_is_valid_kind() {
+        assert!(is_valid_kind("blocks"));
+        assert!(is_valid_kind("relates_to"));
+        assert!(!is_valid_kind("parent-child"));
+        assert!(!is_valid_kind("depends-on"));
     }
 
     #[test]
