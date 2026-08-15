@@ -801,3 +801,261 @@ readiness then correctly reports a bead that can never become ready.
   A deliberate "prove the baseline green before touching it" gate is legitimate
   and structurally identical to the error.
 - No F001-F017 pass state changed. R025 is post-0.1 and sequenced after R017.
+
+## 2026-08-15 — plan-idea-gen run 4: post-R026 operations
+
+Target: `docs/plan/plan.md` (revision 5). Pool: 60 — deliberately scaled below
+the 100 default because runs 1-3 already banked ~243 mechanisms; every
+candidate here was generated against that corpus and duplicates were dropped
+at generation time rather than manufactured for the count. Clusters: 9.
+Triage survivors: 25. Crossover merges: 1 (checkpoint archaeology = query +
+diff + bisect over committed generations). Pairwise advancers: 15. Kill-pass
+survivors: 12. Completeness entrants: 1, which survived and displaced the
+weakest advancer. Finalists: 10.
+
+Context that shaped this run: bead-rs is now the canonical bead CLI across the
+surrounding environment (two machines, ~19 workspaces, thousands of beads);
+R026 automatic flush was adopted the same day with its prerequisite beads
+filed; the migration period produced a real wrong-CLI-against-wrong-store data
+-loss incident (SEAM, 2026-08-14); and the multi-clone flush-commit-push /
+pull workflow is now the de facto replication path between machines. Several
+run-1/run-2 kills and deferrals were legitimately resurrected because those
+facts invalidate their original objections; each resurrection states why.
+
+Hard constraints (kill criteria): clean-room (never parse another bead
+implementation's formats); no daemon/sockets/network sync; bead-rs never runs
+Git; JSONL is the sole backup boundary; deterministic and noninteractive with
+no hidden automation; no title/content heuristics; Rust 1.75, no unsafe; new
+formats require normative specs and independent review; additive to NEEDLE v1;
+no duplication of F001-F017 or R001-R026.
+
+| # | Idea and mechanism | Cluster | Verdict |
+| ---: | --- | --- | --- |
+| 1 | Remote-advanced reconcile — checkpoint-ahead-of-db after `git pull` becomes a recognized state with `sync reconcile` merging the verified pointer-selected checkpoint into the live store | Git transport | **FINALIST** |
+| 2 | Checkpoint query without import — read-only list/query against a named checkpoint artifact | Git transport | MERGED into finalist archaeology (resurrects run-1 #49: R026 makes per-commit generations ubiquitous) |
+| 3 | `init --from-checkpoint` — one-command clone recovery | Git transport | KILL: wrapper over two existing commands |
+| 4 | Unblock plan — readiness-ordered open transitive blockers for a target bead | UX | KILL: composes from `why` (R023) and dependency queries (R004) |
+| 5 | Self-defending workspace discovery — stop at the first `.beads`, fail closed without a bead-rs fingerprint instead of walking past a foreign store to a parent workspace | Safety | **FINALIST** |
+| 6 | Create-time context-fit lint — warn when a description exceeds the configured legacy-worker ceiling | UX | KILL: R019's context-fit work redefines the ceiling; a pre-R019 lint hardcodes what R019 replaces |
+| 7 | Chain-affinity claim — reserve a bead's sole dependent for the same worker | Claim | KILL: reservation/hoarding objection from run 1 stands |
+| 8 | Idempotent create by unique ref — `create --unique-ref ns:key` returns the existing bound bead instead of duplicating | Creation integrity | **FINALIST** |
+| 9 | As-of reconstruction — `show --as-of SEQ` via replay | History | KILL: archaeology over committed generations answers the same forensic questions without a new replay surface |
+| 10 | Stuck-work report — open beads that cannot become ready, with reasons | Operator | KILL: expressible via query over deferred/blocked chains; R025 already covers the inverted-gate class |
+| 11 | Pretty review export — annotated human checkpoint rendering | History | KILL: presentation only |
+| 12 | Long-poll claim — `claim --wait` bounded internal retry with jitter | Claim | KILL: convenience beside locks; callers script this today without correctness loss |
+| 13 | Generation bisect — predicate-driven search over historical checkpoints | Git transport | MERGED into finalist archaeology |
+| 14 | Three-way checkpoint merge driver for git-conflicted checkpoint files | Git transport | KILL: with reconcile, a conflicted pull resolves by taking either checkpoint side then reconciling and reflushing; three-way file merge becomes unnecessary |
+| 15 | Retention/compaction with receipts — prune ancient closed history into sealed archive generations | Retention | KILL (strongest runner-up): plan-contemplated and inevitable, but L-complexity, spec-gated, and R026 P1/P2 must land first |
+| 16 | Preemption advisory flag on lower-priority in_progress beads | Claim | KILL: advisory with no consumer; drifts toward wall-clock coordination |
+| 17 | Built-in transient retry — global bounded backoff on exit 6 | Process | KILL: callers already own retry policy; embedding one contests it |
+| 18 | Generation semantic diff — `sync diff A B` issue/event delta between checkpoints | Git transport | MERGED into finalist archaeology (resurrects run-1 #19 under the R026 argument) |
+| 19 | Declared `duplicates` edge kind with close-one-keep-one workflow | Creation integrity | KILL: spec-heavy cleanup; finalist 8 prevents the duplicate at the source |
+| 20 | Reason-code explain — `bead explain CODE` | CLI | KILL: documentation surface; schema explain and man pages carry it |
+| 21 | Prometheus textfile metrics rendering | Observability | KILL: metrics-snapshot objection stands; an exporter composes from existing `--json` |
+| 22 | Soft-ordering `after` edge kind | Claim | KILL: policy complexity for unproven need |
+| 23 | Shipped git-hook templates | Packaging | KILL: packaging/docs, not mechanism |
+| 24 | Caller-owned stdio session — one JSON request/response per line, no socket, parent-owned lifecycle | Process | **FINALIST** (resurrects run-1 daemon kill: the socket-lifecycle and security objections do not apply to stdio) |
+| 25 | Stable embedded library API as a semver crate | Process | KILL: API stabilization cost exceeds subprocess pain; stdio session captures most of the win |
+| 26 | Atomic bulk transaction manifests — validate, dry-run diff, commit all-or-none | Bulk | **FINALIST** (deferred in run 1; resurrected: R026 turns N-command materialization into N published generations, and interrupted materialization still discards whole workspaces) |
+| 27 | Read-only fleet aggregation across an explicit workspace list | Operator | KILL: composes from per-workspace status JSON in a shell loop |
+| 28 | Worker capability declarations matched in the claim transaction | Claim | KILL: deferral stands; heterogeneity remains telemetry-grade evidence, locks won the cluster |
+| 29 | Atomic resource locks — declared local resource keys acquired atomically at claim | Claim | **FINALIST** (deferred in run 1; resurrected: NEEDLE ADR-015 adopts bead-level serialization for shared checkouts and the duplicate/conflicting-work incident class recurred — locks mechanize the accepted model) |
+| 30 | Structured stderr diagnostics (`--log-format json`) | Process | KILL: additive-later objection from run 1 stands |
+| 31 | Per-invocation claim policy override | Claim | KILL: reproducibility risk for a niche need |
+| 32 | Doctor recovery guidance — exact next commands per failure state | Operator | KILL: mechanical gate beats prose; superseded by 33 in pairwise, which itself fell to the gap entrant |
+| 33 | Freshness gate exit mode — `sync --status --check` nonzero when dirty | Operator | KILL: flag-sized and composable; displaced by the completeness entrant |
+| 34 | `create --stdin-json` — one issue document as input | Creation integrity | KILL: subsumed by bulk manifests |
+| 35 | `init --demo` seeded lifecycle workspace | UX | KILL: fixtures/docs concern (run-2 objection stands) |
+| 36 | `--id-only` output mode | CLI | KILL: flag-sized convenience |
+| 37 | Global `--workspace PATH` | CLI | KILL: flag-sized convenience |
+| 38 | Graph rendering — `query --format dot\|mermaid` | Power user | KILL: composes from `--json` plus external tooling |
+| 39 | `dep chain A B C` — serialization chain in one call | Power user | KILL: sugar; locks address the underlying serialization need at the correct layer |
+| 40 | Query-scoped label mutation | Bulk | KILL: subsumed by bulk manifests |
+| 41 | Claims-paused maintenance mode | Claim | KILL: rare event at configuration-flag scale |
+| 42 | Workspace metadata (name/purpose) in status | Operator | KILL: config nicety |
+| 43 | Contention counters in `sync --status` | Reliability | KILL: run-1 objection stands until R026 concurrency evidence exists |
+| 44 | Flush disk-space preflight | Reliability | KILL: atomic-rename semantics already bound the damage; rare failure |
+| 45 | Binary version-skew warning | Reliability | KILL: narrow window; migration gate covers the dangerous direction |
+| 46 | Global `--read-only` flag | Reliability | KILL: run-1 "too small" objection stands |
+| 47 | Stale in-progress detection — doctor scope for non-leased in_progress beads with no recent events | Operator | **FINALIST** |
+| 48 | Gitignore shadow warning | Safety | KILL: reimplementing gitignore semantics without git is a correctness minefield; `git check-ignore` composes |
+| 49 | Network-filesystem warning | Safety | KILL: detection reliability unknown; docs cover it |
+| 50 | Human `bead status` summary | Novice UX | KILL: workspace-tour objection from run 3 stands |
+| 51 | Color output with NO_COLOR | Novice UX | KILL: polish |
+| 52 | Close feedback listing newly ready beads | Novice UX | KILL: collides with the exact-stdout success contract |
+| 53 | ID suggestions on not-found | Novice UX | KILL: polish; auto-resolution remains rejected |
+| 54 | MCP server over stdio | Process | MERGED into finalist 24 as a consumer of the session protocol |
+| 55 | Static HTML report | Competitor | KILL: dashboard-adjacent; composes externally |
+| 56 | CSV projection | Competitor | KILL: trivial projection over existing query output |
+| 57 | Changelog generator from closed beads | Competitor | KILL: archaeology shares the machinery and answers strictly more; repos can template from its JSON |
+| 58 | Fork identity for clones — `sync fork` re-origins a cloned workspace with a provenance-chained new store UUID | Git transport | **FINALIST** |
+| 59 | Prebuilt-binary distribution polish | Packaging | KILL: packaging, not mechanism |
+| 60 | Named recovery points — tags on generations | Git transport | KILL: wrapper-scale; rides on pointer machinery whenever transport work lands |
+
+### Completeness entrant
+
+| Idea | Verdict |
+| --- | --- |
+| Sensitive-content flush lint — versioned built-in credential-shape rules scan checkpoint-bound content, warn-only, never printing matched values | **FINALIST** (deferred in run 3; resurrected: the environment's credential-write guard covers only one agent harness, other fleet adapters bypass it, and under R026 a leaked secret becomes an immortal Git object at mutation speed rather than flush speed) |
+
+### Finalist dossiers
+
+#### 1. Remote-advanced reconcile
+
+`bead sync reconcile` recognizes the state where the committed checkpoint is
+ahead of the live database — the normal result of `git pull` in the
+multi-machine flush-commit-push workflow — verifies the pointer and event
+continuity, and merges the checkpoint into the live store through the existing
+`--merge` machinery. Today doctor classifies covered-ahead-of-live as an
+integrity failure, which misdiagnoses the fleet's daily replication path.
+
+- Complexity: **M**
+- First step: specify the state taxonomy — verified-pointer event-stream
+  superset of live versus every other covered>live case — so genuine
+  corruption is never masked, then wire the guided merge.
+- Strongest objection: it legitimizes a state currently treated as integrity
+  failure; the specification must keep the corruption cases fail-closed.
+
+#### 2. Fork identity for clones
+
+`bead sync fork` re-origins a cloned workspace under a new store UUID with a
+provenance-chained receipt. Two clones of one repository currently share a
+store UUID, so divergent event streams at the same origin sequence are
+rejected as divergence with no reconciliation path. Forking makes clones
+distinct origins whose histories merge composably, the way git remotes do.
+
+- Complexity: **M**
+- First step: specify fork receipt fields, UUID derivation provenance, and
+  doctor guidance that detects same-UUID divergence and names the fix.
+- Strongest objection: a mistaken fork makes future same-store merges look
+  foreign; the receipt chain and an explicit operator step are mandatory.
+
+#### 3. Self-defending workspace discovery
+
+Workspace discovery stops at the first `.beads` directory on the walk and
+fails closed if it lacks the bead-rs fingerprint, instead of walking past a
+foreign store and silently operating on a parent workspace. Motivated by the
+2026-08-14 SEAM incident, where wrong-CLI-against-wrong-store produced schema
+errors and a destructive misrepair. The guard claims only "not a bead-rs
+workspace" — it never identifies the foreign format.
+
+- Complexity: **S**
+- First step: change the discovery walk to terminate at any `.beads` and
+  validate the fingerprint before selection, with a precise diagnostic.
+- Strongest objection: a repo could legitimately nest a foreign `.beads`
+  above a bead-rs workspace; an explicit override flag must exist.
+
+#### 4. Atomic resource locks
+
+Issues declare normalized local resource keys; a claim atomically acquires
+them and excludes ready issues needing a held key. Deferred in run 1;
+resurrected because NEEDLE ADR-015 explicitly adopts bead-level serialization
+as the answer to shared-checkout collisions and the duplicate/conflicting-work
+incident class has recurred — locks mechanize the discipline the fleet
+currently maintains by hand.
+
+- Complexity: **M**
+- First step: define resource-key validation, acquisition/release lifecycle
+  bound to claim/release/close, and readiness reason codes, scoped strictly to
+  one native store.
+- Strongest objection: users may mistake it for distributed locking; naming
+  and documentation must anchor it to a single workspace.
+
+#### 5. Idempotent create by unique ref
+
+`create --unique-ref ns:key` binds an R011 external reference at creation
+inside the insert transaction; if the reference is already bound, the command
+returns the existing bead's ID instead of creating a duplicate. This kills
+the duplicate-bead class at its source — dispatchers that materialize beads
+from the same defect/source identifier race today and produce twin beads.
+
+- Complexity: **S**
+- First step: define the ref-hit contract, including the closed-bead case
+  (return the closed ID with distinct output, or fail with exit 4 under a
+  flag) so automation cannot silently loop on finished work.
+- Strongest objection: the closed-bead semantics must be explicit or retries
+  oscillate between "already exists" and "work is done".
+
+#### 6. Atomic bulk transaction manifests
+
+Validate a versioned JSON manifest of creates, updates, labels, dependencies,
+and closes with local references for new IDs, show a dry-run diff, then commit
+all operations in one transaction. Deferred in run 1; resurrected because
+R026 turns an N-command materialization into N published checkpoint
+generations, and an interrupted materialization still discards the whole
+disposable workspace — one manifest is one transaction and one generation.
+
+- Complexity: **L**
+- First step: define manifest v1 strictly as a thin composition of existing
+  command primitives with validation order and a result map.
+- Strongest objection: transaction DSLs creep toward duplicating the CLI;
+  v1 must refuse any semantics a single existing command does not already have.
+
+#### 7. Caller-owned stdio session
+
+`bead session --stdio` reads one JSON request per line and writes one response
+per line, with the parent process owning the lifecycle. No socket, no daemon,
+no shared state beyond the store itself. Amortizes per-invocation process and
+connection startup for fleets that issue thousands of calls, and gives MCP and
+editor integrations a native host to sit on. Resurrects the run-1 daemon kill:
+those objections were socket lifecycle and security surface, which stdio does
+not have.
+
+- Complexity: **L**
+- First step: specify the session protocol as a normative versioned contract
+  (request envelope, error mapping to the exit taxonomy, capability
+  negotiation) before implementation, per the format-governance rule.
+- Strongest objection: it is a second public surface that must be specified,
+  conformance-tested, and kept in lockstep with the CLI forever.
+
+#### 8. Checkpoint archaeology
+
+One read-a-checkpoint substrate serving three read-only operations over
+committed generations: query a named checkpoint artifact without import,
+semantically diff two generations at issue/event granularity, and
+bisect-style predicate search across a series. Under R026 every commit
+carries a generation, so committed history becomes a queryable timeline of
+workspace state — the git-history forensics story. Resurrects run-1 #49 and
+#19, whose "secondary" objections predate per-commit generations.
+
+- Complexity: **M**
+- First step: implement verified read-only loading of a pointer/manifest/
+  monolith into an ephemeral in-memory view, then expose `query --checkpoint`
+  and `sync diff` over it; never accept these views as import input.
+- Strongest objection: a queryable partial view can be mistaken for a
+  recovery source; outputs must be explicitly non-importable.
+
+#### 9. Stale in-progress detection
+
+A doctor scope reporting non-leased `in_progress` beads whose last event is
+older than a configured interval, with the exact `release` suggestion. Workers
+die without releasing; leases (R002) solve this only for opted-in claims, and
+the fleet's dominant path is non-leased. Advisory only — doctor never releases
+work itself.
+
+- Complexity: **S**
+- First step: add the check to the existing doctor scope framework with a
+  configured threshold and stable diagnostic code.
+- Strongest objection: overlaps R019's planned starvation diagnostics and
+  R002 leases; justified as the narrow, immediately executable subset for the
+  non-leased majority.
+
+#### 10. Sensitive-content flush lint
+
+A versioned, built-in set of high-confidence credential-shape rules scans
+checkpoint-bound fields at flush (and on demand), reporting field locations
+without retaining or printing matched values. Warn-only by default; no remote
+or executable rule packs. Deferred in run 3; resurrected because the
+environment's credential-write guard protects only one agent harness while
+the fleet runs several, and under R026 a leaked secret becomes an immortal
+Git-tracked object at mutation speed.
+
+- Complexity: **M**
+- First step: define the rule-set version, redacted diagnostic schema, and
+  size bounds; wire as a doctor scope plus an optional flush-time warning.
+- Strongest objection: false positives and negatives are inherent; it must
+  never claim completeness and never block flush by default.
+
+### Run-4 disposition
+
+Pending product decision.
