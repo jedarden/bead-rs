@@ -105,6 +105,14 @@ pub fn add_dependency(
         ));
     }
 
+    // Validate dependency kind
+    if kind != "blocks" && kind != "relates_to" {
+        return Err(Error::validation(format!(
+            "Invalid dependency kind '{}': must be 'blocks' or 'relates_to'",
+            kind
+        )));
+    }
+
     // Validate condition fields if provided
     if let Some(cond) = condition {
         cond.validate_fields()?;
@@ -508,6 +516,24 @@ mod tests {
 
         let result = add_dependency(&mut store, "issue-1", "nonexistent", "blocks", None);
         assert!(matches!(result, Err(Error::Workspace(_))));
+    }
+
+    #[test]
+    fn test_add_dependency_invalid_kind() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "issue-1", "Blocked Issue");
+        create_test_issue(&mut store, "issue-2", "Blocker Issue");
+
+        let result = add_dependency(&mut store, "issue-1", "issue-2", "parent-child", None);
+        assert!(matches!(result, Err(Error::CliUsage(_))));
+
+        // Verify no dependency was added
+        let conn = store.conn();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM dependencies", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(count, 0);
     }
 
     #[test]
