@@ -34,9 +34,8 @@ independently from the normative specifications.
 - A blocking edge has the semantic direction `(blocked, blocker, blocks)`.
   Adding an unfinished blocker makes the blocked issue report `blocked`.
 - The observed dependency spelling is
-  `dep add BLOCKER --blocks BLOCKED --type blocks`. The NEEDLE v1 contract
-  instead requires `dep add BLOCKED BLOCKER --type blocks`; this is a CLI
-  profile difference, not a difference in canonical edge direction.
+  `dep add BLOCKED BLOCKER --kind blocks`. The NEEDLE v1 contract
+  matches the shipped CLI spelling; this is not a profile difference.
 - Claim accepts an assignee and optional model/harness telemetry. A successful
   claim returns a JSON object containing the selected ID and assignee, assigns
   the issue, and reports its lifecycle as `in_progress`.
