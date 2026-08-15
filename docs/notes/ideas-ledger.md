@@ -1058,4 +1058,21 @@ Git-tracked object at mutation speed.
 
 ### Run-4 disposition
 
-Pending product decision.
+Product decision on 2026-08-15:
+
+- **Adopted:** remote-advanced reconcile, fork identity for clones,
+  checkpoint archaeology, self-defending workspace discovery, atomic resource
+  locks, idempotent create by unique reference, atomic bulk transaction
+  manifests, and stale in-progress detection. These are R027-R034 in the plan
+  (revision 6). Resource locks and bulk manifests thereby leave the section 14
+  deferred list they had occupied since run 1.
+- **Deferred to this ledger:** caller-owned stdio session (with MCP hosting as
+  a consumer of it) and sensitive-content flush lint.
+- **Beads:** `beadrs-de075bba` (R027), `beadrs-eeabe47a` (R028),
+  `beadrs-2ba14020` (R029), `beadrs-17aa4ef9` (R030), `beadrs-1ce8d4a6`
+  (R031), `beadrs-57f9ef2f` (R032), `beadrs-e854d52a` (R033),
+  `beadrs-90c9afc9` (R034), under genesis `beadrs-d6f98dab`.
+- Separately requested, outside this run's pool: an assessment of upgrading
+  bead-rs from the Rust 1.75 MSRV to current stable (investigation first, not
+  yet a roadmap item).
+- No F001-F017 pass state changed.

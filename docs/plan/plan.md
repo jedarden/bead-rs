@@ -1,8 +1,16 @@
 # bead-rs 0.1 implementation plan
 
-Plan revision: 5
+Plan revision: 6
 
 As of: 2026-08-15
+
+Revision 6 change: adopts the run-4 ideation tranche R027-R034 (multi-clone
+transport, checkpoint archaeology, self-defending discovery, resource locks,
+idempotent creation, bulk manifests, stale-claim diagnostics) per the
+2026-08-15 ideas-ledger product decision; moves resource locks and bulk
+transaction manifests out of the section 14 deferred list and adds the
+caller-owned stdio session to it. These items postdate `.marathon/COMPLETE`
+and do not retroactively alter the recorded R001-R026 gates.
 
 Revision 5 change: ADR-003 adopts automatic checkpoint flush on successful
 mutation as the eventual default, adds section 6.2.1 and R026, and gates
@@ -2428,6 +2436,102 @@ exit 1, a checkpoint publication lock separate from the SQLite write path,
 field, and the documentation reversal across README, root help, generated man
 pages, and `AGENTS.md`. Authorized by ADR-003.
 
+### Run-4 tranche (adopted 2026-08-15)
+
+R027-R034 were adopted from ideation run 4 after `.marathon/COMPLETE` was
+recorded. They do not retroactively alter the recorded R001-R026 full-project
+gates. Each follows this section's extension rules — its own normative
+specification, conformance scenarios, migrations where applicable, and ledger
+entries — before implementation evidence can be accepted. Tracking beads
+`beadrs-de075bba` through `beadrs-90c9afc9` under genesis `beadrs-d6f98dab`
+record per-item acceptance criteria.
+
+### R027 — Remote-advanced checkpoint reconcile (extension)
+
+Add `bead sync reconcile`, which recognizes the state where the committed,
+pointer-verified checkpoint is ahead of the live database — the normal result
+of pulling another machine's flush in the Git-transported workflow — and
+merges that checkpoint into the live store through the existing `--merge`
+machinery. The specification must define the state taxonomy precisely: only a
+verified pointer whose event stream is a superset of live state qualifies as
+remote-advanced; every other covered-ahead-of-live case remains a fail-closed
+integrity failure exactly as today, and doctor reports the distinction rather
+than a blanket failure. `bead-rs` still never runs Git.
+
+### R028 — Fork identity for cloned workspaces (extension)
+
+Add `bead sync fork`, an explicit operator command that re-origins a cloned
+workspace under a new store UUID recorded in a provenance-chained receipt.
+Clones of one repository currently share a store UUID, so independently
+advanced histories are rejected as same-UUID divergence with no
+reconciliation path; forked clones are distinct origins whose event streams
+merge composably under the existing different-UUID rules. Doctor detects
+same-UUID divergence and names the fork/reconcile remedy. Forking is never
+implicit or inferred.
+
+### R029 — Checkpoint archaeology (extension)
+
+One verified read-only loader materializes a named checkpoint artifact
+(pointer, manifest, or monolith) into an ephemeral view serving three
+operations: query against a historical generation without import, a semantic
+issue/event-level diff between two generations, and predicate-driven search
+across a generation series. Views are never accepted as import input and
+archaeology outputs are explicitly non-importable, so a partial view can
+never be mistaken for a recovery source. Sequenced with R026, whose
+per-mutation generations make committed history a queryable timeline.
+
+### R030 — Self-defending workspace discovery
+
+Workspace discovery stops at the first `.beads` directory encountered on the
+upward walk and fails closed with a precise diagnostic when that directory
+lacks the bead-rs workspace fingerprint, instead of continuing past a foreign
+store to an unrelated parent workspace. The diagnostic claims only that the
+directory is not a bead-rs workspace; identifying a foreign format remains
+prohibited by the clean-room boundary. An explicit override permits
+legitimate nesting. This corrects section 4.1's discovery rule and may be
+scheduled ahead of the larger extensions.
+
+### R031 — Atomic resource locks (extension)
+
+Issues may declare normalized local resource keys. A claim atomically
+acquires every key its bead declares and excludes ready issues that need a
+key currently held; release, close, and lease expiry return keys. Readiness
+explanations gain a resource-conflict reason code. Scope is strictly one
+native store: this is workspace-local scheduling exclusion, never distributed
+locking, and naming and documentation must say so. Adopted from the run-1
+deferral after NEEDLE ADR-015 made bead-level serialization the accepted
+shared-checkout model.
+
+### R032 — Idempotent create by unique reference (extension)
+
+`create --unique-ref NAMESPACE:KEY` binds an R011 external reference inside
+the insert transaction; when the reference is already bound, the command
+returns the existing bead's identity instead of creating a duplicate. The
+specification must define the closed-bead case explicitly — a distinct output
+or a flagged conflict — so automation cannot loop on finished work. This
+prevents duplicate beads at the source when dispatchers materialize work from
+the same external identifier concurrently.
+
+### R033 — Atomic bulk transaction manifests (extension)
+
+Validate a versioned JSON manifest composed strictly of existing command
+primitives — creates, updates, labels, dependencies, closes — with local
+references for newly created IDs; show a dry-run diff; then commit all
+operations in one transaction that publishes at most one checkpoint
+generation under R026. Version 1 must refuse any semantics a single existing
+command does not already have. Adopted from the run-1 deferral: per-mutation
+publication makes an N-command materialization publish N generations, and an
+interrupted materialization still discards an entire disposable workspace.
+
+### R034 — Stale in-progress detection
+
+Add a doctor scope that reports non-leased `in_progress` beads whose most
+recent event is older than a configured interval, together with the exact
+release remedy. Advisory only: doctor never releases work itself. This is the
+immediately executable subset of R019's starvation diagnostics for the
+non-leased majority of claims and must share reason codes with R001/R019
+rather than inventing parallel semantics.
+
 ## 13. Release gates
 
 ### Bootstrap and handoff gates
@@ -2569,14 +2673,16 @@ Before `.marathon/COMPLETE`:
 The following candidates remain intentionally deferred in
 `docs/notes/ideas-ledger.md` and are not roadmap commitments:
 
-- atomic resource locks;
 - predeclared file-intent manifests, file-derived dependency serialization,
   edit fencing, and post-diff path enforcement;
-- atomic bulk transaction manifests;
 - mutation idempotency keys;
-- worker capability declarations.
+- worker capability declarations;
 - sensitive-content linting for backup-bound fields;
-- portable execution-outcome envelopes.
+- portable execution-outcome envelopes;
+- a caller-owned stdio session protocol (and MCP hosting atop it).
+
+Atomic resource locks and atomic bulk transaction manifests left this list on
+2026-08-15 when they were adopted as R031 and R033.
 
 Workers are not required to predict or declare files before claiming or
 starting a bead. `bead-rs` does not gate edits on an accepted read/write set,
