@@ -212,3 +212,59 @@ fn test_doctor_rejects_inconsistent_close_metadata() {
             "inconsistent closed status metadata",
         ));
 }
+
+#[test]
+#[serial]
+fn test_doctor_reports_open_issue_held_by_assignee() {
+    let temp = tempfile::tempdir().unwrap();
+    std::env::set_current_dir(temp.path()).unwrap();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["init"])
+        .assert()
+        .success();
+    let output = Command::cargo_bin("bead")
+        .unwrap()
+        .args(["create", "--title", "Held by an assignee"])
+        .output()
+        .unwrap();
+    let id = String::from_utf8(output.stdout).unwrap();
+    let id = id.trim();
+
+    // A clean workspace reports the frontier as healthy.
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["doctor"])
+        .assert()
+        .stderr(predicates::str::contains("Ready frontier OK"));
+
+    // Assigning an issue while it stays open takes it off the ready frontier
+    // without changing its status, which is the shape doctor must surface.
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["update", id, "--assignee", "worker-1"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["doctor"])
+        .assert()
+        .stderr(predicates::str::contains("Ready frontier warning"))
+        .stderr(predicates::str::contains(id))
+        .stderr(predicates::str::contains("--clear-assignee"));
+
+    // Clearing the assignee returns it to the frontier and silences the warning.
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["update", id, "--clear-assignee"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["doctor"])
+        .assert()
+        .stderr(predicates::str::contains("Ready frontier OK"));
+}

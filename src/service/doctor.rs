@@ -278,6 +278,33 @@ pub fn run_diagnostics_with_scopes(
                 });
             }
         }
+
+        // 6b. Ready-frontier eligibility (issues held by an assignee alone)
+        match check_ready_frontier(store) {
+            Ok(msg) => {
+                checks.push(DiagnosticCheck {
+                    name: "ready_frontier".to_string(),
+                    status: DiagnosticStatus::Ok,
+                    message: msg.clone(),
+                    scope: Some("dependencies".to_string()),
+                    details: Some(serde_json::json!({
+                        "message": msg
+                    })),
+                });
+            }
+            Err(e) => {
+                has_warnings = true;
+                checks.push(DiagnosticCheck {
+                    name: "ready_frontier".to_string(),
+                    status: DiagnosticStatus::Warning,
+                    message: format!("Ready frontier warning: {}", e),
+                    scope: Some("dependencies".to_string()),
+                    details: Some(serde_json::json!({
+                        "warning": e.to_string()
+                    })),
+                });
+            }
+        }
     }
 
     // Comments scope checks
@@ -1077,6 +1104,72 @@ fn check_temporary_files(store: &impl Store) -> Result<String> {
             temp_count
         )))
     }
+}
+
+/// Check for issues held off the ready frontier by an assignee alone.
+///
+/// An issue that is `open` **and** carries an assignee is not an active claim —
+/// a claim sets `in_progress`. It is, however, excluded from the ready frontier,
+/// so no worker will ever pick it up. Nothing else in `doctor` reports this
+/// shape, and neither `show` nor the dependency checks make it visible, so a
+/// workspace can quietly accumulate unclaimable work until the frontier empties
+/// and every worker starves against a backlog that looks healthy.
+///
+/// Reaching this state is legitimate (`reopen` preserves assignment by design),
+/// so this is a warning and never an automatic repair: only the operator knows
+/// whether a given assignment is still meaningful. The remedy is
+/// `bead update <id> --clear-assignee`.
+fn check_ready_frontier(store: &impl Store) -> Result<String> {
+    let config = store.get_workspace_config()?;
+    let db_path = config.root.join(".beads/beads.db");
+
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| Error::Integrity(format!("Failed to open database: {}", e)))?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT id FROM issues
+             WHERE base_status = 'open'
+               AND assignee IS NOT NULL
+               AND TRIM(assignee) != ''
+             ORDER BY id",
+        )
+        .map_err(|e| Error::Integrity(format!("Failed to prepare statement: {}", e)))?;
+
+    let held: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| Error::Integrity(format!("Failed to query issues: {}", e)))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    if held.is_empty() {
+        return Ok("Ready frontier OK: no open issues are held by an assignee".to_string());
+    }
+
+    // Name a bounded sample so the warning is actionable without flooding output
+    // on a workspace that has accumulated hundreds of them.
+    const SAMPLE: usize = 5;
+    let sample = held
+        .iter()
+        .take(SAMPLE)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let suffix = if held.len() > SAMPLE {
+        format!(", and {} more", held.len() - SAMPLE)
+    } else {
+        String::new()
+    };
+
+    Err(Error::workspace(format!(
+        "{} open issue(s) are assigned and therefore excluded from the ready frontier, \
+         so no worker can claim them: {}{}. \
+         An assigned open issue is not an active claim (a claim sets in_progress). \
+         Clear the ones that are no longer meaningful with `bead update <id> --clear-assignee`",
+        held.len(),
+        sample,
+        suffix
+    )))
 }
 
 /// Calculate SHA-256 hash of a file
