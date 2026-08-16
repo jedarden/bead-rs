@@ -1630,7 +1630,10 @@ Before F017, `doctor` is read-only and checks:
   sequence, reporting clean only when the hash agrees and the sequences are
   equal; a missing file/row, hash mismatch, or sequence lag is dirty, while a
   covered sequence ahead of live state is an integrity failure;
-- orphaned temporary files owned by `bead-rs`.
+- orphaned temporary files owned by `bead-rs`;
+- open issues carrying an assignee, which are excluded from the ready frontier
+  without being an active claim, reported with the `update --clear-assignee`
+  remedy and never cleared automatically (ADR-005, R035).
 
 Warnings begin exactly `WARN `; healthy lines may use `OK `. Failed integrity
 checks exit nonzero.
@@ -2507,6 +2510,14 @@ prohibited by the clean-room boundary. An explicit override permits
 legitimate nesting. This corrects section 4.1's discovery rule and may be
 scheduled ahead of the larger extensions.
 
+Field evidence strengthens the case for scheduling it early: on 2026-08-14 a
+workspace was structurally damaged because the operator could not tell which
+tool owned a store, applied a foreign recovery procedure to it, and silently
+reinitialized it with the wrong schema; the data survived only because that
+workspace's checkpoint happened to be current. A fail-closed diagnostic naming
+the directory as not-a-bead-rs-workspace is the intervention that stops this
+class of loss, and it remains sayable without identifying the foreign format.
+
 ### R031 — Atomic resource locks (extension)
 
 Issues may declare normalized local resource keys. A claim atomically
@@ -2547,6 +2558,49 @@ release remedy. Advisory only: doctor never releases work itself. This is the
 immediately executable subset of R019's starvation diagnostics for the
 non-leased majority of claims and must share reason codes with R001/R019
 rather than inventing parallel semantics.
+
+### R035 — Assignment-held readiness diagnosis
+
+Report open beads that carry an assignee, which are excluded from the ready
+frontier despite not being an active claim, together with the exact
+`update --clear-assignee` remedy. Advisory only: doctor never clears an
+assignee, because a parked reservation and abandoned residue are
+indistinguishable at the schema level and only the operator knows which is
+which. This is R034's sibling for the `open` lifecycle state; the two must
+converge on shared R001 reason codes rather than each carrying prose. The
+initial check shipped ahead of that convergence and currently emits prose, so
+reason codes, a machine-readable id list, and any means of declaring an
+intentionally-held assignment remain outstanding. Accepted in ADR-005; field
+evidence 2026-08-16 found 583 such beads across 47 workspaces, ten of them with
+an entirely empty ready frontier while workers starved and every diagnostic
+reported clean.
+
+### R036 — First-class verified restore (extension)
+
+Turn the explicit restore that section 7 already recommends into one verified
+command rather than an operator-reconstructed recipe: select and verify a named
+immutable generation, refuse a non-empty target unless explicitly overridden,
+attribute the actor, and report exactly what was restored. Restore stays
+explicit and never automatic — doctor continues to recommend and never perform
+it — so this changes only whether the recommended path is executable. The
+specification must state plainly how it relates to `sync import-only`, and must
+refuse R029 archaeology views as input, preserving their non-importability.
+Adopted because the recovery path currently survives as lore: an operator under
+pressure reaching for a remembered recipe is how a foreign tool's recovery
+steps were applied to a native store on 2026-08-14, silently reinitializing it
+with the wrong schema. Accepted in ADR-006.
+
+### R037 — Command errors that name the remedy
+
+Where a command rejects an argument a competent operator would expect to work,
+state the domain rule and the remedy instead of surfacing a bare parser error.
+Covers at minimum fields immutable after `create` (title, description,
+priority, issue-type) and near-miss flag spellings on lifecycle commands,
+notably `close --body` against `--reason`. No currently-rejected invocation
+becomes accepted and no semantics change; this generalizes the standard
+`release` already sets when it refuses an assigned open issue by naming
+`update --clear-assignee`. Conformance scenarios must assert the remedy text so
+the affordance cannot regress to a parser default. Accepted in ADR-007.
 
 ## 13. Release gates
 
