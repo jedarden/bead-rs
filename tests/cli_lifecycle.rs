@@ -591,6 +591,49 @@ fn test_reopen_in_progress_conflicts() {
 }
 
 #[test]
+fn test_reopen_warns_when_preserving_assignee() {
+    let workspace = setup_workspace();
+    let issue_id = create_issue(workspace.path(), "Test Issue");
+
+    // Assign and close the issue
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["update", &issue_id, "--assignee", "worker-1"])
+        .current_dir(workspace.path())
+        .assert()
+        .success();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["close", &issue_id, "--reason", "Completed"])
+        .current_dir(workspace.path())
+        .assert()
+        .success();
+
+    // Reopen should warn about the preserved assignee
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["reopen", &issue_id])
+        .current_dir(workspace.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("WARNING: This issue has an assignee and will not appear on the ready frontier"))
+        .stderr(predicate::str::contains(format!(
+            "bead update {} --clear-assignee",
+            issue_id
+        )));
+
+    // Verify assignee is still retained
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["show", &issue_id, "--json"])
+        .current_dir(workspace.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"assignee\":\"worker-1\""));
+}
+
+#[test]
 fn test_update_without_workspace() {
     let temp_dir = TempDir::new().unwrap();
 
