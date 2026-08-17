@@ -336,10 +336,11 @@ fn cmd_list(opts: cli::ListOptions) -> Result<()> {
             println!("[]");
         } else {
             for issue in issues {
-                // Load dependencies and labels for each issue
+                // Load dependencies, labels, and comments for each issue
                 let dependencies = load_dependencies(&conn, &issue.id)?;
                 let labels = load_labels(&conn, &issue.id)?;
-                let output = serde_json::to_string(&to_needle_json(&issue, &dependencies, &labels))
+                let comments = load_comments(&conn, &issue.id, &opts.comments)?;
+                let output = serde_json::to_string(&to_needle_json(&issue, &dependencies, &labels, &comments))
                     .map_err(|e| {
                         Error::Internal(anyhow::anyhow!("Failed to serialize issue: {}", e))
                     })?;
@@ -395,10 +396,13 @@ fn cmd_show(opts: cli::ShowOptions) -> Result<()> {
     // Load labels for this issue
     let labels = load_labels(&conn, &opts.id)?;
 
+    // Load comments for this issue based on projection level
+    let comments = load_comments(&conn, &opts.id, &opts.comments)?;
+
     // Output results
     if opts.json {
         // Emit as one-element array for NEEDLE v1 compatibility
-        let output = serde_json::to_string(&vec![to_needle_json(&issue, &dependencies, &labels)])
+        let output = serde_json::to_string(&vec![to_needle_json(&issue, &dependencies, &labels, &comments)])
             .map_err(|e| {
             Error::Internal(anyhow::anyhow!("Failed to serialize issue: {}", e))
         })?;
@@ -558,11 +562,23 @@ fn cmd_reopen(opts: cli::ReopenOptions) -> Result<()> {
         return Ok(());
     }
 
+    // Fetch the issue before reopening to check for assignee
+    let issue_before = service::get_issue_by_id(&conn, &opts.id)?
+        .ok_or_else(|| Error::not_found(format!("Issue not found: {}", opts.id)))?;
+
+    let had_assignee = issue_before.assignee.is_some();
+
     // Reopen the issue
     let id = service::reopen_issue(&conn, &opts.id, opts.if_revision, opts.fencing_token)?;
 
-    // Print only the ID on success
+    // Print the ID on success
     println!("{}", id);
+
+    // Warn if assignee was preserved (issue will not appear on ready frontier)
+    if had_assignee {
+        eprintln!("WARNING: This issue has an assignee and will not appear on the ready frontier.");
+        eprintln!("  To make it claimable by workers: bead update {} --clear-assignee", id);
+    }
 
     Ok(())
 }
@@ -917,13 +933,6 @@ fn cmd_sync_flush_only(opts: cli::SyncFlushOptions) -> Result<()> {
             ));
         }
 
-        if opts.profile != "native-v1" {
-            return Err(Error::validation(format!(
-                "Profile '{}' is not supported for export; only native-v1 is supported",
-                opts.profile
-            )));
-        }
-
         // Flush native issue-only checkpoint for export
         let result = service::flush_checkpoint(&mut store, &output_path)?;
 
@@ -1258,6 +1267,7 @@ fn to_needle_json(
     issue: &model::Issue,
     dependencies: &[serde_json::Value],
     labels: &[String],
+    comments: &[serde_json::Value],
 ) -> serde_json::Value {
     let status_str = match issue.base_status {
         model::BaseStatus::Open => "open",
@@ -1267,7 +1277,7 @@ fn to_needle_json(
     };
 
     // Include all issue fields for complete representation
-    serde_json::json!({
+    let mut json_obj = serde_json::json!({
         "id": issue.id,
         "title": issue.title,
         "description": issue.description.as_ref().unwrap_or(&String::new()),
@@ -1279,7 +1289,14 @@ fn to_needle_json(
         "updated_at": issue.updated_at,
         "labels": labels,
         "revision": issue.revision.unwrap_or(1)
-    })
+    });
+
+    // Add comments array (may be empty)
+    if let Some(obj) = json_obj.as_object_mut() {
+        obj.insert("comments".to_string(), serde_json::json!(comments));
+    }
+
+    json_obj
 }
 
 /// Load dependencies for an issue from the database
@@ -1316,6 +1333,73 @@ fn load_labels(conn: &rusqlite::Connection, issue_id: &str) -> Result<Vec<String
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to load labels: {}", e)))?;
 
     Ok(labels)
+}
+
+/// Load comments for an issue from the database based on projection level
+///
+/// projection: "none" (return empty array), "unresolved" (only unresolved), "all" (all comments)
+fn load_comments(
+    conn: &rusqlite::Connection,
+    issue_id: &str,
+    projection: &str,
+) -> Result<Vec<serde_json::Value>> {
+    let (query, include_body): (&str, bool) = match projection {
+        "none" => {
+            // For "none", return empty array immediately
+            return Ok(Vec::new());
+        }
+        "unresolved" => (
+            "SELECT id, author, body, reply_to_id, resolution_state, created_at
+             FROM comments
+             WHERE issue_id = ? AND (resolution_state IS NULL OR resolution_state != 'resolved')
+             ORDER BY created_at ASC",
+            true
+        ),
+        "all" => (
+            "SELECT id, author, body, reply_to_id, resolution_state, created_at
+             FROM comments
+             WHERE issue_id = ?
+             ORDER BY created_at ASC",
+            true
+        ),
+        _ => return Ok(Vec::new()), // Should never happen due to validation
+    };
+
+    let mut stmt = conn.prepare_cached(query)?;
+
+    let comments = stmt
+        .query_map([issue_id], |row| {
+            let id: String = row.get(0)?;
+            let author: String = row.get(1)?;
+            let body: String = row.get(2)?;
+            let reply_to_id: Option<String> = row.get(3)?;
+            let resolution_state: Option<String> = row.get(4)?;
+            let created_at: String = row.get(5)?;
+
+            let mut comment_obj = serde_json::json!({
+                "id": id,
+                "author": author,
+                "created_at": created_at
+            });
+
+            if include_body {
+                comment_obj["body"] = serde_json::json!(body);
+            }
+
+            if let Some(reply_id) = reply_to_id {
+                comment_obj["reply_to_id"] = serde_json::json!(reply_id);
+            }
+
+            if let Some(state) = resolution_state {
+                comment_obj["resolution_state"] = serde_json::json!(state);
+            }
+
+            Ok(comment_obj)
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to load comments: {}", e)))?;
+
+    Ok(comments)
 }
 
 fn cmd_capabilities(opts: cli::CapabilitiesOptions) -> Result<()> {
