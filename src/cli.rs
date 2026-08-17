@@ -752,7 +752,6 @@ atomically renames. Checkpoint state is updated only after a successful flush.
 EXAMPLES:
   bead sync flush-only                                  # Flush the workspace checkpoint
   bead sync flush-only --output /path/to/backup.jsonl   # Export a copy elsewhere
-  bead sync flush-only --profile needle-v1              # Export under another profile
 
 OUTPUT:
   Without --output, writes the forensic checkpoint set into .beads/checkpoint/:
@@ -770,10 +769,6 @@ CHECKPOINT FRESHNESS:
   makes it stale, and nothing flushes implicitly. Flush before committing, and
   periodically during long sessions -- otherwise a fresh clone of the repository
   reproduces the last flushed state, not the current one.
-
-PROFILES:
-  - native-v1: full native checkpoint (default)
-  - needle-v1: issue-only NEEDLE compatibility checkpoint
 
 ATOMICITY:
   - A read transaction captures the snapshot
@@ -854,13 +849,13 @@ Use --dry-run to validate checkpoints before risking database mutation."
 /// Options for flushing checkpoint
 #[derive(Parser, Debug)]
 pub struct SyncFlushOptions {
-    /// Profile for export (default: native-v1)
-    #[arg(long, default_value = "native-v1")]
-    pub profile: String,
-
     /// Export an issue-only copy to this path instead of only updating .beads/checkpoint/
     #[arg(long)]
     pub output: Option<String>,
+
+    /// Profile for checkpoint format (not supported for issue-only export)
+    #[arg(long)]
+    pub profile: Option<String>,
 }
 
 /// Import operation mode
@@ -905,10 +900,6 @@ pub struct SyncImportOptions {
     /// Perform dry-run without activating state
     #[arg(long)]
     pub dry_run: bool,
-
-    /// Generate complete diagnostic report (R014)
-    #[arg(long)]
-    pub diagnostics: bool,
 }
 
 /// Label management commands

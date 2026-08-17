@@ -923,6 +923,13 @@ fn cmd_sync_flush_only(opts: cli::SyncFlushOptions) -> Result<()> {
 
     // If explicit output path provided, use pre-F017 issue-only export
     if let Some(ref output) = opts.output {
+        // Reject --profile for issue-only export (not supported)
+        if opts.profile.is_some() {
+            return Err(Error::validation(
+                "--profile is not supported for issue-only export (use default forensic checkpoint instead)",
+            ));
+        }
+
         let output_path = config.root.join(output);
 
         // Validate output path doesn't point into .beads/checkpoint
