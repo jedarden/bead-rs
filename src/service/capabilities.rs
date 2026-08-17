@@ -122,19 +122,27 @@ pub fn generate_capabilities(profile: &str) -> Result<Capabilities> {
         // All public root commands in alphabetical order
         commands: vec![
             "capabilities".to_string(),
+            "changes".to_string(),
             "claim".to_string(),
             "close".to_string(),
+            "compare".to_string(),
             "create".to_string(),
+            "data".to_string(),
             "dep".to_string(),
             "doctor".to_string(),
             "init".to_string(),
             "label".to_string(),
             "list".to_string(),
+            "policy".to_string(),
+            "query".to_string(),
+            "recurrence".to_string(),
+            "ref".to_string(),
             "release".to_string(),
             "reopen".to_string(),
             "show".to_string(),
             "sync".to_string(),
             "update".to_string(),
+            "why".to_string(),
         ],
     })
 }
