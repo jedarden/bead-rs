@@ -132,7 +132,6 @@ pub fn generate_capabilities(profile: &str) -> Result<Capabilities> {
             "list".to_string(),
             "release".to_string(),
             "reopen".to_string(),
-            "schema".to_string(),
             "show".to_string(),
             "sync".to_string(),
             "update".to_string(),
