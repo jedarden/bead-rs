@@ -45,10 +45,10 @@ fn populated_workspace() -> tempfile::TempDir {
             .success();
     }
 
-    // `create` does not write to the events table, so claim and close twice to
-    // generate multiple events. More than one event is essential here: a single
-    // event cannot expose an identity collision, which is the defect these
-    // tests exist to catch.
+    // Claim and close twice to generate multiple events beyond the `created`
+    // events the creates already emit. More than one event is essential here:
+    // a single event cannot expose an identity collision, which is the defect
+    // these tests exist to catch.
     for _ in 0..2 {
         Command::cargo_bin("bead")
             .unwrap()

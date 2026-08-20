@@ -90,6 +90,63 @@ fn test_change_feed_empty_workspace() {
 }
 
 #[test]
+fn test_change_feed_create_appends_created_event() {
+    let workspace = setup_workspace();
+
+    // Baseline: a fresh workspace has an empty event sequence
+    let snapshot = get_latest_cursor_json(workspace.path());
+    assert_eq!(snapshot["max_sequence"], 0);
+
+    // Create an issue
+    let output = Command::cargo_bin("bead")
+        .unwrap()
+        .arg("create")
+        .arg("--title")
+        .arg("Created Event Test")
+        .current_dir(workspace.path())
+        .assert()
+        .success();
+
+    let issue_id = String::from_utf8(output.get_output().stdout.clone())
+        .unwrap()
+        .trim()
+        .to_string();
+
+    // The cursor advances by exactly one per create
+    let snapshot = get_latest_cursor_json(workspace.path());
+    assert_eq!(snapshot["max_sequence"], 1);
+
+    // Exactly one mutation is available, and it is the created event
+    let changes = get_changes_since_json(workspace.path(), "0");
+    assert_eq!(changes["total_available"], 1);
+    assert_eq!(changes["returned_count"], 1);
+    assert!(!changes["has_gaps"].as_bool().unwrap());
+
+    let mutations = changes["mutations"].as_array().unwrap();
+    assert_eq!(mutations.len(), 1);
+    assert_eq!(mutations[0]["kind"], "created");
+    assert_eq!(mutations[0]["issue_id"], issue_id.as_str());
+    assert!(mutations[0]["actor"].is_string());
+
+    // A second create advances the cursor by exactly one more
+    Command::cargo_bin("bead")
+        .unwrap()
+        .arg("create")
+        .arg("--title")
+        .arg("Second Issue")
+        .current_dir(workspace.path())
+        .assert()
+        .success();
+
+    let snapshot = get_latest_cursor_json(workspace.path());
+    assert_eq!(snapshot["max_sequence"], 2);
+
+    let changes = get_changes_since_json(workspace.path(), "1");
+    assert_eq!(changes["returned_count"], 1);
+    assert_eq!(changes["mutations"][0]["kind"], "created");
+}
+
+#[test]
 fn test_change_feed_after_create() {
     let workspace = setup_workspace();
 

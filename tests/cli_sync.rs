@@ -61,10 +61,10 @@ fn test_sync_flush_only_basic() {
     let forensic_view = checkpoint_base.join("forensic.jsonl");
     assert!(forensic_view.exists());
 
-    // Verify checkpoint contains one issue
+    // Verify checkpoint contains one issue record and its created event
     let content = fs::read_to_string(&forensic_view).unwrap();
     let lines: Vec<&str> = content.lines().collect();
-    assert_eq!(lines.len(), 1);
+    assert_eq!(lines.len(), 2);
 
     // Verify issue JSON structure (wrapped in record_type envelope)
     let record: Value = serde_json::from_str(lines[0]).unwrap();
@@ -74,6 +74,13 @@ fn test_sync_flush_only_basic() {
     assert_eq!(issue["title"], "Test Issue");
     assert!(issue["priority"].is_number());
     assert!(issue["base_status"].is_string());
+
+    // Verify the created audit event follows its issue
+    let record: Value = serde_json::from_str(lines[1]).unwrap();
+    assert_eq!(record["record_type"], "event");
+    let event = &record["event"];
+    assert_eq!(event["kind"], "created");
+    assert_eq!(event["issue_id"], issue["id"]);
 }
 
 #[test]
@@ -205,13 +212,15 @@ fn test_sync_flush_only_deterministic_ordering() {
         .assert()
         .success();
 
-    // Verify issues are in deterministic order (by ID)
+    // Verify deterministic ordering: issue records (by ID) come first, then
+    // the created events for those issues
     let forensic_view = temp_dir.path().join(".beads/checkpoint/forensic.jsonl");
     let content = fs::read_to_string(&forensic_view).unwrap();
     let lines: Vec<&str> = content.lines().collect();
+    assert_eq!(lines.len(), 6);
 
     let mut prev_id = String::new();
-    for line in lines {
+    for line in &lines[0..3] {
         let record: Value = serde_json::from_str(line).unwrap();
         assert_eq!(record["record_type"], "issue");
         let issue = &record["issue"];
@@ -220,6 +229,12 @@ fn test_sync_flush_only_deterministic_ordering() {
             assert!(id > prev_id, "Issues should be sorted by ID");
         }
         prev_id = id;
+    }
+
+    for line in &lines[3..6] {
+        let record: Value = serde_json::from_str(line).unwrap();
+        assert_eq!(record["record_type"], "event");
+        assert_eq!(record["event"]["kind"], "created");
     }
 }
 

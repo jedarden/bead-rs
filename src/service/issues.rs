@@ -85,6 +85,12 @@ pub fn create_issue(
         &schema_ref,
     ))?;
 
+    // Record the creation as an audit event on the caller's connection, so it
+    // commits (or rolls back) in the same transaction as the insert above. The
+    // live event sequence is the dirtiness signal (plan 6.2.1 P3), so an
+    // unrecorded creation would silently read as no change.
+    append_created_event(conn, &id, &title, priority, issue_type_value, None, &now)?;
+
     // Add labels if provided
     if !labels.is_empty() {
         let mut label_stmt =
@@ -100,6 +106,39 @@ pub fn create_issue(
     })?;
 
     Ok(issue)
+}
+
+/// Append the audit event for a newly created issue
+///
+/// Both create paths (public and recurrence-internal) emit this event through
+/// the caller's connection, inside the caller's transaction. A create that
+/// fails or rolls back therefore leaves no event row behind.
+fn append_created_event(
+    conn: &Connection,
+    id: &str,
+    title: &str,
+    priority: i64,
+    issue_type: &str,
+    actor: Option<&str>,
+    now: &str,
+) -> Result<()> {
+    let actor_value = actor.unwrap_or("system");
+
+    let event_detail = serde_json::json!({
+        "actor": actor_value,
+        "issue_id": id,
+        "title": title,
+        "priority": priority,
+        "issue_type": issue_type,
+    });
+
+    let mut event_stmt = conn.prepare_cached(
+        "INSERT INTO events (issue_id, kind, actor, time, detail) VALUES (?1, ?2, ?3, ?4, ?5)",
+    )?;
+
+    event_stmt.execute((id, "created", actor_value, now, &event_detail.to_string()))?;
+
+    Ok(())
 }
 
 /// Internal function to create an issue with a specific ID (used by recurrence service)
@@ -172,25 +211,7 @@ pub fn create_issue_internal(
     }
 
     // Create audit event for the issue creation
-    let event_detail = serde_json::json!({
-        "actor": actor.unwrap_or("system"),
-        "issue_id": id,
-        "title": title,
-        "priority": priority,
-        "issue_type": issue_type,
-    });
-
-    let mut event_stmt = conn.prepare_cached(
-        "INSERT INTO events (issue_id, kind, actor, time, detail) VALUES (?1, ?2, ?3, ?4, ?5)",
-    )?;
-
-    event_stmt.execute((
-        id,
-        "created",
-        actor.unwrap_or("system"),
-        &now,
-        &event_detail.to_string(),
-    ))?;
+    append_created_event(conn, id, title, priority, issue_type, actor, &now)?;
 
     Ok(id.to_string())
 }
