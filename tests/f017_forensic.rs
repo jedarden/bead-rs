@@ -7,6 +7,7 @@
 //! - Atomic operations and crash safety
 //! - Doctor validation for forensic checkpoints
 
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -14,6 +15,26 @@ use std::process::Command;
 /// Get the path to the bead binary for testing
 fn bead_binary() -> String {
     env!("CARGO_BIN_EXE_bead").to_string()
+}
+
+/// Run `bead sync flush-only` in the workspace, asserting success
+fn run_flush(workspace: &Path, bead: &str) {
+    let output = Command::new(bead)
+        .args(["sync", "flush-only"])
+        .current_dir(workspace)
+        .output()
+        .expect("Failed to flush checkpoint");
+    assert!(
+        output.status.success(),
+        "flush-only failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Read and parse `current.json` from a checkpoint directory
+fn read_current_pointer(checkpoint_dir: &Path) -> serde_json::Value {
+    let content = fs::read_to_string(checkpoint_dir.join("current.json")).unwrap();
+    serde_json::from_str(&content).unwrap()
 }
 
 #[test]
@@ -138,6 +159,213 @@ fn test_f017_content_addressed_paths() {
     assert!(active_root.ends_with(".jsonl"));
     assert!(active_root.contains("/"));
     assert!(active_root.starts_with("objects/"));
+
+    // The object name must be its own content SHA-256 (plan 6.1.1 / 6.2.1 P1),
+    // not the generation ID.
+    let root_sha = current
+        .get("active_root")
+        .unwrap()
+        .get("sha256")
+        .unwrap()
+        .as_str()
+        .unwrap();
+    assert_eq!(active_root, format!("objects/{}.jsonl", root_sha));
+
+    let object_bytes = fs::read(workspace.join(".beads/checkpoint").join(active_root)).unwrap();
+    let actual_hash = format!("{:x}", Sha256::digest(&object_bytes));
+    assert_eq!(actual_hash, root_sha);
+
+    let generation_id = current.get("generation_id").unwrap().as_str().unwrap();
+    assert_ne!(
+        active_root,
+        format!("objects/{}.jsonl", generation_id),
+        "monolithic root must not be named by generation ID"
+    );
+
+    // Cleanup
+    let _ = fs::remove_dir_all(&test_dir);
+}
+
+#[test]
+fn test_f017_identical_flushes_reuse_one_object() {
+    let test_dir = format!("/tmp/test-f017-reuse-{}", std::process::id());
+    let _ = fs::remove_dir_all(&test_dir);
+    fs::create_dir_all(&test_dir).unwrap();
+
+    let workspace = Path::new(&test_dir);
+    let bead = bead_binary();
+
+    // Initialize workspace
+    Command::new(&bead)
+        .args(["init"])
+        .current_dir(workspace)
+        .output()
+        .expect("Failed to init workspace");
+
+    // Create an issue
+    Command::new(&bead)
+        .args(["create", "--title", "Reuse test issue"])
+        .current_dir(workspace)
+        .output()
+        .expect("Failed to create issue");
+
+    let checkpoint_dir = workspace.join(".beads/checkpoint");
+
+    // First flush
+    run_flush(workspace, &bead);
+    let first = read_current_pointer(&checkpoint_dir);
+
+    // Second flush with no intervening mutation: the monolith bytes are
+    // identical, so the content-addressed object must be reused, not
+    // duplicated.
+    run_flush(workspace, &bead);
+    let second = read_current_pointer(&checkpoint_dir);
+
+    // A new generation was still published...
+    assert_ne!(
+        first.get("generation_id").unwrap().as_str().unwrap(),
+        second.get("generation_id").unwrap().as_str().unwrap()
+    );
+
+    // ...but it points at the same content-addressed object.
+    assert_eq!(
+        first
+            .get("active_root")
+            .unwrap()
+            .get("path")
+            .unwrap()
+            .as_str()
+            .unwrap(),
+        second
+            .get("active_root")
+            .unwrap()
+            .get("path")
+            .unwrap()
+            .as_str()
+            .unwrap()
+    );
+
+    // Exactly one monolithic object exists after both publications.
+    let objects_dir = checkpoint_dir.join("objects");
+    let jsonl_count = fs::read_dir(&objects_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map(|x| x == "jsonl").unwrap_or(false))
+        .count();
+    assert_eq!(
+        jsonl_count, 1,
+        "two byte-identical publications must reuse one object"
+    );
+
+    // Cleanup
+    let _ = fs::remove_dir_all(&test_dir);
+}
+
+#[test]
+fn test_f017_legacy_generation_named_object_importable() {
+    let test_dir = format!("/tmp/test-f017-legacy-gen-{}", std::process::id());
+    let _ = fs::remove_dir_all(&test_dir);
+    fs::create_dir_all(&test_dir).unwrap();
+
+    let source_workspace = Path::new(&test_dir).join("source");
+    let target_workspace = Path::new(&test_dir).join("target");
+    fs::create_dir_all(&source_workspace).unwrap();
+    fs::create_dir_all(&target_workspace).unwrap();
+
+    let bead = bead_binary();
+
+    // Build a real checkpoint in the source workspace.
+    Command::new(&bead)
+        .args(["init"])
+        .current_dir(&source_workspace)
+        .output()
+        .expect("Failed to init source workspace");
+
+    let create_output = Command::new(&bead)
+        .args(["create", "--title", "Legacy object test issue"])
+        .current_dir(&source_workspace)
+        .output()
+        .expect("Failed to create issue");
+    assert!(
+        create_output.status.success(),
+        "create failed: {}",
+        String::from_utf8_lossy(&create_output.stderr)
+    );
+
+    run_flush(&source_workspace, &bead);
+
+    // Reshape the checkpoint into the legacy generation-named layout: rename
+    // the content-addressed object to `objects/gen-*.jsonl` and repoint
+    // current.json at it, as pre-P1 checkpoints on disk still look.
+    let checkpoint_dir = source_workspace.join(".beads/checkpoint");
+    let mut pointer = read_current_pointer(&checkpoint_dir);
+    let old_path = pointer
+        .get("active_root")
+        .unwrap()
+        .get("path")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string();
+    let legacy_name = "objects/gen-legacy0123456789.jsonl";
+    fs::rename(
+        checkpoint_dir.join(&old_path),
+        checkpoint_dir.join(legacy_name),
+    )
+    .unwrap();
+    *pointer
+        .get_mut("active_root")
+        .unwrap()
+        .get_mut("path")
+        .unwrap() = serde_json::Value::String(legacy_name.to_string());
+    fs::write(
+        checkpoint_dir.join("current.json"),
+        serde_json::to_vec_pretty(&pointer).unwrap(),
+    )
+    .unwrap();
+
+    // Restore the legacy-shaped checkpoint into a fresh workspace -- the
+    // pointer's active_root.path is authoritative, so the generation-named
+    // object must still be readable.
+    Command::new(&bead)
+        .args(["init"])
+        .current_dir(&target_workspace)
+        .output()
+        .expect("Failed to init target workspace");
+
+    let import_output = Command::new(&bead)
+        .args([
+            "sync",
+            "import-only",
+            "--input",
+            checkpoint_dir.to_str().unwrap(),
+            "--profile",
+            "native-v1",
+            "--restore-into-empty",
+            "--actor",
+            "test",
+        ])
+        .current_dir(&target_workspace)
+        .output()
+        .expect("Failed to run import-only");
+    assert!(
+        import_output.status.success(),
+        "import of legacy generation-named checkpoint failed: {}",
+        String::from_utf8_lossy(&import_output.stderr)
+    );
+
+    // The restored workspace contains the source issue.
+    let list_output = Command::new(&bead)
+        .args(["list", "--json"])
+        .current_dir(&target_workspace)
+        .output()
+        .expect("Failed to list issues");
+    assert!(list_output.status.success());
+    let list_stdout = String::from_utf8_lossy(&list_output.stdout);
+    assert!(
+        list_stdout.contains("Legacy object test issue"),
+        "restored workspace is missing the source issue"
+    );
 
     // Cleanup
     let _ = fs::remove_dir_all(&test_dir);

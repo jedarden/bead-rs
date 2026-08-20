@@ -47,6 +47,9 @@
 //! - Single `.beads/checkpoint/forensic.jsonl` file
 //! - Three record types: issue, event, provenance_receipt
 //! - Canonical ordering: issues by ID, events by sequence, receipts by ID
+//! - Authoritative root is the content-addressed
+//!   `.beads/checkpoint/objects/<sha256>.jsonl`; `forensic.jsonl` is the
+//!   nonauthoritative byte-identical view
 //!
 //! ## Sharded Mode
 //! - `.beads/checkpoint/current.json` (authoritative pointer)
@@ -811,11 +814,13 @@ fn stage_forensic_checkpoint(input_path: &Path) -> Result<ForensicStaging> {
 /// Stage a checkpoint referenced by a `current.json` pointer, dispatching on
 /// the pointer's own `mode` field. A directory checkpoint is not necessarily
 /// sharded: `bead sync flush-only` always writes the same pointer +
-/// `objects/gen-*.jsonl` layout, but for monolithic mode that generation
-/// file is the raw JSONL data itself, not a shard manifest -- treating it as
-/// the latter (as this dispatch used to do unconditionally for any
-/// directory input) fails to parse, erroring on the second JSONL record as
-/// unexpected "trailing characters".
+/// `objects/<sha256>.jsonl` layout (older checkpoints may still reference
+/// generation-named `objects/gen-*.jsonl` objects -- the pointer's
+/// `active_root.path` is authoritative either way), but for monolithic mode
+/// that root file is the raw JSONL data itself, not a shard manifest --
+/// treating it as the latter (as this dispatch used to do unconditionally
+/// for any directory input) fails to parse, erroring on the second JSONL
+/// record as unexpected "trailing characters".
 fn stage_pointer_checkpoint(pointer_path: &Path) -> Result<ForensicStaging> {
     let pointer_data = std::fs::read_to_string(pointer_path)?;
     let pointer: serde_json::Value =
@@ -3564,8 +3569,9 @@ fn publish_monolithic_checkpoint(
     changed_paths: &mut Vec<String>,
 ) -> Result<(String, String)> {
     let objects_dir = checkpoint_dir.join("objects");
+    // Temp file is generation-scoped (unique scratch name); the final object
+    // is content-addressed below, per plan 6.1.1 / 6.2.1 P1.
     let temp_path = objects_dir.join(format!("{}.tmp", generation_id));
-    let final_path = objects_dir.join(format!("{}.jsonl", generation_id));
 
     // Create temporary file
     let temp_file = File::create(&temp_path)?;
@@ -3628,8 +3634,17 @@ fn publish_monolithic_checkpoint(
     // Calculate hash
     let hash = calculate_file_hash(&temp_path)?;
 
-    // Atomically rename to final path
-    std::fs::rename(&temp_path, &final_path)?;
+    // Content-addressed object name: identical content reuses one object
+    // (plan 6.1.1, 6.2.1 P1). If the object already exists, its bytes are
+    // identical by construction -- drop the temp and keep the published
+    // object instead of writing a second copy. A concurrent publisher
+    // renaming over the same path just replaces identical bytes atomically.
+    let final_path = objects_dir.join(format!("{}.jsonl", hash));
+    if final_path.exists() {
+        std::fs::remove_file(&temp_path)?;
+    } else {
+        std::fs::rename(&temp_path, &final_path)?;
+    }
 
     // Sync parent directory to ensure directory entry is persisted
     let objects_dir_file = File::open(&objects_dir)?;
@@ -3650,10 +3665,10 @@ fn publish_monolithic_checkpoint(
     checkpoint_dir_file.sync_all()?;
     drop(checkpoint_dir_file);
 
-    changed_paths.push(format!("objects/{}.jsonl", generation_id));
+    changed_paths.push(format!("objects/{}.jsonl", hash));
     changed_paths.push("forensic.jsonl".to_string());
 
-    Ok((hash, format!("objects/{}.jsonl", generation_id)))
+    Ok((hash.clone(), format!("objects/{}.jsonl", hash)))
 }
 
 /// Publish sharded forensic checkpoint
