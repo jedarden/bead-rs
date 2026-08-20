@@ -105,6 +105,11 @@ pub fn generate_capabilities(profile: &str) -> Result<Capabilities> {
             p4_claimable_by_fifo: true,
         },
         logical_revision: true,
+        // "blocked" is advertised alongside the BaseStatus values: it is a
+        // settable status overlay (`update --status blocked` sets
+        // manual_blocked) and a filterable/reportable effective status, so
+        // consumers need it in the list (plan capabilities example,
+        // needle-v1 contract).
         statuses: vec![
             "blocked".to_string(),
             "closed".to_string(),

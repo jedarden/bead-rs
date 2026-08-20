@@ -29,7 +29,7 @@ implementation.
 | Create | `create --title T --description D [--label L]...` | stdout contains the new ID only |
 | Add label | `label add ID --label L` | Idempotent label presence |
 | Remove label | `label remove ID --label L` | Idempotent label absence |
-| Add dependency | `dep add BLOCKED BLOCKER --type blocks` | BLOCKER prevents BLOCKED readiness |
+| Add dependency | `dep add BLOCKED BLOCKER --kind blocks` | BLOCKER prevents BLOCKED readiness |
 | Remove dependency | `dep remove BLOCKED BLOCKER` | Matching edge removed |
 | Flush | `sync --flush-only` | Committed state checkpointed to `.beads/issues.jsonl` |
 | Import | `sync --import-only` | Valid checkpoint reconciled into native state |
