@@ -61,6 +61,8 @@ pub fn remove_label(store: &mut SqliteStore, issue_id: &str, label: &str) -> Res
 ///
 /// Rejects self-edges and cycles in `blocks` dependencies.
 /// This operation is idempotent: adding an existing edge succeeds without changes.
+/// A committed add appends a `dependency_added` audit event in the same
+/// transaction; an idempotent no-op appends none.
 ///
 /// # Arguments
 /// * `blocked_id` - The issue that is blocked
@@ -130,20 +132,72 @@ pub fn add_dependency(
     // Serialize condition if present
     let condition_json = condition.map(|c| c.to_json()).transpose()?;
 
-    // Idempotent insert: ignore if already exists
-    if let Some(ref cond_json) = condition_json {
+    // Idempotent insert: ignore if already exists. A re-add of an existing
+    // edge commits no semantic mutation, so it must append no event.
+    let inserted = if let Some(ref cond_json) = condition_json {
         tx.execute(
             "INSERT OR IGNORE INTO dependencies (blocked_issue_id, blocker_issue_id, kind, condition) VALUES (?1, ?2, ?3, ?4)",
             [blocked_id, blocker_id, kind, cond_json.as_str()],
-        )?;
+        )?
     } else {
         tx.execute(
             "INSERT OR IGNORE INTO dependencies (blocked_issue_id, blocker_issue_id, kind, condition) VALUES (?1, ?2, ?3, NULL)",
             [blocked_id, blocker_id, kind],
+        )?
+    };
+
+    // Record the mutation as an audit event inside this transaction: the live
+    // event sequence is the dirtiness signal (plan 6.2.1 P3), so an unrecorded
+    // dependency add would silently read as no change.
+    if inserted > 0 {
+        let condition_value = match condition {
+            Some(c) => serde_json::to_value(c)
+                .map_err(|e| Error::validation(format!("Failed to serialize condition: {}", e)))?,
+            None => serde_json::Value::Null,
+        };
+
+        append_dependency_event(
+            &tx,
+            blocked_id,
+            "dependency_added",
+            &serde_json::json!({
+                "actor": "system",
+                "blocked": blocked_id,
+                "blocker": blocker_id,
+                "kind": kind,
+                "condition": condition_value,
+            }),
         )?;
     }
 
     tx.commit()?;
+    Ok(())
+}
+
+/// Append the audit event for a dependency-graph mutation.
+///
+/// The event is inserted on the mutation's own transaction, so it commits (or
+/// rolls back) with the edge it describes. `blocked_id` is the event's issue
+/// subject: it is the issue whose readiness the edge changes. Callers append
+/// only after a real edge change, which guarantees the blocked issue exists
+/// (add verifies both endpoints; a deleted edge row cannot outlive its
+/// cascading foreign keys), so the events table's own foreign key holds.
+fn append_dependency_event(
+    tx: &rusqlite::Transaction,
+    blocked_id: &str,
+    kind: &str,
+    detail: &serde_json::Value,
+) -> Result<(), Error> {
+    let now = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    let mut stmt = tx.prepare_cached(
+        "INSERT INTO events (issue_id, kind, actor, time, detail) VALUES (?1, ?2, ?3, ?4, ?5)",
+    )?;
+
+    stmt.execute((blocked_id, kind, "system", now, detail.to_string()))?;
+
     Ok(())
 }
 
@@ -155,6 +209,8 @@ fn is_valid_kind(kind: &str) -> bool {
 /// Removes a dependency edge.
 ///
 /// This operation is idempotent: removing a non-existent edge succeeds without changes.
+/// A remove that deletes at least one edge appends a `dependency_removed` audit
+/// event in the same transaction; an idempotent no-op appends none.
 ///
 /// # Arguments
 /// * `blocked_id` - The blocked issue
@@ -169,15 +225,35 @@ pub fn remove_dependency(
     let conn = store.conn();
     let tx = conn.unchecked_transaction()?;
 
-    if let Some(k) = kind {
+    // Idempotent delete: removing a non-existent edge commits no semantic
+    // mutation, so it must append no event.
+    let removed = if let Some(k) = kind {
         tx.execute(
             "DELETE FROM dependencies WHERE blocked_issue_id = ?1 AND blocker_issue_id = ?2 AND kind = ?3",
             [blocked_id, blocker_id, k],
-        )?;
+        )?
     } else {
         tx.execute(
             "DELETE FROM dependencies WHERE blocked_issue_id = ?1 AND blocker_issue_id = ?2",
             [blocked_id, blocker_id],
+        )?
+    };
+
+    // Record the mutation as an audit event inside this transaction: the live
+    // event sequence is the dirtiness signal (plan 6.2.1 P3), so an unrecorded
+    // dependency remove would silently read as no change. A null kind records
+    // that the remove was not filtered by kind.
+    if removed > 0 {
+        append_dependency_event(
+            &tx,
+            blocked_id,
+            "dependency_removed",
+            &serde_json::json!({
+                "actor": "system",
+                "blocked": blocked_id,
+                "blocker": blocker_id,
+                "kind": kind,
+            }),
         )?;
     }
 
@@ -616,6 +692,163 @@ mod tests {
             .unwrap();
 
         assert_eq!(count, 0);
+    }
+
+    /// Reads every event row as (issue_id, kind, detail-as-JSON)
+    fn read_events(store: &mut SqliteStore) -> Vec<(Option<String>, String, serde_json::Value)> {
+        let conn = store.conn();
+        conn.prepare("SELECT issue_id, kind, detail FROM events ORDER BY sequence")
+            .unwrap()
+            .query_map([], |row| {
+                let issue_id: Option<String> = row.get(0)?;
+                let kind: String = row.get(1)?;
+                let detail: String = row.get(2)?;
+                Ok((issue_id, kind, serde_json::from_str(&detail).unwrap()))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn test_add_dependency_appends_event() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "issue-1", "Blocked Issue");
+        create_test_issue(&mut store, "issue-2", "Blocker Issue");
+
+        add_dependency(&mut store, "issue-1", "issue-2", "blocks", None).unwrap();
+
+        let events = read_events(&mut store);
+        assert_eq!(events.len(), 1, "one event per committed add");
+
+        let (issue_id, kind, detail) = &events[0];
+        assert_eq!(issue_id.as_deref(), Some("issue-1"));
+        assert_eq!(kind, "dependency_added");
+        assert_eq!(detail["blocked"], "issue-1");
+        assert_eq!(detail["blocker"], "issue-2");
+        assert_eq!(detail["kind"], "blocks");
+        assert_eq!(detail["condition"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn test_add_dependency_with_condition_records_condition() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "issue-1", "Blocked Issue");
+        create_test_issue(&mut store, "issue-2", "Blocker Issue");
+
+        let condition = ConditionExpr::Equals {
+            field: "priority".to_string(),
+            value: serde_json::json!(2),
+        };
+        add_dependency(&mut store, "issue-1", "issue-2", "blocks", Some(&condition)).unwrap();
+
+        let events = read_events(&mut store);
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].2["condition"],
+            serde_json::json!({"type": "equals", "value": {"field": "priority", "value": 2}})
+        );
+    }
+
+    #[test]
+    fn test_add_dependency_idempotent_appends_no_event() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "issue-1", "Blocked Issue");
+        create_test_issue(&mut store, "issue-2", "Blocker Issue");
+
+        add_dependency(&mut store, "issue-1", "issue-2", "blocks", None).unwrap();
+        add_dependency(&mut store, "issue-1", "issue-2", "blocks", None).unwrap(); // Duplicate
+
+        let events = read_events(&mut store);
+        assert_eq!(events.len(), 1, "a no-op re-add is not a semantic mutation");
+    }
+
+    #[test]
+    fn test_remove_dependency_appends_event() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "issue-1", "Blocked Issue");
+        create_test_issue(&mut store, "issue-2", "Blocker Issue");
+
+        add_dependency(&mut store, "issue-1", "issue-2", "blocks", None).unwrap();
+        remove_dependency(&mut store, "issue-1", "issue-2", Some("blocks")).unwrap();
+
+        let events = read_events(&mut store);
+        assert_eq!(events.len(), 2, "one event per committed mutation");
+
+        let (issue_id, kind, detail) = &events[1];
+        assert_eq!(issue_id.as_deref(), Some("issue-1"));
+        assert_eq!(kind, "dependency_removed");
+        assert_eq!(detail["blocked"], "issue-1");
+        assert_eq!(detail["blocker"], "issue-2");
+        assert_eq!(detail["kind"], "blocks");
+    }
+
+    #[test]
+    fn test_remove_dependency_without_kind_records_null_kind() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "issue-1", "Blocked Issue");
+        create_test_issue(&mut store, "issue-2", "Blocker Issue");
+
+        add_dependency(&mut store, "issue-1", "issue-2", "blocks", None).unwrap();
+        add_dependency(&mut store, "issue-1", "issue-2", "relates_to", None).unwrap();
+
+        // Removing every edge between the pair is one mutation, one event
+        remove_dependency(&mut store, "issue-1", "issue-2", None).unwrap();
+
+        let events = read_events(&mut store);
+        assert_eq!(events.len(), 3);
+        let (_, kind, detail) = &events[2];
+        assert_eq!(kind, "dependency_removed");
+        assert_eq!(
+            detail["kind"],
+            serde_json::Value::Null,
+            "unfiltered remove records a null kind"
+        );
+    }
+
+    #[test]
+    fn test_remove_dependency_idempotent_appends_no_event() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "issue-1", "Blocked Issue");
+        create_test_issue(&mut store, "issue-2", "Blocker Issue");
+
+        add_dependency(&mut store, "issue-1", "issue-2", "blocks", None).unwrap();
+        remove_dependency(&mut store, "issue-1", "issue-2", Some("blocks")).unwrap();
+        remove_dependency(&mut store, "issue-1", "issue-2", Some("blocks")).unwrap(); // Duplicate
+
+        let events = read_events(&mut store);
+        assert_eq!(events.len(), 2, "a no-op remove is not a semantic mutation");
+    }
+
+    #[test]
+    fn test_dependency_events_advance_sequence_per_mutation() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "issue-1", "Blocked Issue");
+        create_test_issue(&mut store, "issue-2", "Blocker Issue");
+
+        let max_sequence = |store: &mut SqliteStore| -> i64 {
+            let conn = store.conn();
+            conn.query_row("SELECT COALESCE(MAX(sequence), 0) FROM events", [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+        };
+
+        let before = max_sequence(&mut store);
+
+        add_dependency(&mut store, "issue-1", "issue-2", "blocks", None).unwrap();
+        assert_eq!(max_sequence(&mut store), before + 1);
+
+        // No-op re-add does not advance the sequence
+        add_dependency(&mut store, "issue-1", "issue-2", "blocks", None).unwrap();
+        assert_eq!(max_sequence(&mut store), before + 1);
+
+        remove_dependency(&mut store, "issue-1", "issue-2", Some("blocks")).unwrap();
+        assert_eq!(max_sequence(&mut store), before + 2);
+
+        // No-op re-remove does not advance the sequence
+        remove_dependency(&mut store, "issue-1", "issue-2", Some("blocks")).unwrap();
+        assert_eq!(max_sequence(&mut store), before + 2);
     }
 
     #[test]

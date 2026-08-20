@@ -580,6 +580,121 @@ fn test_dep_remove_without_kind() {
 
 #[test]
 #[serial]
+fn test_dep_mutations_advance_change_feed() {
+    let temp = tempfile::tempdir().unwrap();
+    std::env::set_current_dir(temp.path()).unwrap();
+
+    // Initialize workspace
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["init", "--prefix", "test"])
+        .assert()
+        .success();
+
+    // Create issues (each create appends one event)
+    let blocked_id = Command::cargo_bin("bead")
+        .unwrap()
+        .args(["create", "--title", "Blocked Issue"])
+        .assert()
+        .success()
+        .stdout(predicate::str::is_match("test-[a-f0-9]{8}").unwrap());
+
+    let blocked_id = String::from_utf8(blocked_id.get_output().clone().stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+
+    let blocker_id = Command::cargo_bin("bead")
+        .unwrap()
+        .args(["create", "--title", "Blocker Issue"])
+        .assert()
+        .success()
+        .stdout(predicate::str::is_match("test-[a-f0-9]{8}").unwrap());
+
+    let blocker_id = String::from_utf8(blocker_id.get_output().clone().stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+
+    let latest_cursor = || -> i64 {
+        let output = Command::cargo_bin("bead")
+            .unwrap()
+            .args(["changes", "--latest"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let stdout = String::from_utf8(output).unwrap();
+        stdout
+            .lines()
+            .find_map(|l| l.strip_prefix("Latest cursor: "))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap()
+    };
+
+    // Baseline after two creates
+    let baseline = latest_cursor();
+
+    // dep add appends one event: the cursor advances by exactly one
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["dep", "add", &blocked_id, &blocker_id])
+        .assert()
+        .success();
+    assert_eq!(latest_cursor(), baseline + 1);
+
+    // Idempotent no-op re-add appends no event
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["dep", "add", &blocked_id, &blocker_id])
+        .assert()
+        .success();
+    assert_eq!(latest_cursor(), baseline + 1);
+
+    // dep remove appends one event
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["dep", "remove", &blocked_id, &blocker_id])
+        .assert()
+        .success();
+    assert_eq!(latest_cursor(), baseline + 2);
+
+    // Idempotent no-op re-remove appends no event
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["dep", "remove", &blocked_id, &blocker_id])
+        .assert()
+        .success();
+    assert_eq!(latest_cursor(), baseline + 2);
+
+    // The recorded events carry blocked, blocker, and kind in their detail
+    let conn = rusqlite::Connection::open(".beads/beads.db").unwrap();
+    let mut stmt = conn
+        .prepare("SELECT detail FROM events WHERE kind LIKE 'dependency_%' ORDER BY sequence")
+        .unwrap();
+    let details: Vec<String> = stmt
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(details.len(), 2);
+
+    let added: serde_json::Value = serde_json::from_str(&details[0]).unwrap();
+    assert_eq!(added["blocked"], serde_json::json!(blocked_id));
+    assert_eq!(added["blocker"], serde_json::json!(blocker_id));
+    assert_eq!(added["kind"], "blocks");
+
+    let removed: serde_json::Value = serde_json::from_str(&details[1]).unwrap();
+    assert_eq!(removed["blocked"], serde_json::json!(blocked_id));
+    assert_eq!(removed["blocker"], serde_json::json!(blocker_id));
+    assert_eq!(removed["kind"], serde_json::Value::Null);
+}
+
+#[test]
+#[serial]
 fn test_dep_remove_idempotent() {
     let temp = tempfile::tempdir().unwrap();
     std::env::set_current_dir(temp.path()).unwrap();
