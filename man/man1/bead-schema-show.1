@@ -1,0 +1,25 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead schema show" 1  "bead schema show " 
+.SH NAME
+bead schema show \- Show a public JSON Schema
+.SH SYNOPSIS
+\fBbead schema show\fR [\fB\-\-format\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fISCHEMA_REF\fR> 
+.SH DESCRIPTION
+Emit the immutable JSON Schema Draft 2020\-12 document for an exact catalog identity.
+.PP
+Schema resolution is workspace\-independent. Unknown identities are usage errors.
+.SH OPTIONS
+.TP
+\fB\-\-format\fR=\fIFORMAT\fR [default: json]
+Output format
+.br
+
+.br
+[\fIpossible values: \fRjson]
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fISCHEMA_REF\fR>
+Exact schema identity

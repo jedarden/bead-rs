@@ -1,0 +1,22 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead schema list" 1  "bead schema list " 
+.SH NAME
+bead schema list \- List public schemas
+.SH SYNOPSIS
+\fBbead schema list\fR [\fB\-\-format\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+List every supported public document schema as deterministic JSON.
+.PP
+Entries are sorted by exact schema identity and include document kind, readability, writability, validation support, and consuming or emitting operations.
+.SH OPTIONS
+.TP
+\fB\-\-format\fR=\fIFORMAT\fR [default: json]
+Output format
+.br
+
+.br
+[\fIpossible values: \fRjson]
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

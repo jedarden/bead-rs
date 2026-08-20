@@ -1,0 +1,28 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead schema" 1  "bead schema " 
+.SH NAME
+bead schema \- Inspect public schemas
+.SH SYNOPSIS
+\fBbead schema\fR [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+Inspect the immutable public document\-schema catalog.
+.PP
+The catalog is workspace\-independent and is the same typed registry returned by `bead capabilities`.
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.SH SUBCOMMANDS
+.TP
+bead schema\-list(1)
+List public schemas
+.TP
+bead schema\-show(1)
+Show a public JSON Schema
+.TP
+bead schema\-explain(1)
+Explain a public schema
+.TP
+bead schema\-help(1)
+Print this message or the help of the given subcommand(s)

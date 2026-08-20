@@ -4,7 +4,7 @@
 .SH NAME
 bead sync flush\-only \- Flush checkpoint to JSONL file
 .SH SYNOPSIS
-\fBbead sync flush\-only\fR [\fB\-\-profile\fR] [\fB\-\-output\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBbead sync flush\-only\fR [\fB\-\-output\fR] [\fB\-\-profile\fR] [\fB\-h\fR|\fB\-\-help\fR] 
 .SH DESCRIPTION
 Atomically publish a checkpoint from the current database state.
 .PP
@@ -15,7 +15,6 @@ atomically renames. Checkpoint state is updated only after a successful flush.
 EXAMPLES:
   bead sync flush\-only                                  # Flush the workspace checkpoint
   bead sync flush\-only \-\-output /path/to/backup.jsonl   # Export a copy elsewhere
-  bead sync flush\-only \-\-profile needle\-v1              # Export under another profile
 .PP
 OUTPUT:
   Without \-\-output, writes the forensic checkpoint set into .beads/checkpoint/:
@@ -34,11 +33,6 @@ CHECKPOINT FRESHNESS:
   periodically during long sessions \-\- otherwise a fresh clone of the repository
   reproduces the last flushed state, not the current one.
 .PP
-PROFILES:
-  \- native\-v1: full native checkpoint (default)
-  \- needle\-v1: issue\-only NEEDLE compatibility checkpoint
-  \- br\-v1, bf\-v1: external compatibility formats
-.PP
 ATOMICITY:
   \- A read transaction captures the snapshot
   \- The temporary file is written and verified
@@ -51,11 +45,11 @@ GIT INTEGRATION:
   \*(Aqbead init\*(Aq followed by \*(Aqbead sync import\-only \-\-restore\-into\-empty\*(Aq.
 .SH OPTIONS
 .TP
-\fB\-\-profile\fR=\fIPROFILE\fR [default: native\-v1]
-Profile for export (default: native\-v1)
-.TP
 \fB\-\-output\fR=\fIOUTPUT\fR
 Export an issue\-only copy to this path instead of only updating .beads/checkpoint/
+.TP
+\fB\-\-profile\fR=\fIPROFILE\fR
+Profile for checkpoint format (not supported for issue\-only export)
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

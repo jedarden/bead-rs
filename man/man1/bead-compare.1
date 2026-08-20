@@ -12,7 +12,7 @@ This is a read\-only operation that never writes to the database.
 .PP
 EXAMPLES:
   bead compare \-\-id bead\-1234567890abcdef \-\-source native\-v1 \-\-target needle\-v1
-  bead compare \-\-id bead\-1234567890abcdef \-\-source native\-v1 \-\-target bf\-v1 \-\-json
+  bead compare \-\-id bead\-1234567890abcdef \-\-source needle\-v1 \-\-target native\-v1 \-\-json
 .PP
 The command fails with exit code 3 if the issue is not found,
 or exit code 2 if either profile is not supported.

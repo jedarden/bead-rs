@@ -1,6 +1,6 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH bead 1  "bead 0.1.0" 
+.TH bead 1  "bead 0.1.3" 
 .SH NAME
 bead \- Clean\-room task coordination for agent fleets
 .SH SYNOPSIS
@@ -92,6 +92,9 @@ Diagnose workspace integrity and optionally perform repairs
 bead\-capabilities(1)
 Show capabilities and supported features
 .TP
+bead\-schema(1)
+Inspect public schemas
+.TP
 bead\-query(1)
 Execute safe query language queries
 .TP
@@ -113,12 +116,9 @@ Manage recurrence templates
 bead\-policy(1)
 Validate workspace policy and scheduling configuration
 .TP
-bead\-migrate(1)
-Migrate checkpoints between profiles with dry\-run and receipt support
-.TP
 bead\-help(1)
 Print this message or the help of the given subcommand(s)
 .SH VERSION
-v0.1.0
+v0.1.3
 .SH AUTHORS
 Jed Arden <github@jedarden.com>

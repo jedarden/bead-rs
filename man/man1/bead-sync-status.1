@@ -1,0 +1,43 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead sync status" 1  "bead sync status " 
+.SH NAME
+bead sync status \- Report checkpoint status and readiness to commit
+.SH SYNOPSIS
+\fBbead sync status\fR [\fB\-\-format\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Report checkpoint freshness, verification, and readiness to commit.
+.PP
+Reads the authoritative current.json pointer, verifies the root object it
+selects, checks the forensic.jsonl compatibility view (monolithic mode),
+reapplies no changes, and lists any pointer\-declared tombstones that are
+still unresolved on disk.
+.PP
+READINESS:
+  ready_to_commit holds only when every check passes:
+  \- the pointer\*(Aqs root object exists and hashes to the declared SHA\-256
+  \- the checkpoint covers the live event sequence (not dirty)
+  \- no pointer\-declared tombstone remains on disk
+  \- the forensic.jsonl view is byte\-identical to the root object
+  \- the recorded checkpoint state agrees with the pointer
+.PP
+  Repository automation must treat a not\-ready checkpoint as a failed
+  pre\-commit gate: run `bead sync flush\-only` and include every reported
+  changed path in the same Git commit.
+.PP
+EXAMPLES:
+  bead sync status                     # Human\-readable summary
+  bead sync status \-\-format json       # Machine\-readable status
+.PP
+OUTPUT:
+  \-\-format json prints one JSON object with checkpoint_present, mode,
+  generation_id, live_sequence, covered_sequence, dirty, root_path,
+  root_hash, root_verified, view_agrees, unresolved_tombstones,
+  changed_paths, ready_to_commit, and not_ready_reasons.
+.SH OPTIONS
+.TP
+\fB\-\-format\fR=\fIFORMAT\fR [default: text]
+Output format: text or json
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

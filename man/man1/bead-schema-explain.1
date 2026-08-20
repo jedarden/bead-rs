@@ -1,0 +1,25 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead schema explain" 1  "bead schema explain " 
+.SH NAME
+bead schema explain \- Explain a public schema
+.SH SYNOPSIS
+\fBbead schema explain\fR [\fB\-\-format\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fISCHEMA_REF\fR> 
+.SH DESCRIPTION
+Explain an exact public schema identity as deterministic typed JSON or Markdown.
+.PP
+The explanation describes ownership, transport, supported operations, and the schema\*(Aqs public members.
+.SH OPTIONS
+.TP
+\fB\-\-format\fR=\fIFORMAT\fR [default: json]
+Output format
+.br
+
+.br
+[\fIpossible values: \fRjson, markdown]
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fISCHEMA_REF\fR>
+Exact schema identity
