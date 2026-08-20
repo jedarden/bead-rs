@@ -190,6 +190,34 @@ pub struct ForensicFlushResult {
     pub changed_paths: Vec<String>,
 }
 
+/// Checkpoint status for `bead sync status` (plan 6.2)
+///
+/// `ready_to_commit` is the pre-commit gate: it holds only when the
+/// authoritative pointer verifies against its root object, the checkpoint
+/// covers the live event sequence, no pointer-declared tombstone is
+/// unresolved, the monolithic compatibility view (when applicable) agrees
+/// with the pointer-selected object, and the recorded checkpoint state
+/// agrees with the pointer.
+#[derive(Debug, Clone, Serialize)]
+pub struct CheckpointStatusReport {
+    pub checkpoint_present: bool,
+    pub mode: Option<String>,
+    pub generation_id: Option<String>,
+    pub live_sequence: i64,
+    pub covered_sequence: Option<i64>,
+    pub dirty: bool,
+    pub root_path: Option<String>,
+    pub root_hash: Option<String>,
+    pub root_verified: bool,
+    /// `Some(true)`/`Some(false)` in monolithic mode (forensic.jsonl versus
+    /// the pointer-selected object); `None` when no view applies (sharded).
+    pub view_agrees: Option<bool>,
+    pub unresolved_tombstones: Vec<String>,
+    pub changed_paths: Vec<String>,
+    pub ready_to_commit: bool,
+    pub not_ready_reasons: Vec<String>,
+}
+
 /// Import result with F017 support
 #[derive(Debug, Clone, Serialize)]
 #[allow(dead_code)]
@@ -3483,34 +3511,53 @@ pub fn publish_forensic_checkpoint(
         std::fs::rename(&previous_temp, &previous_pointer_path)?;
 
         // Sync parent directory
-        let checkpoint_dir_file = File::open(checkpoint_dir)?;
+        let checkpoint_dir_file = File::open(&checkpoint_dir)?;
         checkpoint_dir_file.sync_all()?;
         drop(checkpoint_dir_file);
 
         changed_paths.push("previous.json".to_string());
 
-        // Read previous pointer to get existing files
-        read_previous_pointer_files(&current_pointer_path)?
+        // Read the outgoing pointer to get the files it still references
+        read_pointer_referenced_files(&current_pointer_path)?
     } else {
         HashSet::new()
     };
 
-    // Calculate path categories
-    let current_files: HashSet<String> = changed_paths.iter().cloned().collect();
+    // Calculate path categories. current.json is rewritten by this
+    // publication, so it counts as a current file and can only be replaced,
+    // never deleted (plan 6.2 step 6, 6.2.1 P2).
+    let mut current_files: HashSet<String> = changed_paths.iter().cloned().collect();
+    current_files.insert("current.json".to_string());
     let added_paths: Vec<String> = current_files.difference(&previous_files).cloned().collect();
     let replaced_paths: Vec<String> = current_files
         .intersection(&previous_files)
         .cloned()
         .collect();
-    let deleted_paths: Vec<String> = previous_files.difference(&current_files).cloned().collect();
+
+    // Declare tombstones for every generation object on disk that neither
+    // the new generation nor the retained previous generation references
+    // (plan 6.1.1, 6.2 step 6). Enumerating the directory rather than
+    // replaying the outgoing pointer's own declarations keeps cleanup
+    // repeatable: files left behind by an interrupted cleanup, a legacy
+    // layout, or an older writer are re-declared on every publication until
+    // they are gone, and the retained set stays bounded by the two
+    // generations current.json and previous.json reference.
+    let retained_objects: HashSet<String> = previous_files
+        .iter()
+        .chain(current_files.iter())
+        .filter(|p| is_generation_object_path(p))
+        .cloned()
+        .collect();
+    let deleted_paths_sorted: Vec<String> = enumerate_generation_objects(&checkpoint_dir)?
+        .into_iter()
+        .filter(|p| !retained_objects.contains(p))
+        .collect();
 
     // Sort for deterministic output
     let mut added_paths_sorted = added_paths;
     added_paths_sorted.sort();
     let mut replaced_paths_sorted = replaced_paths;
     replaced_paths_sorted.sort();
-    let mut deleted_paths_sorted = deleted_paths;
-    deleted_paths_sorted.sort();
 
     // Write new current.json pointer
     let pointer_config = PointerConfig {
@@ -3526,10 +3573,24 @@ pub fn publish_forensic_checkpoint(
         total_record_count,
         added_paths: added_paths_sorted,
         replaced_paths: replaced_paths_sorted,
-        deleted_paths: deleted_paths_sorted,
+        deleted_paths: deleted_paths_sorted.clone(),
     };
     write_current_pointer(&current_pointer_path, &pointer_config)?;
     changed_paths.push("current.json".to_string());
+
+    // Apply only the pointer-declared tombstones, after the pointer is
+    // durable and before checkpoint state is recorded (plan 6.2 step 6).
+    // A declared path that is already absent counts as resolved, so an
+    // interrupted cleanup is safely reapplied by the next publication; a
+    // real failure aborts the flush with the new generation already
+    // authoritative and the tombstones still declared for reapplication.
+    apply_checkpoint_tombstones(&checkpoint_dir, &deleted_paths_sorted)?;
+
+    // Report deletions alongside additions and modifications so one
+    // external Git commit carries the entire changed-path set (plan 6.1.1).
+    for path in &deleted_paths_sorted {
+        changed_paths.push(path.clone());
+    }
 
     // Update checkpoint_state table
     let state_config = CheckpointStateConfig {
@@ -3556,6 +3617,207 @@ pub fn publish_forensic_checkpoint(
         covered_sequence: current_sequence,
         changed_paths,
     })
+}
+
+/// Report forensic checkpoint status for `bead sync status` (plan 6.2)
+///
+/// Reads the authoritative pointer, the root object it selects, the
+/// monolithic compatibility view, the recorded checkpoint state, and the
+/// live event sequence, then decides whether the checkpoint is ready to
+/// commit. Never mutates anything: repairing a not-ready checkpoint is a
+/// flush's job.
+pub fn forensic_checkpoint_status(
+    store: &mut SqliteStore,
+    checkpoint_base: &Path,
+) -> Result<CheckpointStatusReport> {
+    let conn = store.conn();
+
+    let live_sequence: i64 = conn
+        .query_row("SELECT COALESCE(MAX(sequence), 0) FROM events", [], |row| {
+            row.get(0)
+        })
+        .unwrap_or(0);
+
+    // Recorded checkpoint state, when a flush has ever run
+    let state_row: Option<(i64, Option<String>, Option<String>)> = conn
+        .query_row(
+            "SELECT covered_event_sequence, current_generation_id, changed_paths_json
+             FROM checkpoint_state WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    let (state_covered, state_generation, state_changed_paths) = match state_row {
+        Some((covered, generation, changed)) => (covered, generation, changed),
+        None => (0, None, None),
+    };
+
+    let checkpoint_dir = checkpoint_base.join("checkpoint");
+    let pointer_path = checkpoint_dir.join("current.json");
+
+    let pointer = if pointer_path.exists() {
+        let content = std::fs::read_to_string(&pointer_path)?;
+        match serde_json::from_str::<serde_json::Value>(&content) {
+            Ok(pointer) => Some(pointer),
+            Err(_) => {
+                return Ok(CheckpointStatusReport {
+                    checkpoint_present: true,
+                    mode: None,
+                    generation_id: None,
+                    live_sequence,
+                    covered_sequence: None,
+                    dirty: true,
+                    root_path: None,
+                    root_hash: None,
+                    root_verified: false,
+                    view_agrees: None,
+                    unresolved_tombstones: Vec::new(),
+                    changed_paths: Vec::new(),
+                    ready_to_commit: false,
+                    not_ready_reasons: vec!["current.json is unparseable".to_string()],
+                });
+            }
+        }
+    } else {
+        None
+    };
+
+    let mut report = CheckpointStatusReport {
+        checkpoint_present: pointer.is_some(),
+        mode: pointer
+            .as_ref()
+            .and_then(|p| p.get("mode"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        generation_id: pointer
+            .as_ref()
+            .and_then(|p| p.get("generation_id"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        live_sequence,
+        covered_sequence: pointer
+            .as_ref()
+            .and_then(|p| p.get("snapshot_sequence"))
+            .and_then(|v| v.as_i64()),
+        dirty: false,
+        root_path: pointer
+            .as_ref()
+            .and_then(|p| p.get("active_root"))
+            .and_then(|r| r.get("path"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        root_hash: pointer
+            .as_ref()
+            .and_then(|p| p.get("active_root"))
+            .and_then(|r| r.get("sha256"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        root_verified: false,
+        view_agrees: None,
+        unresolved_tombstones: Vec::new(),
+        changed_paths: state_changed_paths
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<Vec<String>>(json).ok())
+            .unwrap_or_default(),
+        ready_to_commit: false,
+        not_ready_reasons: Vec::new(),
+    };
+
+    let Some(pointer) = pointer else {
+        report
+            .not_ready_reasons
+            .push("no checkpoint published (run `bead sync flush-only`)".to_string());
+        return Ok(report);
+    };
+
+    // Verify the root object the pointer selects
+    let root_path = report.root_path.clone().unwrap_or_default();
+    let root_hash = report.root_hash.clone().unwrap_or_default();
+    let root_file = checkpoint_dir.join(&root_path);
+    if root_path.is_empty() || !root_file.exists() {
+        report
+            .not_ready_reasons
+            .push(format!("root object missing: {}", root_path));
+    } else if calculate_file_hash(&root_file)
+        .map(|actual| actual != root_hash)
+        .unwrap_or(true)
+    {
+        report
+            .not_ready_reasons
+            .push(format!("root hash mismatch: {}", root_path));
+    } else {
+        report.root_verified = true;
+    }
+
+    // Unresolved tombstones: declared deleted but still present on disk
+    if let Some(deleted) = pointer.get("deleted_paths").and_then(|v| v.as_array()) {
+        for path in deleted.iter().filter_map(|v| v.as_str()) {
+            if checkpoint_dir.join(path).exists() {
+                report.unresolved_tombstones.push(path.to_string());
+            }
+        }
+    }
+    if !report.unresolved_tombstones.is_empty() {
+        report.not_ready_reasons.push(format!(
+            "unresolved tombstones ({}): {}",
+            report.unresolved_tombstones.len(),
+            report.unresolved_tombstones.join(", ")
+        ));
+    }
+
+    // Compatibility-view agreement: monolithic mode materializes
+    // forensic.jsonl as a byte-identical copy of the pointer-selected
+    // object (plan 6.2).
+    if report.mode.as_deref() == Some("monolithic") && report.root_verified {
+        let view_path = checkpoint_dir.join("forensic.jsonl");
+        let agrees = std::fs::read(&view_path).ok().map(|view| {
+            std::fs::read(&root_file)
+                .map(|root| view == root)
+                .unwrap_or(false)
+        });
+        report.view_agrees = agrees;
+        if agrees == Some(false) {
+            report
+                .not_ready_reasons
+                .push("forensic.jsonl view disagrees with the pointer-selected object".to_string());
+        }
+    }
+
+    // Freshness against the live event sequence
+    let covered = report.covered_sequence.unwrap_or(0);
+    report.dirty = covered < live_sequence;
+    if report.dirty {
+        report.not_ready_reasons.push(format!(
+            "checkpoint dirty: covered={}, live={}",
+            covered, live_sequence
+        ));
+    }
+
+    // The recorded state must agree with the authoritative pointer
+    if state_generation.is_some() && state_generation.as_deref() != report.generation_id.as_deref()
+    {
+        report
+            .not_ready_reasons
+            .push("checkpoint state disagrees with current.json".to_string());
+    } else if state_generation.is_none() {
+        report
+            .not_ready_reasons
+            .push("checkpoint state not recorded".to_string());
+    } else if state_covered != covered {
+        report.not_ready_reasons.push(format!(
+            "checkpoint state covered sequence {} disagrees with pointer {}",
+            state_covered, covered
+        ));
+    }
+
+    report.ready_to_commit = report.not_ready_reasons.is_empty();
+    Ok(report)
 }
 
 /// Publish monolithic forensic checkpoint
@@ -4185,8 +4447,14 @@ fn update_forensic_checkpoint_state(
     Ok(())
 }
 
-/// Read previous pointer files for path calculation
-fn read_previous_pointer_files(pointer_path: &Path) -> Result<HashSet<String>> {
+/// Read the file set a pointer still references
+///
+/// The active root plus the paths the pointer declares as added or replaced.
+/// Paths it declares deleted are its own tombstones -- they name files it no
+/// longer references -- so they are excluded. `current.json` itself is
+/// included because every publication rewrites it: it is replaced, never
+/// deleted.
+fn read_pointer_referenced_files(pointer_path: &Path) -> Result<HashSet<String>> {
     let content = std::fs::read_to_string(pointer_path)?;
 
     if let Ok(pointer) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -4202,8 +4470,8 @@ fn read_previous_pointer_files(pointer_path: &Path) -> Result<HashSet<String>> {
             }
         }
 
-        // Extract paths from added, replaced, deleted arrays
-        for key in &["added_paths", "replaced_paths", "deleted_paths"] {
+        // Extract paths from added and replaced arrays
+        for key in &["added_paths", "replaced_paths"] {
             if let Some(paths) = pointer.get(key).and_then(|p| p.as_array()) {
                 for path in paths {
                     if let Some(path_str) = path.as_str() {
@@ -4218,6 +4486,107 @@ fn read_previous_pointer_files(pointer_path: &Path) -> Result<HashSet<String>> {
         // If we can't parse the previous pointer, assume no previous files
         Ok(HashSet::new())
     }
+}
+
+/// Whether a checkpoint-relative path names a generation object
+///
+/// Generation objects live directly under `objects/` or `manifests/` and are
+/// the only paths a tombstone may remove. Pointer and view files at the
+/// checkpoint root (`current.json`, `previous.json`, `forensic.jsonl`) are
+/// managed by publication itself and are never tombstone-removable.
+fn is_generation_object_path(path: &str) -> bool {
+    (path.starts_with("objects/") || path.starts_with("manifests/"))
+        && !path.contains("..")
+        && !path.contains('\\')
+        && path.split('/').all(|component| !component.is_empty())
+}
+
+/// Enumerate generation objects currently on disk
+///
+/// Returns checkpoint-relative paths (`objects/<name>`, `manifests/<name>`)
+/// for regular, non-temporary files. Publication temporaries (`.tmp`) are
+/// skipped: they are scratch from an interrupted write, not generation
+/// content. Symlinks and subdirectories are skipped so a tombstone can never
+/// traverse out of the checkpoint directory.
+fn enumerate_generation_objects(checkpoint_dir: &Path) -> Result<Vec<String>> {
+    let mut paths = Vec::new();
+
+    for dir_name in ["objects", "manifests"] {
+        let entries = match std::fs::read_dir(checkpoint_dir.join(dir_name)) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e.into()),
+        };
+
+        for entry in entries {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let name = entry.file_name();
+            let name = name.to_str().ok_or_else(|| {
+                anyhow!(
+                    "non-UTF-8 checkpoint object name: {}",
+                    entry.path().display()
+                )
+            })?;
+            if name.ends_with(".tmp") {
+                continue;
+            }
+            paths.push(format!("{}/{}", dir_name, name));
+        }
+    }
+
+    Ok(paths)
+}
+
+/// Apply pointer-declared tombstones after the pointer commit (plan 6.2 step 6)
+///
+/// Removes each declared path that still exists under the checkpoint
+/// directory. Only generation objects are removable; a root-level pointer or
+/// view path is skipped, not removed. A declared path that is already absent
+/// counts as resolved, so application is idempotent and safely repeatable
+/// after a crash. Touched directories are synced so a crash cannot
+/// resurrect deleted directory entries. Returns how many files were removed.
+fn apply_checkpoint_tombstones(checkpoint_dir: &Path, deleted_paths: &[String]) -> Result<usize> {
+    let mut removed = 0usize;
+    let mut touched_dirs: Vec<std::path::PathBuf> = Vec::new();
+
+    for rel in deleted_paths {
+        if !is_generation_object_path(rel) {
+            // Root-level files (pointers, compatibility view) are managed by
+            // publication itself; a tombstone never removes them.
+            continue;
+        }
+        let full = checkpoint_dir.join(rel);
+        match std::fs::remove_file(&full) {
+            Ok(()) => {
+                removed += 1;
+                if let Some(parent) = full.parent() {
+                    if !touched_dirs.iter().any(|d| d == parent) {
+                        touched_dirs.push(parent.to_path_buf());
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(anyhow!(
+                    "failed to apply checkpoint tombstone {}: {}",
+                    rel,
+                    e
+                ));
+            }
+        }
+    }
+
+    // Persist directory entries so deleted objects cannot reappear
+    for dir in &touched_dirs {
+        let dir_file = File::open(dir)?;
+        dir_file.sync_all()?;
+        drop(dir_file);
+    }
+
+    Ok(removed)
 }
 
 /// Read all events from database

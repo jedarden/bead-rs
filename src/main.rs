@@ -340,10 +340,15 @@ fn cmd_list(opts: cli::ListOptions) -> Result<()> {
                 let dependencies = load_dependencies(&conn, &issue.id)?;
                 let labels = load_labels(&conn, &issue.id)?;
                 let comments = load_comments(&conn, &issue.id, &opts.comments)?;
-                let output = serde_json::to_string(&to_needle_json(&issue, &dependencies, &labels, &comments))
-                    .map_err(|e| {
-                        Error::Internal(anyhow::anyhow!("Failed to serialize issue: {}", e))
-                    })?;
+                let output = serde_json::to_string(&to_needle_json(
+                    &issue,
+                    &dependencies,
+                    &labels,
+                    &comments,
+                ))
+                .map_err(|e| {
+                    Error::Internal(anyhow::anyhow!("Failed to serialize issue: {}", e))
+                })?;
                 println!("{}", output);
             }
         }
@@ -402,10 +407,13 @@ fn cmd_show(opts: cli::ShowOptions) -> Result<()> {
     // Output results
     if opts.json {
         // Emit as one-element array for NEEDLE v1 compatibility
-        let output = serde_json::to_string(&vec![to_needle_json(&issue, &dependencies, &labels, &comments)])
-            .map_err(|e| {
-            Error::Internal(anyhow::anyhow!("Failed to serialize issue: {}", e))
-        })?;
+        let output = serde_json::to_string(&vec![to_needle_json(
+            &issue,
+            &dependencies,
+            &labels,
+            &comments,
+        )])
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to serialize issue: {}", e)))?;
         println!("{}", output);
     } else {
         // Human-readable output
@@ -577,7 +585,10 @@ fn cmd_reopen(opts: cli::ReopenOptions) -> Result<()> {
     // Warn if assignee was preserved (issue will not appear on ready frontier)
     if had_assignee {
         eprintln!("WARNING: This issue has an assignee and will not appear on the ready frontier.");
-        eprintln!("  To make it claimable by workers: bead update {} --clear-assignee", id);
+        eprintln!(
+            "  To make it claimable by workers: bead update {} --clear-assignee",
+            id
+        );
     }
 
     Ok(())
@@ -905,6 +916,7 @@ fn cmd_sync(cmd: cli::SyncCommand) -> Result<()> {
     match cmd {
         cli::SyncCommand::FlushOnly(opts) => cmd_sync_flush_only(opts),
         cli::SyncCommand::ImportOnly(opts) => cmd_sync_import_only(opts),
+        cli::SyncCommand::Status(opts) => cmd_sync_status(opts),
     }
 }
 
@@ -974,6 +986,84 @@ fn cmd_sync_flush_only(opts: cli::SyncFlushOptions) -> Result<()> {
 
         for path in &result.changed_paths {
             eprintln!("    {}", path);
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_sync_status(opts: cli::SyncStatusOptions) -> Result<()> {
+    // Discover workspace
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    // Open database connection
+    let db_path = config.database_path();
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    let mut store = store::SqliteStore::from_conn(conn);
+
+    let checkpoint_base = config.root.join(".beads");
+    let report = service::forensic_checkpoint_status(&mut store, &checkpoint_base)?;
+
+    match opts.format.as_str() {
+        "json" => {
+            let json = serde_json::to_string_pretty(&report)?;
+            println!("{}", json);
+        }
+        "text" => {
+            println!("Checkpoint status:");
+            if let Some(mode) = &report.mode {
+                println!("  Mode: {}", mode);
+            }
+            if let Some(generation) = &report.generation_id {
+                println!("  Generation: {}", generation);
+            }
+            println!("  Live sequence: {}", report.live_sequence);
+            match report.covered_sequence {
+                Some(covered) => println!("  Covered sequence: {}", covered),
+                None => println!("  Covered sequence: (none)"),
+            }
+            println!("  Dirty: {}", if report.dirty { "yes" } else { "no" });
+            match &report.root_path {
+                Some(path) => println!(
+                    "  Root: {} ({})",
+                    path,
+                    if report.root_verified {
+                        "verified"
+                    } else {
+                        "NOT verified"
+                    }
+                ),
+                None => println!("  Root: (none)"),
+            }
+            match report.view_agrees {
+                Some(true) => println!("  View agreement: yes"),
+                Some(false) => println!("  View agreement: NO"),
+                None => {}
+            }
+            println!(
+                "  Unresolved tombstones: {}",
+                report.unresolved_tombstones.len()
+            );
+            for path in &report.unresolved_tombstones {
+                println!("    {}", path);
+            }
+            if report.ready_to_commit {
+                println!("  Ready to commit: yes");
+            } else {
+                println!("  Ready to commit: NO");
+                for reason in &report.not_ready_reasons {
+                    println!("    - {}", reason);
+                }
+            }
+        }
+        other => {
+            return Err(Error::validation(format!(
+                "unknown --format '{}' (expected 'text' or 'json')",
+                other
+            )));
         }
     }
 
@@ -1360,14 +1450,14 @@ fn load_comments(
              FROM comments
              WHERE issue_id = ? AND (resolution_state IS NULL OR resolution_state != 'resolved')
              ORDER BY created_at ASC",
-            true
+            true,
         ),
         "all" => (
             "SELECT id, author, body, reply_to_id, resolution_state, created_at
              FROM comments
              WHERE issue_id = ?
              ORDER BY created_at ASC",
-            true
+            true,
         ),
         _ => return Ok(Vec::new()), // Should never happen due to validation
     };

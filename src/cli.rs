@@ -844,6 +844,41 @@ EXIT CODES:
 Use --dry-run to validate checkpoints before risking database mutation."
     )]
     ImportOnly(SyncImportOptions),
+
+    /// Report checkpoint status and readiness to commit
+    #[command(
+        name = "status",
+        about = "Report checkpoint status and readiness to commit",
+        long_about = "Report checkpoint freshness, verification, and readiness to commit.
+
+Reads the authoritative current.json pointer, verifies the root object it
+selects, checks the forensic.jsonl compatibility view (monolithic mode),
+reapplies no changes, and lists any pointer-declared tombstones that are
+still unresolved on disk.
+
+READINESS:
+  ready_to_commit holds only when every check passes:
+  - the pointer's root object exists and hashes to the declared SHA-256
+  - the checkpoint covers the live event sequence (not dirty)
+  - no pointer-declared tombstone remains on disk
+  - the forensic.jsonl view is byte-identical to the root object
+  - the recorded checkpoint state agrees with the pointer
+
+  Repository automation must treat a not-ready checkpoint as a failed
+  pre-commit gate: run `bead sync flush-only` and include every reported
+  changed path in the same Git commit.
+
+EXAMPLES:
+  bead sync status                     # Human-readable summary
+  bead sync status --format json       # Machine-readable status
+
+OUTPUT:
+  --format json prints one JSON object with checkpoint_present, mode,
+  generation_id, live_sequence, covered_sequence, dirty, root_path,
+  root_hash, root_verified, view_agrees, unresolved_tombstones,
+  changed_paths, ready_to_commit, and not_ready_reasons."
+    )]
+    Status(SyncStatusOptions),
 }
 
 /// Options for flushing checkpoint
@@ -900,6 +935,14 @@ pub struct SyncImportOptions {
     /// Perform dry-run without activating state
     #[arg(long)]
     pub dry_run: bool,
+}
+
+/// Options for checkpoint status
+#[derive(Parser, Debug)]
+pub struct SyncStatusOptions {
+    /// Output format: text or json
+    #[arg(long, default_value = "text")]
+    pub format: String,
 }
 
 /// Label management commands

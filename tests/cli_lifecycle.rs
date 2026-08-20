@@ -617,7 +617,9 @@ fn test_reopen_warns_when_preserving_assignee() {
         .current_dir(workspace.path())
         .assert()
         .success()
-        .stderr(predicate::str::contains("WARNING: This issue has an assignee and will not appear on the ready frontier"))
+        .stderr(predicate::str::contains(
+            "WARNING: This issue has an assignee and will not appear on the ready frontier",
+        ))
         .stderr(predicate::str::contains(format!(
             "bead update {} --clear-assignee",
             issue_id

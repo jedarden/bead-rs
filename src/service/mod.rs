@@ -29,7 +29,10 @@ pub use capabilities::generate_capabilities;
 pub use changes::{
     get_changes_since, get_gap_info, get_snapshot_identity, validate_cursor, Cursor,
 };
-pub use checkpoint::{flush_checkpoint, import_forensic_checkpoint, publish_forensic_checkpoint};
+pub use checkpoint::{
+    flush_checkpoint, forensic_checkpoint_status, import_forensic_checkpoint,
+    publish_forensic_checkpoint,
+};
 pub use claim::{
     claim_issue_with_lease, claim_issue_with_policy, claim_issue_with_trace, EnhancedClaimResult,
 };
