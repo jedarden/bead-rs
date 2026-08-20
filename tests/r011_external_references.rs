@@ -669,3 +669,127 @@ fn test_reference_namespace_scoped_uniqueness() {
     assert!(stdout.contains("github/issue: 456"));
     assert!(!stdout.contains("github/issue: 123"));
 }
+
+#[test]
+fn test_ref_mutations_advance_change_feed() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let workspace = temp_dir.path();
+
+    // Initialize workspace
+    run_bead_in_workspace(workspace, &["init", "--prefix", "test"]);
+
+    // Create an issue (the create itself appends one event)
+    let (stdout, _, _) = run_bead_in_workspace(
+        workspace,
+        &["create", "--title", "Test Issue", "--priority", "2"],
+    );
+    let issue_id = stdout.trim().to_string();
+
+    let latest_cursor = || -> i64 {
+        let (stdout, _, success) = run_bead_in_workspace(workspace, &["changes", "--latest"]);
+        assert!(success);
+        stdout
+            .lines()
+            .find_map(|l| l.strip_prefix("Latest cursor: "))
+            .expect("changes --latest prints the cursor")
+            .trim()
+            .parse()
+            .unwrap()
+    };
+
+    // Baseline after the create
+    let baseline = latest_cursor();
+
+    let ref_add = |value: &str| {
+        run_bead_in_workspace(
+            workspace,
+            &[
+                "ref",
+                "add",
+                "--id",
+                &issue_id,
+                "--namespace",
+                "github",
+                "--key",
+                "issue-number",
+                "--value",
+                value,
+            ],
+        )
+    };
+    let ref_remove = || {
+        run_bead_in_workspace(
+            workspace,
+            &[
+                "ref",
+                "remove",
+                "--id",
+                &issue_id,
+                "--namespace",
+                "github",
+                "--key",
+                "issue-number",
+            ],
+        )
+    };
+
+    // ref add appends one event: the cursor advances by exactly one
+    let (_, _, success) = ref_add("12345");
+    assert!(success);
+    assert_eq!(latest_cursor(), baseline + 1);
+
+    // Idempotent re-add of the identical reference appends no event
+    let (_, _, success) = ref_add("12345");
+    assert!(success);
+    assert_eq!(latest_cursor(), baseline + 1);
+
+    // Re-add with a changed value replaces the row: one more event
+    let (_, _, success) = ref_add("67890");
+    assert!(success);
+    assert_eq!(latest_cursor(), baseline + 2);
+
+    // ref remove appends one event
+    let (_, _, success) = ref_remove();
+    assert!(success);
+    assert_eq!(latest_cursor(), baseline + 3);
+
+    // Idempotent remove of the missing reference appends no event
+    let (_, _, success) = ref_remove();
+    assert!(success);
+    assert_eq!(latest_cursor(), baseline + 3);
+
+    // The recorded events carry namespace and key, never the value verbatim
+    let conn = rusqlite::Connection::open(workspace.join(".beads/beads.db")).unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT kind, detail FROM events WHERE kind LIKE 'external_ref_%' ORDER BY sequence",
+        )
+        .unwrap();
+    let rows: Vec<(String, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(rows.len(), 3);
+
+    let (kind, detail) = &rows[0];
+    assert_eq!(kind, "external_ref_added");
+    assert!(detail.contains("\"namespace\":\"github\""));
+    assert!(detail.contains("\"key\":\"issue-number\""));
+    assert!(
+        !detail.contains("12345"),
+        "value must not be recorded verbatim"
+    );
+
+    let (kind, detail) = &rows[1];
+    assert_eq!(kind, "external_ref_added");
+    assert!(
+        !detail.contains("67890"),
+        "value must not be recorded verbatim"
+    );
+
+    let (kind, detail) = &rows[2];
+    assert_eq!(kind, "external_ref_removed");
+    assert!(detail.contains("\"namespace\":\"github\""));
+    assert!(detail.contains("\"key\":\"issue-number\""));
+}

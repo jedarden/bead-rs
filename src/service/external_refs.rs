@@ -9,11 +9,17 @@ use crate::model::{
     ExternalReference,
 };
 use crate::store::SqliteStore;
+use rusqlite::OptionalExtension;
 
 /// Add an external reference to an issue
 ///
 /// This operation is idempotent - adding the same reference multiple times
-/// will succeed without creating duplicates.
+/// will succeed without creating duplicates. Adding a reference whose value
+/// differs from the stored one replaces it.
+///
+/// A committed add that stores a new pair or a changed value appends an
+/// `external_ref_added` audit event in the same transaction; an idempotent
+/// re-add of the identical reference appends none.
 pub fn add_external_reference(
     store: &mut SqliteStore,
     issue_id: &str,
@@ -44,6 +50,19 @@ pub fn add_external_reference(
         return Err(Error::not_found(format!("Issue {}", issue_id)));
     }
 
+    // The add is upsert-shaped: INSERT OR REPLACE reports one row changed
+    // whether it creates the pair or rewrites an identical one, so the prior
+    // value decides whether a semantic mutation is about to commit. A re-add
+    // of the same (namespace, key, value) is a no-op and must append no event.
+    let prior_value: Option<String> = tx
+        .query_row(
+            "SELECT value FROM external_references
+             WHERE issue_id = ?1 AND namespace = ?2 AND key = ?3",
+            [&issue_id, &namespace, &key],
+            |row| row.get(0),
+        )
+        .optional()?;
+
     // Insert or replace the external reference
     tx.execute(
         "INSERT OR REPLACE INTO external_references (issue_id, namespace, key, value)
@@ -51,13 +70,72 @@ pub fn add_external_reference(
         [&issue_id, &namespace, &key, &value],
     )?;
 
+    // Record the mutation as an audit event inside this transaction: the live
+    // event sequence is the dirtiness signal (plan 6.2.1 P3), so an unrecorded
+    // reference add would silently read as no change. Reference values are
+    // free-form and can carry a credential-shaped string, so the detail never
+    // carries the value verbatim - only its SHA-256 fingerprint.
+    if prior_value.as_deref() != Some(value) {
+        append_external_ref_event(
+            &tx,
+            issue_id,
+            "external_ref_added",
+            &serde_json::json!({
+                "actor": "system",
+                "namespace": namespace,
+                "key": key,
+                "value_sha256": value_fingerprint(value),
+            }),
+        )?;
+    }
+
     tx.commit()?;
     Ok(())
+}
+
+/// Append the audit event for an external-reference mutation.
+///
+/// The event is inserted on the mutation's own transaction, so it commits (or
+/// rolls back) with the row it describes. `issue_id` is the event's issue
+/// subject. Callers append only after a real row change, which guarantees the
+/// issue exists (add verifies it up front; a deleted reference row cannot
+/// outlive its cascading foreign key), so the events table's own foreign key
+/// holds.
+fn append_external_ref_event(
+    tx: &rusqlite::Transaction,
+    issue_id: &str,
+    kind: &str,
+    detail: &serde_json::Value,
+) -> Result<(), Error> {
+    let now = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    let mut stmt = tx.prepare_cached(
+        "INSERT INTO events (issue_id, kind, actor, time, detail) VALUES (?1, ?2, ?3, ?4, ?5)",
+    )?;
+
+    stmt.execute((issue_id, kind, "system", now, detail.to_string()))?;
+
+    Ok(())
+}
+
+/// Non-reversible fingerprint of a reference value for audit detail.
+///
+/// R011 reference values are free-form, so an event must never record one
+/// verbatim. The digest still lets an audit consumer distinguish an identical
+/// re-write from a changed value without the value itself landing in the
+/// event log.
+fn value_fingerprint(value: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(value.as_bytes()))
 }
 
 /// Remove an external reference from an issue
 ///
 /// This operation is idempotent - removing a non-existent reference will succeed.
+/// A remove that deletes a row appends an `external_ref_removed` audit event in
+/// the same transaction; an idempotent no-op remove appends none.
 pub fn remove_external_reference(
     store: &mut SqliteStore,
     issue_id: &str,
@@ -71,12 +149,29 @@ pub fn remove_external_reference(
     let conn = store.conn();
     let tx = conn.unchecked_transaction()?;
 
-    // Remove the reference if it exists
-    tx.execute(
+    // Idempotent delete: removing a non-existent reference commits no semantic
+    // mutation, so it must append no event.
+    let removed = tx.execute(
         "DELETE FROM external_references
          WHERE issue_id = ?1 AND namespace = ?2 AND key = ?3",
         [&issue_id, &namespace, &key],
     )?;
+
+    // Record the mutation as an audit event inside this transaction: the live
+    // event sequence is the dirtiness signal (plan 6.2.1 P3), so an unrecorded
+    // reference remove would silently read as no change.
+    if removed > 0 {
+        append_external_ref_event(
+            &tx,
+            issue_id,
+            "external_ref_removed",
+            &serde_json::json!({
+                "actor": "system",
+                "namespace": namespace,
+                "key": key,
+            }),
+        )?;
+    }
 
     tx.commit()?;
     Ok(())
@@ -269,6 +364,224 @@ mod tests {
 
         // Remove a non-existent reference - should succeed
         remove_external_reference(&mut store, "bead-test004", "github", "issue-number").unwrap();
+    }
+
+    /// Reads every event row as (issue_id, kind, detail-as-JSON)
+    fn read_events(store: &mut SqliteStore) -> Vec<(Option<String>, String, serde_json::Value)> {
+        let conn = store.conn();
+        conn.prepare("SELECT issue_id, kind, detail FROM events ORDER BY sequence")
+            .unwrap()
+            .query_map([], |row| {
+                let issue_id: Option<String> = row.get(0)?;
+                let kind: String = row.get(1)?;
+                let detail: String = row.get(2)?;
+                Ok((issue_id, kind, serde_json::from_str(&detail).unwrap()))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn test_add_external_reference_appends_event() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "bead-test010", "Test Issue");
+
+        add_external_reference(
+            &mut store,
+            "bead-test010",
+            "github",
+            "issue-number",
+            "12345",
+        )
+        .unwrap();
+
+        let events = read_events(&mut store);
+        assert_eq!(events.len(), 1, "one event per committed add");
+
+        let (issue_id, kind, detail) = &events[0];
+        assert_eq!(issue_id.as_deref(), Some("bead-test010"));
+        assert_eq!(kind, "external_ref_added");
+        assert_eq!(detail["namespace"], "github");
+        assert_eq!(detail["key"], "issue-number");
+        assert_eq!(detail["value_sha256"], value_fingerprint("12345"));
+    }
+
+    #[test]
+    fn test_add_external_reference_event_omits_value_verbatim() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "bead-test011", "Test Issue");
+
+        // A credential-shaped value must never reach the event log verbatim
+        let fixture_value = "bearer-sup3r-s3cret-fixture-value";
+        add_external_reference(&mut store, "bead-test011", "github", "token", fixture_value)
+            .unwrap();
+
+        let events = read_events(&mut store);
+        assert_eq!(events.len(), 1);
+
+        let raw_detail = {
+            let conn = store.conn();
+            conn.query_row(
+                "SELECT detail FROM events WHERE kind = 'external_ref_added'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+        };
+        assert!(
+            !raw_detail.contains(fixture_value),
+            "event detail must not carry the value verbatim"
+        );
+        assert_eq!(
+            events[0].2["value_sha256"],
+            value_fingerprint(fixture_value)
+        );
+    }
+
+    #[test]
+    fn test_add_duplicate_reference_idempotent_appends_no_event() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "bead-test012", "Test Issue");
+
+        add_external_reference(
+            &mut store,
+            "bead-test012",
+            "github",
+            "issue-number",
+            "12345",
+        )
+        .unwrap();
+        add_external_reference(
+            &mut store,
+            "bead-test012",
+            "github",
+            "issue-number",
+            "12345",
+        )
+        .unwrap(); // Identical re-add
+
+        let events = read_events(&mut store);
+        assert_eq!(events.len(), 1, "an identical re-add is not a mutation");
+    }
+
+    #[test]
+    fn test_add_reference_with_changed_value_appends_event() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "bead-test013", "Test Issue");
+
+        add_external_reference(
+            &mut store,
+            "bead-test013",
+            "github",
+            "issue-number",
+            "12345",
+        )
+        .unwrap();
+        // The add is upsert-shaped: replacing the stored value is a mutation
+        add_external_reference(
+            &mut store,
+            "bead-test013",
+            "github",
+            "issue-number",
+            "67890",
+        )
+        .unwrap();
+
+        let events = read_events(&mut store);
+        assert_eq!(events.len(), 2, "a changed value is a semantic mutation");
+        assert_eq!(events[1].2["value_sha256"], value_fingerprint("67890"));
+    }
+
+    #[test]
+    fn test_remove_external_reference_appends_event() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "bead-test014", "Test Issue");
+
+        add_external_reference(
+            &mut store,
+            "bead-test014",
+            "github",
+            "issue-number",
+            "12345",
+        )
+        .unwrap();
+        remove_external_reference(&mut store, "bead-test014", "github", "issue-number").unwrap();
+
+        let events = read_events(&mut store);
+        assert_eq!(events.len(), 2, "one event per committed mutation");
+
+        let (issue_id, kind, detail) = &events[1];
+        assert_eq!(issue_id.as_deref(), Some("bead-test014"));
+        assert_eq!(kind, "external_ref_removed");
+        assert_eq!(detail["namespace"], "github");
+        assert_eq!(detail["key"], "issue-number");
+    }
+
+    #[test]
+    fn test_remove_nonexistent_reference_appends_no_event() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "bead-test015", "Test Issue");
+
+        remove_external_reference(&mut store, "bead-test015", "github", "issue-number").unwrap();
+
+        let events = read_events(&mut store);
+        assert_eq!(events.len(), 0, "a no-op remove is not a mutation");
+    }
+
+    #[test]
+    fn test_external_reference_events_advance_sequence_per_mutation() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "bead-test016", "Test Issue");
+
+        let max_sequence = |store: &mut SqliteStore| -> i64 {
+            let conn = store.conn();
+            conn.query_row("SELECT COALESCE(MAX(sequence), 0) FROM events", [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+        };
+
+        let before = max_sequence(&mut store);
+
+        add_external_reference(
+            &mut store,
+            "bead-test016",
+            "github",
+            "issue-number",
+            "12345",
+        )
+        .unwrap();
+        assert_eq!(max_sequence(&mut store), before + 1);
+
+        // Identical re-add does not advance the sequence
+        add_external_reference(
+            &mut store,
+            "bead-test016",
+            "github",
+            "issue-number",
+            "12345",
+        )
+        .unwrap();
+        assert_eq!(max_sequence(&mut store), before + 1);
+
+        // Changed value does advance it
+        add_external_reference(
+            &mut store,
+            "bead-test016",
+            "github",
+            "issue-number",
+            "67890",
+        )
+        .unwrap();
+        assert_eq!(max_sequence(&mut store), before + 2);
+
+        remove_external_reference(&mut store, "bead-test016", "github", "issue-number").unwrap();
+        assert_eq!(max_sequence(&mut store), before + 3);
+
+        // No-op re-remove does not advance the sequence
+        remove_external_reference(&mut store, "bead-test016", "github", "issue-number").unwrap();
+        assert_eq!(max_sequence(&mut store), before + 3);
     }
 
     #[test]
