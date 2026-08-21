@@ -31,7 +31,7 @@ pub use changes::{
 };
 pub use checkpoint::{
     flush_checkpoint, forensic_checkpoint_status, import_forensic_checkpoint,
-    publish_forensic_checkpoint,
+    load_checkpoint_config, publish_forensic_checkpoint,
 };
 // claim_issue_with_trace is public library API but unused by the binary
 #[allow(unused_imports)]

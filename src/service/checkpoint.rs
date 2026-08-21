@@ -6,16 +6,18 @@
 //!
 //! The checkpoint system operates in two distinct modes:
 //!
-//! ## Pre-F017 (Current Default)
-//! - Writes to `.beads/issues.jsonl`
+//! ## Pre-F017 (Caller-Selected Export)
+//! - Written by `sync flush-only --output PATH`
 //! - Contains issue records only
 //! - Used for basic backup and interchange
 //! - Single-file format with one JSON object per line
 //!
-//! ## F017 Forensic Checkpoint Set (Code Complete, Not Yet Activated)
+//! ## F017 Forensic Checkpoint Set (Default Flush Path)
 //! - Writes to `.beads/checkpoint/` directory structure
 //! - Contains issues, events, and provenance receipts
-//! - Supports both monolithic and sharded modes
+//! - Supports both monolithic and sharded modes, selected from the
+//!   recorded plan 6.1.1 thresholds (`.beads/config.json` may force a mode
+//!   or override the threshold table)
 //! - Content-addressed storage with SHA-256 hashes
 //! - Atomic pointer-based generation management
 //! - Git-trackable artifacts for version control integration
@@ -106,6 +108,389 @@ impl std::str::FromStr for CheckpointMode {
     }
 }
 
+/// Versioned checkpoint threshold configuration (plan 6.1.1)
+///
+/// These are the *recorded* thresholds a flush consults: they select
+/// monolithic versus sharded mode and bound issue-shard and event-object
+/// sizes. The defaults are the plan 6.1.1 values. Every published sharded
+/// manifest records the thresholds that produced it, and a later flush
+/// retains them unless the workspace overrides them in
+/// `.beads/config.json` (`checkpoint.thresholds`), so threshold changes in
+/// code never reshuffle an existing workspace's partition plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckpointThresholds {
+    /// Threshold-table version; bump when the field set changes meaning
+    pub version: u32,
+    /// Issue records above which the native default switches to sharded
+    pub max_monolith_issue_records: u64,
+    /// Total serialized monolith bytes above which the default switches
+    pub max_monolith_total_bytes: u64,
+    /// Any single record line above this switches mode; forcing a
+    /// monolith never bypasses this limit
+    pub max_record_line_bytes: u64,
+    /// Issue-shard split target: record count
+    pub max_shard_issue_records: u64,
+    /// Issue-shard split target: serialized bytes (lines plus newlines)
+    pub max_shard_bytes: u64,
+    /// Event-object seal target: record count
+    pub max_event_object_events: u64,
+    /// Event-object seal target: serialized bytes
+    pub max_event_object_bytes: u64,
+}
+
+impl Default for CheckpointThresholds {
+    fn default() -> Self {
+        CheckpointThresholds {
+            version: 1,
+            max_monolith_issue_records: 50_000,
+            max_monolith_total_bytes: 64 * 1024 * 1024,
+            max_record_line_bytes: 8 * 1024 * 1024,
+            max_shard_issue_records: 10_000,
+            max_shard_bytes: 50 * 1024 * 1024,
+            max_event_object_events: 100_000,
+            max_event_object_bytes: 64 * 1024 * 1024,
+        }
+    }
+}
+
+impl CheckpointThresholds {
+    /// Thresholds as recorded in a sharded manifest's `partition_thresholds`
+    pub fn to_manifest_json(self) -> serde_json::Value {
+        serde_json::to_value(self).expect("thresholds serialize to JSON")
+    }
+
+    /// Parse thresholds recorded in a manifest, rejecting a version this
+    /// build does not understand or any nonpositive limit
+    fn from_manifest_json(value: &serde_json::Value) -> Option<Self> {
+        let parsed: CheckpointThresholds = serde_json::from_value(value.clone()).ok()?;
+        if parsed.version != 1 {
+            return None;
+        }
+        if parsed.max_monolith_issue_records == 0
+            || parsed.max_monolith_total_bytes == 0
+            || parsed.max_record_line_bytes == 0
+            || parsed.max_shard_issue_records == 0
+            || parsed.max_shard_bytes == 0
+            || parsed.max_event_object_events == 0
+            || parsed.max_event_object_bytes == 0
+        {
+            return None;
+        }
+        Some(parsed)
+    }
+}
+
+/// How a flush decides which checkpoint mode to publish
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModePolicy {
+    /// Select from the recorded section 6.1.1 thresholds
+    Adaptive,
+    /// Operator-forced mode (plan 6.1.1). Forcing sharded is always
+    /// honored; forcing a monolith is refused while the content exceeds
+    /// any recorded record/byte safety limit.
+    Forced(CheckpointMode),
+}
+
+/// Checkpoint configuration recorded in `.beads/config.json`
+///
+/// Both keys are optional; absence means the recorded plan 6.1.1 defaults
+/// (and, for thresholds, the previous manifest's recorded values) apply.
+///
+/// ```json
+/// { "checkpoint": { "mode": "sharded",
+///                   "thresholds": { "version": 1, "max_monolith_issue_records": 4 } } }
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct CheckpointConfig {
+    /// Forced checkpoint mode; `None` selects adaptively from thresholds
+    pub mode: Option<CheckpointMode>,
+    /// Threshold overrides; `None` retains recorded/default thresholds
+    pub thresholds: Option<CheckpointThresholds>,
+}
+
+/// Read the checkpoint section of `.beads/config.json`, if present
+pub fn load_checkpoint_config(beads_dir: &Path) -> Result<CheckpointConfig> {
+    let config_path = beads_dir.join("config.json");
+    if !config_path.exists() {
+        return Ok(CheckpointConfig::default());
+    }
+
+    let raw = std::fs::read_to_string(&config_path)?;
+    let parsed: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| anyhow!("Invalid .beads/config.json: {}", e))?;
+
+    let Some(section) = parsed.get("checkpoint") else {
+        return Ok(CheckpointConfig::default());
+    };
+    if section.is_null() {
+        return Ok(CheckpointConfig::default());
+    }
+
+    let mut config = CheckpointConfig::default();
+
+    if let Some(mode_value) = section.get("mode") {
+        let mode_str = mode_value
+            .as_str()
+            .ok_or_else(|| anyhow!(".beads/config.json checkpoint.mode must be a string"))?;
+        config.mode = match mode_str {
+            "adaptive" => None,
+            other => Some(
+                std::str::FromStr::from_str(other)
+                    .map_err(|e| anyhow!(".beads/config.json checkpoint.mode: {}", e))?,
+            ),
+        };
+    }
+
+    if let Some(thresholds_value) = section.get("thresholds") {
+        if !thresholds_value.is_null() {
+            let raw_value = thresholds_value.clone();
+            config.thresholds =
+                CheckpointThresholds::from_manifest_json(&raw_value).or_else(|| {
+                    // A partial override merges over the defaults so tests and
+                    // operators can tune one limit without restating the table
+                    let mut merged = serde_json::to_value(CheckpointThresholds::default())
+                        .expect("thresholds serialize to JSON");
+                    if let (Some(target), Some(source)) =
+                        (merged.as_object_mut(), raw_value.as_object())
+                    {
+                        for (key, value) in source {
+                            target.insert(key.clone(), value.clone());
+                        }
+                    }
+                    CheckpointThresholds::from_manifest_json(&merged)
+                });
+            if config.thresholds.is_none() {
+                bail!(
+                    "Invalid .beads/config.json checkpoint.thresholds: expected version-1 limits, all positive"
+                );
+            }
+        }
+    }
+
+    Ok(config)
+}
+
+/// Size statistics of the would-be monolith, used for mode selection
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MonolithStats {
+    pub issue_records: u64,
+    pub total_bytes: u64,
+    pub max_line_bytes: u64,
+}
+
+/// Resolve the threshold table a flush consults (plan 6.1.1, 6.2 step 3)
+///
+/// Precedence: an explicit `.beads/config.json` override, then the table
+/// recorded in the previous sharded manifest -- so a later code-default
+/// change never reshuffles an existing workspace's partition plan -- then
+/// the recorded plan 6.1.1 defaults.
+fn resolve_checkpoint_thresholds(
+    config: &CheckpointConfig,
+    previous_manifest: Option<&serde_json::Value>,
+) -> CheckpointThresholds {
+    if let Some(thresholds) = config.thresholds {
+        return thresholds;
+    }
+    if let Some(manifest) = previous_manifest {
+        if let Some(recorded) = manifest.get("partition_thresholds") {
+            if let Some(thresholds) = CheckpointThresholds::from_manifest_json(recorded) {
+                return thresholds;
+            }
+        }
+    }
+    CheckpointThresholds::default()
+}
+
+/// The outgoing generation a new publication supersedes
+///
+/// Read from `current.json` before anything is written, so mode selection,
+/// threshold retention, partition-plan retention, and the transition
+/// tombstone all see the generation being replaced.
+struct PreviousGeneration {
+    /// Files the outgoing pointer still references (drives tombstone math)
+    referenced_files: HashSet<String>,
+    /// The outgoing pointer's recorded mode, when parseable
+    mode: Option<CheckpointMode>,
+    /// The outgoing pointer's active root, checkpoint-relative
+    root_path: Option<String>,
+    /// The outgoing sharded manifest, when the outgoing mode was sharded
+    manifest: Option<serde_json::Value>,
+}
+
+/// Read the generation `current.json` currently selects (plan 6.2 step 3)
+///
+/// Returns `None` when no pointer exists or it is unparseable: an
+/// unparseable pointer still gets preserved as `previous.json` by the
+/// publication itself, but it carries no retention information.
+fn read_previous_generation(checkpoint_dir: &Path) -> Result<Option<PreviousGeneration>> {
+    let pointer_path = checkpoint_dir.join("current.json");
+    if !pointer_path.exists() {
+        return Ok(None);
+    }
+
+    let content = std::fs::read_to_string(&pointer_path)?;
+    let Ok(pointer) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return Ok(None);
+    };
+
+    let referenced_files = read_pointer_referenced_files(&pointer_path)?;
+    let mode = pointer
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .and_then(|s| std::str::FromStr::from_str(s).ok());
+    let root_path = pointer
+        .get("active_root")
+        .and_then(|r| r.get("path"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    // A sharded pointer selects its manifest as root; read it so the next
+    // flush can retain the recorded partition plan and thresholds. Any
+    // failure to read or parse degrades safely to a fresh plan.
+    let manifest = match (&mode, &root_path) {
+        (Some(CheckpointMode::Sharded), Some(rel))
+            if rel.starts_with("manifests/") && is_generation_object_path(rel) =>
+        {
+            std::fs::read_to_string(checkpoint_dir.join(rel))
+                .ok()
+                .and_then(|data| serde_json::from_str(&data).ok())
+        }
+        _ => None,
+    };
+
+    Ok(Some(PreviousGeneration {
+        referenced_files,
+        mode,
+        root_path,
+        manifest,
+    }))
+}
+
+/// The fully serialized checkpoint corpus in canonical order (plan 6.2 step 2)
+///
+/// Every record line is serialized exactly once: mode selection counts bytes
+/// from these lines and both publishers consume them, so a flush never
+/// serializes the same record twice and the counted monolith is byte-for-byte
+/// what a monolithic publication would write.
+struct SerializedCorpus {
+    /// Enriched issue record lines, parallel to the sorted issue list
+    issue_lines: Vec<Vec<u8>>,
+    /// Event record lines, parallel to the sorted event list
+    event_lines: Vec<Vec<u8>>,
+    /// Receipt record lines, parallel to the sorted receipt list
+    receipt_lines: Vec<Vec<u8>>,
+}
+
+/// Serialize every checkpoint record line in canonical order
+fn serialize_corpus(
+    issues: &[Issue],
+    events: &[EventRecord],
+    receipts: &[ProvenanceReceipt],
+    graph_data: &IssueGraphData,
+) -> Result<SerializedCorpus> {
+    let mut issue_lines = Vec::with_capacity(issues.len());
+    for issue in issues {
+        let issue_dependencies: Vec<_> = graph_data
+            .dependencies
+            .iter()
+            .filter(|(blocked, _, _)| blocked == &issue.id)
+            .collect();
+        let issue_labels: Vec<_> = graph_data
+            .labels
+            .iter()
+            .filter(|(issue_id, _)| issue_id == &issue.id)
+            .collect();
+        let issue_obj = build_enriched_issue_object(issue, issue_dependencies, issue_labels)?;
+        let record = serde_json::json!({
+            "record_type": "issue",
+            "issue": issue_obj
+        });
+        issue_lines.push(serde_json::to_vec(&record)?);
+    }
+
+    let mut event_lines = Vec::with_capacity(events.len());
+    for event in events {
+        let record = CheckpointRecord::Event {
+            event: event.clone(),
+        };
+        event_lines.push(serde_json::to_vec(&record)?);
+    }
+
+    let mut receipt_lines = Vec::with_capacity(receipts.len());
+    for receipt in receipts {
+        let record = CheckpointRecord::ProvenanceReceipt {
+            provenance_receipt: receipt.clone(),
+        };
+        receipt_lines.push(serde_json::to_vec(&record)?);
+    }
+
+    Ok(SerializedCorpus {
+        issue_lines,
+        event_lines,
+        receipt_lines,
+    })
+}
+
+/// Monolith size statistics from the serialized corpus
+fn corpus_monolith_stats(corpus: &SerializedCorpus) -> MonolithStats {
+    let mut stats = MonolithStats {
+        issue_records: corpus.issue_lines.len() as u64,
+        ..MonolithStats::default()
+    };
+    for line in corpus
+        .issue_lines
+        .iter()
+        .chain(corpus.event_lines.iter())
+        .chain(corpus.receipt_lines.iter())
+    {
+        // +1 for the newline every JSONL line carries
+        stats.total_bytes += line.len() as u64 + 1;
+        stats.max_line_bytes = stats.max_line_bytes.max(line.len() as u64);
+    }
+    stats
+}
+
+/// Select the checkpoint mode from the recorded thresholds (plan 6.1.1)
+///
+/// Adaptive policy switches to sharded when the monolith would exceed the
+/// issue-record count, total-byte, or single-line limit. A forced sharded
+/// mode is always honored. A forced monolith is refused while any limit
+/// would be exceeded -- forcing output never bypasses the safety limits.
+pub fn select_checkpoint_mode(
+    stats: &MonolithStats,
+    thresholds: &CheckpointThresholds,
+    policy: ModePolicy,
+) -> Result<CheckpointMode> {
+    let exceeds = stats.issue_records > thresholds.max_monolith_issue_records
+        || stats.total_bytes > thresholds.max_monolith_total_bytes
+        || stats.max_line_bytes > thresholds.max_record_line_bytes;
+
+    match policy {
+        ModePolicy::Forced(CheckpointMode::Sharded) => Ok(CheckpointMode::Sharded),
+        ModePolicy::Forced(CheckpointMode::Monolithic) => {
+            if exceeds {
+                bail!(
+                    "Forced monolithic checkpoint would exceed recorded safety limits \
+                     ({} issue records, {} total bytes, {} max line bytes; limits {}, {}, {}): \
+                     remove checkpoint.mode from .beads/config.json or set it to \"sharded\"/\"adaptive\"",
+                    stats.issue_records,
+                    stats.total_bytes,
+                    stats.max_line_bytes,
+                    thresholds.max_monolith_issue_records,
+                    thresholds.max_monolith_total_bytes,
+                    thresholds.max_record_line_bytes
+                );
+            }
+            Ok(CheckpointMode::Monolithic)
+        }
+        ModePolicy::Adaptive => Ok(if exceeds {
+            CheckpointMode::Sharded
+        } else {
+            CheckpointMode::Monolithic
+        }),
+    }
+}
+
 /// Forensic checkpoint record types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "record_type")]
@@ -178,7 +563,6 @@ pub struct ReceiptCounts {
 /// Forensic flush result
 #[derive(Debug, Clone)]
 pub struct ForensicFlushResult {
-    #[allow(dead_code)]
     pub mode: CheckpointMode,
     pub generation_id: String,
     pub issue_count: usize,
@@ -1222,6 +1606,19 @@ fn stage_sharded_checkpoint(pointer_path: &Path) -> Result<ForensicStaging> {
     }
 
     let input_hash = format!("{:x}", hasher.finalize());
+
+    // Canonical order is a property of the staged corpus, not of the manifest
+    // that delivered it: shards may be listed in any order (issue shards are
+    // keyed by hash prefix, so their bead IDs interleave), and the corpus the
+    // publisher serializes is sorted by bead ID regardless.
+    issues.sort_by(|a, b| a.id.cmp(&b.id));
+    dependencies.sort();
+    labels.sort();
+    events.sort_by(|a, b| {
+        (a.origin_store_uuid.as_str(), a.origin_event_sequence)
+            .cmp(&(b.origin_store_uuid.as_str(), b.origin_event_sequence))
+    });
+    receipts.sort_by(|a, b| a.receipt_id.cmp(&b.receipt_id));
 
     Ok(ForensicStaging {
         issues,
@@ -3392,7 +3789,7 @@ pub fn flush_checkpoint(store: &mut SqliteStore, output_path: &Path) -> Result<F
 /// - Git-trackable changed paths
 pub fn publish_forensic_checkpoint(
     store: &mut SqliteStore,
-    mode: CheckpointMode,
+    config: &CheckpointConfig,
     checkpoint_base: &Path,
 ) -> Result<ForensicFlushResult> {
     let conn = store.conn();
@@ -3458,38 +3855,67 @@ pub fn publish_forensic_checkpoint(
     std::fs::create_dir_all(checkpoint_dir.join("manifests"))?;
     std::fs::create_dir_all(checkpoint_dir.join("objects"))?;
 
+    // Serialize every record line once (plan 6.2 step 2): mode selection
+    // counts bytes from the same lines the publisher writes.
+    let corpus = serialize_corpus(
+        &sorted_issues,
+        &sorted_events,
+        &sorted_receipts,
+        &graph_data,
+    )?;
+
+    // Read the outgoing generation before publishing anything, then select
+    // the mode from the recorded configuration and thresholds (plan 6.1.1,
+    // 6.2 step 3): an explicit `.beads/config.json` mode forces output,
+    // otherwise the would-be monolith's size against the threshold table
+    // decides.
+    let previous = read_previous_generation(&checkpoint_dir)?;
+    let thresholds =
+        resolve_checkpoint_thresholds(config, previous.as_ref().and_then(|p| p.manifest.as_ref()));
+    let stats = corpus_monolith_stats(&corpus);
+    let policy = match config.mode {
+        Some(mode) => ModePolicy::Forced(mode),
+        None => ModePolicy::Adaptive,
+    };
+    let mode = select_checkpoint_mode(&stats, &thresholds, policy)?;
+
     let mut changed_paths = Vec::new();
 
-    // Publish based on mode
-    let (root_hash, root_path) = match mode {
+    // Publish based on mode. The output's `referenced_paths` lists every
+    // file the new generation selects; `changed_paths` accumulates what this
+    // generation actually wrote (what one external Git commit must carry).
+    let publication = match mode {
         CheckpointMode::Monolithic => publish_monolithic_checkpoint(
-            &sorted_issues,
-            &sorted_events,
-            &sorted_receipts,
-            &graph_data,
+            &corpus,
             &checkpoint_dir,
             &generation_id,
             &mut changed_paths,
         )?,
         CheckpointMode::Sharded => {
-            let config = ShardedConfig {
+            let sharded_config = ShardedConfig {
                 generation_id: generation_id.clone(),
                 store_uuid: store_uuid.clone(),
                 snapshot_sequence: current_sequence,
             };
             publish_sharded_checkpoint(
-                &sorted_issues,
-                &sorted_events,
-                &sorted_receipts,
-                &graph_data,
+                ShardedPublishInputs {
+                    issues: &sorted_issues,
+                    events: &sorted_events,
+                    receipts: &sorted_receipts,
+                    corpus: &corpus,
+                    config: sharded_config,
+                    thresholds,
+                    previous_manifest: previous.as_ref().and_then(|p| p.manifest.as_ref()),
+                },
                 &checkpoint_dir,
-                &config,
                 &mut changed_paths,
             )?
         }
     };
 
     // Update checkpoint pointers in a write transaction
+    let root_hash = publication.root_hash;
+    let root_path = publication.root_path;
     let conn = store.conn();
     let tx = conn.unchecked_transaction()?;
 
@@ -3517,16 +3943,22 @@ pub fn publish_forensic_checkpoint(
 
         changed_paths.push("previous.json".to_string());
 
-        // Read the outgoing pointer to get the files it still references
-        read_pointer_referenced_files(&current_pointer_path)?
+        // The outgoing pointer's referenced set was read before publication
+        previous
+            .as_ref()
+            .map(|p| p.referenced_files.clone())
+            .unwrap_or_default()
     } else {
         HashSet::new()
     };
 
     // Calculate path categories. current.json is rewritten by this
     // publication, so it counts as a current file and can only be replaced,
-    // never deleted (plan 6.2 step 6, 6.2.1 P2).
-    let mut current_files: HashSet<String> = changed_paths.iter().cloned().collect();
+    // never deleted (plan 6.2 step 6, 6.2.1 P2). The current set is every
+    // file the new generation references, not merely what it wrote: reused
+    // content-addressed objects stay referenced and must never be
+    // tombstoned while the generation selects them.
+    let mut current_files: HashSet<String> = publication.referenced_paths.iter().cloned().collect();
     current_files.insert("current.json".to_string());
     let added_paths: Vec<String> = current_files.difference(&previous_files).cloned().collect();
     let replaced_paths: Vec<String> = current_files
@@ -3548,10 +3980,27 @@ pub fn publish_forensic_checkpoint(
         .filter(|p| is_generation_object_path(p))
         .cloned()
         .collect();
-    let deleted_paths_sorted: Vec<String> = enumerate_generation_objects(&checkpoint_dir)?
+    let mut deleted_paths_sorted: Vec<String> = enumerate_generation_objects(&checkpoint_dir)?
         .into_iter()
         .filter(|p| !retained_objects.contains(p))
         .collect();
+
+    // A mode transition supersedes the outgoing root outright: the new
+    // generation's changed-path set carries a tombstone for it (plan 6.1.1).
+    // Everything else the outgoing generation referenced stays retained by
+    // previous.json for one more generation, per the rule above.
+    if let Some(previous) = &previous {
+        if let (Some(previous_mode), Some(root_path)) = (&previous.mode, &previous.root_path) {
+            if *previous_mode != mode
+                && is_generation_object_path(root_path)
+                && !deleted_paths_sorted.contains(root_path)
+            {
+                deleted_paths_sorted.push(root_path.clone());
+            }
+        }
+    }
+    deleted_paths_sorted.sort();
+    deleted_paths_sorted.dedup();
 
     // Sort for deterministic output
     let mut added_paths_sorted = added_paths;
@@ -3821,15 +4270,24 @@ pub fn forensic_checkpoint_status(
 }
 
 /// Publish monolithic forensic checkpoint
+/// What a publication produced
+struct PublicationOutput {
+    /// Canonical SHA-256 of the active root's complete bytes
+    root_hash: String,
+    /// Checkpoint-relative path of the active root
+    root_path: String,
+    /// Every checkpoint-relative file the new generation references,
+    /// including reused content-addressed objects and the compatibility
+    /// view. Retention must keep all of them selectable.
+    referenced_paths: Vec<String>,
+}
+
 fn publish_monolithic_checkpoint(
-    issues: &[Issue],
-    events: &[EventRecord],
-    receipts: &[ProvenanceReceipt],
-    graph_data: &IssueGraphData,
+    corpus: &SerializedCorpus,
     checkpoint_dir: &Path,
     generation_id: &str,
     changed_paths: &mut Vec<String>,
-) -> Result<(String, String)> {
+) -> Result<PublicationOutput> {
     let objects_dir = checkpoint_dir.join("objects");
     // Temp file is generation-scoped (unique scratch name); the final object
     // is content-addressed below, per plan 6.1.1 / 6.2.1 P1.
@@ -3839,49 +4297,14 @@ fn publish_monolithic_checkpoint(
     let temp_file = File::create(&temp_path)?;
     let mut writer = BufWriter::new(temp_file);
 
-    // Write issue records
-    for issue in issues {
-        // Collect dependencies for this issue in canonical order
-        let issue_dependencies: Vec<_> = graph_data
-            .dependencies
-            .iter()
-            .filter(|(blocked, _, _)| blocked == &issue.id)
-            .collect();
-
-        // Collect labels for this issue in canonical order
-        let issue_labels: Vec<_> = graph_data
-            .labels
-            .iter()
-            .filter(|(issue_id, _)| issue_id == &issue.id)
-            .collect();
-
-        // Build enriched issue object with dependencies and labels
-        let issue_obj = build_enriched_issue_object(issue, issue_dependencies, issue_labels)?;
-
-        // Wrap in record envelope for serialization
-        let record = serde_json::json!({
-            "record_type": "issue",
-            "issue": issue_obj
-        });
-        serde_json::to_writer(&mut writer, &record)?;
-        writer.write_all(b"\n")?;
-    }
-
-    // Write event records
-    for event in events {
-        let record = CheckpointRecord::Event {
-            event: event.clone(),
-        };
-        serde_json::to_writer(&mut writer, &record)?;
-        writer.write_all(b"\n")?;
-    }
-
-    // Write provenance receipt records
-    for receipt in receipts {
-        let record = CheckpointRecord::ProvenanceReceipt {
-            provenance_receipt: receipt.clone(),
-        };
-        serde_json::to_writer(&mut writer, &record)?;
+    // Write the pre-serialized record lines in canonical order
+    for line in corpus
+        .issue_lines
+        .iter()
+        .chain(corpus.event_lines.iter())
+        .chain(corpus.receipt_lines.iter())
+    {
+        writer.write_all(line)?;
         writer.write_all(b"\n")?;
     }
 
@@ -3930,274 +4353,431 @@ fn publish_monolithic_checkpoint(
     changed_paths.push(format!("objects/{}.jsonl", hash));
     changed_paths.push("forensic.jsonl".to_string());
 
-    Ok((hash.clone(), format!("objects/{}.jsonl", hash)))
+    let root_path = format!("objects/{}.jsonl", hash);
+    Ok(PublicationOutput {
+        root_hash: hash,
+        root_path: root_path.clone(),
+        referenced_paths: vec![root_path, "forensic.jsonl".to_string()],
+    })
 }
 
-/// Publish sharded forensic checkpoint
-fn publish_sharded_checkpoint(
-    issues: &[Issue],
-    events: &[EventRecord],
-    receipts: &[ProvenanceReceipt],
-    graph_data: &IssueGraphData,
-    checkpoint_dir: &Path,
-    config: &ShardedConfig,
+/// Maximum hex-prefix depth of an issue shard partition (a shard key is a
+/// 64-hex-character SHA-256 digest)
+const MAX_PARTITION_DEPTH: usize = 16;
+
+/// Default shallow partition plan: the sixteen single-digit hex prefixes
+/// (plan 6.1.1: "begin with a shallow prefix")
+fn default_partition_plan() -> Vec<String> {
+    (0..16).map(|d| format!("{:x}", d)).collect()
+}
+
+/// Shard key of a bead ID: the lowercase hex SHA-256 of the UTF-8 ID
+/// (plan 6.1.1 issue shard assignment)
+fn issue_shard_key(id: &str) -> String {
+    format!("{:x}", Sha256::digest(id.as_bytes()))
+}
+
+/// Whether a recorded partition plan is structurally usable
+///
+/// Prefixes must be lowercase hex of length 1..=MAX_PARTITION_DEPTH, pairwise
+/// disjoint (no prefix of another), and together cover the whole key space.
+/// Coverage follows from the mass argument: over a common denominator of
+/// 16^MAX_PARTITION_DEPTH, a depth-k prefix covers 16^(MAX_PARTITION_DEPTH-k)
+/// shares, and disjoint prefixes cover everything exactly when their shares
+/// sum to the whole. A plan failing any check is discarded and rebuilt from
+/// the shallow default -- correctness never depends on the plan, only write
+/// amplification does.
+fn partition_plan_is_valid(prefixes: &[String]) -> bool {
+    if prefixes.is_empty() {
+        return false;
+    }
+
+    let mut sorted: Vec<&str> = prefixes.iter().map(|s| s.as_str()).collect();
+    sorted.sort();
+
+    for prefix in &sorted {
+        if prefix.is_empty() || prefix.len() > MAX_PARTITION_DEPTH {
+            return false;
+        }
+        if !prefix
+            .chars()
+            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+        {
+            return false;
+        }
+    }
+
+    // Pairwise disjoint: sorted neighbors cannot be prefix-related
+    for pair in sorted.windows(2) {
+        if pair[1].starts_with(pair[0]) {
+            return false;
+        }
+    }
+
+    let whole = 16u128.pow(MAX_PARTITION_DEPTH as u32);
+    let covered: u128 = sorted
+        .iter()
+        .map(|p| 16u128.pow((MAX_PARTITION_DEPTH - p.len()) as u32))
+        .sum();
+    covered == whole
+}
+
+/// Load the recorded issue partition plan from a previous manifest
+fn load_issue_partition_plan(manifest: &serde_json::Value) -> Option<Vec<String>> {
+    let recorded = manifest.get("issue_partition")?.as_array()?;
+    let mut prefixes: Vec<String> = recorded
+        .iter()
+        .map(|v| v.as_str().map(|s| s.to_string()))
+        .collect::<Option<Vec<_>>>()?;
+    if !partition_plan_is_valid(&prefixes) {
+        return None;
+    }
+    prefixes.sort();
+    Some(prefixes)
+}
+
+/// The plan prefix a shard key belongs to, walking key digits shallow-first
+fn plan_prefix_for_key<'a>(key: &str, plan: &HashSet<&'a str>) -> Option<&'a str> {
+    for len in 1..=key.len().min(MAX_PARTITION_DEPTH) {
+        if let Some(prefix) = plan.get(&key[..len]) {
+            return Some(prefix);
+        }
+    }
+    None
+}
+
+/// Assign each issue index to its plan prefix, buckets ordered by prefix
+fn assign_issue_buckets(
+    keys: &[String],
+    plan: &[String],
+) -> Result<std::collections::BTreeMap<String, Vec<usize>>> {
+    let plan_set: HashSet<&str> = plan.iter().map(|s| s.as_str()).collect();
+    let mut buckets = std::collections::BTreeMap::new();
+    for (i, key) in keys.iter().enumerate() {
+        let prefix = plan_prefix_for_key(key, &plan_set)
+            .ok_or_else(|| anyhow!("recorded partition plan does not cover shard key {}", key))?;
+        buckets
+            .entry(prefix.to_string())
+            .or_insert_with(Vec::new)
+            .push(i);
+    }
+    Ok(buckets)
+}
+
+/// Group record indexes into objects sealed at the recorded targets
+///
+/// Greedy packing in the given canonical order: an object is closed once it
+/// holds `max_records` records or when the next line would push it past
+/// `max_bytes`. Because packing depends only on the prefix it covers,
+/// re-packing a corpus that only appended records reproduces every earlier
+/// object byte-for-byte, which is what lets a later flush reuse sealed
+/// objects instead of rewriting them.
+fn pack_sealed_groups(line_lens: &[usize], max_records: u64, max_bytes: u64) -> Vec<Vec<usize>> {
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut current: Vec<usize> = Vec::new();
+    let mut current_bytes = 0u64;
+    for (i, line_len) in line_lens.iter().enumerate() {
+        // +1 for the newline every JSONL line carries
+        let line_len = *line_len as u64 + 1;
+        if !current.is_empty()
+            && (current.len() as u64 >= max_records || current_bytes + line_len > max_bytes)
+        {
+            groups.push(std::mem::take(&mut current));
+            current_bytes = 0;
+        }
+        current.push(i);
+        current_bytes += line_len;
+    }
+    if !current.is_empty() {
+        groups.push(current);
+    }
+    groups
+}
+
+/// Sync a directory entry so renames and creations beneath it persist
+/// (plan 6.2 step 5)
+fn sync_dir(dir: &Path) -> Result<()> {
+    let dir_file = File::open(dir)?;
+    dir_file.sync_all()?;
+    drop(dir_file);
+    Ok(())
+}
+
+/// Write a content-addressed generation object, reusing an identical object
+/// already on disk without rewriting it (plan 6.1.1, 6.2 step 4)
+///
+/// Returns the checkpoint-relative path and the content SHA-256. Because the
+/// filename is the content hash, an existing object holds identical bytes by
+/// construction, so publication writes nothing for it -- that reuse is what
+/// makes a flush's byte cost proportional to the delta rather than the
+/// workspace. `changed_paths` receives the path only when this call wrote
+/// new bytes.
+fn write_content_object(
+    objects_dir: &Path,
+    scratch_tag: &str,
+    body: &[u8],
     changed_paths: &mut Vec<String>,
 ) -> Result<(String, String)> {
+    let hash = format!("{:x}", Sha256::digest(body));
+    let rel = format!("objects/{}.jsonl", hash);
+    let final_path = objects_dir.join(format!("{}.jsonl", hash));
+    if !final_path.exists() {
+        let temp_path = objects_dir.join(format!("{}.tmp", scratch_tag));
+        let mut file = File::create(&temp_path)?;
+        file.write_all(body)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temp_path, &final_path)?;
+        sync_dir(objects_dir)?;
+        changed_paths.push(rel.clone());
+    }
+    Ok((rel, hash))
+}
+
+/// Everything a sharded publication needs beyond its output paths
+struct ShardedPublishInputs<'a> {
+    issues: &'a [Issue],
+    events: &'a [EventRecord],
+    receipts: &'a [ProvenanceReceipt],
+    corpus: &'a SerializedCorpus,
+    config: ShardedConfig,
+    thresholds: CheckpointThresholds,
+    /// The outgoing generation's manifest, for plan/threshold retention
+    previous_manifest: Option<&'a serde_json::Value>,
+}
+
+/// Publish sharded forensic checkpoint (plan 6.1.1)
+///
+/// Issue records are partitioned by the leading hexadecimal digits of
+/// SHA-256(bead ID). The partition plan is retained from the previous
+/// manifest whenever it is structurally valid, and only a shard exceeding a
+/// recorded threshold splits, into its sixteen next-digit children -- shards
+/// never merge automatically, so a workspace's plan never reshuffles (an
+/// explicit future compaction operation may produce a new plan and receipt).
+///
+/// Audit events are packed in canonical origin/sequence order into objects
+/// sealed at the recorded count/byte targets; because every object is
+/// content-addressed, a later flush writes a new tail object and a new
+/// immutable manifest while reusing sealed objects byte-for-byte. This keeps
+/// forensic history append-friendly and prevents a frequently updated bead
+/// from rewriting its history-bearing issue shard. Receipts use the same
+/// content-addressed object set and seal targets, sorted by receipt ID.
+fn publish_sharded_checkpoint(
+    inputs: ShardedPublishInputs<'_>,
+    checkpoint_dir: &Path,
+    changed_paths: &mut Vec<String>,
+) -> Result<PublicationOutput> {
+    let ShardedPublishInputs {
+        issues,
+        events,
+        receipts,
+        corpus,
+        config,
+        thresholds,
+        previous_manifest,
+    } = inputs;
     let objects_dir = checkpoint_dir.join("objects");
+    let mut referenced_paths: Vec<String> = Vec::new();
 
-    // Adaptive issue sharding with count and byte thresholds
-    const MAX_ISSUES_PER_SHARD: usize = 10000;
-    const MAX_BYTES_PER_SHARD: usize = 50 * 1024 * 1024; // 50MB
+    // ---- Issue shards: sha256 hex-prefix partition plan ----
 
-    let mut issue_shard_metadata = Vec::new();
-    let mut current_shard_issues = Vec::new();
-    let mut current_shard_bytes = 0;
-    let mut shard_index = 0;
+    // Retain the previous plan when it is structurally valid (plan 6.2
+    // step 3); otherwise begin with the shallow default.
+    let mut plan: Vec<String> = previous_manifest
+        .and_then(load_issue_partition_plan)
+        .unwrap_or_else(default_partition_plan);
 
-    // Sort issues for deterministic distribution
-    let mut sorted_issues = issues.to_vec();
-    sorted_issues.sort_by(|a, b| a.id.cmp(&b.id));
+    let keys: Vec<String> = issues.iter().map(|i| issue_shard_key(&i.id)).collect();
+    let mut buckets = assign_issue_buckets(&keys, &plan)?;
 
-    for issue in &sorted_issues {
-        // Collect dependencies and labels for this issue to estimate size
-        let issue_dependencies: Vec<_> = graph_data
-            .dependencies
+    // Split only overflowing shards (plan 6.1.1): each split replaces one
+    // prefix with its sixteen next-digit children. A shard that cannot split
+    // -- a single record, or a prefix at maximum depth -- stays oversized; a
+    // single record line above max_record_line_bytes already forced sharded
+    // mode, so an unsplittable shard cannot smuggle monolith-scale bytes.
+    loop {
+        let overflowing: Vec<String> = buckets
             .iter()
-            .filter(|(blocked, _, _)| blocked == &issue.id)
+            .filter(|(_, members)| {
+                let count = members.len() as u64;
+                let bytes: u64 = members
+                    .iter()
+                    .map(|&i| corpus.issue_lines[i].len() as u64 + 1)
+                    .sum();
+                count > thresholds.max_shard_issue_records || bytes > thresholds.max_shard_bytes
+            })
+            .map(|(prefix, _)| prefix.clone())
             .collect();
-
-        let issue_labels: Vec<_> = graph_data
-            .labels
-            .iter()
-            .filter(|(issue_id, _)| issue_id == &issue.id)
-            .collect();
-
-        // Estimate size of this issue record (with dependencies and labels)
-        let issue_obj = build_enriched_issue_object(issue, issue_dependencies, issue_labels)?;
-        let issue_json = serde_json::to_string(&issue_obj)?;
-        let issue_size = issue_json.len() + 1; // +1 for newline
-
-        // Check if we need to start a new shard
-        let needs_new_shard = !current_shard_issues.is_empty()
-            && (current_shard_issues.len() >= MAX_ISSUES_PER_SHARD
-                || current_shard_bytes + issue_size > MAX_BYTES_PER_SHARD);
-
-        if needs_new_shard {
-            // Write current shard
-            let temp_path = objects_dir.join(format!(
-                "issue-{}-{}.tmp",
-                config.generation_id, shard_index
-            ));
-            let hash = write_issue_shard(&current_shard_issues, graph_data, &temp_path)?;
-
-            // Use content-addressed filename
-            let shard_path = objects_dir.join(format!("{}.jsonl", hash));
-            std::fs::rename(&temp_path, &shard_path)?;
-
-            // Sync parent directory
-            let objects_dir_file = File::open(&objects_dir)?;
-            objects_dir_file.sync_all()?;
-            drop(objects_dir_file);
-
-            let id_prefix = current_shard_issues
-                .first()
-                .and_then(|i| i.id.strip_prefix("bead-"))
-                .and_then(|s| s.chars().next())
-                .unwrap_or('0');
-
-            let metadata = serde_json::json!({
-                "path": format!("{}.jsonl", hash),
-                "sha256": hash,
-                "byte_length": std::fs::metadata(&shard_path)?.len(),
-                "record_count": current_shard_issues.len(),
-                "id_prefix": id_prefix,
-                "role": "issues"
-            });
-
-            issue_shard_metadata.push(metadata);
-            changed_paths.push(format!("objects/{}.jsonl", hash));
-
-            current_shard_issues.clear();
-            current_shard_bytes = 0;
-            shard_index += 1;
+        if overflowing.is_empty() {
+            break;
         }
 
-        current_shard_issues.push(issue.clone());
-        current_shard_bytes += issue_size;
+        let mut split_any = false;
+        for prefix in overflowing {
+            let members = buckets.remove(&prefix).unwrap_or_default();
+            if prefix.len() >= MAX_PARTITION_DEPTH || members.len() <= 1 {
+                buckets.insert(prefix, members);
+                continue;
+            }
+            split_any = true;
+            plan.retain(|p| p != &prefix);
+            for digit in 0..16u32 {
+                let child = format!("{}{:x}", prefix, digit);
+                plan.push(child.clone());
+                buckets.insert(child, Vec::new());
+            }
+            for i in members {
+                let key = &keys[i];
+                let child = format!("{}{}", prefix, &key[prefix.len()..prefix.len() + 1]);
+                buckets
+                    .get_mut(&child)
+                    .expect("child bucket was just inserted")
+                    .push(i);
+            }
+        }
+        if !split_any {
+            break;
+        }
     }
+    plan.sort();
+    plan.dedup();
 
-    // Write remaining issues
-    if !current_shard_issues.is_empty() {
-        let temp_path = objects_dir.join(format!(
-            "issue-{}-{}.tmp",
-            config.generation_id, shard_index
-        ));
-        let hash = write_issue_shard(&current_shard_issues, graph_data, &temp_path)?;
-
-        // Use content-addressed filename
-        let shard_path = objects_dir.join(format!("{}.jsonl", hash));
-        std::fs::rename(&temp_path, &shard_path)?;
-
-        // Sync parent directory
-        let objects_dir_file = File::open(&objects_dir)?;
-        objects_dir_file.sync_all()?;
-        drop(objects_dir_file);
-
-        let id_prefix = current_shard_issues
-            .first()
-            .and_then(|i| i.id.strip_prefix("bead-"))
-            .and_then(|s| s.chars().next())
-            .unwrap_or('0');
-
-        let metadata = serde_json::json!({
-            "path": format!("{}.jsonl", hash),
+    // Members are pushed in ascending bead-ID order (issues arrive sorted),
+    // so every shard's records sort by bead ID as section 6.1.1 requires.
+    let mut issue_shard_metadata = Vec::new();
+    for (prefix, members) in &buckets {
+        if members.is_empty() {
+            continue;
+        }
+        let mut body = Vec::new();
+        for &i in members {
+            body.extend_from_slice(&corpus.issue_lines[i]);
+            body.push(b'\n');
+        }
+        let (rel, hash) = write_content_object(
+            &objects_dir,
+            &format!("issue-{}-{}", config.generation_id, prefix),
+            &body,
+            changed_paths,
+        )?;
+        referenced_paths.push(rel.clone());
+        issue_shard_metadata.push(serde_json::json!({
+            "path": rel,
             "sha256": hash,
-            "byte_length": std::fs::metadata(&shard_path)?.len(),
-            "record_count": current_shard_issues.len(),
-            "id_prefix": id_prefix,
+            "byte_length": body.len(),
+            "record_count": members.len(),
+            "id_prefix": prefix,
             "role": "issues"
-        });
-
-        issue_shard_metadata.push(metadata);
-        changed_paths.push(format!("objects/{}.jsonl", hash));
+        }));
     }
 
-    // Adaptive event sharding with count and byte thresholds
-    const MAX_EVENTS_PER_SHARD: usize = 100000;
-    const MAX_EVENT_BYTES_PER_SHARD: usize = 100 * 1024 * 1024; // 100MB
+    // ---- Event objects: canonical-order packing, sealed at the recorded targets ----
+    let event_line_lens: Vec<usize> = corpus.event_lines.iter().map(|l| l.len()).collect();
+    let event_groups = pack_sealed_groups(
+        &event_line_lens,
+        thresholds.max_event_object_events,
+        thresholds.max_event_object_bytes,
+    );
 
     let mut event_shard_metadata = Vec::new();
-    let mut current_shard_events = Vec::new();
-    let mut current_shard_bytes = 0;
-    let mut shard_index = 0;
-
-    for event in events {
-        // Estimate size of this event record
-        let event_json = serde_json::to_string(&CheckpointRecord::Event {
-            event: event.clone(),
-        })?;
-        let event_size = event_json.len() + 1; // +1 for newline
-
-        // Check if we need to start a new shard
-        let needs_new_shard = !current_shard_events.is_empty()
-            && (current_shard_events.len() >= MAX_EVENTS_PER_SHARD
-                || current_shard_bytes + event_size > MAX_EVENT_BYTES_PER_SHARD);
-
-        if needs_new_shard {
-            // Write current shard
-            let temp_path =
-                objects_dir.join(format!("event-{}-{}.tmp", config.store_uuid, shard_index));
-            let hash = write_event_shard(&current_shard_events, &temp_path)?;
-
-            // Use content-addressed filename
-            let shard_path = objects_dir.join(format!("{}.jsonl", hash));
-            std::fs::rename(&temp_path, &shard_path)?;
-
-            // Sync parent directory
-            let objects_dir_file = File::open(&objects_dir)?;
-            objects_dir_file.sync_all()?;
-            drop(objects_dir_file);
-
-            let metadata = serde_json::json!({
-                "path": format!("{}.jsonl", hash),
-                "sha256": hash,
-                "byte_length": std::fs::metadata(&shard_path)?.len(),
-                "record_count": current_shard_events.len(),
-                "origin_store_uuid": config.store_uuid,
-                "sequence_range": [current_shard_events.first().map(|e| e.origin_event_sequence), current_shard_events.last().map(|e| e.origin_event_sequence)],
-                "role": "events"
-            });
-
-            event_shard_metadata.push(metadata);
-            changed_paths.push(format!("objects/{}.jsonl", hash));
-
-            current_shard_events.clear();
-            current_shard_bytes = 0;
-            shard_index += 1;
+    // Per-origin summaries (plan 6.1.1): uuid -> (count, min seq, max seq, object paths)
+    let mut origin_stats: std::collections::BTreeMap<String, (u64, i64, i64, Vec<String>)> =
+        std::collections::BTreeMap::new();
+    for (group_index, members) in event_groups.iter().enumerate() {
+        let mut body = Vec::new();
+        for &i in members {
+            body.extend_from_slice(&corpus.event_lines[i]);
+            body.push(b'\n');
         }
+        let (rel, hash) = write_content_object(
+            &objects_dir,
+            &format!("event-{}-{}", config.generation_id, group_index),
+            &body,
+            changed_paths,
+        )?;
+        referenced_paths.push(rel.clone());
 
-        current_shard_events.push(event.clone());
-        current_shard_bytes += event_size;
-    }
+        let first = &events[members[0]];
+        let last = &events[members[members.len() - 1]];
+        // Every object but the last was closed by hitting a seal target; the
+        // last one is the open tail a later flush extends.
+        let sealed = group_index + 1 < event_groups.len()
+            || members.len() as u64 >= thresholds.max_event_object_events
+            || body.len() as u64 >= thresholds.max_event_object_bytes;
 
-    // Write remaining events
-    if !current_shard_events.is_empty() {
-        let temp_path =
-            objects_dir.join(format!("event-{}-{}.tmp", config.store_uuid, shard_index));
-        let hash = write_event_shard(&current_shard_events, &temp_path)?;
-
-        // Use content-addressed filename
-        let shard_path = objects_dir.join(format!("{}.jsonl", hash));
-        std::fs::rename(&temp_path, &shard_path)?;
-
-        // Sync parent directory
-        let objects_dir_file = File::open(&objects_dir)?;
-        objects_dir_file.sync_all()?;
-        drop(objects_dir_file);
-
-        let metadata = serde_json::json!({
-            "path": format!("{}.jsonl", hash),
+        event_shard_metadata.push(serde_json::json!({
+            "path": rel.clone(),
             "sha256": hash,
-            "byte_length": std::fs::metadata(&shard_path)?.len(),
-            "record_count": current_shard_events.len(),
-            "origin_store_uuid": config.store_uuid,
-            "sequence_range": [current_shard_events.first().map(|e| e.origin_event_sequence), current_shard_events.last().map(|e| e.origin_event_sequence)],
+            "byte_length": body.len(),
+            "record_count": members.len(),
+            "sequence_range": [first.origin_event_sequence, last.origin_event_sequence],
+            "origin_range": {
+                "first": [first.origin_store_uuid, first.origin_event_sequence],
+                "last": [last.origin_store_uuid, last.origin_event_sequence]
+            },
+            "sealed": sealed,
             "role": "events"
-        });
+        }));
 
-        event_shard_metadata.push(metadata);
-        changed_paths.push(format!("objects/{}.jsonl", hash));
+        for &i in members {
+            let event = &events[i];
+            let stats = origin_stats
+                .entry(event.origin_store_uuid.clone())
+                .or_insert((0, i64::MAX, i64::MIN, Vec::new()));
+            stats.0 += 1;
+            stats.1 = stats.1.min(event.origin_event_sequence);
+            stats.2 = stats.2.max(event.origin_event_sequence);
+            if stats.3.last().map(|p| p != &rel).unwrap_or(true) {
+                stats.3.push(rel.clone());
+            }
+        }
     }
 
-    // Write receipt shards
-    let mut receipt_shards: HashMap<String, Vec<ProvenanceReceipt>> = HashMap::new();
-    for receipt in receipts {
-        let prefix = receipt.receipt_id.chars().next().unwrap_or('0');
-        receipt_shards
-            .entry(prefix.to_string())
-            .or_default()
-            .push(receipt.clone());
-    }
+    // ---- Receipt objects: content-addressed, receipt-ID order ----
+    let receipt_line_lens: Vec<usize> = corpus.receipt_lines.iter().map(|l| l.len()).collect();
+    let receipt_groups = pack_sealed_groups(
+        &receipt_line_lens,
+        thresholds.max_event_object_events,
+        thresholds.max_event_object_bytes,
+    );
 
     let mut receipt_shard_metadata = Vec::new();
-    for (prefix, shard_receipts) in &receipt_shards {
-        let shard_path = objects_dir.join(format!("receipt-{}.jsonl", prefix));
-        let temp_path = shard_path.with_extension("tmp");
-
-        let temp_file = File::create(&temp_path)?;
-        let mut writer = BufWriter::new(temp_file);
-
-        let mut sorted_shard = shard_receipts.clone();
-        sorted_shard.sort_by(|a, b| a.receipt_id.cmp(&b.receipt_id));
-
-        for receipt in &sorted_shard {
-            let record = CheckpointRecord::ProvenanceReceipt {
-                provenance_receipt: receipt.clone(),
-            };
-            serde_json::to_writer(&mut writer, &record)?;
-            writer.write_all(b"\n")?;
+    for (group_index, members) in receipt_groups.iter().enumerate() {
+        let mut body = Vec::new();
+        for &i in members {
+            body.extend_from_slice(&corpus.receipt_lines[i]);
+            body.push(b'\n');
         }
-
-        writer.flush()?;
-        drop(writer);
-
-        let hash = calculate_file_hash(&temp_path)?;
-        std::fs::rename(&temp_path, &shard_path)?;
-
-        let metadata = serde_json::json!({
-            "path": format!("receipt-{}.jsonl", prefix),
+        let (rel, hash) = write_content_object(
+            &objects_dir,
+            &format!("receipt-{}-{}", config.generation_id, group_index),
+            &body,
+            changed_paths,
+        )?;
+        referenced_paths.push(rel.clone());
+        receipt_shard_metadata.push(serde_json::json!({
+            "path": rel,
             "sha256": hash,
-            "byte_length": std::fs::metadata(&shard_path)?.len(),
-            "record_count": shard_receipts.len(),
-            "id_prefix": prefix,
+            "byte_length": body.len(),
+            "record_count": members.len(),
             "role": "provenance_receipts"
-        });
-
-        receipt_shard_metadata.push(metadata);
-        changed_paths.push(format!("objects/receipt-{}.jsonl", prefix));
+        }));
     }
 
-    // Create manifest
+    // ---- Manifest: the immutable, content-addressed sharded root ----
+    let origins: Vec<serde_json::Value> = origin_stats
+        .iter()
+        .map(|(uuid, (count, min, max, paths))| {
+            serde_json::json!({
+                "origin_store_uuid": uuid,
+                "event_count": count,
+                "min_sequence": min,
+                "max_sequence": max,
+                "objects": paths,
+            })
+        })
+        .collect();
+
     let manifest = serde_json::json!({
         "format": "checkpoint-set-v1",
         "schema_version": 1,
@@ -4206,95 +4786,41 @@ fn publish_sharded_checkpoint(
         "max_local_ingestion_sequence": config.snapshot_sequence,
         "created_at": format_rfc3339(SystemTime::now()),
         "profile": "native-v1",
-        "partition_algorithm": "hash-prefix",
-        "partition_thresholds": {
-            "max_issues_per_shard": 10000,
-            "max_shard_size_bytes": 52428800,
-            "max_events_per_shard": 100000,
-            "max_event_shard_size_bytes": 67108864
-        },
+        "partition_algorithm": "sha256-hex-prefix",
+        "partition_thresholds": thresholds.to_manifest_json(),
+        "issue_partition": plan,
+        "issue_count": issues.len(),
+        "event_count": events.len(),
+        "receipt_count": receipts.len(),
+        "total_record_count": issues.len() + events.len() + receipts.len(),
         "issue_shards": issue_shard_metadata,
         "event_shards": event_shard_metadata,
-        "receipt_shards": receipt_shard_metadata
+        "receipt_shards": receipt_shard_metadata,
+        "origins": origins
     });
 
-    // Write manifest
     let manifest_json = serde_json::to_vec_pretty(&manifest)?;
     let manifest_hash = format!("{:x}", Sha256::digest(&manifest_json));
-
-    let manifest_path = checkpoint_dir
-        .join("manifests")
-        .join(format!("{}.json", manifest_hash));
+    let manifest_rel = format!("manifests/{}.json", manifest_hash);
+    let manifest_path = checkpoint_dir.join(&manifest_rel);
     let temp_manifest_path = manifest_path.with_extension("tmp");
-    std::fs::write(&temp_manifest_path, manifest_json)?;
+    std::fs::write(&temp_manifest_path, &manifest_json)?;
 
-    // Sync temp file
+    // Sync temp file, atomically rename, sync parent directory
     let temp_file = File::open(&temp_manifest_path)?;
     temp_file.sync_all()?;
     drop(temp_file);
-
     std::fs::rename(&temp_manifest_path, &manifest_path)?;
+    sync_dir(&checkpoint_dir.join("manifests"))?;
 
-    // Sync parent directory
-    let manifests_dir = checkpoint_dir.join("manifests");
-    let manifests_dir_file = File::open(&manifests_dir)?;
-    manifests_dir_file.sync_all()?;
-    drop(manifests_dir_file);
+    changed_paths.push(manifest_rel.clone());
+    referenced_paths.push(manifest_rel.clone());
 
-    changed_paths.push(format!("manifests/{}.json", manifest_hash));
-
-    Ok((
-        manifest_hash.clone(),
-        format!("manifests/{}.json", manifest_hash),
-    ))
-}
-
-/// Write issue shard to temp path and return hash
-fn write_issue_shard(
-    issues: &[Issue],
-    graph_data: &IssueGraphData,
-    temp_path: &Path,
-) -> Result<String> {
-    let temp_file = File::create(temp_path)?;
-    let mut writer = BufWriter::new(temp_file);
-
-    for issue in issues {
-        // Collect dependencies for this issue in canonical order
-        let issue_dependencies: Vec<_> = graph_data
-            .dependencies
-            .iter()
-            .filter(|(blocked, _, _)| blocked == &issue.id)
-            .collect();
-
-        // Collect labels for this issue in canonical order
-        let issue_labels: Vec<_> = graph_data
-            .labels
-            .iter()
-            .filter(|(issue_id, _)| issue_id == &issue.id)
-            .collect();
-
-        // Build enriched issue object with dependencies and labels
-        let issue_obj = build_enriched_issue_object(issue, issue_dependencies, issue_labels)?;
-
-        // Wrap in record envelope for serialization
-        let record = serde_json::json!({
-            "record_type": "issue",
-            "issue": issue_obj
-        });
-        serde_json::to_writer(&mut writer, &record)?;
-        writer.write_all(b"\n")?;
-    }
-
-    writer.flush()?;
-    drop(writer);
-
-    // Sync temp file to storage
-    let temp_file = File::open(temp_path)?;
-    temp_file.sync_all()?;
-    drop(temp_file);
-
-    let hash = calculate_file_hash(temp_path)?;
-    Ok(hash)
+    Ok(PublicationOutput {
+        root_hash: manifest_hash,
+        root_path: manifest_rel,
+        referenced_paths,
+    })
 }
 
 /// Build an enriched issue object with dependencies and labels embedded
@@ -4335,31 +4861,6 @@ fn build_enriched_issue_object<'a>(
     }
 
     Ok(serde_json::Value::Object(issue_obj))
-}
-
-/// Write event shard to temp path and return hash
-fn write_event_shard(events: &[EventRecord], temp_path: &Path) -> Result<String> {
-    let temp_file = File::create(temp_path)?;
-    let mut writer = BufWriter::new(temp_file);
-
-    for event in events {
-        let record = CheckpointRecord::Event {
-            event: event.clone(),
-        };
-        serde_json::to_writer(&mut writer, &record)?;
-        writer.write_all(b"\n")?;
-    }
-
-    writer.flush()?;
-    drop(writer);
-
-    // Sync temp file to storage
-    let temp_file = File::open(temp_path)?;
-    temp_file.sync_all()?;
-    drop(temp_file);
-
-    let hash = calculate_file_hash(temp_path)?;
-    Ok(hash)
 }
 
 /// Write current.json pointer
@@ -4735,7 +5236,6 @@ fn read_all_provenance_receipts(tx: &Transaction) -> Result<Vec<ProvenanceReceip
 /// Configuration for sharded checkpoint publishing
 #[derive(Debug, Clone)]
 struct ShardedConfig {
-    #[allow(dead_code)]
     generation_id: String,
     store_uuid: String,
     snapshot_sequence: i64,

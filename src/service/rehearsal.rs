@@ -22,7 +22,7 @@ use crate::cli::ImportMode;
 use crate::error::{Error, Result};
 use crate::model::Issue;
 use crate::service::checkpoint::{
-    import_forensic_checkpoint, publish_forensic_checkpoint, CheckpointMode, CheckpointRecord,
+    import_forensic_checkpoint, publish_forensic_checkpoint, CheckpointConfig, CheckpointRecord,
 };
 use crate::service::doctor;
 use crate::store::{SqliteStore, Store};
@@ -257,8 +257,14 @@ pub fn run_recovery_rehearsal() -> Result<RecoveryRehearsalReport> {
     // Step 7: re-export using the exact production flush path.
     eprintln!("📤 Exporting from temporary workspace...");
 
-    publish_forensic_checkpoint(&mut temp_store, CheckpointMode::Monolithic, &temp_beads_dir)
-        .context("Failed to export checkpoint from temporary workspace")?;
+    // Rehearse the production publication path: the mode the workspace's
+    // recorded configuration and thresholds would select, not a forced one.
+    publish_forensic_checkpoint(
+        &mut temp_store,
+        &CheckpointConfig::default(),
+        &temp_beads_dir,
+    )
+    .context("Failed to export checkpoint from temporary workspace")?;
     let rehearsal_checkpoint_dir = temp_beads_dir.join("checkpoint");
 
     eprintln!(
