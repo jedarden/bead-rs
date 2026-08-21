@@ -8,6 +8,8 @@ use rusqlite::Connection;
 /// Adds a label to an issue.
 ///
 /// This operation is idempotent: adding an existing label succeeds without changes.
+/// A committed add appends a `label_added` audit event in the same transaction;
+/// an idempotent no-op appends none.
 pub fn add_label(store: &mut SqliteStore, issue_id: &str, label: &str) -> Result<(), Error> {
     let conn = store.conn();
     let tx = conn.unchecked_transaction()?;
@@ -21,11 +23,27 @@ pub fn add_label(store: &mut SqliteStore, issue_id: &str, label: &str) -> Result
         return Err(Error::not_found(format!("Issue {issue_id}")));
     }
 
-    // Idempotent insert: ignore if already exists
-    tx.execute(
+    // Idempotent insert: a re-add of an existing label commits no semantic
+    // mutation, so it must append no event.
+    let inserted = tx.execute(
         "INSERT OR IGNORE INTO labels (issue_id, label) VALUES (?1, ?2)",
         [issue_id, label],
     )?;
+
+    // Record the mutation as an audit event inside this transaction: the live
+    // event sequence is the dirtiness signal (plan 6.2.1 P3), so an unrecorded
+    // label add would silently read as no change.
+    if inserted > 0 {
+        append_label_event(
+            &tx,
+            issue_id,
+            "label_added",
+            &serde_json::json!({
+                "actor": "system",
+                "label": label,
+            }),
+        )?;
+    }
 
     tx.commit()?;
     Ok(())
@@ -34,6 +52,8 @@ pub fn add_label(store: &mut SqliteStore, issue_id: &str, label: &str) -> Result
 /// Removes a label from an issue.
 ///
 /// This operation is idempotent: removing a non-existent label succeeds without changes.
+/// A remove that deletes the label appends a `label_removed` audit event in the
+/// same transaction; an idempotent no-op appends none.
 pub fn remove_label(store: &mut SqliteStore, issue_id: &str, label: &str) -> Result<(), Error> {
     let conn = store.conn();
     let tx = conn.unchecked_transaction()?;
@@ -47,13 +67,55 @@ pub fn remove_label(store: &mut SqliteStore, issue_id: &str, label: &str) -> Res
         return Err(Error::not_found(format!("Issue {issue_id}")));
     }
 
-    // Idempotent delete: ignore if not exists
-    tx.execute(
+    // Idempotent delete: removing a non-existent label commits no semantic
+    // mutation, so it must append no event.
+    let removed = tx.execute(
         "DELETE FROM labels WHERE issue_id = ?1 AND label = ?2",
         [issue_id, label],
     )?;
 
+    // Record the mutation as an audit event inside this transaction: the live
+    // event sequence is the dirtiness signal (plan 6.2.1 P3), so an unrecorded
+    // label remove would silently read as no change.
+    if removed > 0 {
+        append_label_event(
+            &tx,
+            issue_id,
+            "label_removed",
+            &serde_json::json!({
+                "actor": "system",
+                "label": label,
+            }),
+        )?;
+    }
+
     tx.commit()?;
+    Ok(())
+}
+
+/// Append the audit event for a label mutation.
+///
+/// The event is inserted on the mutation's own transaction, so it commits (or
+/// rolls back) with the row it describes. `issue_id` is the event's issue
+/// subject. Callers append only after a real row change, which guarantees the
+/// issue exists (both mutations verify it up front), so the events table's own
+/// foreign key holds.
+fn append_label_event(
+    tx: &rusqlite::Transaction,
+    issue_id: &str,
+    kind: &str,
+    detail: &serde_json::Value,
+) -> Result<(), Error> {
+    let now = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    let mut stmt = tx.prepare_cached(
+        "INSERT INTO events (issue_id, kind, actor, time, detail) VALUES (?1, ?2, ?3, ?4, ?5)",
+    )?;
+
+    stmt.execute((issue_id, kind, "system", now, detail.to_string()))?;
+
     Ok(())
 }
 
@@ -467,6 +529,64 @@ mod tests {
 
         let result = add_label(&mut store, "nonexistent", "bug");
         assert!(matches!(result, Err(Error::Workspace(_))));
+    }
+
+    #[test]
+    fn test_add_label_appends_event() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "issue-1", "Test Issue");
+
+        add_label(&mut store, "issue-1", "bug").unwrap();
+
+        let events = read_events(&mut store);
+        assert_eq!(events.len(), 1, "one event per committed add");
+
+        let (issue_id, kind, detail) = &events[0];
+        assert_eq!(issue_id.as_deref(), Some("issue-1"));
+        assert_eq!(kind, "label_added");
+        assert_eq!(detail["label"], "bug");
+    }
+
+    #[test]
+    fn test_add_label_idempotent_appends_no_event() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "issue-1", "Test Issue");
+
+        add_label(&mut store, "issue-1", "bug").unwrap();
+        add_label(&mut store, "issue-1", "bug").unwrap(); // Duplicate
+
+        let events = read_events(&mut store);
+        assert_eq!(events.len(), 1, "a no-op re-add is not a semantic mutation");
+    }
+
+    #[test]
+    fn test_remove_label_appends_event() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "issue-1", "Test Issue");
+
+        add_label(&mut store, "issue-1", "bug").unwrap();
+        remove_label(&mut store, "issue-1", "bug").unwrap();
+
+        let events = read_events(&mut store);
+        assert_eq!(events.len(), 2, "one event per committed mutation");
+
+        let (issue_id, kind, detail) = &events[1];
+        assert_eq!(issue_id.as_deref(), Some("issue-1"));
+        assert_eq!(kind, "label_removed");
+        assert_eq!(detail["label"], "bug");
+    }
+
+    #[test]
+    fn test_remove_label_idempotent_appends_no_event() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "issue-1", "Test Issue");
+
+        add_label(&mut store, "issue-1", "bug").unwrap();
+        remove_label(&mut store, "issue-1", "bug").unwrap();
+        remove_label(&mut store, "issue-1", "bug").unwrap(); // Duplicate remove
+
+        let events = read_events(&mut store);
+        assert_eq!(events.len(), 2, "a no-op remove is not a semantic mutation");
     }
 
     #[test]
