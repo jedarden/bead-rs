@@ -7,11 +7,16 @@
 
 use crate::error::{Error, Result};
 use crate::store::SqliteStore;
+use rusqlite::OptionalExtension;
 
 /// Set a structured data value for an issue
 ///
 /// Sets or replaces the JSON value for a specific namespace with schema governance.
 /// The operation is atomic and validates that the issue exists.
+///
+/// A committed set that stores a new pair or changes the schema reference or
+/// value appends a `data_set` audit event in the same transaction; an
+/// idempotent re-set of the identical row appends none.
 pub fn set_data(
     store: &mut SqliteStore,
     issue_id: &str,
@@ -46,13 +51,74 @@ pub fn set_data(
     let value_str = serde_json::to_string(value)
         .map_err(|e| Error::validation(format!("Invalid JSON value: {}", e)))?;
 
+    // The set is upsert-shaped: INSERT OR REPLACE reports one row changed
+    // whether it creates the pair or rewrites an identical one, so the prior
+    // row decides whether a semantic mutation is about to commit. A re-set of
+    // the same (namespace, schema_ref, value) is a no-op and appends no event.
+    let prior: Option<(String, String)> = tx
+        .query_row(
+            "SELECT schema_ref, value FROM issue_data WHERE issue_id = ?1 AND namespace = ?2",
+            [issue_id, namespace],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+
     // Insert or replace the data value
     tx.execute(
         "INSERT OR REPLACE INTO issue_data (issue_id, namespace, schema_ref, value) VALUES (?1, ?2, ?3, ?4)",
         [issue_id, namespace, schema_ref, &value_str],
     )?;
 
+    // Record the mutation as an audit event inside this transaction: the live
+    // event sequence is the dirtiness signal (plan 6.2.1 P3), so an unrecorded
+    // data set would silently read as no change. The document body is
+    // schema-governed but unbounded, so the detail records only the namespace
+    // and schema_ref - never the body itself.
+    let is_semantic_change = prior
+        .as_ref()
+        .map(|(prior_schema, prior_value)| prior_schema != schema_ref || prior_value != &value_str)
+        .unwrap_or(true);
+
+    if is_semantic_change {
+        append_data_event(
+            &tx,
+            issue_id,
+            "data_set",
+            &serde_json::json!({
+                "actor": "system",
+                "namespace": namespace,
+                "schema_ref": schema_ref,
+            }),
+        )?;
+    }
+
     tx.commit()?;
+    Ok(())
+}
+
+/// Append the audit event for a structured-data mutation.
+///
+/// The event is inserted on the mutation's own transaction, so it commits (or
+/// rolls back) with the row it describes. `issue_id` is the event's issue
+/// subject. Callers append only after a real row change, which guarantees the
+/// issue exists (both mutations verify it up front), so the events table's own
+/// foreign key holds.
+fn append_data_event(
+    tx: &rusqlite::Transaction,
+    issue_id: &str,
+    kind: &str,
+    detail: &serde_json::Value,
+) -> Result<()> {
+    let now = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    let mut stmt = tx.prepare_cached(
+        "INSERT INTO events (issue_id, kind, actor, time, detail) VALUES (?1, ?2, ?3, ?4, ?5)",
+    )?;
+
+    stmt.execute((issue_id, kind, "system", now, detail.to_string()))?;
+
     Ok(())
 }
 
@@ -123,6 +189,8 @@ pub fn list_data(store: &mut SqliteStore, issue_id: &str) -> Result<Vec<(String,
 ///
 /// Removes the JSON value for a specific namespace if it exists.
 /// Idempotent - succeeds whether or not the namespace exists.
+/// A remove that deletes a row appends a `data_removed` audit event in the
+/// same transaction; an idempotent no-op remove appends none.
 pub fn remove_data(store: &mut SqliteStore, issue_id: &str, namespace: &str) -> Result<()> {
     let conn = store.conn();
     let tx = conn.unchecked_transaction()?;
@@ -144,11 +212,40 @@ pub fn remove_data(store: &mut SqliteStore, issue_id: &str, namespace: &str) -> 
     // Validate namespace
     validate_namespace(namespace)?;
 
-    // Remove the data value (idempotent - no error if not found)
-    tx.execute(
+    // Capture the governed schema reference before the row goes away: the
+    // remove takes no schema_ref, but the audit detail still records it.
+    let prior_schema_ref: Option<String> = tx
+        .query_row(
+            "SELECT schema_ref FROM issue_data WHERE issue_id = ?1 AND namespace = ?2",
+            [issue_id, namespace],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    // Remove the data value (idempotent - no error if not found). Removing a
+    // nonexistent namespace commits no semantic mutation, so it must append no
+    // event.
+    let removed = tx.execute(
         "DELETE FROM issue_data WHERE issue_id = ? AND namespace = ?",
         [issue_id, namespace],
     )?;
+
+    // Record the mutation as an audit event inside this transaction: the live
+    // event sequence is the dirtiness signal (plan 6.2.1 P3), so an unrecorded
+    // data remove would silently read as no change. The detail records the
+    // namespace and the removed row's schema_ref - never the document body.
+    if removed > 0 {
+        append_data_event(
+            &tx,
+            issue_id,
+            "data_removed",
+            &serde_json::json!({
+                "actor": "system",
+                "namespace": namespace,
+                "schema_ref": prior_schema_ref,
+            }),
+        )?;
+    }
 
     tx.commit()?;
     Ok(())
@@ -411,6 +508,265 @@ mod tests {
 
         let result = remove_data(&mut store, "nonexistent", "test");
         assert!(result.is_err());
+    }
+
+    /// Reads every event row as (issue_id, kind, detail-as-JSON)
+    fn read_events(store: &mut SqliteStore) -> Vec<(Option<String>, String, serde_json::Value)> {
+        let conn = store.conn();
+        conn.prepare("SELECT issue_id, kind, detail FROM events ORDER BY sequence")
+            .unwrap()
+            .query_map([], |row| {
+                let issue_id: Option<String> = row.get(0)?;
+                let kind: String = row.get(1)?;
+                let detail: String = row.get(2)?;
+                Ok((issue_id, kind, serde_json::from_str(&detail).unwrap()))
+            })
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    #[serial]
+    fn test_set_data_appends_event() {
+        let (_temp, mut store) = test_store();
+        let issue_id = create_test_issue(&mut store);
+
+        set_data(
+            &mut store,
+            &issue_id,
+            "config",
+            "schema:1",
+            &serde_json::json!({"key": "value"}),
+        )
+        .unwrap();
+
+        let events = read_events(&mut store);
+        assert_eq!(events.len(), 1, "one event per committed set");
+
+        let (event_issue, kind, detail) = &events[0];
+        assert_eq!(event_issue.as_deref(), Some(issue_id.as_str()));
+        assert_eq!(kind, "data_set");
+        assert_eq!(detail["actor"], "system");
+        assert_eq!(detail["namespace"], "config");
+        assert_eq!(detail["schema_ref"], "schema:1");
+    }
+
+    #[test]
+    #[serial]
+    fn test_set_data_event_omits_document_body() {
+        let (_temp, mut store) = test_store();
+        let issue_id = create_test_issue(&mut store);
+
+        // A credential-shaped body must never reach the event log verbatim
+        let fixture_body = "bearer-sup3r-s3cret-fixture-value";
+        set_data(
+            &mut store,
+            &issue_id,
+            "config",
+            "schema:1",
+            &serde_json::json!({"token": fixture_body}),
+        )
+        .unwrap();
+
+        let raw_detail = {
+            let conn = store.conn();
+            conn.query_row(
+                "SELECT detail FROM events WHERE kind = 'data_set'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+        };
+        assert!(
+            !raw_detail.contains(fixture_body),
+            "event detail must not carry the document body"
+        );
+        assert!(!raw_detail.contains("token"), "no body key leaks either");
+    }
+
+    #[test]
+    #[serial]
+    fn test_set_data_identical_reset_appends_no_event() {
+        let (_temp, mut store) = test_store();
+        let issue_id = create_test_issue(&mut store);
+
+        set_data(
+            &mut store,
+            &issue_id,
+            "config",
+            "schema:1",
+            &serde_json::json!({"key": "value"}),
+        )
+        .unwrap();
+        set_data(
+            &mut store,
+            &issue_id,
+            "config",
+            "schema:1",
+            &serde_json::json!({"key": "value"}),
+        )
+        .unwrap(); // Identical re-set
+
+        let events = read_events(&mut store);
+        assert_eq!(events.len(), 1, "an identical re-set is not a mutation");
+    }
+
+    #[test]
+    #[serial]
+    fn test_set_data_changed_value_appends_event() {
+        let (_temp, mut store) = test_store();
+        let issue_id = create_test_issue(&mut store);
+
+        set_data(
+            &mut store,
+            &issue_id,
+            "config",
+            "schema:1",
+            &serde_json::json!({"key": "old"}),
+        )
+        .unwrap();
+        // The set is upsert-shaped: replacing the stored value is a mutation
+        set_data(
+            &mut store,
+            &issue_id,
+            "config",
+            "schema:1",
+            &serde_json::json!({"key": "new"}),
+        )
+        .unwrap();
+
+        let events = read_events(&mut store);
+        assert_eq!(events.len(), 2, "a changed value is a semantic mutation");
+        assert_eq!(events[1].2["schema_ref"], "schema:1");
+    }
+
+    #[test]
+    #[serial]
+    fn test_set_data_changed_schema_ref_appends_event() {
+        let (_temp, mut store) = test_store();
+        let issue_id = create_test_issue(&mut store);
+
+        set_data(
+            &mut store,
+            &issue_id,
+            "config",
+            "schema:1",
+            &serde_json::json!({"key": "value"}),
+        )
+        .unwrap();
+        // Re-governing the same body under a new schema reference is a mutation
+        set_data(
+            &mut store,
+            &issue_id,
+            "config",
+            "schema:2",
+            &serde_json::json!({"key": "value"}),
+        )
+        .unwrap();
+
+        let events = read_events(&mut store);
+        assert_eq!(
+            events.len(),
+            2,
+            "a changed schema_ref is a semantic mutation"
+        );
+        assert_eq!(events[1].2["schema_ref"], "schema:2");
+    }
+
+    #[test]
+    #[serial]
+    fn test_remove_data_appends_event() {
+        let (_temp, mut store) = test_store();
+        let issue_id = create_test_issue(&mut store);
+
+        set_data(
+            &mut store,
+            &issue_id,
+            "config",
+            "schema:1",
+            &serde_json::json!({"key": "value"}),
+        )
+        .unwrap();
+        remove_data(&mut store, &issue_id, "config").unwrap();
+
+        let events = read_events(&mut store);
+        assert_eq!(events.len(), 2, "one event per committed mutation");
+
+        let (event_issue, kind, detail) = &events[1];
+        assert_eq!(event_issue.as_deref(), Some(issue_id.as_str()));
+        assert_eq!(kind, "data_removed");
+        assert_eq!(detail["actor"], "system");
+        assert_eq!(detail["namespace"], "config");
+        assert_eq!(detail["schema_ref"], "schema:1");
+    }
+
+    #[test]
+    #[serial]
+    fn test_remove_nonexistent_data_appends_no_event() {
+        let (_temp, mut store) = test_store();
+        let issue_id = create_test_issue(&mut store);
+
+        remove_data(&mut store, &issue_id, "nonexistent").unwrap();
+
+        let events = read_events(&mut store);
+        assert_eq!(events.len(), 0, "a no-op remove is not a mutation");
+    }
+
+    #[test]
+    #[serial]
+    fn test_data_events_advance_sequence_per_mutation() {
+        let (_temp, mut store) = test_store();
+        let issue_id = create_test_issue(&mut store);
+
+        let max_sequence = |store: &mut SqliteStore| -> i64 {
+            let conn = store.conn();
+            conn.query_row("SELECT COALESCE(MAX(sequence), 0) FROM events", [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+        };
+
+        let before = max_sequence(&mut store);
+
+        set_data(
+            &mut store,
+            &issue_id,
+            "config",
+            "schema:1",
+            &serde_json::json!({"key": "value"}),
+        )
+        .unwrap();
+        assert_eq!(max_sequence(&mut store), before + 1);
+
+        // Identical re-set does not advance the sequence
+        set_data(
+            &mut store,
+            &issue_id,
+            "config",
+            "schema:1",
+            &serde_json::json!({"key": "value"}),
+        )
+        .unwrap();
+        assert_eq!(max_sequence(&mut store), before + 1);
+
+        // Changed value does advance it
+        set_data(
+            &mut store,
+            &issue_id,
+            "config",
+            "schema:1",
+            &serde_json::json!({"key": "changed"}),
+        )
+        .unwrap();
+        assert_eq!(max_sequence(&mut store), before + 2);
+
+        remove_data(&mut store, &issue_id, "config").unwrap();
+        assert_eq!(max_sequence(&mut store), before + 3);
+
+        // No-op re-remove does not advance the sequence
+        remove_data(&mut store, &issue_id, "config").unwrap();
+        assert_eq!(max_sequence(&mut store), before + 3);
     }
 
     #[test]

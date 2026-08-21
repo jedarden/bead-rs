@@ -599,6 +599,135 @@ fn test_data_complex_json_value() {
 }
 
 #[test]
+fn test_data_mutations_advance_change_feed() {
+    let temp_dir = TempDir::new().unwrap();
+    let workspace_dir = temp_dir.path();
+
+    // Initialize workspace
+    run_bead_command(&["init"], workspace_dir);
+
+    // Create a test issue (the create itself appends one event)
+    let issue_id = run_bead_command(&["create", "--title", "Data Issue"], workspace_dir);
+    let issue_id = issue_id.trim().to_string();
+
+    let latest_cursor = || -> i64 {
+        let stdout = run_bead_command(&["changes", "--latest"], workspace_dir);
+        stdout
+            .lines()
+            .find_map(|l| l.strip_prefix("Latest cursor: "))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap()
+    };
+
+    // Baseline after one create
+    let baseline = latest_cursor();
+
+    // data set appends one event: the cursor advances by exactly one
+    run_bead_command(
+        &[
+            "data",
+            "set",
+            "--id",
+            &issue_id,
+            "--namespace",
+            "config",
+            "--schema-ref",
+            "schema:v1",
+            "--value",
+            r#"{"token": "fixture-sup3r-s3cret-value"}"#,
+        ],
+        workspace_dir,
+    );
+    assert_eq!(latest_cursor(), baseline + 1);
+
+    // Idempotent identical re-set appends no event
+    run_bead_command(
+        &[
+            "data",
+            "set",
+            "--id",
+            &issue_id,
+            "--namespace",
+            "config",
+            "--schema-ref",
+            "schema:v1",
+            "--value",
+            r#"{"token": "fixture-sup3r-s3cret-value"}"#,
+        ],
+        workspace_dir,
+    );
+    assert_eq!(latest_cursor(), baseline + 1);
+
+    // Re-set under a changed schema_ref and value appends one event
+    run_bead_command(
+        &[
+            "data",
+            "set",
+            "--id",
+            &issue_id,
+            "--namespace",
+            "config",
+            "--schema-ref",
+            "schema:v2",
+            "--value",
+            r#"{"token": "rotated-fixture-value"}"#,
+        ],
+        workspace_dir,
+    );
+    assert_eq!(latest_cursor(), baseline + 2);
+
+    // data remove appends one event
+    run_bead_command(
+        &["data", "remove", "--id", &issue_id, "--namespace", "config"],
+        workspace_dir,
+    );
+    assert_eq!(latest_cursor(), baseline + 3);
+
+    // Idempotent no-op re-remove appends no event
+    run_bead_command(
+        &["data", "remove", "--id", &issue_id, "--namespace", "config"],
+        workspace_dir,
+    );
+    assert_eq!(latest_cursor(), baseline + 3);
+
+    // The recorded events carry namespace and schema_ref in their detail, and
+    // never the document body
+    let conn = rusqlite::Connection::open(workspace_dir.join(".beads/beads.db")).unwrap();
+    let mut stmt = conn
+        .prepare("SELECT detail FROM events WHERE kind LIKE 'data_%' ORDER BY sequence")
+        .unwrap();
+    let details: Vec<String> = stmt
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(details.len(), 3);
+
+    let set: serde_json::Value = serde_json::from_str(&details[0]).unwrap();
+    assert_eq!(set["namespace"], "config");
+    assert_eq!(set["schema_ref"], "schema:v1");
+
+    let replaced: serde_json::Value = serde_json::from_str(&details[1]).unwrap();
+    assert_eq!(replaced["namespace"], "config");
+    assert_eq!(replaced["schema_ref"], "schema:v2");
+
+    let removed: serde_json::Value = serde_json::from_str(&details[2]).unwrap();
+    assert_eq!(removed["namespace"], "config");
+    assert_eq!(removed["schema_ref"], "schema:v2");
+
+    for detail in &details {
+        assert!(
+            !detail.contains("fixture-sup3r-s3cret-value")
+                && !detail.contains("rotated-fixture-value")
+                && !detail.contains("token"),
+            "event detail must not carry the document body: {detail}"
+        );
+    }
+}
+
+#[test]
 fn test_data_help() {
     let temp_dir = TempDir::new().unwrap();
     let workspace_dir = temp_dir.path();
