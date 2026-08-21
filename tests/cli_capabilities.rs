@@ -1,8 +1,11 @@
 //! Integration tests for `bead capabilities` command
 
 use assert_cmd::Command;
+use bead_rs::service::AUTO_FLUSH_COMPILED_DEFAULT;
 use serde_json::Value;
 use serial_test::serial;
+use std::fs;
+use std::path::Path;
 
 #[test]
 #[serial]
@@ -224,4 +227,154 @@ fn test_capabilities_schema_entries() {
 
     // Restore original directory before dropping temp
     std::env::set_current_dir(original_dir).unwrap();
+}
+
+/// Run `bead ARGS` in `dir` and parse its stdout as one JSON document.
+fn capabilities_json(dir: &Path, args: &[&str]) -> Value {
+    let output = Command::cargo_bin("bead")
+        .unwrap()
+        .current_dir(dir)
+        .args(args)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    serde_json::from_slice(&output).unwrap()
+}
+
+/// The additive R026 handshake field (plan section 11): `auto_flush` is
+/// absent until the compiled default flips on, then present reporting
+/// exactly that default -- in both profiles, so a fleet detects the
+/// behavior by handshake rather than inferring it from a version number.
+#[test]
+#[serial]
+fn auto_flush_field_tracks_the_compiled_default() {
+    let nowhere = tempfile::tempdir().unwrap();
+    for profile in ["native-v1", "needle-v1"] {
+        let caps = capabilities_json(nowhere.path(), &["capabilities", "--profile", profile]);
+        if AUTO_FLUSH_COMPILED_DEFAULT {
+            assert_eq!(
+                caps.get("auto_flush"),
+                Some(&Value::Bool(true)),
+                "{profile}: with the compiled default on, auto_flush must be \
+                 present and report it"
+            );
+        } else {
+            assert_eq!(
+                caps.get("auto_flush"),
+                None,
+                "{profile}: auto_flush must be absent while the compiled default \
+                 is off -- the field appears only once the R026 gate flips it"
+            );
+        }
+    }
+}
+
+/// The field reports the compiled default, never workspace state (plan
+/// section 11): a workspace that disables publication through
+/// `checkpoint.auto_flush`, and an invocation suppressed by
+/// `--no-auto-flush`, advertise exactly what a workspace-less invocation
+/// advertises.
+#[test]
+#[serial]
+fn auto_flush_advertisement_ignores_workspace_state() {
+    let nowhere = tempfile::tempdir().unwrap();
+    let baseline = capabilities_json(nowhere.path(), &["capabilities"]);
+
+    let workspace = tempfile::tempdir().unwrap();
+    Command::cargo_bin("bead")
+        .unwrap()
+        .current_dir(workspace.path())
+        .args(["init", "--prefix", "handshake"])
+        .assert()
+        .success();
+
+    // Durably opt the workspace out of automatic publication.
+    let config_path = workspace.path().join(".beads/config.json");
+    let mut config: Value =
+        serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+    config
+        .as_object_mut()
+        .unwrap()
+        .entry("checkpoint")
+        .or_insert(Value::Object(Default::default()))
+        .as_object_mut()
+        .unwrap()
+        .insert("auto_flush".into(), Value::Bool(false));
+    fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+
+    let opted_out = capabilities_json(workspace.path(), &["capabilities"]);
+    assert_eq!(
+        opted_out.get("auto_flush"),
+        baseline.get("auto_flush"),
+        "checkpoint.auto_flush = false changed the advertisement; it changes \
+         behavior, never what the binary advertises"
+    );
+
+    let suppressed = capabilities_json(workspace.path(), &["capabilities", "--no-auto-flush"]);
+    assert_eq!(
+        suppressed.get("auto_flush"),
+        baseline.get("auto_flush"),
+        "--no-auto-flush changed the advertisement; it suppresses one \
+         invocation, never what the binary advertises"
+    );
+}
+
+/// The advertised value matches actual binary behavior: in a workspace
+/// with no `checkpoint.auto_flush` key, a plain mutating invocation
+/// publishes a covering checkpoint generation exactly when the document
+/// advertises `auto_flush: true`. The assertion holds on both sides of
+/// the R026 gate, and `sync --status` is what reports the resulting
+/// state either way -- it remains the only authority on whether this
+/// workspace is actually clean.
+#[test]
+#[serial]
+fn auto_flush_advertisement_matches_binary_behavior() {
+    let nowhere = tempfile::tempdir().unwrap();
+    let advertised = capabilities_json(nowhere.path(), &["capabilities"])
+        .get("auto_flush")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let workspace = tempfile::tempdir().unwrap();
+    for args in [
+        vec!["init", "--prefix", "advertise"],
+        vec!["create", "--title", "handshake behavior probe"],
+    ] {
+        Command::cargo_bin("bead")
+            .unwrap()
+            .current_dir(workspace.path())
+            .args(&args)
+            .assert()
+            .success();
+    }
+
+    let report = capabilities_json(workspace.path(), &["sync", "status", "--format", "json"]);
+    let live = report["live_sequence"].as_i64().unwrap();
+    assert!(live >= 1, "setup: the mutation must have committed");
+    if advertised {
+        assert_eq!(
+            report["checkpoint_present"],
+            Value::Bool(true),
+            "auto_flush is advertised but a plain mutation published no checkpoint"
+        );
+        assert_eq!(
+            report["covered_sequence"], report["live_sequence"],
+            "auto_flush is advertised but the durable checkpoint is behind the database"
+        );
+    } else {
+        assert_eq!(
+            report["checkpoint_present"],
+            Value::Bool(false),
+            "the binary published a checkpoint while the capability document \
+             does not advertise auto_flush -- the handshake must match behavior"
+        );
+        assert_eq!(
+            report["covered_sequence"],
+            Value::Null,
+            "sync --status must report the truth: nothing was published, so no \
+             sequence is covered"
+        );
+    }
 }

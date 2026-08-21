@@ -41,8 +41,9 @@ pub use checkpoint::{
 #[allow(unused_imports)]
 pub use checkpoint::CheckpointPublicationLock;
 // The compiled automatic-flush default is public library API (the capability
-// document reports it once the R026 gate flips it, plan 6.2.1) but the
-// binary reaches it only through `CheckpointConfig::auto_flush_enabled`.
+// document keys its `auto_flush` advertisement on it, plan 6.2.1 and section
+// 11) but the binary reaches it only through
+// `CheckpointConfig::auto_flush_enabled`.
 #[allow(unused_imports)]
 pub use checkpoint::AUTO_FLUSH_COMPILED_DEFAULT;
 // claim_issue_with_trace is public library API but unused by the binary

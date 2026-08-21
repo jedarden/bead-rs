@@ -188,6 +188,9 @@ fn names(kind: &str) -> &'static [&'static str] {
             "schema_ref",
             "schemas",
             "commands",
+            // Additive R026 handshake (plan section 11): optional because it
+            // is absent until the compiled automatic-flush default flips on
+            "auto_flush",
         ],
         "checkpoint_pointer" => &[
             "schema_version",
@@ -300,7 +303,9 @@ fn property_schema(kind: &str, name: &str) -> Value {
         | ("checkpoint_manifest", "receipt_shards") => json!({"type":"array"}),
         ("checkpoint_manifest", "partition_thresholds") => json!({"type":"object"}),
         ("capabilities", "store_layout") => json!({"type":"integer", "minimum":1}),
-        ("capabilities", "atomic_claim") | ("capabilities", "logical_revision") => {
+        ("capabilities", "atomic_claim")
+        | ("capabilities", "logical_revision")
+        | ("capabilities", "auto_flush") => {
             json!({"type":"boolean"})
         }
         ("capabilities", "statuses")
@@ -349,6 +354,10 @@ fn required_for(kind: &str) -> Vec<String> {
         ],
         "audit_event" => &["issue_id", "actor"],
         "provenance_receipt" => &["summary_event_identity"],
+        // Optional while the R026 gate keeps the compiled default off, so a
+        // document without it validates; present-when-enabled documents
+        // validate against the same additive identity (plan section 11)
+        "capabilities" => &["auto_flush"],
         _ => &[],
     };
     names(kind)

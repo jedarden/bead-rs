@@ -4,6 +4,7 @@
 //! a JSON document describing what this implementation supports.
 
 use crate::error::Result;
+use crate::service::checkpoint::AUTO_FLUSH_COMPILED_DEFAULT;
 use serde::{Deserialize, Serialize};
 
 /// Capabilities document
@@ -37,6 +38,16 @@ pub struct Capabilities {
     pub schemas: Vec<SchemaEntry>,
     /// Available commands
     pub commands: Vec<String>,
+    /// Whether this binary publishes a checkpoint generation after every
+    /// successful semantic mutation (plan 6.2.1, R026). Reports the
+    /// compiled default, never workspace state: `checkpoint.auto_flush`
+    /// and `--no-auto-flush` suppress publication without changing this
+    /// advertisement, and `sync --status` remains the only authority on
+    /// whether a given workspace is clean. Absent until the R026
+    /// activation gate flips the compiled default on, always present
+    /// after (plan section 11).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_flush: Option<bool>,
 }
 
 /// Priority capabilities
@@ -149,5 +160,11 @@ pub fn generate_capabilities(profile: &str) -> Result<Capabilities> {
             "update".to_string(),
             "why".to_string(),
         ],
+        // The additive R026 handshake (plan section 11): `auto_flush`
+        // reports the compiled default and is present only once that
+        // default is on -- absent until the activation gate flips it,
+        // then always `true`. The workspace key and the per-invocation
+        // flag change behavior, never the advertisement.
+        auto_flush: AUTO_FLUSH_COMPILED_DEFAULT.then_some(AUTO_FLUSH_COMPILED_DEFAULT),
     })
 }

@@ -28,6 +28,17 @@ CAPABILITY INFORMATION:
   \- Checkpoint modes and formats
   \- Schema catalog with validation and operation support
   \- Complete command inventory
+  \- auto_flush: present only once this binary publishes a checkpoint
+    generation after every successful semantic mutation
+.PP
+AUTO_FLUSH:
+  The additive auto_flush field reports the compiled default, not
+  workspace state: a workspace that disables publication through
+  checkpoint.auto_flush and an invocation passing \-\-no\-auto\-flush
+  change what the binary does, never what it advertises. The field is
+  absent until the compiled default is enabled. Consumers that require
+  a current checkpoint must still read `bead sync \-\-status`, which
+  remains the only authority on whether this workspace is clean.
 .PP
 PROFILES:
   \- native\-v1: Full native capabilities (default)
