@@ -1,12 +1,12 @@
 {
   "active_root": {
-    "path": "objects/gen-9af09edc38630c10f7ace7f7bbf5196f.jsonl",
-    "sha256": "9f01738e47c2fdcfda6fe4390e9bf6923333fc931a411cceae6ed355b30675d4"
+    "path": "objects/gen-454fda3dfb48665b83753e126ec074d7.jsonl",
+    "sha256": "a244ea4566f45d5a457d651f41bd596cd5edcdfe140b6acae953460872068782"
   },
   "added_paths": [
-    "objects/gen-9af09edc38630c10f7ace7f7bbf5196f.jsonl"
+    "objects/gen-454fda3dfb48665b83753e126ec074d7.jsonl"
   ],
-  "created_at": "2026-08-21T13:43:40.89381358Z",
+  "created_at": "2026-08-21T14:48:15.97681921Z",
   "deleted_paths": [
     "current.json",
     "objects/4a1abb32c1e68f87b50a8971e0dcdf961333838d9e49c5ac0b1bebc90c9204a0.jsonl",
@@ -35,19 +35,21 @@
     "objects/gen-91f2fe6af7035921cf1cc1f8d760b225.jsonl",
     "objects/gen-9558777e6a77de43ab57ec3ee84fe042.jsonl",
     "objects/gen-962b3eb47a4c429fe75acb6e708c98fd.jsonl",
+    "objects/gen-9af09edc38630c10f7ace7f7bbf5196f.jsonl",
     "objects/gen-9d1c33fe8143ac93f4e46fefa95bad91.jsonl",
     "objects/gen-abb3286bab9358061afbc3a0ec3ca48b.jsonl",
     "objects/gen-af7fb922449daaa54a09632b9348d0f2.jsonl",
     "objects/gen-b17e11616dc9d672eadc66d248fb4c9c.jsonl",
     "objects/gen-b9a17bb0dde3bd9f9e62db4298ddf367.jsonl",
     "objects/gen-bc56146d84806d5f3cc8daed4a1c6a3a.jsonl",
+    "objects/gen-c6279bc82ade4f20dda5cd82846a292d.jsonl",
     "objects/gen-c6a23af9467c5b219a113ea8c6ef392f.jsonl",
     "objects/gen-ca9a439ed3581dcff7d6473809be67d7.jsonl",
     "objects/gen-dbc76a10b622f0b6b8f3242e6edf73fa.jsonl",
     "objects/gen-fd187798e16ef0fb46548a62da1dc0c5.jsonl"
   ],
-  "event_count": 87,
-  "generation_id": "gen-9af09edc38630c10f7ace7f7bbf5196f",
+  "event_count": 92,
+  "generation_id": "gen-454fda3dfb48665b83753e126ec074d7",
   "issue_count": 39,
   "mode": "monolithic",
   "receipt_count": 0,
@@ -56,7 +58,7 @@
     "previous.json"
   ],
   "schema_version": 1,
-  "snapshot_sequence": 87,
+  "snapshot_sequence": 92,
   "store_uuid": "1c4f5d56-dcff-cbc5-ddf9-c536653c45f4",
-  "total_record_count": 126
+  "total_record_count": 131
 }
