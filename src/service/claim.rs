@@ -57,6 +57,23 @@ pub enum ReasonCode {
 
     /// Workspace has no issues at all
     EmptyWorkspace,
+
+    /// Assignee already holds an in_progress issue in this workspace,
+    /// so the opt-in single-claim guard refused a new claim
+    AssigneeHasActiveClaim,
+}
+
+impl ReasonCode {
+    /// Machine-readable snake_case identifier for this reason code
+    ///
+    /// Derived from the serde representation so the string and the enum
+    /// variant cannot drift apart.
+    pub fn code_string(&self) -> String {
+        match serde_json::to_value(self) {
+            Ok(serde_json::Value::String(s)) => s,
+            _ => format!("{:?}", self),
+        }
+    }
 }
 
 /// Issue eligibility factors for decision trace
@@ -126,6 +143,10 @@ pub struct DecisionTrace {
 /// - Records a claim audit event
 /// - Returns empty result if no eligible work exists
 ///
+/// When `single_claim` is set, refuses with `assignee_has_active_claim` if the
+/// assignee already holds an in_progress issue in this workspace. The guard
+/// runs in this same transaction, before selection.
+///
 /// All operations occur in a single write transaction to guarantee atomicity.
 pub fn claim_issue(
     tx: &Transaction,
@@ -133,7 +154,12 @@ pub fn claim_issue(
     _model: Option<&str>,
     _harness: Option<&str>,
     _harness_version: Option<&str>,
+    single_claim: bool,
 ) -> Result<ClaimResult> {
+    // Refuse before selecting when the single-claim guard is enabled and the
+    // assignee already holds active work
+    enforce_single_claim(tx, assignee, single_claim)?;
+
     // Find the next eligible issue using FIFO-v1 ranking
     let eligible_issue = find_eligible_issue(tx)?;
 
@@ -199,12 +225,20 @@ pub struct EnhancedClaimResult {
 /// - Validates fencing tokens when provided
 /// - Maintains backward compatibility with non-leased claims
 ///
+/// When `single_claim` is set, the new-claim branch refuses with
+/// `assignee_has_active_claim` if the assignee already holds an in_progress
+/// issue in this workspace. Lease renewal and fencing-token validation are
+/// not guarded: both operate on an issue the assignee already holds, so they
+/// do not newly assign work.
+///
 /// # Arguments
 /// * `tx` - Database transaction
 /// * `assignee` - Who is claiming the issue
 /// * `lease_ttl_seconds` - Optional TTL for leased claims
 /// * `renew_lease` - If true, renew existing lease instead of claiming new work
 /// * `fencing_token` - Optional fencing token for validation
+/// * `single_claim` - If true, refuse when the assignee already holds an
+///   in_progress issue in this workspace
 ///
 /// # Returns
 /// Enhanced claim result including lease information if applicable
@@ -214,6 +248,7 @@ pub fn claim_issue_with_lease(
     lease_ttl_seconds: Option<u64>,
     renew_lease: bool,
     fencing_token: Option<i64>,
+    single_claim: bool,
 ) -> Result<EnhancedClaimResult> {
     // Handle lease renewal if requested
     if renew_lease {
@@ -224,6 +259,10 @@ pub fn claim_issue_with_lease(
     if let Some(token) = fencing_token {
         return claim_with_fencing_token(tx, assignee, token, lease_ttl_seconds);
     }
+
+    // Refuse before selecting when the single-claim guard is enabled and the
+    // assignee already holds active work
+    enforce_single_claim(tx, assignee, single_claim)?;
 
     // Perform normal claim with optional lease creation
     let eligible_issue = find_eligible_issue(tx)?;
@@ -626,6 +665,60 @@ pub fn create_decision_trace(
     })
 }
 
+/// Find an in_progress issue currently held by the given assignee
+///
+/// Returns the blocking issue ID for the single-claim guard when the assignee
+/// already holds active work. Ordered deterministically so the reported
+/// blocker is stable even if more than one exists (possible in workspaces
+/// predating the guard, or via `update --assignee` on an open issue).
+fn find_assignee_in_progress_issue(tx: &Transaction, assignee: &str) -> Result<Option<String>> {
+    let issue_id: Option<String> = tx
+        .query_row(
+            "SELECT id FROM issues
+             WHERE assignee = ?1 AND base_status = 'in_progress'
+             ORDER BY updated_at ASC, id ASC
+             LIMIT 1",
+            [assignee],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| {
+            crate::Error::Internal(anyhow::anyhow!(
+                "Failed to query assignee in-progress issues: {}",
+                e
+            ))
+        })?;
+
+    Ok(issue_id)
+}
+
+/// Enforce the opt-in single-claim guard before selecting a new issue
+///
+/// When `single_claim` is set, refuse the claim if the assignee already holds
+/// any issue with base status in_progress in this workspace. The refusal
+/// carries the `assignee_has_active_claim` reason code and names the blocking
+/// issue ID. Must run inside the caller's claim transaction so the check and
+/// the subsequent selection/assignment are atomic — no race between check
+/// and assign.
+fn enforce_single_claim(tx: &Transaction, assignee: &str, single_claim: bool) -> Result<()> {
+    if !single_claim {
+        return Ok(());
+    }
+
+    if let Some(blocking_id) = find_assignee_in_progress_issue(tx, assignee)? {
+        return Err(Error::ClaimRefused {
+            code: ReasonCode::AssigneeHasActiveClaim.code_string(),
+            message: format!(
+                "assignee '{}' already holds in_progress issue '{}' in this workspace; \
+                 release or close it before claiming another (--single-claim)",
+                assignee, blocking_id
+            ),
+        });
+    }
+
+    Ok(())
+}
+
 /// Find the next eligible issue using FIFO-v1 ranking
 ///
 /// Eligibility requires:
@@ -670,6 +763,11 @@ fn find_eligible_issue(tx: &Transaction) -> Result<Option<String>> {
 /// This function wraps the standard claim operation with optional decision trace
 /// collection for diagnostic purposes. The decision trace is nonmutating and
 /// only reads data to explain the claim decision.
+///
+/// Part of the library's public claim API. The CLI builds its `--why` trace
+/// from `create_decision_trace` over the claim it already made, so this
+/// wrapper may show as unused when compiling the binary.
+#[allow(dead_code)]
 pub fn claim_issue_with_trace(
     tx: &Transaction,
     assignee: &str,
@@ -677,9 +775,10 @@ pub fn claim_issue_with_trace(
     harness: Option<&str>,
     harness_version: Option<&str>,
     include_trace: bool,
+    single_claim: bool,
 ) -> Result<(ClaimResult, Option<DecisionTrace>)> {
     // First perform the standard claim operation
-    let result = claim_issue(tx, assignee, model, harness, harness_version)?;
+    let result = claim_issue(tx, assignee, model, harness, harness_version, single_claim)?;
 
     // Collect decision trace if requested
     let trace = if include_trace {
@@ -712,6 +811,8 @@ pub fn claim_issue_with_trace(
 /// * `model` - Optional model name for telemetry
 /// * `harness` - Optional harness name for telemetry
 /// * `harness_version` - Optional harness version for telemetry
+/// * `single_claim` - If true, refuse when the assignee already holds an
+///   in_progress issue in this workspace
 ///
 /// # Returns
 /// Standard claim result enhanced with scheduling information
@@ -722,15 +823,24 @@ pub fn claim_issue_with_policy(
     model: Option<&str>,
     harness: Option<&str>,
     harness_version: Option<&str>,
+    single_claim: bool,
 ) -> Result<ClaimResult> {
     match policy {
         SchedulingPolicy::FifoV1 => {
             // Use existing FIFO-v1 logic for backward compatibility
-            claim_issue(tx, assignee, model, harness, harness_version)
+            claim_issue(tx, assignee, model, harness, harness_version, single_claim)
         }
         _ => {
             // Use intelligent scheduling for other policies
-            intelligent_claim(tx, assignee, policy, model, harness, harness_version)
+            intelligent_claim(
+                tx,
+                assignee,
+                policy,
+                model,
+                harness,
+                harness_version,
+                single_claim,
+            )
         }
     }
 }
@@ -743,7 +853,12 @@ fn intelligent_claim(
     _model: Option<&str>,
     _harness: Option<&str>,
     _harness_version: Option<&str>,
+    single_claim: bool,
 ) -> Result<ClaimResult> {
+    // Refuse before selecting when the single-claim guard is enabled and the
+    // assignee already holds active work
+    enforce_single_claim(tx, assignee, single_claim)?;
+
     // Increment workspace claim sequence for rotation tracking
     let workspace_sequence = scheduling::increment_workspace_sequence(tx)?;
 
@@ -888,5 +1003,17 @@ mod tests {
         };
         let json_empty = serde_json::to_string(&empty).unwrap();
         assert!(json_empty.contains("null"));
+    }
+
+    #[test]
+    fn test_assignee_has_active_claim_reason_code() {
+        // The guard's machine-readable identifier must stay stable: consumers
+        // match on it to distinguish a refused claim from other exit-4 errors
+        let code = ReasonCode::AssigneeHasActiveClaim.code_string();
+        assert_eq!(code, "assignee_has_active_claim");
+        assert_eq!(
+            serde_json::to_value(ReasonCode::AssigneeHasActiveClaim).unwrap(),
+            serde_json::json!("assignee_has_active_claim")
+        );
     }
 }

@@ -425,6 +425,23 @@ LEASED CLAIMS:
   Standard non-leased claims remain the default and maintain backward compatibility.
   Leased claims add safety for distributed fleets and crash recovery scenarios.
 
+SINGLE-CLAIM GUARD:
+  --single-claim refuses the claim when this assignee already holds an
+  in_progress issue in this workspace. The refusal fails with exit code 4
+  and the machine-readable reason code 'assignee_has_active_claim', naming
+  the blocking issue ID. Without the flag, an assignee may hold any number
+  of simultaneous claims (default unchanged).
+
+  The guard checks this workspace's own store only, inside the same atomic
+  transaction as selection and assignment. It bounds claim accumulation
+  (one in_progress issue per assignee per workspace); it does not detect or
+  reap stale claims -- combine with --lease-ttl to bound how long a stale
+  claim can persist.
+
+  Lease renewal (--renew-lease) is not guarded: it operates on an issue the
+  assignee already holds. Assigning via 'bead update --assignee' is also
+  unaffected.
+
 CLAIM SEMANTICS:
   - Atomic: selection, assignment, and audit record are one transaction
   - Deterministic: same state always produces same result (fifo-v1)
@@ -464,6 +481,12 @@ pub struct ClaimOptions {
     /// Explicit fencing token for lease validation (advanced usage)
     #[arg(long)]
     pub fencing_token: Option<i64>,
+
+    /// Refuse the claim if this assignee already holds an in_progress issue
+    /// in this workspace (opt-in guard; fails with reason code
+    /// assignee_has_active_claim and exit code 4)
+    #[arg(long)]
+    pub single_claim: bool,
 }
 
 /// Options for updating an issue

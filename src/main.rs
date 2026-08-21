@@ -126,6 +126,7 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
             opts.lease_ttl,
             opts.renew_lease,
             opts.fencing_token,
+            opts.single_claim,
         )?;
 
         let claim = ClaimResult {
@@ -142,6 +143,7 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
             None, // model
             None, // harness
             None, // harness_version
+            opts.single_claim,
         )?;
 
         // Create enhanced result without lease for intelligent policies
@@ -153,11 +155,16 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
         (enhanced, claim)
     };
 
-    // Get decision trace if requested (backward compatibility with R001)
+    // Get decision trace if requested (backward compatibility with R001).
+    // The trace is built from the claim that already happened in this
+    // transaction — it must not perform a second claim, which would silently
+    // assign an extra issue to the assignee (and defeat --single-claim).
     let trace = if opts.why {
-        let (_, trace_data) =
-            service::claim_issue_with_trace(&tx, &opts.assignee, None, None, None, true)?;
-        trace_data
+        Some(service::claim::create_decision_trace(
+            &tx,
+            enhanced_result.bead_id.as_deref(),
+            &opts.assignee,
+        )?)
     } else {
         None
     };

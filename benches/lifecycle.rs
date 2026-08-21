@@ -701,7 +701,7 @@ fn run_warmup(config: &BenchmarkConfig, store: &mut SqliteStore) -> Result<()> {
             let assignee = format!("warmup-worker-{}", i % config.num_workers);
             let tx = store.conn().unchecked_transaction()?;
 
-            match claim::claim_issue(&tx, &assignee, None, None, None) {
+            match claim::claim_issue(&tx, &assignee, None, None, None, false) {
                 Ok(result) => {
                     if let Some(bead_id) = &result.bead_id {
                         tx.commit()?;
@@ -786,7 +786,7 @@ fn execute_claim_close(
             let claim_start = Instant::now();
             let tx = store.conn().unchecked_transaction()?;
 
-            match claim::claim_issue(&tx, assignee, None, None, None) {
+            match claim::claim_issue(&tx, assignee, None, None, None, false) {
                 Ok(result) => {
                     if result.bead_id.is_some() {
                         metrics.succeeded_claims += 1;
@@ -843,7 +843,7 @@ fn execute_claim_release(
             let claim_start = Instant::now();
             let tx = store.conn().unchecked_transaction()?;
 
-            match claim::claim_issue(&tx, assignee, None, None, None) {
+            match claim::claim_issue(&tx, assignee, None, None, None, false) {
                 Ok(result) => {
                     if result.bead_id.is_some() {
                         metrics.succeeded_claims += 1;
@@ -900,7 +900,7 @@ fn execute_mixed_workload(
                     let claim_start = Instant::now();
                     let tx = store.conn().unchecked_transaction()?;
 
-                    match claim::claim_issue(&tx, assignee, None, None, None) {
+                    match claim::claim_issue(&tx, assignee, None, None, None, false) {
                         Ok(result) => {
                             if result.bead_id.is_some() {
                                 metrics.succeeded_claims += 1;
@@ -920,7 +920,8 @@ fn execute_mixed_workload(
                 6..=7 => {
                     // Release if has claim
                     let tx = store.conn().unchecked_transaction()?;
-                    if let Ok(claimed) = claim::claim_issue(&tx, assignee, None, None, None) {
+                    if let Ok(claimed) = claim::claim_issue(&tx, assignee, None, None, None, false)
+                    {
                         if let Some(bead_id) = &claimed.bead_id {
                             tx.commit()?;
                             lifecycle::release_issue(store.conn(), bead_id, None, None)?;
@@ -935,7 +936,8 @@ fn execute_mixed_workload(
                 8..=9 => {
                     // Close and reopen
                     let tx = store.conn().unchecked_transaction()?;
-                    if let Ok(claimed) = claim::claim_issue(&tx, assignee, None, None, None) {
+                    if let Ok(claimed) = claim::claim_issue(&tx, assignee, None, None, None, false)
+                    {
                         if let Some(bead_id) = &claimed.bead_id {
                             tx.commit()?;
 
@@ -1002,7 +1004,7 @@ fn execute_dependency_churn(
             let claim_start = Instant::now();
             let tx = store.conn().unchecked_transaction()?;
 
-            match claim::claim_issue(&tx, assignee, None, None, None) {
+            match claim::claim_issue(&tx, assignee, None, None, None, false) {
                 Ok(result) => {
                     if result.bead_id.is_some() {
                         metrics.succeeded_claims += 1;

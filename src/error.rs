@@ -42,6 +42,14 @@ pub enum Error {
     #[error("Lease conflict: {0}")]
     LeaseConflict(String),
 
+    /// Claim refused by an opt-in claim-time guard, e.g. --single-claim (exit 4)
+    ///
+    /// `code` carries the machine-readable reason code (snake_case, sourced
+    /// from the claim ReasonCode taxonomy); `message` names the blocking
+    /// state, including the blocking issue ID.
+    #[error("{code}: {message}")]
+    ClaimRefused { code: String, message: String },
+
     /// Integrity, import, or migration failure (exit 5)
     #[error("Integrity error: {0}")]
     #[allow(dead_code)]
@@ -86,7 +94,8 @@ impl Error {
             Error::Conflict(_)
             | Error::Validation(_)
             | Error::LeaseExpired(_)
-            | Error::LeaseConflict(_) => 4,
+            | Error::LeaseConflict(_)
+            | Error::ClaimRefused { .. } => 4,
             Error::Integrity(_) => 5,
             Error::DatabaseBusy(_) => 6,
             _ => 1,

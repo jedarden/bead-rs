@@ -33,6 +33,8 @@ pub use checkpoint::{
     flush_checkpoint, forensic_checkpoint_status, import_forensic_checkpoint,
     publish_forensic_checkpoint,
 };
+// claim_issue_with_trace is public library API but unused by the binary
+#[allow(unused_imports)]
 pub use claim::{
     claim_issue_with_lease, claim_issue_with_policy, claim_issue_with_trace, EnhancedClaimResult,
 };

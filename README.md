@@ -111,7 +111,7 @@ Exit codes are stable across every command:
 | 1 | Internal failure |
 | 2 | CLI usage or validation error |
 | 3 | Workspace, issue, or file not found |
-| 4 | Conflict — invalid transition, revision guard, dependency cycle |
+| 4 | Conflict — invalid transition, revision guard, dependency cycle, single-claim refusal |
 | 5 | Malformed input or integrity failure |
 
 ## Coordinating a fleet
@@ -125,6 +125,12 @@ Exit codes are stable across every command:
 - **Leases.** `bead claim --lease-ttl SECONDS` issues a lease with a
   monotonically increasing fencing token, so a crashed or partitioned worker
   cannot mutate work that has since been reassigned.
+- **Single-claim guard.** `bead claim --single-claim` refuses the claim when
+  the assignee already holds an `in_progress` issue in the workspace, failing
+  with exit 4 and reason code `assignee_has_active_claim` naming the blocking
+  issue. Opt-in per call, like `--lease-ttl`; it bounds claim accumulation but
+  does not detect stale claims — combine it with a lease TTL to bound how long
+  an abandoned claim can persist.
 - **Revision guards.** `--if-revision N` on `update`, `release`, `close`, and
   `reopen` gives optimistic concurrency control; a stale revision fails with
   exit 4 rather than silently losing an update.
