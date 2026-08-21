@@ -31,8 +31,9 @@ pub use changes::{
 };
 pub use checkpoint::{
     acquire_checkpoint_publication_lock, flush_checkpoint, forensic_checkpoint_status,
-    import_forensic_checkpoint, load_checkpoint_config, publish_forensic_checkpoint,
-    publish_forensic_checkpoint_holding, read_covered_event_sequence, read_live_event_sequence,
+    import_checkpoint_with_diagnostics, import_forensic_checkpoint, load_checkpoint_config,
+    publish_forensic_checkpoint, publish_forensic_checkpoint_holding, read_covered_event_sequence,
+    read_live_event_sequence,
     CheckpointConfig,
 };
 // The publication-lock guard type is public library API (callers that

@@ -1135,13 +1135,6 @@ fn cmd_sync_flush_only(opts: cli::SyncFlushOptions) -> Result<()> {
 
     // If explicit output path provided, use pre-F017 issue-only export
     if let Some(ref output) = opts.output {
-        // Reject --profile for issue-only export (not supported)
-        if opts.profile.is_some() {
-            return Err(Error::validation(
-                "--profile is not supported for issue-only export (use default forensic checkpoint instead)",
-            ));
-        }
-
         let output_path = config.root.join(output);
 
         // Validate output path doesn't point into .beads/checkpoint
@@ -1165,13 +1158,6 @@ fn cmd_sync_flush_only(opts: cli::SyncFlushOptions) -> Result<()> {
     } else {
         // No explicit output - use F017 forensic checkpoint
         let checkpoint_base = config.root.join(".beads");
-
-        // Reject --profile for forensic checkpoint (not supported)
-        if opts.profile.is_some() {
-            return Err(Error::validation(
-                "--profile is not supported for forensic checkpoint (checkpoint mode is determined by .beads/config.json)",
-            ));
-        }
 
         // Mode comes from the recorded checkpoint configuration and the
         // section 6.1.1 thresholds: `.beads/config.json` may force a mode,
@@ -1304,6 +1290,18 @@ fn cmd_sync_status(opts: cli::SyncStatusOptions) -> Result<()> {
 }
 
 fn cmd_sync_import_only(opts: cli::SyncImportOptions) -> Result<()> {
+    // Validate that --diagnostics is not used with restore/merge modes (incompatible)
+    if opts.diagnostics && (opts.restore_into_empty || opts.merge) {
+        return Err(Error::cli_usage(
+            "--diagnostics mode is not compatible with --restore-into-empty or --merge (it uses simple import only)",
+        ));
+    }
+
+    // Use diagnostics path if requested
+    if opts.diagnostics {
+        return cmd_sync_import_diagnostics(opts);
+    }
+
     // Validate that exactly one mode is selected
     let mode = if opts.restore_into_empty {
         Some(cli::ImportMode::RestoreIntoEmpty)
@@ -1425,6 +1423,88 @@ fn cmd_sync_import_only(opts: cli::SyncImportOptions) -> Result<()> {
                 eprintln!("  Summary event sequence: {}", seq);
             }
         }
+    }
+
+    Ok(())
+}
+
+fn cmd_sync_import_diagnostics(opts: cli::SyncImportOptions) -> Result<()> {
+    // Discover workspace
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    // Open database connection
+    let db_path = config.database_path();
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    // Create store wrapper
+    let mut store = store::SqliteStore::from_conn(conn);
+
+    // Resolve input path relative to workspace root if not absolute
+    let input_path = if std::path::Path::new(&opts.input).is_absolute() {
+        std::path::PathBuf::from(&opts.input)
+    } else {
+        config.root.join(&opts.input)
+    };
+
+    // Validate input path exists
+    if !input_path.exists() {
+        return Err(Error::validation(format!(
+            "Input path not found: {}",
+            input_path.display()
+        )));
+    }
+
+    // Run diagnostics import (R014)
+    eprintln!("Running import diagnostics (R014)...");
+    eprintln!();
+
+    let result = service::import_checkpoint_with_diagnostics(
+        &mut store,
+        &input_path,
+        &opts.profile,
+        opts.dry_run,
+        true, // diagnostics_mode enabled
+    )?;
+
+    // Print diagnostics results
+    eprintln!("Import diagnostics complete:");
+    eprintln!("  Input: {}", input_path.display());
+    eprintln!("  Profile: {}", opts.profile);
+
+    if let Some(diagnostics) = result.diagnostics {
+        eprintln!();
+        eprintln!("Validation failures:");
+        eprintln!("  Total lines: {}", diagnostics.total_lines);
+        eprintln!("  Processed lines: {}", diagnostics.processed_lines);
+
+        for failure in &diagnostics.validation_failures {
+            eprintln!();
+            eprintln!("  Line {}", failure.line_number);
+            eprintln!(
+                "    JSON Pointer: {}",
+                failure.json_pointer.as_deref().unwrap_or("N/A")
+            );
+            eprintln!(
+                "    Schema keyword: {}",
+                failure.schema_keyword.as_deref().unwrap_or("N/A")
+            );
+            eprintln!("    Semantic code: {}", failure.semantic_code);
+            eprintln!("    Message: {}", failure.message);
+        }
+
+        if diagnostics.truncated {
+            eprintln!();
+            eprintln!("  (Validation failures truncated - showing worst 100)");
+        }
+    } else {
+        eprintln!("  No validation failures found");
+    }
+
+    eprintln!();
+    if opts.dry_run {
+        eprintln!("Dry run complete - no state was modified");
     }
 
     Ok(())
