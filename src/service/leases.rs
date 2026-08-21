@@ -237,6 +237,20 @@ pub fn get_active_lease(
 /// token. It's used by update, release, close, and reopen operations to prevent
 /// stale workers from mutating expired or reassigned work.
 ///
+/// A lease row only fences the claim epoch that created it. Lease rows are
+/// never deleted (they carry the per-issue fencing-token high-water mark), so
+/// rows can outlive the claim they fenced. When no active lease matches the
+/// issue's current assignee, the historical row is treated as absent unless it
+/// belongs to the current assignee AND the current claim epoch is leased
+/// (determined from the most recent `claimed` event). Concretely:
+///
+/// - Issue never leased, or claimed without `--lease-ttl` -> allow.
+/// - Lease row from a previous epoch (released/closed lease claim, issue since
+///   re-claimed or reassigned) -> allow. Without this, any issue that was ever
+///   leased could never again be mutated by a non-leased claimant.
+/// - Current assignee's own lease expired during the current leased epoch ->
+///   refuse, so a stale worker cannot mutate past expiry.
+///
 /// # Arguments
 /// * `conn` - Database connection
 /// * `issue_id` - ID of the issue being mutated
@@ -267,38 +281,99 @@ pub fn validate_lease_for_mutation(
             Ok(())
         }
         None => {
-            // No active lease exists - this could mean:
+            // No active lease for this assignee - this could mean:
             // 1. Issue was never leased (non-leased claim)
-            // 2. Lease expired
-            // 3. Issue was reassigned to different assignee
+            // 2. Lease expired during the current leased claim epoch
+            // 3. Lease rows exist only from a previous claim epoch (the issue
+            //    was released/closed and later re-claimed or reassigned)
 
-            // Check if any lease ever existed for this issue
-            let any_lease: Option<i64> = conn
+            // Look at who owns the (single) lease row for this issue, if any
+            let lease_row_assignee: Option<String> = conn
                 .query_row(
-                    "SELECT COUNT(*) FROM leases WHERE issue_id = ?1",
+                    "SELECT assignee FROM leases WHERE issue_id = ?1",
                     [issue_id],
                     |row| row.get(0),
                 )
                 .optional()
                 .map_err(|e| {
                     crate::Error::Internal(anyhow::anyhow!("Failed to check lease history: {}", e))
-                })?
-                .flatten();
+                })?;
 
-            match any_lease {
-                Some(0) | None => {
+            match lease_row_assignee {
+                None => {
                     // No lease ever existed - this is a non-leased claim, allow it
                     Ok(())
                 }
+                Some(row_assignee) if row_assignee != assignee => {
+                    // The row belongs to a previous epoch's claimant; it does
+                    // not fence the current assignee, allow
+                    Ok(())
+                }
                 Some(_) => {
-                    // Lease existed but is now expired/invalid
-                    Err(crate::Error::LeaseExpired(format!(
-                        "Lease for issue {} has expired or is invalid for assignee {}",
-                        issue_id, assignee
-                    )))
+                    // The row belongs to the current assignee. It only fences
+                    // if the current claim epoch is leased - if the most
+                    // recent claim was non-leased, the row predates it
+                    if current_claim_epoch_is_leased(conn, issue_id)? {
+                        // Current epoch's lease expired or is invalid
+                        Err(crate::Error::LeaseExpired(format!(
+                            "Lease for issue {} has expired or is invalid for assignee {}",
+                            issue_id, assignee
+                        )))
+                    } else {
+                        // Stale row from an earlier epoch of this same
+                        // assignee, allow
+                        Ok(())
+                    }
                 }
             }
         }
+    }
+}
+
+/// Check whether the issue's current claim epoch was made with a lease
+///
+/// The most recent `claimed` event for the issue records whether the claim
+/// created a lease: leased claims carry `"with_lease": true` (or, for the
+/// fencing-token claim path, a `claim_with_fencing_token` action). `events`
+/// has a monotonically increasing `sequence`, so ordering by it identifies
+/// the current epoch without comparing timestamps.
+///
+/// Returns `true` (treat as leased) when no `claimed` event exists or the
+/// detail cannot be parsed - the conservative reading preserves fencing for
+/// lease rows whose provenance cannot be established.
+fn current_claim_epoch_is_leased(conn: &rusqlite::Connection, issue_id: &str) -> Result<bool> {
+    let detail: Option<String> = conn
+        .query_row(
+            "SELECT detail FROM events
+             WHERE issue_id = ?1 AND kind = 'claimed'
+             ORDER BY sequence DESC LIMIT 1",
+            [issue_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| {
+            crate::Error::Internal(anyhow::anyhow!(
+                "Failed to inspect claim event history: {}",
+                e
+            ))
+        })?;
+
+    let Some(raw_detail) = detail else {
+        return Ok(true);
+    };
+
+    let parsed: Option<serde_json::Value> = serde_json::from_str(&raw_detail).ok();
+    match parsed {
+        Some(detail) => Ok(detail
+            .get("with_lease")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+            || detail.get("action").and_then(serde_json::Value::as_str)
+                == Some("claim_with_fencing_token")
+            || detail
+                .get("new_fencing_token")
+                .is_some_and(|v| !v.is_null())),
+        None => Ok(true),
     }
 }
 

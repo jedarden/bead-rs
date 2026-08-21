@@ -502,6 +502,61 @@ fn test_leased_claim_with_why_flag() {
 }
 
 #[test]
+fn test_plain_reclaim_after_leased_release_is_mutable() {
+    // Regression (beadrs-122d91fb): a lease row from a previous claim epoch
+    // must not fence a later non-leased claimant. Lease rows are never
+    // deleted, so "any lease row ever existed" can never permanently block
+    // close/release/update of an issue that was re-claimed without a lease.
+    let workspace = TestWorkspace::new();
+
+    workspace.run_bead(&["create", "--title", "Task 1", "--priority", "0"]);
+
+    // w1 claims with a lease, then releases while the lease is still active
+    let leased_output =
+        workspace.run_bead(&["claim", "--assignee", "w1", "--lease-ttl", "60", "--json"]);
+    assert!(leased_output.status.success());
+
+    let leased_result: serde_json::Value =
+        serde_json::from_slice(&leased_output.stdout).expect("Failed to parse claim result");
+    let issue_id = leased_result["bead_id"]
+        .as_str()
+        .expect("Failed to get issue ID")
+        .to_string();
+
+    let release_output = workspace.run_bead(&["release", &issue_id]);
+    assert!(
+        release_output.status.success(),
+        "Leased holder must be able to release: {}",
+        String::from_utf8_lossy(&release_output.stderr)
+    );
+
+    // w2 plain-claims the released issue (no lease) - must get the same issue
+    let plain_output = workspace.run_bead(&["claim", "--assignee", "w2", "--json"]);
+    assert!(plain_output.status.success());
+
+    let plain_result: serde_json::Value =
+        serde_json::from_slice(&plain_output.stdout).expect("Failed to parse plain claim result");
+    assert_eq!(plain_result["bead_id"].as_str(), Some(issue_id.as_str()));
+    assert!(plain_result["lease"].is_null());
+
+    // The leftover lease row from w1's epoch must not fence w2: update,
+    // release-style mutations, and close all have to keep working
+    let update_output = workspace.run_bead(&["update", &issue_id, "--notes", "plain epoch works"]);
+    assert!(
+        update_output.status.success(),
+        "Plain claimant must be able to update: {}",
+        String::from_utf8_lossy(&update_output.stderr)
+    );
+
+    let close_output = workspace.run_bead(&["close", &issue_id, "--reason", "done"]);
+    assert!(
+        close_output.status.success(),
+        "Plain claimant must be able to close despite leftover lease row: {}",
+        String::from_utf8_lossy(&close_output.stderr)
+    );
+}
+
+#[test]
 fn test_lease_cleanup_after_expiry() {
     let workspace = TestWorkspace::new();
 
