@@ -4,7 +4,7 @@
 .SH NAME
 bead claim \- Claim an issue from the ready frontier
 .SH SYNOPSIS
-\fBbead claim\fR <\fB\-\-assignee\fR> [\fB\-\-json\fR] [\fB\-\-why\fR] [\fB\-\-policy\fR] [\fB\-\-lease\-ttl\fR] [\fB\-\-renew\-lease\fR] [\fB\-\-fencing\-token\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBbead claim\fR <\fB\-\-assignee\fR> [\fB\-\-json\fR] [\fB\-\-why\fR] [\fB\-\-policy\fR] [\fB\-\-lease\-ttl\fR] [\fB\-\-renew\-lease\fR] [\fB\-\-fencing\-token\fR] [\fB\-\-single\-claim\fR] [\fB\-h\fR|\fB\-\-help\fR] 
 .SH DESCRIPTION
 Atomically claim and assign one issue from the ready frontier.
 .PP
@@ -44,6 +44,23 @@ LEASED CLAIMS:
   Standard non\-leased claims remain the default and maintain backward compatibility.
   Leased claims add safety for distributed fleets and crash recovery scenarios.
 .PP
+SINGLE\-CLAIM GUARD:
+  \-\-single\-claim refuses the claim when this assignee already holds an
+  in_progress issue in this workspace. The refusal fails with exit code 4
+  and the machine\-readable reason code \*(Aqassignee_has_active_claim\*(Aq, naming
+  the blocking issue ID. Without the flag, an assignee may hold any number
+  of simultaneous claims (default unchanged).
+.PP
+  The guard checks this workspace\*(Aqs own store only, inside the same atomic
+  transaction as selection and assignment. It bounds claim accumulation
+  (one in_progress issue per assignee per workspace); it does not detect or
+  reap stale claims \-\- combine with \-\-lease\-ttl to bound how long a stale
+  claim can persist.
+.PP
+  Lease renewal (\-\-renew\-lease) is not guarded: it operates on an issue the
+  assignee already holds. Assigning via \*(Aqbead update \-\-assignee\*(Aq is also
+  unaffected.
+.PP
 CLAIM SEMANTICS:
   \- Atomic: selection, assignment, and audit record are one transaction
   \- Deterministic: same state always produces same result (fifo\-v1)
@@ -76,6 +93,9 @@ Renew an existing lease instead of claiming new work
 .TP
 \fB\-\-fencing\-token\fR=\fIFENCING_TOKEN\fR
 Explicit fencing token for lease validation (advanced usage)
+.TP
+\fB\-\-single\-claim\fR
+Refuse the claim if this assignee already holds an in_progress issue in this workspace (opt\-in guard; fails with reason code assignee_has_active_claim and exit code 4)
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

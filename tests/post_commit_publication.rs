@@ -1,5 +1,5 @@
 //! Post-commit checkpoint publication chokepoint tests (plan 6.2.1 items
-//! 1-3, 5, and 8, ADR-003, R026 step A1).
+//! 1-3, 5, 7, and 8, ADR-003, R026 step A1).
 //!
 //! Every mutating command publishes a checkpoint generation covering its
 //! own committed sequence from one shared chokepoint in `execute_command`:
@@ -20,6 +20,10 @@
 //!   carried to this sequence -- the residue of a lost publication race --
 //!   is treated as success rather than published over;
 //! - publication is silent on success: no command's output changes;
+//! - `--no-auto-flush` and `checkpoint.auto_flush` are the two escape
+//!   hatches (item 7): each suppresses publication, the flag wins over the
+//!   configuration key, a suppressed workspace is left dirty exactly as
+//!   explicit flush leaves it, and `sync --status` reports that state;
 //! - `sync flush-only` stays an explicit, idempotent operation (item 8):
 //!   against a clean checkpoint it publishes nothing and exits 0.
 //!
@@ -737,6 +741,155 @@ fn publication_is_silent_on_success() {
         "the one line must be the new issue ID, got {stdout:?}"
     );
     assert_covers_live(workspace, "after silent publication");
+}
+
+/// `--no-auto-flush` suppresses publication for exactly one invocation
+/// (plan 6.2.1 item 7): the mutation still commits and stays visible, the
+/// checkpoint is left dirty exactly as an unflushed mutation under the
+/// explicit-flush default is, `sync --status` reports that dirtiness, the
+/// suppression does not outlive the invocation, and the suppressed state is
+/// published by the explicit `sync flush-only` that has always covered it.
+/// The flag never disturbs the command's own output, so `bead create` still
+/// prints only the new ID plus LF (item 6).
+#[test]
+fn no_auto_flush_suppresses_publication_for_one_invocation() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    run(workspace, &["init", "--prefix", "esc"]);
+    set_auto_flush(workspace, true);
+    create_issue(workspace, "published before suppression");
+    assert_covers_live(workspace, "setup: automatic publication is on");
+
+    let before = snapshot_checkpoint(workspace);
+    let before_generation = generation_id(workspace);
+    let before_live = status(workspace)["live_sequence"].as_i64().unwrap();
+
+    let output = bead(workspace)
+        .args(["create", "--no-auto-flush", "--title", "suppressed once"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(
+        stdout.lines().count(),
+        1,
+        "a suppressed invocation must keep create's one-line ID output, got {stdout:?}"
+    );
+    let suppressed_id = stdout.trim();
+
+    // The mutation committed and is visible even though nothing published.
+    let listing = run(workspace, &["list", "--json"]);
+    assert!(
+        String::from_utf8_lossy(&listing.stdout).contains(suppressed_id),
+        "the suppressed mutation must still be committed and visible"
+    );
+
+    // The checkpoint is dirty exactly as an unflushed explicit-flush
+    // mutation leaves it: no generation, no object, no byte moved, and the
+    // live sequence one ahead of the covered one.
+    let report = status(workspace);
+    assert_eq!(report["dirty"], Value::Bool(true));
+    assert_eq!(
+        report["live_sequence"].as_i64().unwrap(),
+        before_live + 1,
+        "the suppressed mutation must still advance the live sequence"
+    );
+    assert_eq!(
+        report["covered_sequence"].as_i64().unwrap(),
+        before_live,
+        "a suppressed invocation must not advance the covered sequence"
+    );
+    assert_eq!(
+        generation_id(workspace),
+        before_generation,
+        "a suppressed invocation minted a new generation"
+    );
+    assert_eq!(
+        snapshot_checkpoint(workspace),
+        before,
+        "a suppressed invocation changed the checkpoint set; suppression \
+         must leave it byte-identical, exactly as explicit flush does today"
+    );
+
+    // Suppression lasts one invocation: the next mutation without the flag
+    // publishes normally again.
+    create_issue(workspace, "published after suppression");
+    assert_covers_live(workspace, "the invocation after a suppressed one");
+
+    // Suppress once more, then prove the explicit flush that has always
+    // covered unflushed work publishes the suppressed state.
+    run(
+        workspace,
+        &[
+            "create",
+            "--no-auto-flush",
+            "--title",
+            "suppressed for flush",
+        ],
+    );
+    let dirty = status(workspace);
+    assert_eq!(dirty["dirty"], Value::Bool(true));
+    run(workspace, &["sync", "flush-only"]);
+    let clean = status(workspace);
+    assert_eq!(clean["dirty"], Value::Bool(false));
+    assert_eq!(
+        clean["ready_to_commit"],
+        Value::Bool(true),
+        "after flushing the suppressed state the checkpoint must be ready \
+         to commit, exactly as an explicitly flushed workspace is"
+    );
+    assert_covers_live(workspace, "after flushing the suppressed state");
+}
+
+/// The flag wins over `checkpoint.auto_flush` in both directions (plan
+/// 6.2.1 item 7, plan section 5 command table): it suppresses a workspace
+/// that opted in, and against an already-suppressed workspace it changes
+/// nothing. Being a global flag, it suppresses from both argument
+/// positions.
+#[test]
+fn no_auto_flush_flag_wins_over_the_configuration_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    run(workspace, &["init", "--prefix", "over"]);
+    set_auto_flush(workspace, true);
+    create_issue(workspace, "opted in");
+    assert_covers_live(workspace, "setup: the workspace opted into publication");
+
+    // Config on, flag present: the flag suppresses -- from before the
+    // subcommand and from after it, because the flag is global.
+    for args in [
+        vec!["--no-auto-flush", "create", "--title", "suppressed before"],
+        vec!["create", "--no-auto-flush", "--title", "suppressed after"],
+    ] {
+        let covered = status(workspace)["covered_sequence"].clone();
+        run(workspace, &args);
+        assert_eq!(
+            status(workspace)["covered_sequence"],
+            covered,
+            "the flag failed to suppress the opted-in workspace for {args:?}"
+        );
+    }
+    assert!(
+        status(workspace)["covered_sequence"].as_i64().unwrap()
+            < status(workspace)["live_sequence"].as_i64().unwrap(),
+        "a flag-suppressed opted-in workspace must be reported dirty"
+    );
+
+    // Config off, flag present: publication stays suppressed and the
+    // mutation still succeeds -- the flag agrees with the key rather than
+    // fighting it.
+    set_auto_flush(workspace, false);
+    let covered = status(workspace)["covered_sequence"].clone();
+    run(
+        workspace,
+        &["create", "--no-auto-flush", "--title", "both suppress"],
+    );
+    assert_eq!(
+        status(workspace)["covered_sequence"],
+        covered,
+        "the flag must not let a suppressed workspace publish"
+    );
 }
 
 /// A mutation whose sequence the checkpoint already covers publishes

@@ -4,7 +4,7 @@
 .SH NAME
 bead \- Clean\-room task coordination for agent fleets
 .SH SYNOPSIS
-\fBbead\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIsubcommands\fR>
+\fBbead\fR [\fB\-\-no\-auto\-flush\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIsubcommands\fR>
 .SH DESCRIPTION
 bead\-rs is an independent Rust task\-coordination system.
 .PP
@@ -39,6 +39,9 @@ EXIT CODES:
 .PP
 Run `bead <COMMAND> \-\-help` for the full description of any command.
 .SH OPTIONS
+.TP
+\fB\-\-no\-auto\-flush\fR
+Suppress automatic post\-commit checkpoint publication for this one invocation, leaving the checkpoint dirty for a later explicit `bead sync flush\-only`; overrides the `checkpoint.auto_flush` workspace configuration key
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

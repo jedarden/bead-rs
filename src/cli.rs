@@ -46,6 +46,13 @@ Run `bead <COMMAND> --help` for the full description of any command."
 )]
 #[command(propagate_version = true)]
 pub struct Cli {
+    /// Suppress automatic post-commit checkpoint publication for this one
+    /// invocation, leaving the checkpoint dirty for a later explicit
+    /// `bead sync flush-only`; overrides the `checkpoint.auto_flush`
+    /// workspace configuration key
+    #[arg(long, global = true)]
+    pub no_auto_flush: bool,
+
     /// Subcommand to execute
     #[command(subcommand)]
     pub command: Command,

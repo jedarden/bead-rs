@@ -53,13 +53,21 @@ struct PublicationProbe {
 /// flush setting on: `checkpoint.auto_flush` in `.beads/config.json` when
 /// present, otherwise [`service::AUTO_FLUSH_COMPILED_DEFAULT`] (which stays
 /// `false` until the R026 activation gate passes, keeping the shipped
-/// explicit-flush default). Everything else -- no workspace, unreadable
+/// explicit-flush default). The `--no-auto-flush` escape hatch (plan 6.2.1
+/// item 7) disarms publication for this one invocation before the
+/// configuration is even consulted, so the flag wins over the key in both
+/// directions: a workspace that opted in does not publish, and one already
+/// suppressed stays that way. Everything else -- no workspace, unreadable
 /// configuration, unreadable sequence -- disarms publication and lets the
 /// command behave exactly as it would today; the chokepoint must not fail
 /// or alter a command that would otherwise succeed. `probe` (not
 /// `discover`) is deliberate: an uninitialized workspace is an error to
 /// `discover`, and `init` and `doctor` must keep handling that state.
-fn publication_probe() -> Option<PublicationProbe> {
+fn publication_probe(no_auto_flush: bool) -> Option<PublicationProbe> {
+    if no_auto_flush {
+        return None;
+    }
+
     let config = match store::WorkspaceConfig::probe() {
         Ok(store::WorkspaceState::Ready(config)) => config,
         _ => return None,
@@ -193,8 +201,9 @@ fn publish_committed_state(probe: &PublicationProbe) -> anyhow::Result<()> {
 
 fn execute_command(cli: Cli) -> Result<()> {
     // Arm post-commit publication before dispatch; a command that fails or
-    // mutates nothing never reaches the publish step.
-    let probe = publication_probe();
+    // mutates nothing never reaches the publish step. The flag is read
+    // before `cli` moves into dispatch.
+    let probe = publication_probe(cli.no_auto_flush);
 
     let result = dispatch_command(cli);
 
