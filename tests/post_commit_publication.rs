@@ -1,11 +1,14 @@
 //! Post-commit checkpoint publication chokepoint tests (plan 6.2.1 items
-//! 1-3 and 8, ADR-003, R026 step A1).
+//! 1-3, 5, and 8, ADR-003, R026 step A1).
 //!
 //! Every mutating command publishes a checkpoint generation covering its
 //! own committed sequence from one shared chokepoint in `execute_command`:
 //!
 //! - publication runs only after the command's transaction committed, so a
-//!   publication failure cannot roll back committed work;
+//!   publication failure cannot roll back committed work; a mutation that
+//!   commits and then fails to publish reports the split explicitly (item
+//!   5): success output preserved on stdout, failure and remedy on stderr,
+//!   exit 1;
 //! - which commands publish is decided by observing the live event sequence
 //!   advance across the invocation -- the signal plan 6.2.1 P3 made sound
 //!   and `tests/mutating_command_event_contract.rs` enforces -- so read-only
@@ -613,13 +616,15 @@ fn compiled_default_keeps_explicit_flush() {
     );
 }
 
-/// Publication is strictly after the commit: forced to fail, it reports the
-/// failure without rolling the mutation back. (The full split-failure
-/// contract -- exit code, stderr placement, machine-consumer wording -- is
-/// beadrs-122de256's; this pins the ordering property the chokepoint
-/// itself must guarantee.)
+/// The full split-failure contract of plan 6.2.1 item 5: a mutation that
+/// commits and then fails to publish must keep the mutation committed and
+/// visible, preserve its own success output on stdout, report the
+/// publication failure on stderr in words that distinguish "the mutation
+/// happened and the checkpoint did not advance" from "the mutation did not
+/// happen", and exit exactly 1 -- which never implies rollback. The remedy
+/// the message names must also actually close the gap.
 #[test]
-fn publication_failure_does_not_roll_back_the_mutation() {
+fn publication_failure_reports_the_split_without_rolling_back() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     run(workspace, &["init", "--prefix", "split"]);
@@ -645,19 +650,64 @@ fn publication_failure_does_not_roll_back_the_mutation() {
     std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
     fs::set_permissions(&checkpoint_dir, perms).unwrap();
 
-    // The mutation happened: its success output is preserved and the issue
-    // is committed and visible.
+    // The mutation happened: its success output is preserved on stdout --
+    // exactly the new issue ID, nothing about the publication failure.
     let stdout = String::from_utf8(output.stdout).unwrap();
     let issue_id = stdout.trim();
     assert!(
         !issue_id.is_empty() && stdout.ends_with('\n') && stdout.lines().count() == 1,
         "the mutation's own success output must be preserved on stdout, got {stdout:?}"
     );
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("bead:"),
-        "the publication failure must be reported on stderr"
+
+    // Exit exactly 1: the split outcome is pinned to that code (plan 6.2.1
+    // item 5), and a machine consumer seeing 1 plus the preserved success
+    // output knows the mutation was not rolled back.
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a committed mutation whose publication failed must exit 1, got {:?}",
+        output.status.code()
     );
+
+    // The failure is reported on stderr and names the split: the mutation
+    // is still committed, the checkpoint did not advance, and the remedy is
+    // named (ADR-007).
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        stderr.contains("bead:"),
+        "the publication failure must be reported on stderr, got {stderr:?}"
+    );
+    assert!(
+        stderr.contains("checkpoint publication failed after the mutation committed"),
+        "stderr must state that the mutation committed and publication failed, got {stderr:?}"
+    );
+    assert!(
+        stderr.contains("sync flush-only"),
+        "stderr must name the remedy, got {stderr:?}"
+    );
+
+    // The mutation is still present and visible: exit 1 never rolled it back.
     run(workspace, &["show", issue_id]);
+    let listing = run(workspace, &["list", "--json"]);
+    assert!(
+        String::from_utf8_lossy(&listing.stdout).contains(issue_id),
+        "the committed mutation must still be visible to list"
+    );
+
+    // The split is real, not just reported: the durable checkpoint is
+    // behind the live store, exactly the state a machine consumer must be
+    // able to distinguish from "the mutation did not happen".
+    let report = status(workspace);
+    assert!(
+        report["covered_sequence"].as_i64().unwrap() < report["live_sequence"].as_i64().unwrap(),
+        "after a split failure the checkpoint must be dirty (covered {} < live {})",
+        report["covered_sequence"],
+        report["live_sequence"]
+    );
+
+    // The remedy the message names closes the gap.
+    run(workspace, &["sync", "flush-only"]);
+    assert_covers_live(workspace, "after the remedy the split message names");
 }
 
 /// Automatic publication is silent on success: `bead create` still prints

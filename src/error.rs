@@ -60,6 +60,27 @@ pub enum Error {
     #[allow(dead_code)]
     DatabaseBusy(String),
 
+    /// Automatic checkpoint publication failed after the mutation committed
+    /// (exit 1) -- the split outcome of plan 6.2.1 item 5.
+    ///
+    /// Constructed only by the post-commit publication chokepoint, strictly
+    /// after the command's own transaction committed and its success output
+    /// printed. Carrying the failure in a dedicated variant is what makes
+    /// the outcome defined rather than incidental: exit 1 with this message
+    /// always means the mutation is still committed and visible and only the
+    /// durable checkpoint is behind, never that the mutation was rolled
+    /// back. The underlying publication error rides along as `source`.
+    #[error(
+        "checkpoint publication failed after the mutation committed: {source}. \
+         The mutation is still committed and visible - exit 1 here never means \
+         it was rolled back. The durable checkpoint did not advance; run \
+         'bead sync flush-only' to publish it"
+    )]
+    PostCommitPublicationFailed {
+        #[source]
+        source: anyhow::Error,
+    },
+
     /// Uncategorized internal failure (exit 1)
     #[error("Internal error: {0}")]
     Internal(#[from] anyhow::Error),
@@ -98,6 +119,10 @@ impl Error {
             | Error::ClaimRefused { .. } => 4,
             Error::Integrity(_) => 5,
             Error::DatabaseBusy(_) => 6,
+            // Defined, not inherited from the catch-all: plan 6.2.1 item 5
+            // pins this split outcome to exit 1 regardless of what the
+            // underlying publication error would have mapped to on its own.
+            Error::PostCommitPublicationFailed { .. } => 1,
             _ => 1,
         }
     }

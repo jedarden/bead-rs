@@ -120,7 +120,22 @@ fn open_checkpoint_connection(db_path: &std::path::Path) -> Option<rusqlite::Con
 /// SQLite write path, so a worker that loses the race waits for the
 /// winner, rereads the pointer it published, sees a sequence at or beyond
 /// its own, and returns success without publishing over it.
+///
+/// Item 5 lives at this function's edge: the command already returned
+/// `Ok`, so every failure from the publication tail is a split outcome --
+/// mutation committed, checkpoint did not advance -- and is reported as
+/// [`Error::PostCommitPublicationFailed`] rather than whatever the
+/// underlying error would have printed on its own. The disarm paths (no
+/// connection, unreadable sequence, nothing to publish) stay silent
+/// successes: they are decisions not to publish, not failures to.
 fn publish_after_commit(probe: &PublicationProbe) -> Result<()> {
+    publish_committed_state(probe).map_err(|source| Error::PostCommitPublicationFailed { source })
+}
+
+/// The fallible publication tail the chokepoint wraps: everything after
+/// the decision to publish, whose failure can no longer touch the
+/// committed mutation.
+fn publish_committed_state(probe: &PublicationProbe) -> anyhow::Result<()> {
     let Some(conn) = open_checkpoint_connection(&probe.config.database_path()) else {
         return Ok(());
     };
