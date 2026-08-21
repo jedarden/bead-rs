@@ -3825,6 +3825,23 @@ pub fn read_live_event_sequence(conn: &rusqlite::Connection) -> Option<i64> {
     .ok()
 }
 
+/// The event sequence the durable checkpoint already covers: the
+/// authoritative pointer's `snapshot_sequence` (plan 6.2.1 item 3).
+///
+/// This is the same field `sync --status` reports as `covered_sequence` and
+/// the complement of its dirtiness rule, so a publication decided here and
+/// a dirtiness report there can never disagree. `None` when no pointer
+/// exists or it cannot be read or parsed: the checkpoint then covers
+/// nothing a caller may rely on, so publication must run rather than skip.
+pub fn read_covered_event_sequence(checkpoint_base: &Path) -> Option<i64> {
+    let pointer_path = checkpoint_base.join("checkpoint").join("current.json");
+    let content = std::fs::read_to_string(pointer_path).ok()?;
+    serde_json::from_str::<serde_json::Value>(&content)
+        .ok()?
+        .get("snapshot_sequence")?
+        .as_i64()
+}
+
 /// Publish forensic checkpoint (F017)
 ///
 /// This function implements the full forensic checkpoint-set format with:

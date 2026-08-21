@@ -31,8 +31,8 @@ pub use changes::{
 };
 pub use checkpoint::{
     flush_checkpoint, forensic_checkpoint_status, import_forensic_checkpoint,
-    load_checkpoint_config, publish_forensic_checkpoint, read_live_event_sequence,
-    CheckpointConfig,
+    load_checkpoint_config, publish_forensic_checkpoint, read_covered_event_sequence,
+    read_live_event_sequence, CheckpointConfig,
 };
 // The compiled automatic-flush default is public library API (the capability
 // document reports it once the R026 gate flips it, plan 6.2.1) but the

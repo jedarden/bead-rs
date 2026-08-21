@@ -1,5 +1,5 @@
 //! Post-commit checkpoint publication chokepoint tests (plan 6.2.1 items
-//! 1-2, ADR-003, R026 step A1).
+//! 1-3 and 8, ADR-003, R026 step A1).
 //!
 //! Every mutating command publishes a checkpoint generation covering its
 //! own committed sequence from one shared chokepoint in `execute_command`:
@@ -11,7 +11,14 @@
 //!   and `tests/mutating_command_event_contract.rs` enforces -- so read-only
 //!   commands never publish and a newly added mutating command inherits
 //!   publication with no wiring at its call site;
-//! - publication is silent on success: no command's output changes.
+//! - publication is skipped when the checkpoint already covers the live
+//!   event sequence (item 3), so a mutation that changes nothing mints no
+//!   generation and no object, and a pointer another publisher already
+//!   carried to this sequence -- the residue of a lost publication race --
+//!   is treated as success rather than published over;
+//! - publication is silent on success: no command's output changes;
+//! - `sync flush-only` stays an explicit, idempotent operation (item 8):
+//!   against a clean checkpoint it publishes nothing and exits 0.
 //!
 //! The automatic default itself stays gated (plan section 13): until the
 //! R026 activation gate flips the compiled default, a workspace opts in per
@@ -96,6 +103,53 @@ fn generation_id(workspace: &Path) -> String {
 fn create_issue(workspace: &Path, title: &str) -> String {
     let output = run(workspace, &["create", "--title", title]);
     String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
+/// Every file under `.beads/checkpoint/` with its bytes, keyed by
+/// checkpoint-relative path. Publication rewrites `current.json`,
+/// `previous.json`, and the `forensic.jsonl` view and mints new objects,
+/// so any publication at all changes this map -- and only a publication
+/// does: skipping one leaves it byte-identical.
+fn snapshot_checkpoint(workspace: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    fn walk(dir: &Path, prefix: String, out: &mut std::collections::BTreeMap<String, Vec<u8>>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_str().unwrap().to_string();
+            if path.is_dir() {
+                walk(&path, format!("{prefix}{name}/"), out);
+            } else {
+                out.insert(format!("{prefix}{name}"), fs::read(&path).unwrap());
+            }
+        }
+    }
+    let mut out = std::collections::BTreeMap::new();
+    walk(
+        &workspace.join(".beads/checkpoint"),
+        String::new(),
+        &mut out,
+    );
+    out
+}
+
+/// Rewrite the pointer's `snapshot_sequence`, preserving every other
+/// field: the same authoritative value `read_covered_event_sequence` and
+/// `sync --status` read, so a forged value is indistinguishable from one a
+/// real publisher recorded.
+fn forge_covered_sequence(workspace: &Path, covered: i64) {
+    let pointer_path = workspace.join(".beads/checkpoint/current.json");
+    let mut pointer: Value =
+        serde_json::from_str(&fs::read_to_string(&pointer_path).unwrap()).unwrap();
+    pointer
+        .as_object_mut()
+        .unwrap()
+        .insert("snapshot_sequence".into(), Value::from(covered));
+    fs::write(
+        &pointer_path,
+        serde_json::to_string_pretty(&pointer).unwrap(),
+    )
+    .unwrap();
 }
 
 /// Fixture workspace state the sweep's invocations refer to, modeled on
@@ -633,4 +687,256 @@ fn publication_is_silent_on_success() {
         "the one line must be the new issue ID, got {stdout:?}"
     );
     assert_covers_live(workspace, "after silent publication");
+}
+
+/// A mutation whose sequence the checkpoint already covers publishes
+/// nothing (plan 6.2.1 item 3). The pointer is forged to the exact
+/// sequence the mutation is about to reach -- the residue of a lost
+/// publication race, where a concurrent publisher already carried the
+/// checkpoint to this sequence: the plan requires that be treated as
+/// success, not something to publish over. Advancing the sequence alone
+/// must not force a generation when there is nothing new to carry.
+#[test]
+fn mutation_when_the_checkpoint_covers_the_live_sequence_publishes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    run(workspace, &["init", "--prefix", "raced"]);
+    set_auto_flush(workspace, true);
+    let issue = create_issue(workspace, "raced issue");
+
+    let live = status(workspace)["live_sequence"].as_i64().unwrap();
+    assert_covers_live(workspace, "setup");
+
+    // The sequence `update --notes` will reach: one `updated` event.
+    forge_covered_sequence(workspace, live + 1);
+    let before = snapshot_checkpoint(workspace);
+    let before_generation = generation_id(workspace);
+
+    run(
+        workspace,
+        &["update", &issue, "--notes", "committed silently"],
+    );
+
+    let after = status(workspace);
+    assert_eq!(
+        after["live_sequence"].as_i64().unwrap(),
+        live + 1,
+        "the mutation must still commit -- skipping publication is never \
+         skipping the mutation itself"
+    );
+    assert_eq!(
+        after["covered_sequence"].as_i64().unwrap(),
+        live + 1,
+        "covered sequence changed without a publication"
+    );
+    assert_eq!(
+        generation_id(workspace),
+        before_generation,
+        "a mutation the checkpoint already covered minted a new generation"
+    );
+    assert_eq!(
+        snapshot_checkpoint(workspace),
+        before,
+        "a mutation the checkpoint already covered changed the checkpoint \
+         set -- no generation and no object may be created"
+    );
+}
+
+/// A real mutation against a covering-but-stale checkpoint publishes
+/// exactly one generation, and that generation covers the mutation's own
+/// committed sequence (plan 6.2.1 items 3 and 1).
+#[test]
+fn real_mutation_publishes_exactly_one_generation() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    run(workspace, &["init", "--prefix", "exact"]);
+    set_auto_flush(workspace, true);
+    let issue = create_issue(workspace, "exactly one generation");
+    // A second setup mutation puts the checkpoint in its steady state
+    // (current + previous + one object per retained generation) before the
+    // snapshot, so the mutation under test is the only thing that can move
+    // the file set.
+    create_issue(workspace, "steady state setup");
+
+    let before = snapshot_checkpoint(workspace);
+    let before_generation = generation_id(workspace);
+
+    run(
+        workspace,
+        &["update", &issue, "--notes", "one generation only"],
+    );
+
+    let after_status = status(workspace);
+    assert_covers_live(workspace, "after one real mutation");
+    let after_generation = generation_id(workspace);
+    assert_ne!(
+        after_generation, before_generation,
+        "a real mutation published no generation"
+    );
+
+    // Exactly one generation: the new pointer selects a new root, and the
+    // displaced pointer it retained is the one this invocation found -- an
+    // intermediate generation (a double publication) would show up as
+    // `previous.json` naming something else.
+    let previous: Value = serde_json::from_str(
+        &fs::read_to_string(workspace.join(".beads/checkpoint/previous.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        previous["generation_id"].as_str().unwrap(),
+        before_generation,
+        "previous.json must retain the generation this invocation displaced; \
+         an intermediate generation was published"
+    );
+
+    // Exactly one object: the only file publication added is the new
+    // generation's content-addressed root, and it is the root the pointer
+    // selects.
+    let after = snapshot_checkpoint(workspace);
+    let added: Vec<&String> = after.keys().filter(|k| !before.contains_key(*k)).collect();
+    let root_path = after_status["root_path"].as_str().unwrap().to_string();
+    assert_eq!(
+        added,
+        vec![&root_path],
+        "one real mutation must mint exactly one object (the new root), \
+         instead the checkpoint set changed by {added:?}"
+    );
+    assert_eq!(
+        after_status["root_verified"],
+        Value::Bool(true),
+        "the published root must verify against the pointer"
+    );
+    assert_eq!(
+        after_status["ready_to_commit"],
+        Value::Bool(true),
+        "the published generation must leave the checkpoint ready to commit"
+    );
+}
+
+/// `sync flush-only` is idempotent (plan 6.2.1 item 8): against a clean,
+/// ready-to-commit checkpoint it publishes no new generation, creates no
+/// object, and exits 0. A dirty checkpoint still publishes -- the skip may
+/// never swallow a flush that has work to do.
+#[test]
+fn sync_flush_only_is_idempotent_against_a_clean_checkpoint() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    run(workspace, &["init", "--prefix", "idem"]);
+    set_auto_flush(workspace, true);
+    create_issue(workspace, "idempotent flush issue");
+    assert_covers_live(workspace, "setup");
+
+    let before = snapshot_checkpoint(workspace);
+    let before_generation = generation_id(workspace);
+
+    let output = run(workspace, &["sync", "flush-only"]);
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("already current"),
+        "a clean flush must say so, got {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        generation_id(workspace),
+        before_generation,
+        "a clean flush published a new generation"
+    );
+    assert_eq!(
+        snapshot_checkpoint(workspace),
+        before,
+        "a clean flush changed the checkpoint set -- it must publish nothing"
+    );
+
+    // Contrast: dirty the checkpoint by suppressing publication for one
+    // mutation, and the same command must publish.
+    set_auto_flush(workspace, false);
+    create_issue(workspace, "suppressed until explicit flush");
+    let dirty = status(workspace);
+    assert!(
+        dirty["covered_sequence"].as_i64().unwrap() < dirty["live_sequence"].as_i64().unwrap(),
+        "setup: the checkpoint must be dirty before the contrast flush"
+    );
+    let output = run(workspace, &["sync", "flush-only"]);
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Flushed forensic checkpoint"),
+        "a dirty flush must still publish, got {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_ne!(
+        generation_id(workspace),
+        before_generation,
+        "a dirty flush published nothing"
+    );
+    assert_covers_live(workspace, "after explicit flush of a dirty checkpoint");
+}
+
+/// The flush skip is bounded by readiness, not just cleanliness: a
+/// checkpoint with an unresolved tombstone -- the state an interrupted
+/// cleanup leaves behind -- is not ready to commit, so `sync flush-only`
+/// republishes and reapplies the cleanup rather than skipping.
+#[test]
+fn flush_only_republishes_a_not_ready_checkpoint() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    run(workspace, &["init", "--prefix", "tomb"]);
+    set_auto_flush(workspace, true);
+
+    // Three mutations leave the first generation's root unreferenced by
+    // both pointers, hence tombstoned by the third publication.
+    create_issue(workspace, "tombstone issue one");
+    create_issue(workspace, "tombstone issue two");
+    create_issue(workspace, "tombstone issue three");
+
+    let report = status(workspace);
+    let tombstoned = report["unresolved_tombstones"].as_array().unwrap().len();
+    assert_eq!(
+        tombstoned, 0,
+        "setup: a completed publication leaves no unresolved tombstones"
+    );
+    let pointer: Value = serde_json::from_str(
+        &fs::read_to_string(workspace.join(".beads/checkpoint/current.json")).unwrap(),
+    )
+    .unwrap();
+    let deleted: Vec<String> = pointer["deleted_paths"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect();
+    assert!(
+        !deleted.is_empty(),
+        "setup: three generations must have tombstoned the first root"
+    );
+
+    // Simulate the interrupted cleanup: a declared-deleted object still on
+    // disk keeps the checkpoint not ready to commit.
+    let leftover = &deleted[0];
+    fs::write(
+        workspace.join(".beads/checkpoint").join(leftover),
+        "interrupted cleanup residue\n",
+    )
+    .unwrap();
+    let report = status(workspace);
+    assert_eq!(
+        report["ready_to_commit"],
+        Value::Bool(false),
+        "setup: an unresolved tombstone must keep the checkpoint not ready"
+    );
+
+    let output = run(workspace, &["sync", "flush-only"]);
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Flushed forensic checkpoint"),
+        "a not-ready checkpoint must be republished, not skipped, got {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !workspace.join(".beads/checkpoint").join(leftover).exists(),
+        "the republish must reapply the interrupted tombstone cleanup"
+    );
+    let report = status(workspace);
+    assert_eq!(
+        report["ready_to_commit"],
+        Value::Bool(true),
+        "the republished checkpoint must be ready to commit"
+    );
+    assert_covers_live(workspace, "after cleanup-reapplying flush");
 }

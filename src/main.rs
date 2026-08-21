@@ -90,7 +90,7 @@ fn open_checkpoint_connection(db_path: &std::path::Path) -> Option<rusqlite::Con
     Some(conn)
 }
 
-/// The single post-commit publication chokepoint (plan 6.2.1 items 1-2).
+/// The single post-commit publication chokepoint (plan 6.2.1 items 1-3).
 ///
 /// Runs only after `dispatch_command` returns `Ok` -- that is, strictly
 /// after the command's own transaction committed, never inside it -- so a
@@ -104,6 +104,13 @@ fn open_checkpoint_connection(db_path: &std::path::Path) -> Option<rusqlite::Con
 /// and no-op commands never publish, and a newly added mutating command
 /// inherits publication with no wiring at all: its mandatory event is the
 /// trigger.
+///
+/// Advancing the sequence is necessary but not sufficient: publication is
+/// also skipped when the checkpoint's pointer already covers the live
+/// sequence (item 3), so a no-op mutation publishes no generation and
+/// creates no object, and a checkpoint another publisher already carried
+/// to this sequence or beyond -- the state a lost publication race leaves
+/// behind -- is treated as success, not something to publish over.
 fn publish_after_commit(probe: &PublicationProbe) -> Result<()> {
     let Some(conn) = open_checkpoint_connection(&probe.config.database_path()) else {
         return Ok(());
@@ -118,8 +125,17 @@ fn publish_after_commit(probe: &PublicationProbe) -> Result<()> {
         return Ok(());
     }
 
-    let mut store = store::SqliteStore::from_conn(conn);
     let checkpoint_base = probe.config.root.join(".beads");
+    if service::read_covered_event_sequence(&checkpoint_base)
+        .is_some_and(|covered| covered >= sequence_after)
+    {
+        // The durable checkpoint already covers the live event sequence;
+        // publishing again would mint a generation with nothing new to
+        // carry (plan 6.2.1 item 3).
+        return Ok(());
+    }
+
+    let mut store = store::SqliteStore::from_conn(conn);
     service::publish_forensic_checkpoint(&mut store, &probe.checkpoint_config, &checkpoint_base)?;
 
     // Silent on success (plan 6.2.1 item 6): no command's output gains a
@@ -1106,6 +1122,30 @@ fn cmd_sync_flush_only(opts: cli::SyncFlushOptions) -> Result<()> {
         // otherwise the publisher selects adaptively from the size of the
         // would-be monolith against the threshold table it also resolves.
         let checkpoint_config = service::load_checkpoint_config(&checkpoint_base)?;
+
+        // Idempotent (plan 6.2.1 item 8): against a checkpoint that is
+        // already clean and ready to commit there is no new generation to
+        // publish, so the flush publishes nothing and exits 0. Anything
+        // less -- a dirty checkpoint, but also a not-ready one with
+        // unresolved tombstones, a missing root, or unrecorded state --
+        // still publishes, which is also how an interrupted cleanup is
+        // reapplied.
+        let report = service::forensic_checkpoint_status(&mut store, &checkpoint_base)?;
+        if !report.dirty && report.ready_to_commit {
+            eprintln!("Checkpoint already current:");
+            if let Some(mode) = &report.mode {
+                eprintln!("  Mode: {}", mode);
+            }
+            if let Some(generation) = &report.generation_id {
+                eprintln!("  Generation: {}", generation);
+            }
+            eprintln!(
+                "  Covered sequence: {}",
+                report.covered_sequence.unwrap_or(report.live_sequence)
+            );
+            return Ok(());
+        }
+
         let result =
             service::publish_forensic_checkpoint(&mut store, &checkpoint_config, &checkpoint_base)?;
 

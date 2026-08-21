@@ -215,6 +215,14 @@ fn test_f017_identical_flushes_reuse_one_object() {
     run_flush(workspace, &bead);
     let first = read_current_pointer(&checkpoint_dir);
 
+    // A clean re-flush publishes nothing now (plan 6.2.1 item 8:
+    // flush-only is idempotent against a clean checkpoint), so the
+    // republication this test needs is triggered the way a real one
+    // arises: the pointer is lost. Publication commits `current.json`
+    // last, so an interrupted first publication leaves exactly this
+    // state -- objects on disk, no pointer -- and the retry must publish.
+    fs::remove_file(checkpoint_dir.join("current.json")).unwrap();
+
     // Second flush with no intervening mutation: the monolith bytes are
     // identical, so the content-addressed object must be reused, not
     // duplicated.
