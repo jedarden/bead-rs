@@ -35,7 +35,116 @@ fn main() -> ExitCode {
     }
 }
 
+/// Everything the post-commit publication chokepoint needs to decide
+/// whether the invocation that is about to run committed semantic state.
+struct PublicationProbe {
+    /// Workspace the command will run against
+    config: store::WorkspaceConfig,
+    /// Resolved checkpoint configuration (publication reuses it)
+    checkpoint_config: service::CheckpointConfig,
+    /// Live event sequence before dispatch
+    sequence_before: i64,
+}
+
+/// Resolve whether this invocation publishes a checkpoint generation after
+/// its command commits (plan 6.2.1, ADR-003).
+///
+/// Publication is armed only when the workspace resolves the automatic
+/// flush setting on: `checkpoint.auto_flush` in `.beads/config.json` when
+/// present, otherwise [`service::AUTO_FLUSH_COMPILED_DEFAULT`] (which stays
+/// `false` until the R026 activation gate passes, keeping the shipped
+/// explicit-flush default). Everything else -- no workspace, unreadable
+/// configuration, unreadable sequence -- disarms publication and lets the
+/// command behave exactly as it would today; the chokepoint must not fail
+/// or alter a command that would otherwise succeed. `probe` (not
+/// `discover`) is deliberate: an uninitialized workspace is an error to
+/// `discover`, and `init` and `doctor` must keep handling that state.
+fn publication_probe() -> Option<PublicationProbe> {
+    let config = match store::WorkspaceConfig::probe() {
+        Ok(store::WorkspaceState::Ready(config)) => config,
+        _ => return None,
+    };
+
+    let checkpoint_config = service::load_checkpoint_config(&config.root.join(".beads")).ok()?;
+    if !checkpoint_config.auto_flush_enabled() {
+        return None;
+    }
+
+    let conn = open_checkpoint_connection(&config.database_path())?;
+    let sequence_before = service::read_live_event_sequence(&conn)?;
+
+    Some(PublicationProbe {
+        config,
+        checkpoint_config,
+        sequence_before,
+    })
+}
+
+/// Open a connection for the chokepoint's sequence reads. A short busy
+/// timeout mirrors the store's own setting so a concurrent writer does not
+/// silently disarm publication.
+fn open_checkpoint_connection(db_path: &std::path::Path) -> Option<rusqlite::Connection> {
+    let conn = rusqlite::Connection::open(db_path).ok()?;
+    conn.busy_timeout(std::time::Duration::from_millis(5000))
+        .ok()?;
+    Some(conn)
+}
+
+/// The single post-commit publication chokepoint (plan 6.2.1 items 1-2).
+///
+/// Runs only after `dispatch_command` returns `Ok` -- that is, strictly
+/// after the command's own transaction committed, never inside it -- so a
+/// publication failure propagates to the caller without touching committed
+/// work. Which commands publish is not a per-call-site decision: the probe
+/// snapshots the live event sequence before dispatch, and publication runs
+/// only if this invocation advanced it. The live sequence is a sound
+/// mutation signal because every mutating command must append an audit
+/// event and every read-only command must not
+/// (`tests/mutating_command_event_contract.rs` enforces both), so read-only
+/// and no-op commands never publish, and a newly added mutating command
+/// inherits publication with no wiring at all: its mandatory event is the
+/// trigger.
+fn publish_after_commit(probe: &PublicationProbe) -> Result<()> {
+    let Some(conn) = open_checkpoint_connection(&probe.config.database_path()) else {
+        return Ok(());
+    };
+    let Some(sequence_after) = service::read_live_event_sequence(&conn) else {
+        return Ok(());
+    };
+
+    if sequence_after <= probe.sequence_before {
+        // This invocation committed nothing the checkpoint carries; leave
+        // any pre-existing dirtiness for `sync flush-only` to publish.
+        return Ok(());
+    }
+
+    let mut store = store::SqliteStore::from_conn(conn);
+    let checkpoint_base = probe.config.root.join(".beads");
+    service::publish_forensic_checkpoint(&mut store, &probe.checkpoint_config, &checkpoint_base)?;
+
+    // Silent on success (plan 6.2.1 item 6): no command's output gains a
+    // field or a line. A failure propagates after the command's own output
+    // has already been printed, so the committed mutation stays visible.
+    Ok(())
+}
+
 fn execute_command(cli: Cli) -> Result<()> {
+    // Arm post-commit publication before dispatch; a command that fails or
+    // mutates nothing never reaches the publish step.
+    let probe = publication_probe();
+
+    let result = dispatch_command(cli);
+
+    if result.is_ok() {
+        if let Some(probe) = probe.as_ref() {
+            publish_after_commit(probe)?;
+        }
+    }
+
+    result
+}
+
+fn dispatch_command(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Init(opts) => cmd_init(opts),
         Command::Create(opts) => cmd_create(opts),

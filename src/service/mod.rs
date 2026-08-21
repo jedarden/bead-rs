@@ -31,8 +31,14 @@ pub use changes::{
 };
 pub use checkpoint::{
     flush_checkpoint, forensic_checkpoint_status, import_forensic_checkpoint,
-    load_checkpoint_config, publish_forensic_checkpoint,
+    load_checkpoint_config, publish_forensic_checkpoint, read_live_event_sequence,
+    CheckpointConfig,
 };
+// The compiled automatic-flush default is public library API (the capability
+// document reports it once the R026 gate flips it, plan 6.2.1) but the
+// binary reaches it only through `CheckpointConfig::auto_flush_enabled`.
+#[allow(unused_imports)]
+pub use checkpoint::AUTO_FLUSH_COMPILED_DEFAULT;
 // claim_issue_with_trace is public library API but unused by the binary
 #[allow(unused_imports)]
 pub use claim::{

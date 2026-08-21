@@ -193,11 +193,12 @@ pub enum ModePolicy {
 
 /// Checkpoint configuration recorded in `.beads/config.json`
 ///
-/// Both keys are optional; absence means the recorded plan 6.1.1 defaults
+/// All keys are optional; absence means the recorded plan 6.1.1 defaults
 /// (and, for thresholds, the previous manifest's recorded values) apply.
 ///
 /// ```json
 /// { "checkpoint": { "mode": "sharded",
+///                   "auto_flush": true,
 ///                   "thresholds": { "version": 1, "max_monolith_issue_records": 4 } } }
 /// ```
 #[derive(Debug, Clone, Default)]
@@ -206,6 +207,30 @@ pub struct CheckpointConfig {
     pub mode: Option<CheckpointMode>,
     /// Threshold overrides; `None` retains recorded/default thresholds
     pub thresholds: Option<CheckpointThresholds>,
+    /// Explicit post-commit publication setting (plan 6.2.1); `None` falls
+    /// back to [`AUTO_FLUSH_COMPILED_DEFAULT`]
+    pub auto_flush: Option<bool>,
+}
+
+/// Whether a mutating command publishes a checkpoint generation after its
+/// transaction commits when `.beads/config.json` does not say otherwise
+/// (plan 6.2.1, ADR-003).
+///
+/// **Stays `false` until the R026 activation gate passes** (plan section
+/// 13): the shipped default is explicit `sync flush-only` until the
+/// documentation reversal ships in the same commit that flips this constant.
+/// Until then, a workspace opts in per-workspace by recording
+/// `"checkpoint": { "auto_flush": true }` in `.beads/config.json`; an
+/// explicit value keeps meaning the same thing after the flip, when it
+/// becomes the durable suppressor the plan describes.
+pub const AUTO_FLUSH_COMPILED_DEFAULT: bool = false;
+
+impl CheckpointConfig {
+    /// Resolve the post-commit publication setting: an explicit workspace
+    /// value wins over [`AUTO_FLUSH_COMPILED_DEFAULT`]
+    pub fn auto_flush_enabled(&self) -> bool {
+        self.auto_flush.unwrap_or(AUTO_FLUSH_COMPILED_DEFAULT)
+    }
 }
 
 /// Read the checkpoint section of `.beads/config.json`, if present
@@ -239,6 +264,12 @@ pub fn load_checkpoint_config(beads_dir: &Path) -> Result<CheckpointConfig> {
                     .map_err(|e| anyhow!(".beads/config.json checkpoint.mode: {}", e))?,
             ),
         };
+    }
+
+    if let Some(auto_flush_value) = section.get("auto_flush") {
+        config.auto_flush = Some(auto_flush_value.as_bool().ok_or_else(|| {
+            anyhow!(".beads/config.json checkpoint.auto_flush must be a boolean")
+        })?);
     }
 
     if let Some(thresholds_value) = section.get("thresholds") {
@@ -3778,6 +3809,20 @@ pub fn flush_checkpoint(store: &mut SqliteStore, output_path: &Path) -> Result<F
         covered_sequence: current_sequence,
         export_time,
     })
+}
+
+/// The live event sequence: the same `MAX(sequence)` definition the
+/// publisher and `sync --status` use as the dirtiness signal.
+///
+/// Returns `None` when the sequence cannot be read (unreadable database,
+/// missing `events` table), which callers treat as "nothing to publish"
+/// rather than an error: the post-commit chokepoint must never fail a
+/// command that would otherwise succeed.
+pub fn read_live_event_sequence(conn: &rusqlite::Connection) -> Option<i64> {
+    conn.query_row("SELECT COALESCE(MAX(sequence), 0) FROM events", [], |row| {
+        row.get(0)
+    })
+    .ok()
 }
 
 /// Publish forensic checkpoint (F017)

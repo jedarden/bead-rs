@@ -1,0 +1,636 @@
+//! Post-commit checkpoint publication chokepoint tests (plan 6.2.1 items
+//! 1-2, ADR-003, R026 step A1).
+//!
+//! Every mutating command publishes a checkpoint generation covering its
+//! own committed sequence from one shared chokepoint in `execute_command`:
+//!
+//! - publication runs only after the command's transaction committed, so a
+//!   publication failure cannot roll back committed work;
+//! - which commands publish is decided by observing the live event sequence
+//!   advance across the invocation -- the signal plan 6.2.1 P3 made sound
+//!   and `tests/mutating_command_event_contract.rs` enforces -- so read-only
+//!   commands never publish and a newly added mutating command inherits
+//!   publication with no wiring at its call site;
+//! - publication is silent on success: no command's output changes.
+//!
+//! The automatic default itself stays gated (plan section 13): until the
+//! R026 activation gate flips the compiled default, a workspace opts in per
+//! workspace by recording `"checkpoint": { "auto_flush": true }` in
+//! `.beads/config.json`. The default-off test pins that gate.
+
+use assert_cmd::Command;
+use serde_json::Value;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+/// Record `checkpoint.auto_flush = VALUE` in the workspace's
+/// `.beads/config.json`, preserving every other key.
+fn set_auto_flush(workspace: &Path, value: bool) {
+    let path = workspace.join(".beads/config.json");
+    let mut config: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    config
+        .as_object_mut()
+        .unwrap()
+        .entry("checkpoint")
+        .or_insert(Value::Object(Default::default()))
+        .as_object_mut()
+        .unwrap()
+        .insert("auto_flush".into(), Value::Bool(value));
+    fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+}
+
+fn bead(workspace: &Path) -> Command {
+    let mut cmd = Command::cargo_bin("bead").unwrap();
+    cmd.current_dir(workspace);
+    cmd
+}
+
+fn run(workspace: &Path, args: &[&str]) -> std::process::Output {
+    bead(workspace)
+        .args(args)
+        .assert()
+        .success()
+        .get_output()
+        .clone()
+}
+
+/// `sync status --format json` parsed from stdout.
+fn status(workspace: &Path) -> Value {
+    let output = bead(workspace)
+        .args(["sync", "status", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    serde_json::from_slice(&output).unwrap()
+}
+
+/// Assert the durable checkpoint covers the live event sequence: the
+/// property automatic flush exists to guarantee.
+fn assert_covers_live(workspace: &Path, context: &str) {
+    let status = status(workspace);
+    assert_eq!(
+        status["checkpoint_present"],
+        Value::Bool(true),
+        "{context}: no checkpoint was published"
+    );
+    assert_eq!(
+        status["covered_sequence"], status["live_sequence"],
+        "{context}: checkpoint covers {} but the live sequence is {} -- the \
+         durable checkpoint is silently behind the database",
+        status["covered_sequence"], status["live_sequence"]
+    );
+}
+
+/// The pointer's generation identity: changes exactly when a publication
+/// runs, so it detects a publication even when content-addressed object
+/// reuse keeps the object set identical.
+fn generation_id(workspace: &Path) -> String {
+    status(workspace)["generation_id"]
+        .as_str()
+        .expect("generation_id present once a checkpoint exists")
+        .to_string()
+}
+
+fn create_issue(workspace: &Path, title: &str) -> String {
+    let output = run(workspace, &["create", "--title", title]);
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
+/// Fixture workspace state the sweep's invocations refer to, modeled on
+/// `tests/mutating_command_event_contract.rs`.
+struct Fixture {
+    /// Keeps the workspace directories alive for the whole test.
+    _dirs: Vec<tempfile::TempDir>,
+    workspace: PathBuf,
+    /// Open, unassigned: target for `update --notes`.
+    update_target: String,
+    /// Carries `chokepoint-label` from setup: target for `label remove`.
+    labeled: String,
+    /// Any open issue: target for `label add`.
+    label_target: String,
+    /// Pair used for `dep add` / `dep remove`.
+    blocked: String,
+    blocker: String,
+    /// Carries the `github/probe` reference from setup: target for
+    /// `ref remove`.
+    with_ref: String,
+    /// Any issue without a reference: target for `ref add`.
+    ref_target: String,
+    /// Carries the `cfg` structured data from setup: target for
+    /// `data remove`.
+    with_data: String,
+    /// Any issue without structured data: target for `data set`.
+    data_target: String,
+    /// Held `in_progress` from setup: target for `release`.
+    in_progress: String,
+    /// Open: target for `close`.
+    to_close: String,
+    /// Closed in setup: target for `reopen`.
+    closed: String,
+    /// Checkpoint of a second workspace, merged in by `sync import-only`.
+    foreign_checkpoint: PathBuf,
+}
+
+fn build_fixture() -> Fixture {
+    let dir = tempfile::tempdir().expect("fixture tempdir");
+    let workspace = dir.path().to_path_buf();
+
+    run(&workspace, &["init", "--prefix", "choke"]);
+
+    // Automatic publication is armed from the first mutation on, so every
+    // setup mutation below also exercises the chokepoint.
+    set_auto_flush(&workspace, true);
+
+    let update_target = create_issue(&workspace, "update target");
+    let labeled = create_issue(&workspace, "labeled target");
+    let label_target = create_issue(&workspace, "label target");
+    let blocked = create_issue(&workspace, "blocked target");
+    let blocker = create_issue(&workspace, "blocker target");
+    let with_ref = create_issue(&workspace, "ref target");
+    let ref_target = create_issue(&workspace, "ref add target");
+    let with_data = create_issue(&workspace, "data target");
+    let data_target = create_issue(&workspace, "data set target");
+    let in_progress = create_issue(&workspace, "release target");
+    let to_close = create_issue(&workspace, "close target");
+    let closed = create_issue(&workspace, "reopen target");
+
+    run(
+        &workspace,
+        &["update", &in_progress, "--status", "in_progress"],
+    );
+    run(&workspace, &["close", &closed, "--reason", "fixture setup"]);
+    run(
+        &workspace,
+        &["label", "add", &labeled, "--label", "chokepoint-label"],
+    );
+    run(
+        &workspace,
+        &[
+            "ref",
+            "add",
+            "--id",
+            &with_ref,
+            "--namespace",
+            "github",
+            "--key",
+            "probe",
+            "--value",
+            "chokepoint-1",
+        ],
+    );
+    run(
+        &workspace,
+        &[
+            "data",
+            "set",
+            "--id",
+            &with_data,
+            "--namespace",
+            "cfg",
+            "--schema-ref",
+            "probe:v1",
+            "--value",
+            "{\"setup\": true}",
+        ],
+    );
+    run(
+        &workspace,
+        &[
+            "recurrence",
+            "create",
+            "--id",
+            "choke-template",
+            "--title",
+            "Chokepoint Probe",
+            "--base-title-template",
+            "Chokepoint Probe {n}",
+        ],
+    );
+
+    // A second workspace supplies the checkpoint that `sync import-only`
+    // merges in: one foreign issue, explicitly flushed.
+    let foreign = tempfile::tempdir().expect("foreign tempdir");
+    let foreign_ws = foreign.path().to_path_buf();
+    run(&foreign_ws, &["init", "--prefix", "choke"]);
+    create_issue(&foreign_ws, "foreign issue");
+    run(&foreign_ws, &["sync", "flush-only"]);
+    let foreign_checkpoint = foreign_ws.join(".beads/checkpoint/forensic.jsonl");
+
+    Fixture {
+        _dirs: vec![dir, foreign],
+        workspace,
+        update_target,
+        labeled,
+        label_target,
+        blocked,
+        blocker,
+        with_ref,
+        ref_target,
+        with_data,
+        data_target,
+        in_progress,
+        to_close,
+        closed,
+        foreign_checkpoint,
+    }
+}
+
+/// Every mutating command in the section 5 contract table publishes a
+/// generation covering its own committed sequence from the one chokepoint.
+/// A newly added mutating command lands here by appending one entry; it
+/// needs no publication wiring of its own anywhere else.
+#[test]
+fn every_mutating_command_publishes_a_covering_generation() {
+    let fixture = build_fixture();
+
+    let sweep: Vec<(&str, Vec<String>)> = vec![
+        (
+            "bead create",
+            vec![
+                "create".into(),
+                "--title".into(),
+                "chokepoint create".into(),
+            ],
+        ),
+        (
+            "bead update",
+            vec![
+                "update".into(),
+                fixture.update_target.clone(),
+                "--notes".into(),
+                "chokepoint note".into(),
+            ],
+        ),
+        (
+            "bead claim",
+            vec![
+                "claim".into(),
+                "--assignee".into(),
+                "chokepoint-worker".into(),
+            ],
+        ),
+        (
+            "bead release",
+            vec!["release".into(), fixture.in_progress.clone()],
+        ),
+        (
+            "bead close",
+            vec![
+                "close".into(),
+                fixture.to_close.clone(),
+                "--reason".into(),
+                "chokepoint complete".into(),
+            ],
+        ),
+        ("bead reopen", vec!["reopen".into(), fixture.closed.clone()]),
+        (
+            "bead label add",
+            vec![
+                "label".into(),
+                "add".into(),
+                fixture.label_target.clone(),
+                "--label".into(),
+                "chokepoint-label".into(),
+            ],
+        ),
+        (
+            "bead label remove",
+            vec![
+                "label".into(),
+                "remove".into(),
+                fixture.labeled.clone(),
+                "--label".into(),
+                "chokepoint-label".into(),
+            ],
+        ),
+        (
+            "bead dep add",
+            vec![
+                "dep".into(),
+                "add".into(),
+                fixture.blocked.clone(),
+                fixture.blocker.clone(),
+            ],
+        ),
+        (
+            "bead dep remove",
+            vec![
+                "dep".into(),
+                "remove".into(),
+                fixture.blocked.clone(),
+                fixture.blocker.clone(),
+            ],
+        ),
+        (
+            "bead ref add",
+            vec![
+                "ref".into(),
+                "add".into(),
+                "--id".into(),
+                fixture.ref_target.clone(),
+                "--namespace".into(),
+                "github".into(),
+                "--key".into(),
+                "probe".into(),
+                "--value".into(),
+                "chokepoint-2".into(),
+            ],
+        ),
+        (
+            "bead ref remove",
+            vec![
+                "ref".into(),
+                "remove".into(),
+                "--id".into(),
+                fixture.with_ref.clone(),
+                "--namespace".into(),
+                "github".into(),
+                "--key".into(),
+                "probe".into(),
+            ],
+        ),
+        (
+            "bead data set",
+            vec![
+                "data".into(),
+                "set".into(),
+                "--id".into(),
+                fixture.data_target.clone(),
+                "--namespace".into(),
+                "cfg".into(),
+                "--schema-ref".into(),
+                "probe:v1".into(),
+                "--value".into(),
+                "{\"probe\": true}".into(),
+            ],
+        ),
+        (
+            "bead data remove",
+            vec![
+                "data".into(),
+                "remove".into(),
+                "--id".into(),
+                fixture.with_data.clone(),
+                "--namespace".into(),
+                "cfg".into(),
+            ],
+        ),
+        (
+            "bead recurrence materialize",
+            vec![
+                "recurrence".into(),
+                "materialize".into(),
+                "--id".into(),
+                "choke-template".into(),
+            ],
+        ),
+        (
+            "bead sync import-only",
+            vec![
+                "sync".into(),
+                "import-only".into(),
+                "--input".into(),
+                fixture.foreign_checkpoint.display().to_string(),
+                "--merge".into(),
+                "--actor".into(),
+                "chokepoint".into(),
+            ],
+        ),
+    ];
+
+    for (name, args) in sweep {
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        run(&fixture.workspace, &argv);
+        assert_covers_live(
+            &fixture.workspace,
+            &format!("after mutating command {name}"),
+        );
+    }
+}
+
+/// Read-only commands never publish -- not against a clean checkpoint
+/// (where a publication would still mint a new generation), and not against
+/// a dirty one (where publication would have work to do).
+#[test]
+fn read_only_commands_do_not_publish() {
+    let fixture = build_fixture();
+    let workspace = &fixture.workspace;
+
+    // Dirty the checkpoint by removing the pointer, then confirm a batch of
+    // read-only commands leaves it unpublished.
+    fs::remove_file(workspace.join(".beads/checkpoint/current.json")).unwrap();
+    assert_eq!(
+        status(workspace)["checkpoint_present"],
+        Value::Bool(false),
+        "setup: pointer removal must leave no checkpoint"
+    );
+
+    let read_only: Vec<Vec<&str>> = vec![
+        vec!["list", "--json", "--limit", "10"],
+        vec!["show", &fixture.update_target, "--json"],
+        vec!["why", "--id", &fixture.update_target],
+        vec![
+            "compare",
+            "--id",
+            &fixture.update_target,
+            "--source",
+            "native-v1",
+            "--target",
+            "needle-v1",
+        ],
+        vec!["changes", "--latest"],
+        vec!["ref", "list", "--id", &fixture.ref_target],
+        vec![
+            "ref",
+            "find",
+            "--namespace",
+            "github",
+            "--value",
+            "chokepoint-1",
+        ],
+        vec!["data", "list", "--id", &fixture.data_target],
+        vec!["recurrence", "list"],
+        vec!["recurrence", "show", "--id", "choke-template"],
+        vec!["recurrence", "history", "--id", "choke-template"],
+        vec!["doctor"],
+        vec!["sync", "status"],
+        vec!["policy", "check"],
+        vec!["capabilities"],
+        vec!["schema", "list"],
+    ];
+
+    for args in &read_only {
+        run(workspace, args);
+        assert_eq!(
+            status(workspace)["checkpoint_present"],
+            Value::Bool(false),
+            "read-only command {args:?} published a checkpoint; only a \
+             committed semantic mutation may publish"
+        );
+    }
+
+    // Against a clean checkpoint a publication would be detectable as a new
+    // generation identity; the read-only command must leave it untouched.
+    run(workspace, &["sync", "flush-only"]);
+    let before = generation_id(workspace);
+    run(workspace, &["list", "--json"]);
+    assert_eq!(
+        generation_id(workspace),
+        before,
+        "read-only command against a clean checkpoint published a new generation"
+    );
+    assert_covers_live(
+        workspace,
+        "after read-only commands against clean checkpoint",
+    );
+}
+
+/// A no-op mutation commits no event, advances nothing, and publishes
+/// nothing: adding a label an issue already carries leaves the pointer
+/// exactly as it was.
+#[test]
+fn idempotent_no_op_mutation_publishes_nothing() {
+    let fixture = build_fixture();
+    let workspace = &fixture.workspace;
+
+    // `labeled` already carries `chokepoint-label` from fixture setup.
+    run(
+        workspace,
+        &[
+            "label",
+            "add",
+            &fixture.labeled,
+            "--label",
+            "chokepoint-label",
+        ],
+    );
+    let before = generation_id(workspace);
+    run(
+        workspace,
+        &[
+            "label",
+            "add",
+            &fixture.labeled,
+            "--label",
+            "chokepoint-label",
+        ],
+    );
+    assert_eq!(
+        generation_id(workspace),
+        before,
+        "an idempotent no-op mutation published a generation"
+    );
+}
+
+/// Until the R026 activation gate flips the compiled default, a workspace
+/// without `checkpoint.auto_flush` keeps the explicit-flush default:
+/// mutations publish nothing, `sync flush-only` still does.
+#[test]
+fn compiled_default_keeps_explicit_flush() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    run(workspace, &["init", "--prefix", "default"]);
+    create_issue(workspace, "default-off issue");
+
+    assert_eq!(
+        status(workspace)["checkpoint_present"],
+        Value::Bool(false),
+        "a mutation published without checkpoint.auto_flush set; the \
+         compiled default must stay off until the R026 activation gate \
+         (plan 6.2.1, section 13)"
+    );
+
+    run(workspace, &["sync", "flush-only"]);
+    assert_covers_live(workspace, "after explicit sync flush-only");
+
+    // An explicit false is the same opt-out the plan's escape hatch
+    // describes, and a checkpoint section without the key resolves to the
+    // compiled default.
+    set_auto_flush(workspace, false);
+    create_issue(workspace, "explicitly-suppressed issue");
+    let covered = status(workspace)["covered_sequence"].clone();
+    create_issue(workspace, "still suppressed");
+    assert_eq!(
+        status(workspace)["covered_sequence"],
+        covered,
+        "checkpoint.auto_flush = false failed to suppress publication"
+    );
+}
+
+/// Publication is strictly after the commit: forced to fail, it reports the
+/// failure without rolling the mutation back. (The full split-failure
+/// contract -- exit code, stderr placement, machine-consumer wording -- is
+/// beadrs-122de256's; this pins the ordering property the chokepoint
+/// itself must guarantee.)
+#[test]
+fn publication_failure_does_not_roll_back_the_mutation() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    run(workspace, &["init", "--prefix", "split"]);
+    set_auto_flush(workspace, true);
+    create_issue(workspace, "before failure");
+    let checkpoint_dir = workspace.join(".beads/checkpoint");
+
+    // Make publication fail by removing write permission from the
+    // checkpoint directory it must write into.
+    let mut perms = fs::metadata(&checkpoint_dir).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o555);
+    fs::set_permissions(&checkpoint_dir, perms).unwrap();
+
+    let output = bead(workspace)
+        .args(["create", "--title", "survives publication failure"])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    // Restore writability so the tempdir can clean itself up.
+    let mut perms = fs::metadata(&checkpoint_dir).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+    fs::set_permissions(&checkpoint_dir, perms).unwrap();
+
+    // The mutation happened: its success output is preserved and the issue
+    // is committed and visible.
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let issue_id = stdout.trim();
+    assert!(
+        !issue_id.is_empty() && stdout.ends_with('\n') && stdout.lines().count() == 1,
+        "the mutation's own success output must be preserved on stdout, got {stdout:?}"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("bead:"),
+        "the publication failure must be reported on stderr"
+    );
+    run(workspace, &["show", issue_id]);
+}
+
+/// Automatic publication is silent on success: `bead create` still prints
+/// only the new ID plus LF (plan 6.2.1 item 6).
+#[test]
+fn publication_is_silent_on_success() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    run(workspace, &["init", "--prefix", "quiet"]);
+    set_auto_flush(workspace, true);
+
+    let output = bead(workspace)
+        .args(["create", "--title", "quiet creation"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    assert_eq!(
+        stdout.lines().count(),
+        1,
+        "bead create with automatic publication must print exactly one line, got {stdout:?}"
+    );
+    assert!(
+        stdout.starts_with("quiet-"),
+        "the one line must be the new issue ID, got {stdout:?}"
+    );
+    assert_covers_live(workspace, "after silent publication");
+}
