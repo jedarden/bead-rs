@@ -53,6 +53,16 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub no_auto_flush: bool,
 
+    /// Let workspace discovery continue past the first `.beads` directory
+    /// when it is not a bead-rs workspace (no `.beads/config.json`), so a
+    /// bead-rs workspace farther up the tree can be used. Discovery
+    /// otherwise stops there and fails closed: it never silently skips a
+    /// `.beads` it does not recognize to operate on an unrelated parent
+    /// workspace, and it never writes into the unrecognized directory --
+    /// including under this flag, which only widens the search
+    #[arg(long, global = true)]
+    pub skip_foreign_workspace: bool,
+
     /// Subcommand to execute
     #[command(subcommand)]
     pub command: Command,

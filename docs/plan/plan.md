@@ -725,8 +725,18 @@ before commit and pushes to its authoritative host, from which a configured
 mirror may publish the history to GitHub.
 
 Workspace discovery walks from the current directory toward the filesystem
-root until `.beads/config.json` is found. Never follow a `.beads` symlink
-outside the selected workspace for a mutation.
+root and stops at the first `.beads` directory it encounters (R030). When that
+directory carries the bead-rs workspace fingerprint — `.beads/config.json` —
+it is the selected workspace. When it does not, discovery fails closed with a
+diagnostic that names the directory and claims only that it is not a bead-rs
+workspace; which foreign format occupies it is neither inspected nor named,
+keeping the clean-room boundary intact. Discovery never continues past a
+foreign store to an unrelated parent workspace, and `bead init` equally refuses
+to write into a `.beads` directory lacking the fingerprint. Legitimate
+nesting under an unrecognized `.beads` is opt-in: the global
+`--skip-foreign-workspace` flag continues the search past it and widens only
+the search — it never authorizes writing into the skipped directory. Never
+follow a `.beads` symlink outside the selected workspace for a mutation.
 
 ### 4.2 Connection policy
 
@@ -824,6 +834,7 @@ Human output may evolve; named-profile machine output is stable.
 | `bead dep remove BLOCKED BLOCKER [--kind KIND]` | remove matching edge(s) |
 | `bead sync --flush-only [--profile P] [--output PATH]` | before F017, atomically publish issue-only `.beads/issues.jsonl` when output is omitted or export that issue-only format to a new explicit path; after F017, use the upgraded forensic publication/export contract in section 6; under the R026 automatic default it remains supported and is idempotent against a clean checkpoint |
 | `--no-auto-flush` (global) | suppress R026 automatic post-commit publication for one invocation, leaving the checkpoint dirty; inert while explicit flush is the default; overrides the `checkpoint.auto_flush` workspace configuration key |
+| `--skip-foreign-workspace` (global) | R030: let discovery continue past the first `.beads` directory when it lacks the bead-rs fingerprint, so a bead-rs workspace farther up can be selected; widens the search only and never authorizes writing into the skipped directory |
 | `bead sync --import-only --input PATH [--profile P] [--dry-run]` | before F017, stage and transactionally replace an empty store from exactly one explicitly named issue-only JSONL file; after F017, this base grammar is extended with the required `(--restore-into-empty\|--merge) --actor ACTOR` forensic semantics in section 6.3 |
 | `bead sync --status --format json` | before F017, issue-only checkpoint hash, covered/live sequence, time, and dirty state; after F017, the richer root/mode/changed-path status in section 6.2 |
 | `bead doctor [--repair]` | diagnose; optionally perform safe repairs |

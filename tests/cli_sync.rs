@@ -8,10 +8,10 @@ use tempfile::TempDir;
 
 fn create_workspace() -> TempDir {
     let temp_dir = TempDir::new().unwrap();
-    let bead_dir = temp_dir.path().join(".beads");
-    fs::create_dir(&bead_dir).unwrap();
 
-    // Initialize workspace
+    // Initialize workspace (R030: `bead init` creates `.beads` itself; a
+    // pre-created empty `.beads` is an unrecognized store discovery must
+    // fail closed on, not scaffold over)
     Command::cargo_bin("bead")
         .unwrap()
         .args(["init", "--prefix", "bead"])

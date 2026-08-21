@@ -10,6 +10,12 @@
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::Path;
+
+// R030: workspace discovery stops at the first featureless `.beads` above the
+// working directory, so a test workspace must not live under one. The base is
+// `std::env::temp_dir()` (TMPDIR-aware, like every other test file here)
+// instead of a hardcoded `/tmp`, which a machine may share with unrelated
+// `.beads` debris.
 use std::process::Command;
 
 /// Get the path to the bead binary for testing
@@ -39,7 +45,11 @@ fn read_current_pointer(checkpoint_dir: &Path) -> serde_json::Value {
 
 #[test]
 fn test_f017_monolithic_checkpoint_basic() {
-    let test_dir = format!("/tmp/test-f017-basic-{}", std::process::id());
+    let test_dir = format!(
+        "{}/test-f017-basic-{}",
+        std::env::temp_dir().display(),
+        std::process::id()
+    );
     let _ = fs::remove_dir_all(&test_dir);
     fs::create_dir_all(&test_dir).unwrap();
 
@@ -114,7 +124,11 @@ fn test_f017_monolithic_checkpoint_basic() {
 
 #[test]
 fn test_f017_content_addressed_paths() {
-    let test_dir = format!("/tmp/test-f017-content-{}", std::process::id());
+    let test_dir = format!(
+        "{}/test-f017-content-{}",
+        std::env::temp_dir().display(),
+        std::process::id()
+    );
     let _ = fs::remove_dir_all(&test_dir);
     fs::create_dir_all(&test_dir).unwrap();
 
@@ -188,7 +202,11 @@ fn test_f017_content_addressed_paths() {
 
 #[test]
 fn test_f017_identical_flushes_reuse_one_object() {
-    let test_dir = format!("/tmp/test-f017-reuse-{}", std::process::id());
+    let test_dir = format!(
+        "{}/test-f017-reuse-{}",
+        std::env::temp_dir().display(),
+        std::process::id()
+    );
     let _ = fs::remove_dir_all(&test_dir);
     fs::create_dir_all(&test_dir).unwrap();
 
@@ -271,7 +289,11 @@ fn test_f017_identical_flushes_reuse_one_object() {
 
 #[test]
 fn test_f017_legacy_generation_named_object_importable() {
-    let test_dir = format!("/tmp/test-f017-legacy-gen-{}", std::process::id());
+    let test_dir = format!(
+        "{}/test-f017-legacy-gen-{}",
+        std::env::temp_dir().display(),
+        std::process::id()
+    );
     let _ = fs::remove_dir_all(&test_dir);
     fs::create_dir_all(&test_dir).unwrap();
 
@@ -381,7 +403,11 @@ fn test_f017_legacy_generation_named_object_importable() {
 
 #[test]
 fn test_f017_pointer_metadata_tracking() {
-    let test_dir = format!("/tmp/test-f017-metadata-{}", std::process::id());
+    let test_dir = format!(
+        "{}/test-f017-metadata-{}",
+        std::env::temp_dir().display(),
+        std::process::id()
+    );
     let _ = fs::remove_dir_all(&test_dir);
     fs::create_dir_all(&test_dir).unwrap();
 
@@ -457,7 +483,11 @@ fn test_f017_pointer_metadata_tracking() {
 
 #[test]
 fn test_f017_doctor_validation() {
-    let test_dir = format!("/tmp/test-f017-doctor-{}", std::process::id());
+    let test_dir = format!(
+        "{}/test-f017-doctor-{}",
+        std::env::temp_dir().display(),
+        std::process::id()
+    );
     let _ = fs::remove_dir_all(&test_dir);
     fs::create_dir_all(&test_dir).unwrap();
 
@@ -506,7 +536,11 @@ fn test_f017_doctor_validation() {
 
 #[test]
 fn test_f017_crash_safety_and_atomicity() {
-    let test_dir = format!("/tmp/test-f017-atomicity-{}", std::process::id());
+    let test_dir = format!(
+        "{}/test-f017-atomicity-{}",
+        std::env::temp_dir().display(),
+        std::process::id()
+    );
     let _ = fs::remove_dir_all(&test_dir);
     fs::create_dir_all(&test_dir).unwrap();
 
@@ -567,7 +601,11 @@ fn test_f017_crash_safety_and_atomicity() {
 
 #[test]
 fn test_f017_forensic_jsonl_record_types() {
-    let test_dir = format!("/tmp/test-f017-record-types-{}", std::process::id());
+    let test_dir = format!(
+        "{}/test-f017-record-types-{}",
+        std::env::temp_dir().display(),
+        std::process::id()
+    );
     let _ = fs::remove_dir_all(&test_dir);
     fs::create_dir_all(&test_dir).unwrap();
 

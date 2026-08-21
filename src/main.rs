@@ -200,6 +200,11 @@ fn publish_committed_state(probe: &PublicationProbe) -> anyhow::Result<()> {
 }
 
 fn execute_command(cli: Cli) -> Result<()> {
+    // R030: publish the discovery override before anything resolves a
+    // workspace, so `publication_probe` and every command's `discover` see
+    // the same walk. Read before `cli` moves into dispatch.
+    store::set_skip_foreign_workspaces(cli.skip_foreign_workspace);
+
     // Arm post-commit publication before dispatch; a command that fails or
     // mutates nothing never reaches the publish step. The flag is read
     // before `cli` moves into dispatch.
@@ -265,6 +270,17 @@ fn cmd_init(opts: cli::InitOptions) -> Result<()> {
                 "Rebuilding uninitialized workspace at: {} (preserving committed identity)",
                 root.display()
             );
+        }
+        // R030: the first `.beads` on the walk is not a bead-rs workspace.
+        // init is the command that would write into it, so fail closed here;
+        // the override never helps — it only sends discovery (and therefore
+        // this command) to a workspace farther up, which reports "already
+        // exists" through the Ready arm above. init_workspace repeats the
+        // refusal at the write boundary so no caller path can bypass it.
+        store::WorkspaceState::NotBeadRs { beads_path } => {
+            return Err(Error::workspace(store::foreign_workspace_message(
+                &beads_path,
+            )));
         }
         store::WorkspaceState::NotFound => {}
     }
@@ -1539,6 +1555,28 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
             return Err(Error::integrity(
                 "Workspace database is missing or uninitialized",
             ));
+        }
+        // R030: doctor reports the first-`.beads`-is-not-ours state instead of
+        // diagnosing an unrelated parent workspace, and never offers a repair
+        // that would write into the unrecognized directory. Exit 3 (workspace
+        // error) matches what every other command reports for this state.
+        store::WorkspaceState::NotBeadRs { beads_path } => {
+            println!("Running diagnostics with scopes: All");
+            println!();
+            println!(
+                "FAIL workspace_config: {} is not a bead-rs workspace",
+                beads_path.display()
+            );
+            println!("     (.beads/config.json, the bead-rs workspace fingerprint, is absent).");
+            println!("     Discovery stops at the first .beads directory and does not continue");
+            println!("     to a parent workspace.");
+            println!();
+            println!("Repair: move or remove the unrecognized .beads directory, or operate on a");
+            println!("        bead-rs workspace above it with --skip-foreign-workspace.");
+            return Err(Error::workspace(format!(
+                "No workspace found: {} is not a bead-rs workspace",
+                beads_path.display()
+            )));
         }
     }
 

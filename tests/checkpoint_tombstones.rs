@@ -16,6 +16,12 @@
 use serde_json::Value;
 use std::fs;
 use std::path::Path;
+
+// R030: workspace discovery stops at the first featureless `.beads` above the
+// working directory, so a test workspace must not live under one. The base is
+// `std::env::temp_dir()` (TMPDIR-aware, like every other test file here)
+// instead of a hardcoded `/tmp`, which a machine may share with unrelated
+// `.beads` debris.
 use std::process::Command;
 
 /// Get the path to the bead binary for testing
@@ -89,7 +95,11 @@ fn run_status_json(workspace: &Path) -> Value {
 /// and bound the retained object set to the two referenced generations
 #[test]
 fn tombstones_applied_and_object_set_bounded() {
-    let test_dir = format!("/tmp/test-tombstones-bounded-{}", std::process::id());
+    let test_dir = format!(
+        "{}/test-tombstones-bounded-{}",
+        std::env::temp_dir().display(),
+        std::process::id()
+    );
     let _ = fs::remove_dir_all(&test_dir);
     fs::create_dir_all(&test_dir).unwrap();
 
@@ -178,7 +188,11 @@ fn tombstones_applied_and_object_set_bounded() {
 /// deletions appear in the reported changed-path set
 #[test]
 fn stray_objects_are_reclaimed_and_reported() {
-    let test_dir = format!("/tmp/test-tombstones-stray-{}", std::process::id());
+    let test_dir = format!(
+        "{}/test-tombstones-stray-{}",
+        std::env::temp_dir().display(),
+        std::process::id()
+    );
     let _ = fs::remove_dir_all(&test_dir);
     fs::create_dir_all(&test_dir).unwrap();
 
@@ -235,7 +249,11 @@ fn stray_objects_are_reclaimed_and_reported() {
 /// ready to commit until a repeat publication applies them
 #[test]
 fn status_reports_unresolved_tombstones_until_reapplied() {
-    let test_dir = format!("/tmp/test-tombstones-status-{}", std::process::id());
+    let test_dir = format!(
+        "{}/test-tombstones-status-{}",
+        std::env::temp_dir().display(),
+        std::process::id()
+    );
     let _ = fs::remove_dir_all(&test_dir);
     fs::create_dir_all(&test_dir).unwrap();
 

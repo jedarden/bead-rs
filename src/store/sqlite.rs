@@ -225,6 +225,23 @@ impl Store for SqliteStore {
             msg: e,
         })?;
 
+        // R030: never initialize into a `.beads` directory this tool does not
+        // recognize. A `.beads` without `config.json` (the bead-rs workspace
+        // fingerprint) is not ours to write into; laying the native schema
+        // alongside foreign files is exactly the mixed-store corruption this
+        // guard exists to prevent. Unconditional: the discovery override only
+        // widens the upward *search* (a `--skip-foreign-workspace init` with
+        // a bead-rs workspace above reports that workspace via `probe` and
+        // never reaches this point), so by the time we are here the current
+        // directory is the intended root and its `.beads` must be ours or
+        // absent.
+        let beads_dir = root.join(".beads");
+        if beads_dir.exists() && !root.join(".beads/config.json").exists() {
+            return Err(Error::workspace(super::foreign_workspace_message(
+                &beads_dir,
+            )));
+        }
+
         // An existing config.json means this workspace already has an identity,
         // but NOT necessarily a database — `beads.db` is gitignored while
         // `config.json` is tracked, so a fresh clone lands here with a config
@@ -355,17 +372,17 @@ impl Store for SqliteStore {
     }
 
     fn get_workspace_config(&self) -> Result<WorkspaceConfig> {
-        // Get current directory as workspace root
-        let root = std::env::current_dir().map_err(|e| Error::Io {
-            path: ".".into(),
-            msg: e,
-        })?;
-
-        // Check if workspace exists
-        let config_path = root.join(".beads/config.json");
-        if !config_path.exists() {
-            return Err(Error::workspace("No workspace found in current directory"));
-        }
+        // R030: resolve the workspace through the same discovery walk every
+        // command uses -- stop at the first `.beads` directory and fail closed
+        // when it is not ours, continuing past one only under the explicit
+        // override. The cwd-only lookup this replaced answered a run from a
+        // subdirectory with a generic "no workspace" error and never applied
+        // the first-`.beads` rule at all, which both lost the R030 diagnostic
+        // and made `doctor` from inside a workspace depend on where it was
+        // invoked from.
+        let discovered = WorkspaceConfig::discover()?
+            .ok_or_else(|| Error::workspace("No workspace found in current directory"))?;
+        let root = discovered.root;
 
         // Load existing workspace configuration from database
         let db_path = root.join(".beads/beads.db");
