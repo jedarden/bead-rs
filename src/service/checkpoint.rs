@@ -3842,6 +3842,93 @@ pub fn read_covered_event_sequence(checkpoint_base: &Path) -> Option<i64> {
         .as_i64()
 }
 
+/// How long a publisher waits for the checkpoint publication lock before
+/// giving up. Generous against real publication work (object writes and
+/// fsyncs on a large workspace), finite against a wedged holder: the lock
+/// itself releases on process exit, so only a live but stuck publisher can
+/// hold it this long.
+const PUBLICATION_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Poll interval for the bounded publication-lock wait.
+const PUBLICATION_LOCK_POLL: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// The checkpoint publication lock (plan 6.2.1 item 4).
+///
+/// An exclusive file lock on `.beads/checkpoint/publish.lock`, held across
+/// one publication: read the outgoing generation, write objects, replace
+/// `current.json`, apply the pointer-declared tombstones. It is deliberately
+/// a *file* lock, not a SQLite lock -- publication must serialize with other
+/// publishers, never with the SQLite write path, so a worker committing a
+/// mutation while another publishes blocks on neither. The lock file is
+/// never renamed (an flock follows the open file, not the path), never
+/// appears under `objects/` or `manifests/`, and so is never enumerated,
+/// tombstoned, or imported.
+///
+/// Dropping the guard releases the lock. A process that dies mid-publication
+/// has the lock reclaimed by the kernel, so the next publisher proceeds and
+/// re-declares whatever cleanup the dead one left unapplied.
+pub struct CheckpointPublicationLock {
+    /// Kept alive for the flock; the descriptor is the lock.
+    _file: File,
+}
+
+impl Drop for CheckpointPublicationLock {
+    fn drop(&mut self) {
+        // flock releases on close; unlock() makes that immediate rather than
+        // waiting for the File to close. Either way, failure to unlock is
+        // not a publication failure.
+        let _ = fs2::FileExt::unlock(&self._file);
+    }
+}
+
+/// Acquire the checkpoint publication lock, waiting up to
+/// [`PUBLICATION_LOCK_TIMEOUT`].
+///
+/// The checkpoint directory is created when absent so a first publication
+/// can lock before it writes anything into it.
+pub fn acquire_checkpoint_publication_lock(
+    checkpoint_dir: &Path,
+) -> Result<CheckpointPublicationLock> {
+    acquire_checkpoint_publication_lock_within(checkpoint_dir, PUBLICATION_LOCK_TIMEOUT)
+}
+
+fn acquire_checkpoint_publication_lock_within(
+    checkpoint_dir: &Path,
+    timeout: std::time::Duration,
+) -> Result<CheckpointPublicationLock> {
+    use fs2::FileExt;
+    use std::io::ErrorKind;
+
+    std::fs::create_dir_all(checkpoint_dir)?;
+    // Not File::create: truncating a file another publisher holds would be
+    // harmless (the content is never read) but writing it at all is a lie --
+    // the lock file stays empty forever.
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(checkpoint_dir.join("publish.lock"))?;
+
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match file.try_lock_exclusive() {
+            Ok(()) => return Ok(CheckpointPublicationLock { _file: file }),
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(anyhow!(
+                        "checkpoint publication lock busy: another publisher has held \
+                         {} for more than {}s; retry once it releases",
+                        checkpoint_dir.join("publish.lock").display(),
+                        timeout.as_secs()
+                    ));
+                }
+                std::thread::sleep(PUBLICATION_LOCK_POLL);
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+}
+
 /// Publish forensic checkpoint (F017)
 ///
 /// This function implements the full forensic checkpoint-set format with:
@@ -3849,7 +3936,36 @@ pub fn read_covered_event_sequence(checkpoint_base: &Path) -> Option<i64> {
 /// - Sharded mode: Manifest with content-addressed shards
 /// - Atomic pointer replacement
 /// - Git-trackable changed paths
+///
+/// Publication is serialized by the checkpoint publication lock (plan 6.2.1
+/// item 4), acquired here and held across the whole publication: the
+/// outgoing-generation read that drives tombstone math, the object writes,
+/// the pointer replacement, and the tombstone application that follows it.
+/// Two publishers therefore never interleave those steps, so a lost race can
+/// leave a superseded generation, never a torn pointer or a partially
+/// applied tombstone set. A caller that already holds the lock (the
+/// post-commit chokepoint, which rechecks coverage under it) goes through
+/// [`publish_forensic_checkpoint_holding`] instead.
 pub fn publish_forensic_checkpoint(
+    store: &mut SqliteStore,
+    config: &CheckpointConfig,
+    checkpoint_base: &Path,
+) -> Result<ForensicFlushResult> {
+    let publication_lock =
+        acquire_checkpoint_publication_lock(&checkpoint_base.join("checkpoint"))?;
+    publish_forensic_checkpoint_holding(&publication_lock, store, config, checkpoint_base)
+}
+
+/// The publication body, callable only by a caller that holds the
+/// [`CheckpointPublicationLock`].
+///
+/// The lock parameter is proof, not input: it exists so the chokepoint can
+/// publish under a lock it acquired for its own lost-race recheck without
+/// re-acquiring (the lock is per open file, so a nested acquire by the same
+/// process would self-deadlock), while every other entry point takes the
+/// lock through [`publish_forensic_checkpoint`] and cannot forget it.
+pub fn publish_forensic_checkpoint_holding(
+    _publication_lock: &CheckpointPublicationLock,
     store: &mut SqliteStore,
     config: &CheckpointConfig,
     checkpoint_base: &Path,
@@ -5816,5 +5932,76 @@ mod tests {
         fs::write(&test_path, "line1\nline3\n").unwrap();
         let hash3 = calculate_file_hash(&test_path).unwrap();
         assert_ne!(hash1, hash3);
+    }
+
+    /// The publication lock is exclusive across separately opened files --
+    /// the property that serializes two publisher processes -- and a
+    /// bounded waiter gives up with a named error rather than blocking
+    /// forever (plan 6.2.1 item 4).
+    #[test]
+    fn publication_lock_is_exclusive_across_openers() {
+        let temp_dir = TempDir::new().unwrap();
+        let checkpoint_dir = temp_dir.path().join("checkpoint");
+
+        let held = acquire_checkpoint_publication_lock(&checkpoint_dir).unwrap();
+        {
+            // A second opener (its own file description, like another
+            // process) must not acquire while the first is held. flock is
+            // per open file, so a same-process second open is a faithful
+            // stand-in for a second process here.
+            let contender = std::thread::spawn(move || {
+                acquire_checkpoint_publication_lock_within(
+                    &checkpoint_dir,
+                    std::time::Duration::from_millis(150),
+                )
+            });
+            let outcome = contender.join().unwrap();
+            let err = outcome.err().expect("a second opener acquired a held lock");
+            assert!(
+                err.to_string().contains("publication lock busy"),
+                "lock contention must name the lock, got: {err}"
+            );
+        }
+
+        // Releasing (here, by drop) lets the next opener through.
+        drop(held);
+        let reacquired = acquire_checkpoint_publication_lock_within(
+            &temp_dir.path().join("checkpoint"),
+            std::time::Duration::from_millis(150),
+        );
+        assert!(reacquired.is_ok(), "a released lock must be acquirable");
+    }
+
+    /// The lock file lives where publication can create it before its first
+    /// write, stays empty, and is invisible to the tombstone machinery:
+    /// only `objects/` and `manifests/` paths are ever enumerated or
+    /// declared deleted, so the lock file cannot be reclaimed out from
+    /// under a holder.
+    #[test]
+    fn publication_lock_file_is_created_and_never_a_tombstone_target() {
+        let temp_dir = TempDir::new().unwrap();
+        let checkpoint_dir = temp_dir.path().join("checkpoint");
+
+        let held = acquire_checkpoint_publication_lock(&checkpoint_dir).unwrap();
+        let lock_path = checkpoint_dir.join("publish.lock");
+        assert!(lock_path.exists(), "acquire must create the lock file");
+        assert_eq!(
+            fs::metadata(&lock_path).unwrap().len(),
+            0,
+            "the lock file carries no content"
+        );
+        assert!(
+            !is_generation_object_path("publish.lock"),
+            "the lock file must not be tombstone-removable"
+        );
+        drop(held);
+
+        // And the checkpoint directory enumeration that drives tombstones
+        // never sees it, because it scans only objects/ and manifests/.
+        let enumerated = enumerate_generation_objects(&checkpoint_dir).unwrap();
+        assert!(
+            !enumerated.iter().any(|p| p.contains("publish.lock")),
+            "tombstone enumeration must not see the lock file, got {enumerated:?}"
+        );
     }
 }

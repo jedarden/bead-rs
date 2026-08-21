@@ -90,7 +90,7 @@ fn open_checkpoint_connection(db_path: &std::path::Path) -> Option<rusqlite::Con
     Some(conn)
 }
 
-/// The single post-commit publication chokepoint (plan 6.2.1 items 1-3).
+/// The single post-commit publication chokepoint (plan 6.2.1 items 1-4).
 ///
 /// Runs only after `dispatch_command` returns `Ok` -- that is, strictly
 /// after the command's own transaction committed, never inside it -- so a
@@ -111,6 +111,15 @@ fn open_checkpoint_connection(db_path: &std::path::Path) -> Option<rusqlite::Con
 /// creates no object, and a checkpoint another publisher already carried
 /// to this sequence or beyond -- the state a lost publication race leaves
 /// behind -- is treated as success, not something to publish over.
+///
+/// That coverage check runs twice: once as a lock-free fast path, once as
+/// the authoritative decision under the checkpoint publication lock
+/// (item 4), because a concurrent publisher may replace the pointer
+/// between the two. The lock serializes publication -- object writes,
+/// pointer replacement, tombstone application -- independently of the
+/// SQLite write path, so a worker that loses the race waits for the
+/// winner, rereads the pointer it published, sees a sequence at or beyond
+/// its own, and returns success without publishing over it.
 fn publish_after_commit(probe: &PublicationProbe) -> Result<()> {
     let Some(conn) = open_checkpoint_connection(&probe.config.database_path()) else {
         return Ok(());
@@ -135,8 +144,31 @@ fn publish_after_commit(probe: &PublicationProbe) -> Result<()> {
         return Ok(());
     }
 
+    // Serialize with every other publisher (plan 6.2.1 item 4). Past this
+    // point the pointer stays stable until this publication finishes.
+    let publication_lock =
+        service::acquire_checkpoint_publication_lock(&checkpoint_base.join("checkpoint"))?;
+
+    // The authoritative lost-race decision, under the lock: reread both
+    // the live sequence and the pointer another publisher may have just
+    // replaced. A pointer that now covers the live sequence covers this
+    // invocation's own committed sequence too, so this worker's generation
+    // has nothing to carry -- success, exit 0, nothing published over.
+    if let Some(sequence_now) = service::read_live_event_sequence(&conn) {
+        if service::read_covered_event_sequence(&checkpoint_base)
+            .is_some_and(|covered| covered >= sequence_now)
+        {
+            return Ok(());
+        }
+    }
+
     let mut store = store::SqliteStore::from_conn(conn);
-    service::publish_forensic_checkpoint(&mut store, &probe.checkpoint_config, &checkpoint_base)?;
+    service::publish_forensic_checkpoint_holding(
+        &publication_lock,
+        &mut store,
+        &probe.checkpoint_config,
+        &checkpoint_base,
+    )?;
 
     // Silent on success (plan 6.2.1 item 6): no command's output gains a
     // field or a line. A failure propagates after the command's own output

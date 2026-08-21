@@ -8,3 +8,6 @@
 # byte-cache from the doc-image generator
 __pycache__/
 *.pyc
+
+# runtime publication lock (empty; never checkpoint content)
+.beads/checkpoint/publish.lock

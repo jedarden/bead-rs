@@ -30,10 +30,16 @@ pub use changes::{
     get_changes_since, get_gap_info, get_snapshot_identity, validate_cursor, Cursor,
 };
 pub use checkpoint::{
-    flush_checkpoint, forensic_checkpoint_status, import_forensic_checkpoint,
-    load_checkpoint_config, publish_forensic_checkpoint, read_covered_event_sequence,
-    read_live_event_sequence, CheckpointConfig,
+    acquire_checkpoint_publication_lock, flush_checkpoint, forensic_checkpoint_status,
+    import_forensic_checkpoint, load_checkpoint_config, publish_forensic_checkpoint,
+    publish_forensic_checkpoint_holding, read_covered_event_sequence, read_live_event_sequence,
+    CheckpointConfig,
 };
+// The publication-lock guard type is public library API (callers that
+// publish through `publish_forensic_checkpoint_holding` name it) but the
+// binary holds it only as a value and never names the type.
+#[allow(unused_imports)]
+pub use checkpoint::CheckpointPublicationLock;
 // The compiled automatic-flush default is public library API (the capability
 // document reports it once the R026 gate flips it, plan 6.2.1) but the
 // binary reaches it only through `CheckpointConfig::auto_flush_enabled`.
