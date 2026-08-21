@@ -4,7 +4,7 @@
 //! for the bead workspace.
 
 use crate::error::{Error, Result};
-use crate::store::Store;
+use crate::store::{open_configured_connection, Store};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -448,7 +448,7 @@ fn check_database_integrity(store: &impl Store) -> Result<String> {
     let db_path = config.root.join(".beads/beads.db");
 
     // Try to open database
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = open_configured_connection(&db_path)
         .map_err(|e| Error::Integrity(format!("Failed to open database: {}", e)))?;
 
     // Check SQLite integrity
@@ -492,7 +492,7 @@ fn check_checkpoint_state_with_freshness(store: &impl Store) -> Result<String> {
     let config = store.get_workspace_config()?;
     let db_path = config.root.join(".beads/beads.db");
 
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = open_configured_connection(&db_path)
         .map_err(|e| Error::Integrity(format!("Failed to open database: {}", e)))?;
 
     // Get current event sequence
@@ -614,7 +614,7 @@ fn check_schema_validity(store: &impl Store) -> Result<String> {
     let config = store.get_workspace_config()?;
     let db_path = config.root.join(".beads/beads.db");
 
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = open_configured_connection(&db_path)
         .map_err(|e| Error::Integrity(format!("Failed to open database: {}", e)))?;
 
     let mut issues = Vec::new();
@@ -731,7 +731,7 @@ fn check_dependency_graph(store: &impl Store) -> Result<String> {
     let config = store.get_workspace_config()?;
     let db_path = config.root.join(".beads/beads.db");
 
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = open_configured_connection(&db_path)
         .map_err(|e| Error::Integrity(format!("Failed to open database: {}", e)))?;
 
     // Check for self-edges
@@ -787,7 +787,7 @@ fn check_comments_integrity(store: &impl Store) -> Result<String> {
     let config = store.get_workspace_config()?;
     let db_path = config.root.join(".beads/beads.db");
 
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = open_configured_connection(&db_path)
         .map_err(|e| Error::Integrity(format!("Failed to open database: {}", e)))?;
 
     // Check for comments with invalid structure
@@ -858,7 +858,7 @@ fn check_checkpoint_state(store: &impl Store) -> Result<String> {
     let config = store.get_workspace_config()?;
     let db_path = config.root.join(".beads/beads.db");
 
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = open_configured_connection(&db_path)
         .map_err(|e| Error::Integrity(format!("Failed to open database: {}", e)))?;
 
     // Get current event sequence
@@ -1123,7 +1123,7 @@ fn check_ready_frontier(store: &impl Store) -> Result<String> {
     let config = store.get_workspace_config()?;
     let db_path = config.root.join(".beads/beads.db");
 
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = open_configured_connection(&db_path)
         .map_err(|e| Error::Integrity(format!("Failed to open database: {}", e)))?;
 
     let mut stmt = conn

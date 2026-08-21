@@ -5,6 +5,42 @@ use crate::error::{Error, Result};
 use rusqlite::{Connection, Result as SqliteResult};
 use std::path::Path;
 
+/// Open a database connection at `path` with the standard bead-rs
+/// configuration: `foreign_keys = ON`, `busy_timeout = 5000`,
+/// `journal_mode = WAL`, `synchronous = NORMAL`.
+///
+/// This is the single configuration point for EVERY connection to a bead
+/// workspace database, not only the ones [`SqliteStore`] opens for itself.
+/// Both `foreign_keys` and `busy_timeout` are per-connection defaults in
+/// SQLite (OFF and 0 respectively), so a plain `Connection::open` silently
+/// drops them: the `ON DELETE CASCADE` rules the migrations declare go
+/// unenforced, and concurrent fleet access (multiple workers running
+/// `bead claim`/`update` against one workspace) fails immediately with
+/// `SQLITE_BUSY` instead of waiting out the other writer. Command handlers
+/// and diagnostics must open through this helper rather than calling
+/// `rusqlite::Connection::open` directly.
+pub fn open_configured_connection(path: &Path) -> SqliteResult<Connection> {
+    let conn = Connection::open(path)?;
+
+    // Configure connection
+    conn.execute("PRAGMA foreign_keys = ON", [])?;
+    // busy_timeout returns the new value, so we need to consume the result
+    let _timeout: i64 = conn.query_row("PRAGMA busy_timeout = 5000", [], |row| row.get(0))?;
+
+    // journal_mode returns a result string, so use query_row
+    let journal_mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
+    if journal_mode != "wal" && journal_mode != "wal (deleted)" {
+        return Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_MISUSE),
+            format!("Failed to set journal_mode to WAL, got: {}", journal_mode).into(),
+        ));
+    }
+
+    conn.execute("PRAGMA synchronous = NORMAL", [])?;
+
+    Ok(conn)
+}
+
 /// SQLite store implementation
 pub struct SqliteStore {
     conn: Option<Connection>,
@@ -19,7 +55,7 @@ impl SqliteStore {
     /// Create a new SQLite store with a database path
     #[allow(dead_code)]
     pub fn with_path(path: &Path) -> Result<Self> {
-        let conn = Self::open_connection(path)?;
+        let conn = open_configured_connection(path)?;
         Ok(Self { conn: Some(conn) })
     }
 
@@ -51,30 +87,6 @@ impl SqliteStore {
         let conn = self.conn.as_ref().expect("Connection not initialized");
         migrations::apply_migrations(conn)?;
         Ok(())
-    }
-
-    /// Open a database connection at the specified path
-    fn open_connection(path: &Path) -> SqliteResult<Connection> {
-        let conn = Connection::open(path)?;
-
-        // Configure connection
-        conn.execute("PRAGMA foreign_keys = ON", [])?;
-        // busy_timeout returns the new value, so we need to consume the result
-        let _timeout: i64 = conn.query_row("PRAGMA busy_timeout = 5000", [], |row| row.get(0))?;
-
-        // journal_mode returns a result string, so use query_row
-        let journal_mode: String =
-            conn.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
-        if journal_mode != "wal" && journal_mode != "wal (deleted)" {
-            return Err(rusqlite::Error::SqliteFailure(
-                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_MISUSE),
-                format!("Failed to set journal_mode to WAL, got: {}", journal_mode).into(),
-            ));
-        }
-
-        conn.execute("PRAGMA synchronous = NORMAL", [])?;
-
-        Ok(conn)
     }
 
     /// Ensure the workspace directory structure exists
@@ -251,7 +263,7 @@ impl Store for SqliteStore {
         let config_path = root.join(".beads/config.json");
         let recorded_identity = if config_path.exists() {
             let db_path = root.join(".beads/beads.db");
-            let conn = Self::open_connection(&db_path)
+            let conn = open_configured_connection(&db_path)
                 .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
             if Self::schema_initialized(&conn) {
@@ -293,7 +305,7 @@ impl Store for SqliteStore {
 
         // Initialize database
         let db_path = root.join(".beads/beads.db");
-        let conn = Self::open_connection(&db_path)
+        let conn = open_configured_connection(&db_path)
             .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to create database: {}", e)))?;
 
         // Apply migrations
@@ -386,7 +398,7 @@ impl Store for SqliteStore {
 
         // Load existing workspace configuration from database
         let db_path = root.join(".beads/beads.db");
-        let conn = Self::open_connection(&db_path)
+        let conn = open_configured_connection(&db_path)
             .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
         let uuid: String = conn

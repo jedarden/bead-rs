@@ -6,7 +6,7 @@
 pub mod migrations;
 mod sqlite;
 
-pub use sqlite::SqliteStore;
+pub use sqlite::{open_configured_connection, SqliteStore};
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -202,21 +202,9 @@ impl WorkspaceConfig {
         let db_path = root.join(".beads/beads.db");
 
         // Open database and load workspace metadata
-        let conn = rusqlite::Connection::open(&db_path).map_err(|e| {
+        let conn = open_configured_connection(&db_path).map_err(|e| {
             crate::Error::Internal(anyhow::anyhow!("Failed to open database: {}", e))
         })?;
-
-        // Configure connection to match SqliteStore configuration
-        conn.execute("PRAGMA foreign_keys = ON", []).map_err(|e| {
-            crate::Error::Internal(anyhow::anyhow!("Failed to enable foreign keys: {}", e))
-        })?;
-
-        // busy_timeout returns the new value, so we need to consume the result
-        let _timeout: i64 = conn
-            .query_row("PRAGMA busy_timeout = 5000", [], |row| row.get(0))
-            .map_err(|e| {
-                crate::Error::Internal(anyhow::anyhow!("Failed to set busy timeout: {}", e))
-            })?;
 
         // A tracked `.beads/config.json` can exist without a matching
         // `.beads/beads.db` (the db is gitignored on purpose) -- most

@@ -88,14 +88,11 @@ fn publication_probe(no_auto_flush: bool) -> Option<PublicationProbe> {
     })
 }
 
-/// Open a connection for the chokepoint's sequence reads. A short busy
-/// timeout mirrors the store's own setting so a concurrent writer does not
+/// Open a connection for the chokepoint's sequence reads, through the same
+/// pragma-configured opener the store uses, so a concurrent writer does not
 /// silently disarm publication.
 fn open_checkpoint_connection(db_path: &std::path::Path) -> Option<rusqlite::Connection> {
-    let conn = rusqlite::Connection::open(db_path).ok()?;
-    conn.busy_timeout(std::time::Duration::from_millis(5000))
-        .ok()?;
-    Some(conn)
+    store::open_configured_connection(db_path).ok()
 }
 
 /// The single post-commit publication chokepoint (plan 6.2.1 items 1-4).
@@ -303,7 +300,7 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
 
     // Open database connection
     let db_path = config.database_path();
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = store::open_configured_connection(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Use an immediate transaction for atomicity
@@ -484,7 +481,7 @@ fn cmd_create(opts: cli::CreateOptions) -> Result<()> {
 
     // Open database connection
     let db_path = config.database_path();
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = store::open_configured_connection(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Use a transaction for atomicity
@@ -521,7 +518,7 @@ fn cmd_list(opts: cli::ListOptions) -> Result<()> {
 
     // Open database connection
     let db_path = config.database_path();
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = store::open_configured_connection(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Validate limit
@@ -597,7 +594,7 @@ fn cmd_show(opts: cli::ShowOptions) -> Result<()> {
 
     // Open database connection
     let db_path = config.database_path();
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = store::open_configured_connection(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Validate comments option
@@ -664,7 +661,7 @@ fn cmd_update(opts: cli::UpdateOptions) -> Result<()> {
 
     // Open database connection
     let db_path = config.database_path();
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = store::open_configured_connection(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Handle dry-run mode
@@ -709,7 +706,7 @@ fn cmd_release(opts: cli::ReleaseOptions) -> Result<()> {
 
     // Open database connection
     let db_path = config.database_path();
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = store::open_configured_connection(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Handle dry-run mode
@@ -738,7 +735,7 @@ fn cmd_close(opts: cli::CloseOptions) -> Result<()> {
 
     // Open database connection
     let db_path = config.database_path();
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = store::open_configured_connection(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Handle dry-run mode
@@ -773,7 +770,7 @@ fn cmd_reopen(opts: cli::ReopenOptions) -> Result<()> {
 
     // Open database connection
     let db_path = config.database_path();
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = store::open_configured_connection(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Handle dry-run mode
@@ -824,7 +821,7 @@ fn cmd_label_add(opts: cli::LabelAddOptions) -> Result<()> {
 
     // Open database connection
     let db_path = config.database_path();
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = store::open_configured_connection(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Create store wrapper
@@ -846,7 +843,7 @@ fn cmd_label_remove(opts: cli::LabelRemoveOptions) -> Result<()> {
 
     // Open database connection
     let db_path = config.database_path();
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = store::open_configured_connection(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Create store wrapper
@@ -875,7 +872,7 @@ fn cmd_dep_add(opts: cli::DepAddOptions) -> Result<()> {
 
     // Open database connection
     let db_path = config.database_path();
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = store::open_configured_connection(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Handle dry-run mode
@@ -950,7 +947,7 @@ fn cmd_dep_remove(opts: cli::DepRemoveOptions) -> Result<()> {
 
     // Open database connection
     let db_path = config.database_path();
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = store::open_configured_connection(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Handle dry-run mode
@@ -1001,7 +998,7 @@ fn cmd_ref_add(opts: cli::RefAddOptions) -> Result<()> {
 
     // Open database connection
     let db_path = config.database_path();
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = store::open_configured_connection(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Create store wrapper
@@ -1032,7 +1029,7 @@ fn cmd_ref_remove(opts: cli::RefRemoveOptions) -> Result<()> {
 
     // Open database connection
     let db_path = config.database_path();
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = store::open_configured_connection(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Create store wrapper
@@ -1057,7 +1054,7 @@ fn cmd_ref_list(opts: cli::RefListOptions) -> Result<()> {
 
     // Open database connection
     let db_path = config.database_path();
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = store::open_configured_connection(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Create store wrapper
@@ -1097,7 +1094,7 @@ fn cmd_ref_find(opts: cli::RefFindOptions) -> Result<()> {
 
     // Open database connection
     let db_path = config.database_path();
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = store::open_configured_connection(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Create store wrapper
@@ -1143,7 +1140,7 @@ fn cmd_sync_flush_only(opts: cli::SyncFlushOptions) -> Result<()> {
 
     // Open database connection
     let db_path = config.database_path();
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = store::open_configured_connection(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Create store wrapper
@@ -1234,7 +1231,7 @@ fn cmd_sync_status(opts: cli::SyncStatusOptions) -> Result<()> {
 
     // Open database connection
     let db_path = config.database_path();
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = store::open_configured_connection(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     let mut store = store::SqliteStore::from_conn(conn);
@@ -1368,7 +1365,7 @@ fn cmd_sync_import_only(opts: cli::SyncImportOptions) -> Result<()> {
 
     // Open database connection
     let db_path = config.database_path();
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = store::open_configured_connection(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Create store wrapper
@@ -1451,7 +1448,7 @@ fn cmd_sync_import_diagnostics(opts: cli::SyncImportOptions) -> Result<()> {
 
     // Open database connection
     let db_path = config.database_path();
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = store::open_configured_connection(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Create store wrapper
@@ -1906,7 +1903,7 @@ fn cmd_query(opts: cli::QueryOptions) -> Result<()> {
 
     // Open database connection
     let db_path = config.database_path();
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = store::open_configured_connection(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Handle list views
@@ -2057,7 +2054,7 @@ fn cmd_changes(opts: cli::ChangesOptions) -> Result<()> {
 
     // Open database connection
     let db_path = config.database_path();
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = store::open_configured_connection(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Handle different modes
@@ -2548,7 +2545,7 @@ fn cmd_why(opts: cli::WhyOptions) -> Result<()> {
         .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
 
     let db_path = config.database_path();
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = store::open_configured_connection(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Generate comprehensive why explanation
@@ -2701,7 +2698,7 @@ fn cmd_compare(opts: cli::CompareOptions) -> Result<()> {
         .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
 
     let db_path = config.database_path();
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = store::open_configured_connection(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Perform cross-profile comparison
@@ -2794,7 +2791,7 @@ fn cmd_policy_check(opts: cli::PolicyCheckOptions) -> Result<()> {
         .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
 
     let db_path = config.database_path();
-    let conn = rusqlite::Connection::open(&db_path)
+    let conn = store::open_configured_connection(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Build workspace configuration for validation
