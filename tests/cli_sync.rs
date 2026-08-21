@@ -26,10 +26,12 @@ fn create_workspace() -> TempDir {
 fn test_sync_flush_only_basic() {
     let temp_dir = create_workspace();
 
-    // Create a test issue
+    // Create a test issue with publication suppressed so the explicit
+    // flush below is the operation under test, not a no-op against a
+    // checkpoint the create already published (plan 6.2.1 item 7).
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["create", "--title", "Test Issue"])
+        .args(["create", "--no-auto-flush", "--title", "Test Issue"])
         .current_dir(temp_dir.path())
         .assert()
         .success()
@@ -151,7 +153,8 @@ fn test_sync_flush_only_with_custom_output() {
 fn test_sync_flush_only_rejects_invalid_profile() {
     let temp_dir = create_workspace();
 
-    // Try with invalid profile for export (should fail when using explicit output)
+    // `sync flush-only` takes no --profile: the dead profile checks were
+    // removed (needle-8cb71c7c), so clap rejects the argument outright.
     let custom_output = temp_dir.path().join("custom.jsonl");
     Command::cargo_bin("bead")
         .unwrap()
@@ -166,7 +169,8 @@ fn test_sync_flush_only_rejects_invalid_profile() {
         .current_dir(temp_dir.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("is not supported"));
+        .code(2)
+        .stderr(predicate::str::contains("unexpected argument '--profile'"));
 }
 
 #[test]

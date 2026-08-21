@@ -22,7 +22,11 @@ fn test_doctor_no_workspace() {
 #[serial]
 fn test_doctor_basic() {
     let temp = tempfile::tempdir().unwrap();
-    std::env::set_current_dir(temp.path()).unwrap();
+    let temp_dir = temp.path();
+    let original_home = std::env::var("HOME").ok();
+
+    unsafe { std::env::set_var("HOME", temp_dir); }
+    std::env::set_current_dir(temp_dir).unwrap();
 
     // Initialize workspace
     Command::cargo_bin("bead")
@@ -42,6 +46,13 @@ fn test_doctor_basic() {
         .stderr(predicates::str::contains("database_integrity"))
         .stderr(predicates::str::contains("checkpoint_freshness")) // R016: checkpoint_state replaced with checkpoint_freshness
         .stderr(predicates::str::contains("temporary_files"));
+
+    // Cleanup
+    if let Some(home) = original_home {
+        unsafe { std::env::set_var("HOME", home); }
+    } else {
+        unsafe { std::env::remove_var("HOME"); }
+    }
 }
 
 #[test]
@@ -217,7 +228,11 @@ fn test_doctor_rejects_inconsistent_close_metadata() {
 #[serial]
 fn test_doctor_reports_open_issue_held_by_assignee() {
     let temp = tempfile::tempdir().unwrap();
-    std::env::set_current_dir(temp.path()).unwrap();
+    let temp_dir = temp.path();
+    let original_home = std::env::var("HOME").ok();
+
+    unsafe { std::env::set_var("HOME", temp_dir); }
+    std::env::set_current_dir(temp_dir).unwrap();
 
     Command::cargo_bin("bead")
         .unwrap()
@@ -267,4 +282,158 @@ fn test_doctor_reports_open_issue_held_by_assignee() {
         .args(["doctor"])
         .assert()
         .stderr(predicates::str::contains("Ready frontier OK"));
+}
+
+#[test]
+#[serial]
+fn test_ready_frontier_emits_r001_reason_codes() {
+    let temp = tempfile::tempdir().unwrap();
+    let temp_dir = temp.path();
+
+    // Store original directory and HOME to restore later
+    let original_dir = std::env::current_dir().unwrap();
+    let original_home = std::env::var("HOME").ok();
+
+    // Set HOME to the temp directory to avoid interfering with user's actual workspace
+    unsafe { std::env::set_var("HOME", temp_dir); }
+
+    // Change to the temporary directory
+    std::env::set_current_dir(temp_dir).unwrap();
+
+    // Ensure we're in a clean directory without any existing .beads
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["init", "--prefix", "test-r035"])
+        .assert()
+        .success();
+
+    // Create multiple held issues
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["create", "--title", "First held issue"])
+        .assert()
+        .success();
+    let output = Command::cargo_bin("bead")
+        .unwrap()
+        .args(["create", "--title", "Second held issue"])
+        .output()
+        .unwrap();
+    let id2 = String::from_utf8(output.stdout).unwrap();
+    let id2 = id2.trim();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["create", "--title", "Third held issue"])
+        .assert()
+        .success();
+
+    // Assign all issues to take them off the ready frontier
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["list", "--json"])
+        .assert()
+        .success();
+    let list_output = Command::cargo_bin("bead")
+        .unwrap()
+        .args(["list", "--json"])
+        .output()
+        .unwrap();
+    let list_json: serde_json::Value = serde_json::from_slice(&list_output.stdout).unwrap();
+
+    if let Some(issues) = list_json.as_array() {
+        for issue in issues {
+            if let Some(id) = issue.get("id").and_then(|i| i.as_str()) {
+                Command::cargo_bin("bead")
+                    .unwrap()
+                    .args(["update", id, "--assignee", "worker-1"])
+                    .assert()
+                    .success();
+            }
+        }
+    }
+
+    // Run doctor with JSON output and validate structured reason codes
+    let output = Command::cargo_bin("bead")
+        .unwrap()
+        .args(["doctor", "--json"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+
+    let doctor_json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let checks = doctor_json
+        .get("checks")
+        .and_then(|c| c.as_array())
+        .unwrap();
+
+    // Find the ready_frontier check
+    let frontier_check = checks
+        .iter()
+        .find(|c| c.get("name").and_then(|n| n.as_str()) == Some("ready_frontier"))
+        .expect("ready_frontier check should be present");
+
+    // Validate the structured output
+    let details = frontier_check.get("details").unwrap().as_object().unwrap();
+
+    // Check that held_ids is a machine-readable array, not embedded in prose
+    let held_ids = details.get("held_ids").and_then(|h| h.as_array()).unwrap();
+    assert!(held_ids.len() >= 2, "Should have at least 2 held IDs");
+
+    // Verify the specific ID we tracked is in the list
+    assert!(
+        held_ids.iter().any(|id| id.as_str() == Some(id2)),
+        "Created issue ID should be in held_ids list"
+    );
+
+    // Check that held_count matches the array length
+    let held_count = details.get("held_count").and_then(|c| c.as_u64()).unwrap();
+    assert_eq!(
+        held_count as usize,
+        held_ids.len(),
+        "held_count should match held_ids length"
+    );
+
+    // Validate R001 reason codes are present
+    let reason_codes = details
+        .get("reason_codes")
+        .and_then(|r| r.as_array())
+        .unwrap();
+    assert!(
+        reason_codes.len() >= 1,
+        "Should have at least one reason code"
+    );
+
+    // Check for the specific R035 reason code
+    assert!(
+        reason_codes
+            .iter()
+            .any(|rc| rc.as_str() == Some("open_issue_held_by_assignee")),
+        "Should include open_issue_held_by_assignee reason code"
+    );
+
+    // Validate remedy is provided
+    let remedy = details.get("remedy").and_then(|r| r.as_str()).unwrap();
+    assert!(
+        remedy.contains("--clear-assignee"),
+        "Remedy should mention --clear-assignee"
+    );
+
+    // Validate human-readable message still contains sample
+    let message = frontier_check
+        .get("message")
+        .and_then(|m| m.as_str())
+        .unwrap();
+    assert!(
+        message.contains("open issue(s) are assigned"),
+        "Message should explain the condition in prose"
+    );
+
+    // Cleanup: restore original HOME and directory
+    if let Some(home) = original_home {
+        unsafe { std::env::set_var("HOME", home); }
+    } else {
+        unsafe { std::env::remove_var("HOME"); }
+    }
+    std::env::set_current_dir(original_dir).unwrap();
 }

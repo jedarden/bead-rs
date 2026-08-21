@@ -21,9 +21,11 @@ READINESS:
   \- the forensic.jsonl view is byte\-identical to the root object
   \- the recorded checkpoint state agrees with the pointer
 .PP
-  Repository automation must treat a not\-ready checkpoint as a failed
-  pre\-commit gate: run `bead sync flush\-only` and include every reported
-  changed path in the same Git commit.
+  Under the automatic publication default a not\-ready checkpoint means
+  publication was suppressed by `\-\-no\-auto\-flush` or checkpoint.auto_flush,
+  or failed after a committed mutation. Repository automation must treat a
+  not\-ready checkpoint as a failed pre\-commit gate: run `bead sync
+  flush\-only` and include every reported changed path in the same Git commit.
 .PP
 EXAMPLES:
   bead sync status                     # Human\-readable summary

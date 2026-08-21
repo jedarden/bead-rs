@@ -1,6 +1,7 @@
 # ADR-003: Make Checkpoint Flush Automatic on Mutation, Gated on Incremental Publication
 
-**Status**: Proposed
+**Status**: Accepted — activated 2026-08-21 (plan revision 8); see plan
+section 13 for the gate evidence recorded against the activation commit.
 
 **Date**: 2026-08-15
 

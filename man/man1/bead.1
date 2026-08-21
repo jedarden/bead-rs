@@ -4,22 +4,31 @@
 .SH NAME
 bead \- Clean\-room task coordination for agent fleets
 .SH SYNOPSIS
-\fBbead\fR [\fB\-\-no\-auto\-flush\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIsubcommands\fR>
+\fBbead\fR [\fB\-\-no\-auto\-flush\fR] [\fB\-\-skip\-foreign\-workspace\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIsubcommands\fR>
 .SH DESCRIPTION
 bead\-rs is an independent Rust task\-coordination system.
 .PP
 The intended workflow is:
   init workspace \-> create beads \-> add blocking relationships
-  \-> inspect ready work \-> claim \-> update/release \-> close \-> flush checkpoint
+  \-> inspect ready work \-> claim \-> update/release \-> close
+  \-> checkpoint published automatically with every successful mutation
 .PP
 The ready frontier can be inspected with `bead list \-\-ready \-\-json \-\-limit N`,
 which uses claim order but does not reserve the displayed beads. Use `bead claim`
 to atomically assign work.
 .PP
-SQLite (.beads/beads.db) is the authoritative live state between flushes, and is
-not committed. The checkpoint under .beads/checkpoint/ is the portable, durable
-copy and is what Git tracks; flush it with `bead sync flush\-only` before
-committing the repository. Mutating commands never flush implicitly.
+SQLite (.beads/beads.db) is the authoritative live state and is not committed.
+The checkpoint under .beads/checkpoint/ is the portable, durable copy and is
+what Git tracks; every successful mutation publishes it automatically after its
+transaction commits, so it is never silently behind the database. `bead sync
+flush\-only` remains an explicit idempotent check, and `\-\-no\-auto\-flush` or
+`checkpoint.auto_flush` in .beads/config.json suppresses automatic publication,
+leaving the checkpoint to be flushed by hand.
+.PP
+Recovery is explicit: `bead restore \-\-source .beads/checkpoint \-\-generation
+<GENERATION> \-\-actor <WHO>` verifies one named immutable generation before it
+creates or replaces any live state. `bead doctor` may recommend that command but
+never runs it.
 .PP
 Lifecycle transitions:
   \- open beads may be ready if unassigned and not manually blocked
@@ -43,6 +52,9 @@ Run `bead <COMMAND> \-\-help` for the full description of any command.
 \fB\-\-no\-auto\-flush\fR
 Suppress automatic post\-commit checkpoint publication for this one invocation, leaving the checkpoint dirty for a later explicit `bead sync flush\-only`; overrides the `checkpoint.auto_flush` workspace configuration key
 .TP
+\fB\-\-skip\-foreign\-workspace\fR
+Let workspace discovery continue past the first `.beads` directory when it is not a bead\-rs workspace (no `.beads/config.json`), so a bead\-rs workspace farther up the tree can be used. Discovery otherwise stops there and fails closed: it never silently skips a `.beads` it does not recognize to operate on an unrelated parent workspace, and it never writes into the unrecognized directory \-\- including under this flag, which only widens the search
+.TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)
 .TP
@@ -52,6 +64,9 @@ Print version
 .TP
 bead\-init(1)
 Initialize a new workspace
+.TP
+bead\-restore(1)
+Restore one named, verified checkpoint generation
 .TP
 bead\-create(1)
 Create a new issue

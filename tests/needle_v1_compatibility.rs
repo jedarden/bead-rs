@@ -327,10 +327,12 @@ fn needle_v1_dependency_commands() {
 fn needle_v1_checkpoint_commands() {
     let workspace = TestWorkspace::new();
 
-    // Create an issue
+    // Create an issue with publication suppressed so the explicit flush
+    // below performs a real publication rather than reporting an
+    // already-current checkpoint (plan 6.2.1 item 7)
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["create", "--title", "Checkpoint Test"])
+        .args(["create", "--no-auto-flush", "--title", "Checkpoint Test"])
         .assert()
         .success();
 

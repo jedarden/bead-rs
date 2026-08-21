@@ -48,12 +48,7 @@ fn bead(dir: &Path) -> Command {
 }
 
 fn run(dir: &Path, args: &[&str]) -> std::process::Output {
-    bead(dir)
-        .args(args)
-        .assert()
-        .success()
-        .get_output()
-        .clone()
+    bead(dir).args(args).assert().success().get_output().clone()
 }
 
 /// Nested layout: a real bead-rs workspace at `parent`, an unrecognized
@@ -116,7 +111,13 @@ fn assert_foreign_untouched(foreign_beads: &Path) {
 fn discovery_stops_at_first_beads_and_fails_closed() {
     let (_temp, parent, child, deep) = nested_layout();
 
-    let output = bead(&deep).args(["list"]).assert().failure().code(3).get_output().clone();
+    let output = bead(&deep)
+        .args(["list"])
+        .assert()
+        .failure()
+        .code(3)
+        .get_output()
+        .clone();
     let stderr = String::from_utf8(output.stderr).unwrap();
 
     // Names the unrecognized directory itself...
@@ -149,7 +150,13 @@ fn empty_beads_directory_also_stops_the_walk() {
     let empty_beads = parent.join(".beads");
     fs::create_dir_all(&empty_beads).unwrap();
 
-    let output = bead(&parent).args(["list"]).assert().failure().code(3).get_output().clone();
+    let output = bead(&parent)
+        .args(["list"])
+        .assert()
+        .failure()
+        .code(3)
+        .get_output()
+        .clone();
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
         stderr.contains(&empty_beads.display().to_string())
@@ -164,7 +171,11 @@ fn override_flag_operates_on_workspace_above_from_both_positions() {
     let id = create_issue(&parent, "flag position");
 
     // Without the flag the walk stops at the unrecognized `.beads`.
-    bead(&deep).args(["list", "--json"]).assert().failure().code(3);
+    bead(&deep)
+        .args(["list", "--json"])
+        .assert()
+        .failure()
+        .code(3);
 
     // With it, `list` resolves the parent workspace from either argument
     // position (the flag is global, like --no-auto-flush).
@@ -186,7 +197,12 @@ fn mutation_under_override_writes_to_parent_not_foreign_directory() {
 
     // The create runs with the flag and prints the new bead's ID.
     let output = bead(&deep)
-        .args(["--skip-foreign-workspace", "create", "--title", "via override"])
+        .args([
+            "--skip-foreign-workspace",
+            "create",
+            "--title",
+            "via override",
+        ])
         .assert()
         .success()
         .get_output()
@@ -222,10 +238,7 @@ fn init_refuses_to_write_into_foreign_beads_even_with_override() {
     fs::create_dir_all(&foreign_beads).unwrap();
     fs::write(foreign_beads.join("store.txt"), FOREIGN_MARKER).unwrap();
 
-    for args in [
-        vec!["init"],
-        vec!["--skip-foreign-workspace", "init"],
-    ] {
+    for args in [vec!["init"], vec!["--skip-foreign-workspace", "init"]] {
         let output = bead(&child)
             .args(&args)
             .assert()

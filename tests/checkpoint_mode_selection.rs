@@ -278,12 +278,16 @@ fn operator_forced_mode_wins_over_adaptive_selection() {
     let _ = fs::remove_dir_all(&workspace);
 
     // ...and forcing monolithic never bypasses the recorded safety limits.
+    // Automatic publication is suppressed for this workspace so the fourth
+    // create does not fail on the limit mid-mutation; the refusal under
+    // test belongs to the explicit flush.
     let workspace = temp_workspace("forced-monolithic");
     init_workspace(&workspace);
     write_checkpoint_config(
         &workspace,
         json!({
             "mode": "monolithic",
+            "auto_flush": false,
             "thresholds": thresholds_with(json!({ "max_monolith_issue_records": 3 })),
         }),
     );
@@ -416,6 +420,17 @@ fn mode_transition_tombstones_the_superseded_root() {
 /// mutation, flush again, and report what the second flush wrote.
 struct IncrementalRun {
     corpus_bytes: u64,
+    /// Bytes of the `objects/` corpus alone, excluding `manifests/`.
+    ///
+    /// Under the automatic publication default every mutation publishes, so
+    /// the snapshot this records retains the previous generation's manifest
+    /// alongside the current one (retention is bounded by the generations
+    /// `current.json` and `previous.json` reference). Manifests are linear
+    /// in workspace size but much smaller than the object corpus, and that
+    /// retained copy dilutes the total byte ratio below the
+    /// order-of-magnitude bar without touching the incremental claim, which
+    /// is about data objects.
+    object_bytes: u64,
     added: Vec<String>,
     added_bytes: u64,
     event_object_count: usize,
@@ -439,6 +454,11 @@ fn incremental_sharded_run(count: usize) -> IncrementalRun {
 
     let before = object_inventory(&workspace);
     let corpus_bytes = sum_bytes(&before);
+    let object_bytes: u64 = before
+        .keys()
+        .filter(|path| path.starts_with("objects/"))
+        .map(|path| before[path])
+        .sum();
 
     // One mutation on one existing issue: it rewrites that issue's shard and
     // appends one audit event to the tail.
@@ -464,6 +484,7 @@ fn incremental_sharded_run(count: usize) -> IncrementalRun {
     let _ = fs::remove_dir_all(&workspace);
     IncrementalRun {
         corpus_bytes,
+        object_bytes,
         added,
         added_bytes,
         event_object_count,
@@ -485,15 +506,18 @@ fn role_of_path(workspace: &Path, path: &str) -> String {
 
 #[test]
 fn one_mutation_republishes_one_shard_and_the_event_tail() {
-    // Two workspace sizes an order of magnitude apart.
+    // Two workspace sizes an order of magnitude apart. The ratio is checked
+    // against the object corpus: under automatic publication the snapshot
+    // also retains the previous generation's manifest, which is linear but
+    // small enough to dilute the total below the bar (see IncrementalRun).
     let small = incremental_sharded_run(30);
     let large = incremental_sharded_run(300);
 
     assert!(
-        large.corpus_bytes > 8 * small.corpus_bytes,
-        "the two runs must be an order of magnitude apart: {} vs {}",
-        small.corpus_bytes,
-        large.corpus_bytes
+        large.object_bytes > 8 * small.object_bytes,
+        "the two object corpora must be an order of magnitude apart: {} vs {}",
+        small.object_bytes,
+        large.object_bytes
     );
 
     for run in [&small, &large] {

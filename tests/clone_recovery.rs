@@ -194,8 +194,8 @@ fn commands_report_actionable_error_before_repair() {
         "raw SQLite error leaked to the operator: {stderr}"
     );
     assert!(
-        stderr.contains("bead init"),
-        "error must name the remedy: {stderr}"
+        stderr.contains("bead restore") && stderr.contains("--generation"),
+        "error must name the verified restore remedy: {stderr}"
     );
 }
 
@@ -228,8 +228,12 @@ fn doctor_runs_and_diagnoses_uninitialized_workspace() {
         "doctor must emit a diagnostic, not just abort: {combined}"
     );
     assert!(
-        combined.contains("bead init"),
-        "doctor must name the repair: {combined}"
+        combined.contains("bead restore") && combined.contains("--generation"),
+        "doctor must name the explicit verified restore: {combined}"
+    );
+    assert!(
+        combined.contains("does not run restore automatically"),
+        "doctor must preserve the fail-closed rule: {combined}"
     );
 }
 

@@ -34,6 +34,11 @@ carefully as its correctness.
 - Avoid `unsafe` code.
 - Use structured errors and nonzero exit codes for failures.
 - Every mutating operation must be atomic, auditable, and concurrency-tested.
+- Every successful mutation publishes the Git-tracked checkpoint
+  automatically after its transaction commits. `bead sync flush-only` is an
+  explicit idempotent check, and `--no-auto-flush` or `checkpoint.auto_flush`
+  in `.beads/config.json` suppresses publication for one invocation or
+  durably.
 - Never claim compatibility without passing the corresponding conformance
   suite.
 - Preserve unrelated and untracked work. Never force-push.

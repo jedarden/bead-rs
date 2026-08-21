@@ -15,16 +15,25 @@ use clap::{Parser, Subcommand};
 
 The intended workflow is:
   init workspace -> create beads -> add blocking relationships
-  -> inspect ready work -> claim -> update/release -> close -> flush checkpoint
+  -> inspect ready work -> claim -> update/release -> close
+  -> checkpoint published automatically with every successful mutation
 
 The ready frontier can be inspected with `bead list --ready --json --limit N`,
 which uses claim order but does not reserve the displayed beads. Use `bead claim`
 to atomically assign work.
 
-SQLite (.beads/beads.db) is the authoritative live state between flushes, and is
-not committed. The checkpoint under .beads/checkpoint/ is the portable, durable
-copy and is what Git tracks; flush it with `bead sync flush-only` before
-committing the repository. Mutating commands never flush implicitly.
+SQLite (.beads/beads.db) is the authoritative live state and is not committed.
+The checkpoint under .beads/checkpoint/ is the portable, durable copy and is
+what Git tracks; every successful mutation publishes it automatically after its
+transaction commits, so it is never silently behind the database. `bead sync
+flush-only` remains an explicit idempotent check, and `--no-auto-flush` or
+`checkpoint.auto_flush` in .beads/config.json suppresses automatic publication,
+leaving the checkpoint to be flushed by hand.
+
+Recovery is explicit: `bead restore --source .beads/checkpoint --generation
+<GENERATION> --actor <WHO>` verifies one named immutable generation before it
+creates or replaces any live state. `bead doctor` may recommend that command but
+never runs it.
 
 Lifecycle transitions:
   - open beads may be ready if unassigned and not manually blocked
@@ -72,6 +81,38 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Command {
     Init(InitOptions),
+
+    /// Restore one named, verified checkpoint generation
+    #[command(
+        about = "Restore one named, verified checkpoint generation",
+        long_about = "Restore one named immutable checkpoint generation as an explicit recovery operation.
+
+The source must be a checkpoint-set directory containing current.json or
+previous.json, or one of those pointer files directly. --generation must match
+the selected pointer exactly. Before touching the target, bead-rs verifies the
+pointer, content-addressed root, every sharded object, record counts, canonical
+ordering, event continuity, and graph integrity. Bare forensic.jsonl files,
+unverified artifacts, and checkpoint-archaeology views are refused.
+
+The target is the current bead-rs workspace. A missing or uninitialized native
+database is initialized by this command after source verification. A target
+with semantic state is refused unless --allow-non-empty is supplied; that
+override atomically replaces native semantic state while preserving unknown
+tables. Every successful restore records the actor in a durable provenance
+receipt and reports the selected generation, root hash, UUID, and exact issue,
+event, and receipt counts.
+
+EXAMPLES:
+  bead restore --source .beads/checkpoint --generation gen-abc123 --actor admin
+  bead restore --source /backups/current.json --generation gen-abc123 --actor admin
+  bead restore --source /backups/checkpoint --generation gen-abc123 --actor admin --allow-non-empty
+  bead restore --source /backups/checkpoint --generation gen-abc123 --actor admin --format json
+
+This is the authoritative operator recovery command. `sync import-only` remains
+the lower-level interchange and reconciliation primitive; doctor stays
+read-only and never invokes restore automatically."
+    )]
+    Restore(RestoreOptions),
 
     Create(CreateOptions),
 
@@ -139,14 +180,17 @@ locates every issue carrying a given value, which supports cross-tool dedup.
         long_about = "Publish and ingest the durable checkpoint.
 
 SQLite holds live state and is not committed; the checkpoint under
-.beads/checkpoint/ is what Git tracks. Nothing flushes implicitly, so a
-checkpoint is only as current as the last explicit flush.
+.beads/checkpoint/ is what Git tracks. Every successful mutation publishes
+it automatically after its transaction commits, so it stays current without
+a remembered command.
 
-  bead sync flush-only                                 # database -> checkpoint
+  bead sync flush-only                                 # idempotent check: database -> checkpoint
   bead sync import-only --input <PATH> --restore-into-empty --actor <WHO>
   bead sync import-only --input <PATH> --merge --actor <WHO>
 
-Recovering a fresh clone is `bead init` then `import-only --restore-into-empty`."
+For disaster recovery use `bead restore --source <CHECKPOINT-SET> --generation
+<GENERATION> --actor <WHO>`. `sync import-only` remains the lower-level
+interchange and reconciliation primitive."
     )]
     Sync(SyncCommand),
 
@@ -235,6 +279,34 @@ pub struct InitOptions {
     /// Custom prefix for bead IDs (default: bead)
     #[arg(long, default_value = "bead")]
     pub prefix: String,
+}
+
+/// Options for explicit verified restore (R036)
+#[derive(Parser, Debug)]
+pub struct RestoreOptions {
+    /// Checkpoint-set directory or current.json/previous.json pointer
+    #[arg(long, alias = "input", value_name = "PATH")]
+    pub source: String,
+
+    /// Exact generation ID recorded by the selected immutable pointer
+    #[arg(long, value_name = "GENERATION")]
+    pub generation: String,
+
+    /// Actor responsible for this recovery operation
+    #[arg(long, value_name = "ACTOR")]
+    pub actor: String,
+
+    /// Atomically replace native semantic state when the target is non-empty
+    #[arg(long, alias = "force", alias = "force-non-empty")]
+    pub allow_non_empty: bool,
+
+    /// Prefix used only when this command initializes a workspace with no config
+    #[arg(long, default_value = "bead")]
+    pub prefix: String,
+
+    /// Output format: text or json
+    #[arg(long, default_value = "text")]
+    pub format: String,
 }
 
 /// Options for creating a new issue
@@ -790,7 +862,7 @@ The operation is crash-safe: it writes to a temporary file, verifies it, then
 atomically renames. Checkpoint state is updated only after a successful flush.
 
 EXAMPLES:
-  bead sync flush-only                                  # Flush the workspace checkpoint
+  bead sync flush-only                                  # Idempotent check; publishes nothing new when current
   bead sync flush-only --output /path/to/backup.jsonl   # Export a copy elsewhere
 
 OUTPUT:
@@ -805,10 +877,13 @@ OUTPUT:
   does not update the workspace checkpoint or its freshness state.
 
 CHECKPOINT FRESHNESS:
-  A checkpoint represents the database as of flush time. Any mutation afterwards
-  makes it stale, and nothing flushes implicitly. Flush before committing, and
-  periodically during long sessions -- otherwise a fresh clone of the repository
-  reproduces the last flushed state, not the current one.
+  A checkpoint represents the database as of its publication. Every successful
+  mutation publishes a new generation automatically after its transaction
+  commits, so the checkpoint is never silently behind. `--no-auto-flush` and
+  the checkpoint.auto_flush configuration key suppress that publication,
+  leaving the checkpoint dirty exactly as an unflushed mutation; this command
+  then closes the gap. With a current checkpoint it publishes no new
+  generation and exits 0.
 
 ATOMICITY:
   - A read transaction captures the snapshot
@@ -817,9 +892,10 @@ ATOMICITY:
   - Checkpoint state advances in the same transaction
 
 GIT INTEGRATION:
-  Run 'bead sync flush-only' before committing the repository. bead-rs never
-  runs Git commands itself. Restore a fresh clone with
-  'bead init' followed by 'bead sync import-only --restore-into-empty'."
+  Mutations publish automatically; run 'bead sync flush-only' before committing
+  the repository as an explicit idempotent check that the checkpoint is current.
+  bead-rs never runs Git commands itself. Recover with the named-generation
+  verifier: 'bead restore --source .beads/checkpoint --generation <GEN> --actor <WHO>'."
     )]
     FlushOnly(SyncFlushOptions),
 
@@ -888,6 +964,12 @@ EXIT CODES:
   4 - Reconciliation conflict
   5 - Malformed input or integrity failure
 
+RECOVERY BOUNDARY:
+  This command remains public for interchange, compatibility automation,
+  diagnostic dry-runs, and merge. It may accept standalone artifacts without a
+  generation pointer. Use `bead restore` for operator recovery from a named,
+  fully verified immutable generation; doctor recommends only that path.
+
 Use --dry-run to validate checkpoints before risking database mutation."
     )]
     ImportOnly(SyncImportOptions),
@@ -911,9 +993,11 @@ READINESS:
   - the forensic.jsonl view is byte-identical to the root object
   - the recorded checkpoint state agrees with the pointer
 
-  Repository automation must treat a not-ready checkpoint as a failed
-  pre-commit gate: run `bead sync flush-only` and include every reported
-  changed path in the same Git commit.
+  Under the automatic publication default a not-ready checkpoint means
+  publication was suppressed by `--no-auto-flush` or checkpoint.auto_flush,
+  or failed after a committed mutation. Repository automation must treat a
+  not-ready checkpoint as a failed pre-commit gate: run `bead sync
+  flush-only` and include every reported changed path in the same Git commit.
 
 EXAMPLES:
   bead sync status                     # Human-readable summary
@@ -1258,7 +1342,7 @@ CAPABILITY INFORMATION:
   - Checkpoint modes and formats
   - Schema catalog with validation and operation support
   - Complete command inventory
-  - auto_flush: present only once this binary publishes a checkpoint
+  - auto_flush: reports that this binary publishes a checkpoint
     generation after every successful semantic mutation
 
 AUTO_FLUSH:
@@ -1266,7 +1350,7 @@ AUTO_FLUSH:
   workspace state: a workspace that disables publication through
   checkpoint.auto_flush and an invocation passing --no-auto-flush
   change what the binary does, never what it advertises. The field is
-  absent until the compiled default is enabled. Consumers that require
+  present and true under the automatic default. Consumers that require
   a current checkpoint must still read `bead sync --status`, which
   remains the only authority on whether this workspace is clean.
 

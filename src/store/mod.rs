@@ -62,10 +62,10 @@ fn uninitialized_message(root: &Path, db_path: &Path) -> String {
     format!(
         "Workspace database at {} is missing or uninitialized: .beads/config.json is present, \
          but the database has no schema. This is the expected state of a fresh clone, because \
-         beads.db is gitignored while config.json is committed. Rebuild it with `bead init` in \
-         {} (the committed workspace identity is preserved), then restore content with \
-         `bead sync import-only --input .beads/checkpoint/forensic.jsonl --restore-into-empty \
-         --actor <you>`.",
+         beads.db is gitignored while config.json is committed. Recover it in one verified \
+         operation by running `bead restore --source .beads/checkpoint --generation \
+         <generation_id-from-current.json> --actor <you>` in {}; the committed identity is \
+         preserved and doctor never performs this restore automatically.",
         db_path.display(),
         root.display()
     )
@@ -201,7 +201,9 @@ impl WorkspaceConfig {
 
         let db_path = root.join(".beads/beads.db");
 
-        // Open database and load workspace metadata
+        // Open database and load workspace metadata through the shared
+        // pragma-configured opener, so discovery connections carry the same
+        // configuration as every other connection to the workspace.
         let conn = open_configured_connection(&db_path).map_err(|e| {
             crate::Error::Internal(anyhow::anyhow!("Failed to open database: {}", e))
         })?;

@@ -1,8 +1,18 @@
 # bead-rs 0.1 implementation plan
 
-Plan revision: 7
+Plan revision: 8
 
-As of: 2026-08-15
+As of: 2026-08-21
+
+Revision 8 change: R026 activates. The compiled automatic-flush default
+flips to on, the capability document advertises `auto_flush`, and the
+never-implicit-flush documentation reverses in the same commit across the
+README, root help, the section 5.3 workflow summary, generated man pages, and
+AGENTS.md, satisfying the section 13 handshake-and-documentation criterion.
+Section 13 gate evidence is recorded against that commit; a failing criterion
+reverts the compiled default. The surrounding environment's agent
+instructions (home CLAUDE.md) carry the matching update outside this
+repository, noted in the release rather than left silently stale.
 
 Revision 7 change: ADR-004 raises the MSRV from Rust 1.75 to 1.85 with
 edition 2024, corrects the section 8 dependency-verification wording and the
@@ -833,7 +843,7 @@ Human output may evolve; named-profile machine output is stable.
 | `bead dep add BLOCKED BLOCKER --kind KIND` | add canonical edge |
 | `bead dep remove BLOCKED BLOCKER [--kind KIND]` | remove matching edge(s) |
 | `bead sync --flush-only [--profile P] [--output PATH]` | before F017, atomically publish issue-only `.beads/issues.jsonl` when output is omitted or export that issue-only format to a new explicit path; after F017, use the upgraded forensic publication/export contract in section 6; under the R026 automatic default it remains supported and is idempotent against a clean checkpoint |
-| `--no-auto-flush` (global) | suppress R026 automatic post-commit publication for one invocation, leaving the checkpoint dirty; inert while explicit flush is the default; overrides the `checkpoint.auto_flush` workspace configuration key |
+| `--no-auto-flush` (global) | suppress R026 automatic post-commit publication for one invocation, leaving the checkpoint dirty; overrides the `checkpoint.auto_flush` workspace configuration key |
 | `--skip-foreign-workspace` (global) | R030: let discovery continue past the first `.beads` directory when it lacks the bead-rs fingerprint, so a bead-rs workspace farther up can be selected; widens the search only and never authorizes writing into the skipped directory |
 | `bead sync --import-only --input PATH [--profile P] [--dry-run]` | before F017, stage and transactionally replace an empty store from exactly one explicitly named issue-only JSONL file; after F017, this base grammar is extended with the required `(--restore-into-empty\|--merge) --actor ACTOR` forensic semantics in section 6.3 |
 | `bead sync --status --format json` | before F017, issue-only checkpoint hash, covered/live sequence, time, and dirty state; after F017, the richer root/mode/changed-path status in section 6.2 |
@@ -920,7 +930,8 @@ short form contains a compact intended workflow:
 
 ```text
 init workspace -> create/import beads -> add blocking relationships
--> inspect ready work -> claim -> update/release -> close -> flush JSONL backup
+-> inspect ready work -> claim -> update/release -> close
+-> checkpoint published automatically with every successful mutation
 ```
 
 Here “inspect ready work” is the concrete nonmutating command
@@ -935,21 +946,23 @@ reason and may expose dependents; reopen restores an intentionally closed bead
 to open. They distinguish base state from effective `blocked` status and state
 that SQLite is authoritative live state, `issues.jsonl` is the issue-only
 interchange checkpoint, and the F017 forensic checkpoint is the complete
-portable backup only as of its last successful flush. The root page includes a minimal
+portable backup, published automatically after every successful mutation. The
+root page includes a minimal
 end-to-end command example, points automation to `--json` and capabilities, and
 links each lifecycle operation to its command page.
 
 Root help also states that checkpoint files are designed to be Git-tracked and
 that users or automation should run `bead sync --flush-only` before committing
-the repository. It must not imply that `bead-rs` performs the commit or push.
+the repository as an explicit idempotent check. It must not imply that
+`bead-rs` performs the commit or push.
 
-When R026 activates, this help text, the workflow summary above, the generated
-man pages, and the README reverse together in the same release: the closing
-step becomes automatic publication rather than a remembered command, and
-`sync --flush-only` is described as an explicit idempotent check plus the
-`--no-auto-flush` escape hatch. Documentation must never describe a flush
-default the shipped binary does not have; the never-implicit-flush wording
-stands until the R026 gate passes, and no partial reversal is permitted.
+When R026 activated (plan revision 8), this help text, the workflow summary
+above, the generated man pages, the README, and AGENTS.md reversed together in
+the same commit that flipped the default: the closing step became automatic
+publication rather than a remembered command, and `sync --flush-only` is
+described as an explicit idempotent check plus the `--no-auto-flush` escape
+hatch. Documentation must never describe a flush default the shipped binary
+does not have, and no partial reversal is permitted.
 
 Generate section-1 manual pages from that same command tree and structured
 long-form documentation. Ship `bead(1)` plus one page for every public command
@@ -1358,12 +1371,14 @@ checkpoint is never silently behind the database. `bead-rs` still never invokes
 Git: automatic flush writes the working tree, and committing remains the
 caller's responsibility.
 
-This default is **gated**. Until every prerequisite below is satisfied and its
-gate evidence recorded, the shipped default is explicit `sync flush-only`,
-automatic flush is neither enabled nor advertised, and the section 6.2
-never-implicit-flush contract stands unchanged. The prerequisites are not
-optional performance work; a full-workspace flush per mutation writes bytes
-quadratic in mutation count into a Git-tracked directory.
+This default **was gated**: it activated with plan revision 8, which flipped
+the compiled default, advertised `auto_flush` in the capability document, and
+reversed the never-implicit-flush documentation in the same commit. Section 13
+records its gate evidence against that activation commit, and a failing
+criterion reverts the compiled default. The prerequisites below remain
+normative invariants rather than optional performance work; a full-workspace
+flush per mutation writes bytes quadratic in mutation count into a
+Git-tracked directory.
 
 - **P1 — content-addressed roots.** The monolithic root object is named by its
   content SHA-256, as section 6.1.1 already requires, not by generation
@@ -1679,6 +1694,13 @@ reconciliation of migration-1 `checkpoint_state` into its new pointer state.
 Version 0.1 never reconstructs issue rows, drops unknown tables, deletes the
 database, rewrites a corrupt checkpoint, or alters lifecycle/dependency data
 automatically. Diagnose those cases and recommend explicit manual recovery.
+
+R036 makes that explicit recovery executable as `bead restore`: the operator
+must name a retained immutable generation and actor; the command verifies the
+pointer and complete content-addressed closure before target mutation, refuses
+a non-empty target unless `--allow-non-empty` is explicit, and writes a restore
+event and provenance receipt. Doctor remains diagnostic and never invokes it.
+The normative contract is `research/specs/verified-restore-v1.md`.
 
 ## 8. Rust architecture
 
@@ -2150,9 +2172,10 @@ one and fail if the shipped checkpoint grammar or schema resolver is omitted.
 
 R026 adds one additive boolean, `auto_flush`, reporting whether this binary
 publishes a checkpoint generation after every successful semantic mutation
-(section 6.2.1). It is absent until the R026 gate passes and is then always
-present, so a fleet detects the behavior by handshake rather than inferring it
-from a version number. The field reports the compiled default; a workspace that
+(section 6.2.1). It was absent until the R026 activation flipped the compiled
+default and has been present and `true` since (plan revision 8), so a fleet
+detects the behavior by handshake rather than inferring it from a version
+number. The field reports the compiled default; a workspace that
 disables publication through `checkpoint.auto_flush`, and an invocation that
 passes `--no-auto-flush`, do not change what the binary advertises. Consumers
 that require a current checkpoint must still read `sync --status`, which
@@ -2600,6 +2623,12 @@ Adopted because the recovery path currently survives as lore: an operator under
 pressure reaching for a remembered recipe is how a foreign tool's recovery
 steps were applied to a native store on 2026-08-14, silently reinitializing it
 with the wrong schema. Accepted in ADR-006.
+
+Implemented by `bead restore` and the verified-restore-v1 conformance suite.
+`sync import-only` remains public as the lower-level interchange/merge and
+compatibility path; it is not equivalent to named verified recovery and is no
+longer the path doctor recommends. R029 archaeology artifacts remain explicitly
+non-importable.
 
 ### R037 — Command errors that name the remedy
 

@@ -6,8 +6,43 @@
 use crate::error::{Error, Result};
 use crate::model::{BaseStatus, Issue};
 use crate::service::validate_lease_for_mutation;
-use rusqlite::{Connection, OptionalExtension, Transaction};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::json;
+
+/// Begin the write transaction every lifecycle mutation runs in.
+///
+/// The transaction is taken IMMEDIATE -- before the issue is read -- and the
+/// revision precondition and lease are validated inside it. A deferred
+/// transaction (or validation outside any transaction) leaves a TOCTOU window
+/// in the multi-worker shared-workspace model: a concurrent process commits
+/// between the read and the write, the guard passes against the stale
+/// revision, and the unconditional UPDATE silently clobbers the newer state --
+/// the lost update `--if-revision` exists to fail with exit 4. Holding the
+/// write lock across read-validate-write pins the snapshot the guard checks
+/// to the one the UPDATE lands on.
+fn begin_lifecycle_transaction(conn: &Connection) -> Result<Transaction<'_>> {
+    Ok(Transaction::new_unchecked(
+        conn,
+        TransactionBehavior::Immediate,
+    )?)
+}
+
+/// Fail a mutation whose UPDATE did not touch the row it validated.
+///
+/// Every lifecycle UPDATE carries `AND revision = ?` for the revision its
+/// transaction validated, so an affected-row count of zero means the row
+/// moved underneath a snapshot that was somehow taken without holding the
+/// write lock. That is the same lost update the revision guard rejects, so
+/// it maps to the same conflict (exit 4) rather than to success.
+fn ensure_revision_row_affected(changed: usize, expected_revision: i64) -> Result<()> {
+    if changed == 0 {
+        return Err(Error::conflict(format!(
+            "Revision mismatch: expected {}. The issue has been modified since you retrieved it.",
+            expected_revision
+        )));
+    }
+    Ok(())
+}
 
 /// Update an issue
 #[allow(clippy::too_many_arguments)]
@@ -28,8 +63,13 @@ pub fn update_issue(
         ));
     }
 
+    // Process in a write transaction taken before the read, so the revision
+    // precondition and lease are validated against the snapshot the UPDATE
+    // lands on (see begin_lifecycle_transaction)
+    let mut tx = begin_lifecycle_transaction(conn)?;
+
     // Get current issue state
-    let issue = get_issue_for_update(conn, id)?.ok_or_else(|| Error::not_found(id))?;
+    let issue = get_issue_for_update(&tx, id)?.ok_or_else(|| Error::not_found(id))?;
 
     // Validate revision precondition if provided
     if let Some(expected_revision) = if_revision {
@@ -44,7 +84,7 @@ pub fn update_issue(
 
     // Validate lease if issue has an active lease
     if let Some(current_assignee) = &issue.assignee {
-        validate_lease_for_mutation(conn, id, current_assignee, fencing_token)?;
+        validate_lease_for_mutation(&tx, id, current_assignee, fencing_token)?;
     }
 
     // Validate assignee value if present
@@ -61,18 +101,9 @@ pub fn update_issue(
         }
     }
 
-    // Process in a write transaction
-    let mut update_result = conn.unchecked_transaction()?;
-    let result = update_issue_impl(
-        &mut update_result,
-        &issue,
-        status,
-        assignee,
-        clear_assignee,
-        notes,
-    )?;
+    let result = update_issue_impl(&mut tx, &issue, status, assignee, clear_assignee, notes)?;
 
-    update_result.commit()?;
+    tx.commit()?;
     Ok(result)
 }
 
@@ -83,8 +114,13 @@ pub fn release_issue(
     if_revision: Option<i64>,
     fencing_token: Option<i64>,
 ) -> Result<String> {
+    // Process in a write transaction taken before the read, so the revision
+    // precondition and lease are validated against the snapshot the UPDATE
+    // lands on (see begin_lifecycle_transaction)
+    let mut tx = begin_lifecycle_transaction(conn)?;
+
     // Get current issue state
-    let issue = get_issue_for_update(conn, id)?.ok_or_else(|| Error::not_found(id))?;
+    let issue = get_issue_for_update(&tx, id)?.ok_or_else(|| Error::not_found(id))?;
 
     // Validate revision precondition if provided
     if let Some(expected_revision) = if_revision {
@@ -99,11 +135,9 @@ pub fn release_issue(
 
     // Validate lease if issue has an active lease
     if let Some(current_assignee) = &issue.assignee {
-        validate_lease_for_mutation(conn, id, current_assignee, fencing_token)?;
+        validate_lease_for_mutation(&tx, id, current_assignee, fencing_token)?;
     }
 
-    // Process in a write transaction
-    let mut tx = conn.unchecked_transaction()?;
     let result = release_issue_impl(&mut tx, &issue)?;
 
     tx.commit()?;

@@ -27,10 +27,11 @@
 //! - `sync flush-only` stays an explicit, idempotent operation (item 8):
 //!   against a clean checkpoint it publishes nothing and exits 0.
 //!
-//! The automatic default itself stays gated (plan section 13): until the
-//! R026 activation gate flips the compiled default, a workspace opts in per
-//! workspace by recording `"checkpoint": { "auto_flush": true }` in
-//! `.beads/config.json`. The default-off test pins that gate.
+//! The automatic default is active (the R026 activation flipped the
+//! compiled default, plan section 13): a workspace with no
+//! `checkpoint.auto_flush` key publishes on every mutation, and
+//! `checkpoint.auto_flush = false` is the durable opt-out. The
+//! compiled-default test pins that resolution.
 
 use assert_cmd::Command;
 use serde_json::Value;
@@ -585,30 +586,25 @@ fn idempotent_no_op_mutation_publishes_nothing() {
     );
 }
 
-/// Until the R026 activation gate flips the compiled default, a workspace
-/// without `checkpoint.auto_flush` keeps the explicit-flush default:
-/// mutations publish nothing, `sync flush-only` still does.
+/// Since the R026 activation flipped the compiled default, a workspace
+/// without `checkpoint.auto_flush` publishes automatically: every mutation
+/// covers its own committed sequence with no opt-in key, and an explicit
+/// false is the durable opt-out the plan's escape hatch describes (a
+/// checkpoint section without the key resolves to the compiled default).
 #[test]
-fn compiled_default_keeps_explicit_flush() {
+fn compiled_default_publishes_automatically() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     run(workspace, &["init", "--prefix", "default"]);
-    create_issue(workspace, "default-off issue");
+    create_issue(workspace, "default-on issue");
 
-    assert_eq!(
-        status(workspace)["checkpoint_present"],
-        Value::Bool(false),
-        "a mutation published without checkpoint.auto_flush set; the \
-         compiled default must stay off until the R026 activation gate \
-         (plan 6.2.1, section 13)"
+    assert_covers_live(
+        workspace,
+        "a mutation without checkpoint.auto_flush set must publish; the \
+         compiled default is on since the R026 activation (plan 6.2.1, \
+         section 13)",
     );
 
-    run(workspace, &["sync", "flush-only"]);
-    assert_covers_live(workspace, "after explicit sync flush-only");
-
-    // An explicit false is the same opt-out the plan's escape hatch
-    // describes, and a checkpoint section without the key resolves to the
-    // compiled default.
     set_auto_flush(workspace, false);
     create_issue(workspace, "explicitly-suppressed issue");
     let covered = status(workspace)["covered_sequence"].clone();

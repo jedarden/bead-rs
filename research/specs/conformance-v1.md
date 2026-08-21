@@ -25,6 +25,16 @@ Status: normative test plan.
 - At least 20 simultaneous claim processes receiving no duplicate successes.
 - Process termination before and after commit boundaries.
 - Checkpoint import/export followed by semantic comparison.
+- Verified restore from a named generation into an empty target.
+- Verified restore refusal against a non-empty target, followed by the
+  explicit `--allow-non-empty` replacement path.
+- Two simultaneous verified restores into one empty initialized target, with
+  exactly one activation and one transactional non-empty refusal.
+- Refusal of a hash-mismatched/unverified restore source and of an explicitly
+  non-importable R029 checkpoint-archaeology view, both before target
+  initialization.
+- Doctor recommendation of a named `bead restore` command without performing
+  initialization or restore itself.
 - NEEDLE invocation in an isolated temporary HOME and workspace.
 
 ## Evidence
@@ -38,4 +48,3 @@ profile version, and pass/fail result.
 A release may claim `needle-v1` compatibility only when every required NEEDLE
 scenario passes against the released binary. Interchange profile claims are
 reported separately and include known lossy transformations.
-

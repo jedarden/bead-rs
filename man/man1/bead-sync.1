@@ -9,14 +9,17 @@ bead sync \- Synchronize checkpoint operations
 Publish and ingest the durable checkpoint.
 .PP
 SQLite holds live state and is not committed; the checkpoint under
-\&.beads/checkpoint/ is what Git tracks. Nothing flushes implicitly, so a
-checkpoint is only as current as the last explicit flush.
+\&.beads/checkpoint/ is what Git tracks. Every successful mutation publishes
+it automatically after its transaction commits, so it stays current without
+a remembered command.
 .PP
-  bead sync flush\-only                                 # database \-> checkpoint
+  bead sync flush\-only                                 # idempotent check: database \-> checkpoint
   bead sync import\-only \-\-input <PATH> \-\-restore\-into\-empty \-\-actor <WHO>
   bead sync import\-only \-\-input <PATH> \-\-merge \-\-actor <WHO>
 .PP
-Recovering a fresh clone is `bead init` then `import\-only \-\-restore\-into\-empty`.
+For disaster recovery use `bead restore \-\-source <CHECKPOINT\-SET> \-\-generation
+<GENERATION> \-\-actor <WHO>`. `sync import\-only` remains the lower\-level
+interchange and reconciliation primitive.
 .SH OPTIONS
 .TP
 \fB\-h\fR, \fB\-\-help\fR

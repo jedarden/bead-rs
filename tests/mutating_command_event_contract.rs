@@ -351,6 +351,24 @@ fn registry() -> Vec<RegisteredCommand> {
                 ]
             },
         },
+        RegisteredCommand {
+            path: "bead restore",
+            class: Mutating,
+            reason: "verified restore replaces the issue/event corpus and appends a local \
+                     `checkpoint_restored` audit event plus a provenance receipt",
+            invoke: |f| {
+                vec![
+                    "restore".into(),
+                    "--source".into(),
+                    f.restore_checkpoint.display().to_string(),
+                    "--generation".into(),
+                    f.restore_generation.clone(),
+                    "--actor".into(),
+                    "contract-probe".into(),
+                    "--allow-non-empty".into(),
+                ]
+            },
+        },
         // ---- inspection ----
         RegisteredCommand {
             path: "bead list",
@@ -613,6 +631,9 @@ struct Fixture {
     spare_template: String,
     /// Checkpoint of a second workspace, merged in by `sync import-only`.
     foreign_checkpoint: PathBuf,
+    /// Stable copy of this workspace's setup generation for `bead restore`.
+    restore_checkpoint: PathBuf,
+    restore_generation: String,
 }
 
 fn bead(workspace: &Path) -> Command {
@@ -630,6 +651,20 @@ fn create_issue(workspace: &Path, title: &str) -> String {
         .stdout
         .clone();
     String::from_utf8(output).unwrap().trim().to_string()
+}
+
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let source = entry.path();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&source, &target);
+        } else {
+            std::fs::copy(source, target).unwrap();
+        }
+    }
 }
 
 fn build_fixture() -> Fixture {
@@ -710,6 +745,25 @@ fn build_fixture() -> Fixture {
         .assert()
         .success();
 
+    // Freeze the setup generation outside the live workspace. Earlier
+    // mutating commands in the registry publish newer generations and may
+    // tombstone old objects; restore must keep selecting this exact immutable
+    // generation throughout the sweep.
+    bead(&workspace)
+        .args(["sync", "flush-only"])
+        .assert()
+        .success();
+    let restore_source = tempfile::tempdir().expect("restore source tempdir");
+    let restore_checkpoint = restore_source.path().join("checkpoint");
+    copy_tree(&workspace.join(".beads/checkpoint"), &restore_checkpoint);
+    let restore_pointer: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(restore_checkpoint.join("current.json")).unwrap())
+            .unwrap();
+    let restore_generation = restore_pointer["generation_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
     // A second workspace supplies the checkpoint that `sync import-only`
     // merges in: one foreign issue, flushed.
     let foreign = tempfile::tempdir().expect("foreign tempdir");
@@ -726,7 +780,7 @@ fn build_fixture() -> Fixture {
     let foreign_checkpoint = foreign_ws.join(".beads/checkpoint/forensic.jsonl");
 
     Fixture {
-        _dirs: vec![dir, foreign],
+        _dirs: vec![dir, foreign, restore_source],
         workspace,
         update_target,
         labeled,
@@ -743,6 +797,8 @@ fn build_fixture() -> Fixture {
         template: "probe-template".to_string(),
         spare_template: "probe-spare-template".to_string(),
         foreign_checkpoint,
+        restore_checkpoint,
+        restore_generation,
     }
 }
 

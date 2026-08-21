@@ -40,7 +40,7 @@ Use the template in `000-template.md` for new ADRs. Each ADR should include:
 | [003](003-automatic-checkpoint-flush-gated-on-incremental-publication.md) | Make checkpoint flush automatic on mutation, gated on incremental publication | Proposed | 2026-08-15 |
 | [004](004-raise-msrv-to-1.85-and-edition-2024.md) | Raise the MSRV to Rust 1.85 and migrate to edition 2024 | Accepted | 2026-08-15 |
 | [005](005-assignment-held-issues-diagnosed-not-released.md) | Diagnose issues held off the ready frontier by assignment; never release them automatically | Accepted | 2026-08-16 |
-| [006](006-first-class-verified-restore-over-documented-recipe.md) | Make explicit restore a first-class verified command, not a documented multi-step recipe | Proposed | 2026-08-16 |
+| [006](006-first-class-verified-restore-over-documented-recipe.md) | Make explicit restore a first-class verified command, not a documented multi-step recipe | Accepted | 2026-08-16 |
 | [007](007-cli-errors-name-the-remedy.md) | CLI errors for immutable fields and near-miss flags must name the remedy | Proposed | 2026-08-16 |
 | [008](008-no-title-similarity-duplicate-detection.md) | Do not detect duplicate beads by title similarity | Rejected | 2026-08-16 |
 | [009](009-no-git-awareness-for-checkpoint-ordering.md) | Do not make bead-rs Git-aware to enforce checkpoint/pull ordering | Rejected | 2026-08-16 |

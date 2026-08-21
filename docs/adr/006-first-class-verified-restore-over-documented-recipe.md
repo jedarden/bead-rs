@@ -1,6 +1,6 @@
 # ADR-006: Make explicit restore a first-class verified command, not a documented multi-step recipe
 
-**Status**: Proposed
+**Status**: Accepted
 
 **Date**: 2026-08-16
 
@@ -100,15 +100,17 @@ store that is missing, empty, or structurally unusable.
 
 ## Implementation
 
-Post-0.1. Requires its own normative specification and conformance scenarios
-per section 12, covering at minimum:
+Implemented by `bead restore` under the normative
+[`verified-restore-v1`](../../research/specs/verified-restore-v1.md)
+specification and its R036 conformance suite. The specification covers:
 
 - source selection and verification, and refusal of any unverified or
   R029-view artifact;
 - the empty-target guard and what, if anything, may override it;
 - actor attribution and the receipt/provenance record written;
-- the exact relationship to `sync import-only`, including whether that path
-  becomes internal.
+- the exact relationship to `sync import-only`; that lower-level compatibility
+  and reconciliation path remains public, while `bead restore` is the
+  authoritative operator recovery command.
 
 Tracked as post-0.1 roadmap item **R036**.
 

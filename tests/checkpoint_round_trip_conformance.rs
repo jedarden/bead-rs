@@ -43,6 +43,32 @@ fn create_workspace() -> TempDir {
     temp_dir
 }
 
+/// Pin a workspace to the explicit-flush contract (`checkpoint.auto_flush:
+/// false`, plan 6.2.1 item 7).
+///
+/// These conformance tests drive source workspaces that mutate directly in
+/// SQLite (revision bumps, projected-collection rows) and then publish with
+/// an explicit `sync flush-only`. Direct database writes emit no audit event,
+/// so under the automatic publication default the live sequence does not
+/// advance and the explicit flush correctly reports an already-current
+/// checkpoint without ever observing those rows. Suppressing publication
+/// restores the contract under test: every CLI mutation leaves the checkpoint
+/// dirty and the explicit flush is what carries it, manual rows included.
+fn suppress_auto_flush(workspace: &std::path::Path) {
+    let path = workspace.join(".beads/config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    config
+        .as_object_mut()
+        .unwrap()
+        .entry("checkpoint")
+        .or_insert(serde_json::Value::Object(Default::default()))
+        .as_object_mut()
+        .unwrap()
+        .insert("auto_flush".into(), serde_json::Value::Bool(false));
+    fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+}
+
 /// Extract bead ID from create command output
 fn extract_bead_id(output: &str) -> String {
     // Output format: "bead-12345678" or similar
@@ -611,6 +637,7 @@ fn count_events(workspace: &Path) -> i64 {
 fn test_checkpoint_round_trip_fidelity_comprehensive() {
     // Step 1: Create maximally-populated workspace
     let source_workspace = create_workspace();
+    suppress_auto_flush(source_workspace.path());
 
     // Create issues in different states with all fields populated
 
@@ -1073,6 +1100,7 @@ fn test_checkpoint_merge_advances_revision_when_replacing_newer_live_content() {
 #[test]
 fn test_checkpoint_merge_replaces_projected_collections_when_present() {
     let source = create_workspace();
+    suppress_auto_flush(source.path());
     let output = Command::cargo_bin("bead")
         .unwrap()
         .args(["create", "--title", "Incoming collection owner"])

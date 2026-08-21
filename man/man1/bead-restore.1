@@ -1,0 +1,56 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead restore" 1  "bead restore "
+.SH NAME
+bead restore \- Restore one named, verified checkpoint generation
+.SH SYNOPSIS
+\fBbead restore\fR <\fB\-\-source\fR> <\fB\-\-generation\fR> <\fB\-\-actor\fR> [\fB\-\-allow\-non\-empty\fR] [\fB\-\-prefix\fR] [\fB\-\-format\fR] [\fB\-h\fR|\fB\-\-help\fR]
+.SH DESCRIPTION
+Restore one named immutable checkpoint generation as an explicit recovery operation.
+.PP
+The source must be a checkpoint\-set directory containing current.json or
+previous.json, or one of those pointer files directly. \-\-generation must match
+the selected pointer exactly. Before touching the target, bead\-rs verifies the
+pointer, content\-addressed root, every sharded object, record counts, canonical
+ordering, event continuity, and graph integrity. Bare forensic.jsonl files,
+unverified artifacts, and checkpoint\-archaeology views are refused.
+.PP
+The target is the current bead\-rs workspace. A missing or uninitialized native
+database is initialized by this command after source verification. A target
+with semantic state is refused unless \-\-allow\-non\-empty is supplied; that
+override atomically replaces native semantic state while preserving unknown
+tables. Every successful restore records the actor in a durable provenance
+receipt and reports the selected generation, root hash, UUID, and exact issue,
+event, and receipt counts.
+.PP
+EXAMPLES:
+  bead restore \-\-source .beads/checkpoint \-\-generation gen\-abc123 \-\-actor admin
+  bead restore \-\-source /backups/current.json \-\-generation gen\-abc123 \-\-actor admin
+  bead restore \-\-source /backups/checkpoint \-\-generation gen\-abc123 \-\-actor admin \-\-allow\-non\-empty
+  bead restore \-\-source /backups/checkpoint \-\-generation gen\-abc123 \-\-actor admin \-\-format json
+.PP
+This is the authoritative operator recovery command. `sync import\-only` remains
+the lower\-level interchange and reconciliation primitive; doctor stays
+read\-only and never invokes restore automatically.
+.SH OPTIONS
+.TP
+\fB\-\-source\fR=\fIPATH\fR
+Checkpoint\-set directory or current.json/previous.json pointer
+.TP
+\fB\-\-generation\fR=\fIGENERATION\fR
+Exact generation ID recorded by the selected immutable pointer
+.TP
+\fB\-\-actor\fR=\fIACTOR\fR
+Actor responsible for this recovery operation
+.TP
+\fB\-\-allow\-non\-empty\fR
+Atomically replace native semantic state when the target is non\-empty
+.TP
+\fB\-\-prefix\fR=\fIPREFIX\fR [default: bead]
+Prefix used only when this command initializes a workspace with no config
+.TP
+\fB\-\-format\fR=\fIFORMAT\fR [default: text]
+Output format: text or json
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

@@ -1606,3 +1606,30 @@ The mission remains **ACTIVE BLOCKED** awaiting external dependency resolution. 
 
 - **Publication Note**: Publication to crates.io remains a separately human-authorized operation as specified in mission instructions. The COMPLETE sentinel confirms implementation completion but does not authorize automatic publication.
 
+## 2026-08-21 — R036 First-class verified restore
+
+- Added `bead restore` as the explicit operator-facing recovery path for one
+  exactly named immutable checkpoint generation.
+- Verification covers the selected pointer, content-addressed monolithic root
+  or complete sharded closure, declared counts, native record schemas,
+  canonical order, event continuity, dependency integrity, and R029
+  non-importability before target mutation.
+- Restore initializes a missing native target only after verification, refuses
+  non-empty native state by default, and supports atomic replacement only with
+  `--allow-non-empty` while preserving unknown tables.
+- Successful activation adopts the source identity, records the responsible
+  actor in a `checkpoint_restored` event and provenance receipt, and reports
+  exact source, restored, receipt, and displaced-state details in text or JSON.
+- Doctor remains diagnostic: it prints the exact retained generation in the
+  recommended command when available and never initializes or restores state.
+- Documented that `sync import-only` remains public as the lower-level
+  interchange, compatibility, diagnostic, and merge primitive rather than
+  becoming internal or equivalent to verified recovery.
+- Added nine R036 scenarios covering empty and non-empty targets, override,
+  monolithic and sharded generations, retained generation-named roots,
+  concurrent target guarding, tampered sources, R029 views, and doctor.
+- Verification ran against the exact staged tree with a task-private Cargo
+  target and temporary directory to isolate it from concurrent workers:
+  - `cargo fmt --check`: passed.
+  - `cargo clippy --all-targets -- -D warnings`: passed.
+  - `cargo test`: passed, including all 9 R036 scenarios and doc tests.

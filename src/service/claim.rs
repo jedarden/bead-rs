@@ -61,6 +61,14 @@ pub enum ReasonCode {
     /// Assignee already holds an in_progress issue in this workspace,
     /// so the opt-in single-claim guard refused a new claim
     AssigneeHasActiveClaim,
+
+    /// Open issue carries an assignee, excluding it from the ready frontier
+    /// despite not being an active claim (a claim sets in_progress)
+    OpenIssueHeldByAssignee,
+
+    /// Open issue is intentionally held under its current assignee
+    /// and should not be warned about (operator-declared state)
+    IntentionallyHeldAssignment,
 }
 
 impl ReasonCode {

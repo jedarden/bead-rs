@@ -67,6 +67,12 @@ EXIT CODES:
   4 \- Reconciliation conflict
   5 \- Malformed input or integrity failure
 .PP
+RECOVERY BOUNDARY:
+  This command remains public for interchange, compatibility automation,
+  diagnostic dry\-runs, and merge. It may accept standalone artifacts without a
+  generation pointer. Use `bead restore` for operator recovery from a named,
+  fully verified immutable generation; doctor recommends only that path.
+.PP
 Use \-\-dry\-run to validate checkpoints before risking database mutation.
 .SH OPTIONS
 .TP

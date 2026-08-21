@@ -13,7 +13,7 @@ The operation is crash\-safe: it writes to a temporary file, verifies it, then
 atomically renames. Checkpoint state is updated only after a successful flush.
 .PP
 EXAMPLES:
-  bead sync flush\-only                                  # Flush the workspace checkpoint
+  bead sync flush\-only                                  # Idempotent check; publishes nothing new when current
   bead sync flush\-only \-\-output /path/to/backup.jsonl   # Export a copy elsewhere
 .PP
 OUTPUT:
@@ -28,10 +28,13 @@ OUTPUT:
   does not update the workspace checkpoint or its freshness state.
 .PP
 CHECKPOINT FRESHNESS:
-  A checkpoint represents the database as of flush time. Any mutation afterwards
-  makes it stale, and nothing flushes implicitly. Flush before committing, and
-  periodically during long sessions \-\- otherwise a fresh clone of the repository
-  reproduces the last flushed state, not the current one.
+  A checkpoint represents the database as of its publication. Every successful
+  mutation publishes a new generation automatically after its transaction
+  commits, so the checkpoint is never silently behind. `\-\-no\-auto\-flush` and
+  the checkpoint.auto_flush configuration key suppress that publication,
+  leaving the checkpoint dirty exactly as an unflushed mutation; this command
+  then closes the gap. With a current checkpoint it publishes no new
+  generation and exits 0.
 .PP
 ATOMICITY:
   \- A read transaction captures the snapshot
@@ -40,9 +43,10 @@ ATOMICITY:
   \- Checkpoint state advances in the same transaction
 .PP
 GIT INTEGRATION:
-  Run \*(Aqbead sync flush\-only\*(Aq before committing the repository. bead\-rs never
-  runs Git commands itself. Restore a fresh clone with
-  \*(Aqbead init\*(Aq followed by \*(Aqbead sync import\-only \-\-restore\-into\-empty\*(Aq.
+  Mutations publish automatically; run \*(Aqbead sync flush\-only\*(Aq before committing
+  the repository as an explicit idempotent check that the checkpoint is current.
+  bead\-rs never runs Git commands itself. Recover with the named\-generation
+  verifier: \*(Aqbead restore \-\-source .beads/checkpoint \-\-generation <GEN> \-\-actor <WHO>\*(Aq.
 .SH OPTIONS
 .TP
 \fB\-\-output\fR=\fIOUTPUT\fR

@@ -51,7 +51,7 @@ bead claim --assignee worker-1          # atomically takes the highest-priority 
 bead close "$design" --reason "Schema agreed"
 bead list --ready                       # store has now joined the frontier
 
-bead sync flush-only                    # write the checkpoint Git will track
+bead sync flush-only                    # idempotent check; publishes nothing new
 ```
 
 ![Terminal recording of the quick start: init, three beads, a dependency, the ready frontier, a claim, a close, and a checkpoint flush](docs/img/bead-workflow.gif)
@@ -74,18 +74,30 @@ Two artifacts, with different jobs:
 | `.beads/checkpoint/` | Deterministic JSONL checkpoint | Yes |
 
 The checkpoint carries issues, the event history, provenance receipts, and the
-dependency and label graph. **Nothing flushes implicitly.** A checkpoint is only
-as current as the last explicit `bead sync flush-only`, so flush before
-committing and periodically during long sessions — otherwise a clone of the
-repository reproduces the last flushed state rather than the current one.
+dependency and label graph. **Every successful mutation publishes it
+automatically** after its transaction commits, so it is never silently behind
+the database and a clone of the repository reproduces the current state.
+`bead sync flush-only` remains an explicit idempotent check — against a
+current checkpoint it publishes nothing and exits 0 — and `--no-auto-flush` or
+`checkpoint.auto_flush: false` in `.beads/config.json` suppresses automatic
+publication, leaving the checkpoint to be advanced by that explicit command.
 
 Recovering a fresh clone, which arrives with a checkpoint but no database:
 
 ```bash
-bead init
-bead sync import-only --input .beads/checkpoint --restore-into-empty --actor "$USER"
+generation=$(jq -r .generation_id .beads/checkpoint/current.json)
+bead restore --source .beads/checkpoint --generation "$generation" --actor "$USER"
 bead doctor
 ```
+
+`bead restore` verifies the named pointer, content-addressed root, sharded
+closure (when present), counts, event continuity, and graph before initializing
+or changing the target. It refuses a non-empty target unless
+`--allow-non-empty` is explicit, writes an actor-attributed provenance receipt,
+and reports the exact generation and record counts restored. Bare
+`forensic.jsonl` and checkpoint-archaeology views are not recovery sources.
+`sync import-only` remains the lower-level interchange/merge primitive, not the
+doctor-recommended disaster-recovery path.
 
 `bead doctor` runs read-only integrity checks across store, backup, schema,
 dependencies, and comments; `--repair` performs only safe, non-speculative

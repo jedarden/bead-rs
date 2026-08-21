@@ -51,9 +51,10 @@ struct PublicationProbe {
 ///
 /// Publication is armed only when the workspace resolves the automatic
 /// flush setting on: `checkpoint.auto_flush` in `.beads/config.json` when
-/// present, otherwise [`service::AUTO_FLUSH_COMPILED_DEFAULT`] (which stays
-/// `false` until the R026 activation gate passes, keeping the shipped
-/// explicit-flush default). The `--no-auto-flush` escape hatch (plan 6.2.1
+/// present, otherwise [`service::AUTO_FLUSH_COMPILED_DEFAULT`] (`true`
+/// since the R026 activation flipped it, plan revision 8; an explicit
+/// `false` in the workspace config is the durable opt-out). The
+/// `--no-auto-flush` escape hatch (plan 6.2.1
 /// item 7) disarms publication for this one invocation before the
 /// configuration is even consulted, so the flag wins over the key in both
 /// directions: a workspace that opted in does not publish, and one already
@@ -196,6 +197,41 @@ fn publish_committed_state(probe: &PublicationProbe) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Publish a restore that had to initialize its target during this invocation.
+/// Such a workspace did not exist when the normal pre-dispatch probe ran, so
+/// it needs the same post-commit publication tail armed after activation. The
+/// restore summary event makes the source pointer dirty, and this publication
+/// carries that event plus the new provenance receipt into a fresh generation.
+fn publish_newly_restored_state(no_auto_flush: bool) -> Result<()> {
+    if no_auto_flush {
+        return Ok(());
+    }
+    let config = match store::WorkspaceConfig::probe()? {
+        store::WorkspaceState::Ready(config) => config,
+        _ => return Ok(()),
+    };
+    let checkpoint_config =
+        service::load_checkpoint_config(&config.root.join(".beads")).map_err(Error::Internal)?;
+    if !checkpoint_config.auto_flush_enabled() {
+        return Ok(());
+    }
+    let conn = store::open_configured_connection(&config.database_path())?;
+    let live = service::read_live_event_sequence(&conn).unwrap_or(0);
+    if service::read_covered_event_sequence(&config.root.join(".beads"))
+        .is_some_and(|covered| covered >= live)
+    {
+        return Ok(());
+    }
+    let mut store = store::SqliteStore::from_conn(conn);
+    service::publish_forensic_checkpoint(
+        &mut store,
+        &checkpoint_config,
+        &config.root.join(".beads"),
+    )
+    .map(|_| ())
+    .map_err(|source| Error::PostCommitPublicationFailed { source })
+}
+
 fn execute_command(cli: Cli) -> Result<()> {
     // R030: publish the discovery override before anything resolves a
     // workspace, so `publication_probe` and every command's `discover` see
@@ -205,13 +241,17 @@ fn execute_command(cli: Cli) -> Result<()> {
     // Arm post-commit publication before dispatch; a command that fails or
     // mutates nothing never reaches the publish step. The flag is read
     // before `cli` moves into dispatch.
-    let probe = publication_probe(cli.no_auto_flush);
+    let no_auto_flush = cli.no_auto_flush;
+    let restore_without_probe = matches!(&cli.command, Command::Restore(_));
+    let probe = publication_probe(no_auto_flush);
 
     let result = dispatch_command(cli);
 
     if result.is_ok() {
         if let Some(probe) = probe.as_ref() {
             publish_after_commit(probe)?;
+        } else if restore_without_probe {
+            publish_newly_restored_state(no_auto_flush)?;
         }
     }
 
@@ -221,6 +261,7 @@ fn execute_command(cli: Cli) -> Result<()> {
 fn dispatch_command(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Init(opts) => cmd_init(opts),
+        Command::Restore(opts) => cmd_restore(opts),
         Command::Create(opts) => cmd_create(opts),
         Command::Claim(opts) => cmd_claim(opts),
         Command::List(opts) => cmd_list(opts),
@@ -244,6 +285,121 @@ fn dispatch_command(cli: Cli) -> Result<()> {
         Command::Recurrence(opts) => cmd_recurrence(opts),
         Command::Policy(opts) => cmd_policy(opts),
     }
+}
+
+fn cmd_restore(opts: cli::RestoreOptions) -> Result<()> {
+    if opts.actor.trim().is_empty() {
+        return Err(Error::cli_usage("--actor cannot be empty"));
+    }
+    if opts.actor.len() > 255 {
+        return Err(Error::cli_usage("--actor cannot exceed 255 bytes"));
+    }
+    if opts.actor.contains(char::is_control) {
+        return Err(Error::cli_usage(
+            "--actor cannot contain control characters",
+        ));
+    }
+    if !matches!(opts.format.as_str(), "text" | "json") {
+        return Err(Error::cli_usage(format!(
+            "unknown --format '{}' (expected 'text' or 'json')",
+            opts.format
+        )));
+    }
+
+    // Resolve and verify the complete source before creating, clearing, or
+    // otherwise touching target state (R036's verify-source-first rule).
+    let source = {
+        let source = std::path::PathBuf::from(&opts.source);
+        if source.is_absolute() {
+            source
+        } else {
+            std::env::current_dir()
+                .map_err(|error| Error::Io {
+                    path: ".".into(),
+                    msg: error,
+                })?
+                .join(source)
+        }
+    };
+    service::verify_restore_source(&source, &opts.generation)
+        .map_err(|error| Error::integrity(error.to_string()))?;
+
+    // A fresh clone has config.json plus the committed checkpoint but no
+    // database. Restore initializes that target itself, preserving the
+    // committed identity. A completely new directory uses --prefix.
+    let target_config = match store::WorkspaceConfig::probe()? {
+        store::WorkspaceState::Ready(config) => config,
+        store::WorkspaceState::Uninitialized { root, .. } => {
+            std::env::set_current_dir(&root).map_err(|error| Error::Io {
+                path: root.clone(),
+                msg: error,
+            })?;
+            store::SqliteStore::new().init_workspace(&opts.prefix)?
+        }
+        store::WorkspaceState::NotFound => {
+            store::SqliteStore::new().init_workspace(&opts.prefix)?
+        }
+        store::WorkspaceState::NotBeadRs { beads_path } => {
+            return Err(Error::workspace(store::foreign_workspace_message(
+                &beads_path,
+            )));
+        }
+    };
+
+    // Re-run full verification after initialization so source bytes cannot be
+    // swapped across that boundary. This is still before semantic activation.
+    let verified = service::verify_restore_source(&source, &opts.generation)
+        .map_err(|error| Error::integrity(error.to_string()))?;
+    let mut target = store::SqliteStore::new_at(&target_config.database_path())?;
+    let report = service::restore_verified_generation(
+        &mut target,
+        verified,
+        &opts.actor,
+        opts.allow_non_empty,
+    )
+    .map_err(|error| Error::integrity(error.to_string()))?;
+
+    if opts.format == "json" {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        eprintln!("Verified restore completed:");
+        eprintln!("  Generation: {}", report.generation_id);
+        eprintln!("  Mode: {}", report.mode);
+        eprintln!("  Source pointer: {}", report.source_pointer);
+        eprintln!("  Source root: {}", report.source_root_path);
+        eprintln!("  Source root SHA-256: {}", report.source_root_sha256);
+        eprintln!("  Source UUID: {}", report.source_store_uuid);
+        eprintln!("  Target UUID: {}", report.target_store_uuid);
+        eprintln!("  Snapshot sequence: {}", report.snapshot_sequence);
+        eprintln!("  Actor: {}", report.actor);
+        eprintln!("  Issues restored: {}", report.issues_restored);
+        eprintln!("  Events restored: {}", report.events_restored);
+        eprintln!(
+            "  Provenance receipts restored: {}",
+            report.provenance_receipts_restored
+        );
+        eprintln!("  Restore receipt ID: {}", report.restore_receipt_id);
+        eprintln!(
+            "  Restore receipt SHA-256: {}",
+            report.restore_receipt_sha256
+        );
+        eprintln!(
+            "  Restore summary event sequence: {}",
+            report.summary_event_sequence
+        );
+        eprintln!("  Non-empty target override: {}", report.non_empty_override);
+        if report.non_empty_override {
+            eprintln!(
+                "  Displaced native state: {} issues, {} events, {} provenance receipts, {} saved views, {} recurrence templates",
+                report.displaced.issues,
+                report.displaced.events,
+                report.displaced.provenance_receipts,
+                report.displaced.saved_views,
+                report.displaced.recurrence_templates
+            );
+        }
+    }
+    Ok(())
 }
 
 fn cmd_init(opts: cli::InitOptions) -> Result<()> {
@@ -1544,11 +1700,31 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
             println!("     .beads/config.json is committed but beads.db is gitignored, so a fresh");
             println!("     clone arrives in this state.");
             println!();
-            println!("Repair: run `bead init` in {}", root.display());
-            println!(
-                "        then `bead sync import-only --input .beads/checkpoint/forensic.jsonl \\"
-            );
-            println!("             --restore-into-empty --actor <you>`");
+            let generation = std::fs::read_to_string(root.join(".beads/checkpoint/current.json"))
+                .ok()
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+                .and_then(|pointer| {
+                    pointer
+                        .get("generation_id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                });
+            println!("Repair: restore explicitly from a named, verified generation.");
+            if let Some(generation) = generation {
+                println!("        Run in {}:", root.display());
+                println!(
+                    "        `bead restore --source .beads/checkpoint --generation {} --actor <you>`",
+                    generation
+                );
+            } else {
+                println!(
+                    "        Select a retained current.json or previous.json generation, then run"
+                );
+                println!(
+                    "        `bead restore --source <checkpoint-set> --generation <gen-id> --actor <you>`"
+                );
+            }
+            println!("        Doctor does not run restore automatically.");
             return Err(Error::integrity(
                 "Workspace database is missing or uninitialized",
             ));

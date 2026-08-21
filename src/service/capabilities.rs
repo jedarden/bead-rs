@@ -43,9 +43,8 @@ pub struct Capabilities {
     /// compiled default, never workspace state: `checkpoint.auto_flush`
     /// and `--no-auto-flush` suppress publication without changing this
     /// advertisement, and `sync --status` remains the only authority on
-    /// whether a given workspace is clean. Absent until the R026
-    /// activation gate flips the compiled default on, always present
-    /// after (plan section 11).
+    /// whether a given workspace is clean. Present and `true` since the
+    /// R026 activation flipped the compiled default on (plan section 11).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_flush: Option<bool>,
 }
@@ -155,15 +154,15 @@ pub fn generate_capabilities(profile: &str) -> Result<Capabilities> {
             "ref".to_string(),
             "release".to_string(),
             "reopen".to_string(),
+            "restore".to_string(),
             "show".to_string(),
             "sync".to_string(),
             "update".to_string(),
             "why".to_string(),
         ],
         // The additive R026 handshake (plan section 11): `auto_flush`
-        // reports the compiled default and is present only once that
-        // default is on -- absent until the activation gate flips it,
-        // then always `true`. The workspace key and the per-invocation
+        // reports the compiled default, `true` since the activation
+        // flipped it on. The workspace key and the per-invocation
         // flag change behavior, never the advertisement.
         auto_flush: AUTO_FLUSH_COMPILED_DEFAULT.then_some(AUTO_FLUSH_COMPILED_DEFAULT),
     })

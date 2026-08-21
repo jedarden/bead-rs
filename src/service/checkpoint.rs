@@ -71,13 +71,13 @@ use crate::model::Issue;
 use crate::profile::ProfileLossReport;
 use crate::store::SqliteStore;
 use anyhow::{anyhow, bail, Result};
-use rusqlite::{params, OptionalExtension, Transaction};
+use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Checkpoint mode
@@ -216,14 +216,15 @@ pub struct CheckpointConfig {
 /// transaction commits when `.beads/config.json` does not say otherwise
 /// (plan 6.2.1, ADR-003).
 ///
-/// **Stays `false` until the R026 activation gate passes** (plan section
-/// 13): the shipped default is explicit `sync flush-only` until the
-/// documentation reversal ships in the same commit that flips this constant.
-/// Until then, a workspace opts in per-workspace by recording
-/// `"checkpoint": { "auto_flush": true }` in `.beads/config.json`; an
-/// explicit value keeps meaning the same thing after the flip, when it
-/// becomes the durable suppressor the plan describes.
-pub const AUTO_FLUSH_COMPILED_DEFAULT: bool = false;
+/// **Flipped to `true` when R026 activated** (plan section 13, plan
+/// revision 8): the documentation reversal shipped in the same commit as
+/// this flip, so no shipped surface ever described a default the binary
+/// did not have. The section 13 gate records its evidence against that
+/// commit; a failing criterion reverts this constant. An explicit
+/// `"checkpoint": { "auto_flush": false }` in `.beads/config.json` is the
+/// durable suppressor the plan describes and keeps meaning the same thing
+/// it meant as an opt-in before the flip.
+pub const AUTO_FLUSH_COMPILED_DEFAULT: bool = true;
 
 impl CheckpointConfig {
     /// Resolve the post-commit publication setting: an explicit workspace
@@ -719,6 +720,8 @@ pub struct ForensicStaging {
 /// Serialized event for forensic import
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SerializedEvent {
+    #[serde(rename = "$schema")]
+    pub schema_ref: String,
     #[serde(rename = "origin_store_uuid")]
     pub origin_store_uuid: String,
     #[serde(rename = "origin_event_sequence")]
@@ -783,6 +786,65 @@ pub struct FullImportResult {
     pub receipt: Option<SerializedReceipt>,
     pub summary_event_sequence: Option<i64>,
     pub loss_report: Option<ProfileLossReport>,
+}
+
+/// A named checkpoint generation whose complete source set has passed the
+/// R036 restore verifier. The staged records stay private so callers cannot
+/// construct a value that bypasses pointer/root verification.
+#[derive(Debug, Clone)]
+pub struct VerifiedRestoreSource {
+    generation_id: String,
+    mode: CheckpointMode,
+    source_store_uuid: String,
+    snapshot_sequence: i64,
+    root_path: String,
+    root_sha256: String,
+    pointer_path: PathBuf,
+    staging: ForensicStaging,
+}
+
+/// Exact displacement counts when an operator explicitly restores over a
+/// non-empty target. These counts are reported but are not part of the source
+/// provenance receipt, whose counts describe only the restored generation.
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct RestoreDisplacedCounts {
+    pub issues: usize,
+    pub events: usize,
+    pub provenance_receipts: usize,
+    pub saved_views: usize,
+    pub recurrence_templates: usize,
+}
+
+impl RestoreDisplacedCounts {
+    fn is_empty(self) -> bool {
+        self.issues == 0
+            && self.events == 0
+            && self.provenance_receipts == 0
+            && self.saved_views == 0
+            && self.recurrence_templates == 0
+    }
+}
+
+/// Machine-readable result of one successful first-class restore.
+#[derive(Debug, Clone, Serialize)]
+pub struct RestoreReport {
+    pub generation_id: String,
+    pub mode: String,
+    pub source_pointer: String,
+    pub source_root_path: String,
+    pub source_root_sha256: String,
+    pub source_store_uuid: String,
+    pub target_store_uuid: String,
+    pub snapshot_sequence: i64,
+    pub actor: String,
+    pub issues_restored: usize,
+    pub events_restored: usize,
+    pub provenance_receipts_restored: usize,
+    pub restore_receipt_id: String,
+    pub restore_receipt_sha256: String,
+    pub summary_event_sequence: i64,
+    pub non_empty_override: bool,
+    pub displaced: RestoreDisplacedCounts,
 }
 
 /// Flush checkpoint result
@@ -1102,7 +1164,9 @@ pub fn import_forensic_checkpoint(
 
     // Execute real import based on mode
     let counts = match mode {
-        ImportMode::RestoreIntoEmpty => execute_restore_into_empty(store, &staging, actor)?,
+        ImportMode::RestoreIntoEmpty => {
+            execute_restore_into_empty(store, &staging, actor, false, false)?
+        }
         ImportMode::Merge => execute_merge(store, &staging, actor)?,
     };
 
@@ -1122,6 +1186,8 @@ pub fn import_forensic_checkpoint(
     result.retained = counts.retained;
     result.events_imported = counts.events_imported;
     result.receipts_processed = counts.receipts_processed as i64;
+    result.receipt = counts.receipt;
+    result.summary_event_sequence = counts.summary_event_sequence;
     Ok(result)
 }
 
@@ -1234,6 +1300,645 @@ fn get_import_result(
     Ok((final_sequence, result))
 }
 
+#[derive(Debug, Deserialize)]
+struct RestorePointerRoot {
+    path: String,
+    sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RestorePointer {
+    schema_version: u64,
+    generation_id: String,
+    mode: String,
+    store_uuid: String,
+    snapshot_sequence: i64,
+    active_root: RestorePointerRoot,
+    issue_count: usize,
+    event_count: usize,
+    receipt_count: usize,
+    total_record_count: usize,
+}
+
+/// Select and completely verify the immutable checkpoint generation named by
+/// `generation_id` (R036). Unlike `sync import-only`, this never treats a bare
+/// JSONL file as an authority: the source must resolve through a generation
+/// pointer whose root and complete object closure verify.
+pub fn verify_restore_source(source: &Path, generation_id: &str) -> Result<VerifiedRestoreSource> {
+    validate_generation_name(generation_id)?;
+    let pointer_path = select_restore_pointer(source, generation_id)?;
+    let pointer = read_restore_pointer(&pointer_path)?;
+
+    if pointer.generation_id != generation_id {
+        bail!(
+            "Restore generation mismatch: requested '{}', but {} selects '{}'. Name the exact immutable generation to restore.",
+            generation_id,
+            pointer_path.display(),
+            pointer.generation_id
+        );
+    }
+    if pointer.schema_version != 1 {
+        bail!(
+            "Unverified restore source: pointer schema_version {} is not supported",
+            pointer.schema_version
+        );
+    }
+    if pointer.store_uuid.trim().is_empty() {
+        bail!("Unverified restore source: pointer store_uuid is empty");
+    }
+    if pointer.snapshot_sequence < 0 {
+        bail!("Unverified restore source: snapshot_sequence is negative");
+    }
+    if pointer.total_record_count
+        != pointer.issue_count + pointer.event_count + pointer.receipt_count
+    {
+        bail!(
+            "Unverified restore source: pointer total_record_count {} does not equal issues {} + events {} + receipts {}",
+            pointer.total_record_count,
+            pointer.issue_count,
+            pointer.event_count,
+            pointer.receipt_count
+        );
+    }
+    validate_sha256(&pointer.active_root.sha256, "pointer active_root.sha256")?;
+
+    let mode: CheckpointMode = pointer.mode.parse().map_err(|_| {
+        anyhow!(
+            "Unverified restore source: pointer mode '{}' is not supported",
+            pointer.mode
+        )
+    })?;
+    let base = pointer_path
+        .parent()
+        .ok_or_else(|| anyhow!("Restore pointer has no checkpoint-set directory"))?;
+    let (expected_dir, expected_extension) = match mode {
+        CheckpointMode::Monolithic => ("objects", "jsonl"),
+        CheckpointMode::Sharded => ("manifests", "json"),
+    };
+    let root = verified_checkpoint_path(
+        base,
+        &pointer.active_root.path,
+        expected_dir,
+        expected_extension,
+    )?;
+    verify_restore_root_file(
+        &root,
+        &pointer.active_root.sha256,
+        &pointer.generation_id,
+        mode,
+        "pointer-selected root",
+    )?;
+
+    match mode {
+        CheckpointMode::Monolithic => verify_monolithic_restore_records(&root)?,
+        CheckpointMode::Sharded => verify_sharded_restore_closure(base, &root, &pointer)?,
+    }
+
+    let mut staging = stage_pointer_checkpoint(&pointer_path)?;
+    staging.input_hash = pointer.active_root.sha256.clone();
+    staging.store_uuid = pointer.store_uuid.clone();
+    staging.snapshot_sequence = pointer.snapshot_sequence;
+
+    if staging.issue_count != pointer.issue_count
+        || staging.event_count != pointer.event_count
+        || staging.receipt_count != pointer.receipt_count
+    {
+        bail!(
+            "Unverified restore source: pointer counts (issues={}, events={}, receipts={}) disagree with staged records ({}, {}, {})",
+            pointer.issue_count,
+            pointer.event_count,
+            pointer.receipt_count,
+            staging.issue_count,
+            staging.event_count,
+            staging.receipt_count
+        );
+    }
+    validate_forensic_contents(&staging)?;
+
+    // Close the verification/staging time-of-check gap. A generation object
+    // is immutable by contract; seeing different bytes here means the source
+    // was modified during verification and is therefore not a verified input.
+    verify_restore_root_file(
+        &root,
+        &pointer.active_root.sha256,
+        &pointer.generation_id,
+        mode,
+        "pointer-selected root after staging",
+    )?;
+    if mode == CheckpointMode::Sharded {
+        verify_sharded_restore_closure(base, &root, &pointer)?;
+    }
+
+    Ok(VerifiedRestoreSource {
+        generation_id: pointer.generation_id,
+        mode,
+        source_store_uuid: pointer.store_uuid,
+        snapshot_sequence: pointer.snapshot_sequence,
+        root_path: pointer.active_root.path,
+        root_sha256: pointer.active_root.sha256,
+        pointer_path,
+        staging,
+    })
+}
+
+fn validate_generation_name(generation_id: &str) -> Result<()> {
+    let suffix = generation_id.strip_prefix("gen-").ok_or_else(|| {
+        anyhow!(
+            "Invalid generation '{}': generation IDs start with 'gen-'",
+            generation_id
+        )
+    })?;
+    if suffix.is_empty()
+        || suffix.len() > 128
+        || !suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        bail!(
+            "Invalid generation '{}': use the exact generation_id from current.json or previous.json",
+            generation_id
+        );
+    }
+    Ok(())
+}
+
+fn select_restore_pointer(source: &Path, generation_id: &str) -> Result<PathBuf> {
+    let metadata = std::fs::symlink_metadata(source).map_err(|error| {
+        anyhow!(
+            "Restore source not found or unreadable at {}: {}",
+            source.display(),
+            error
+        )
+    })?;
+    if metadata.file_type().is_symlink() {
+        bail!(
+            "Unverified restore source: {} is a symlink",
+            source.display()
+        );
+    }
+
+    if metadata.is_file() {
+        let pointer = read_restore_pointer(source)?;
+        if pointer.generation_id != generation_id {
+            bail!(
+                "Restore generation mismatch: requested '{}', but {} selects '{}'",
+                generation_id,
+                source.display(),
+                pointer.generation_id
+            );
+        }
+        return Ok(source.to_path_buf());
+    }
+    if !metadata.is_dir() {
+        bail!(
+            "Unverified restore source: {} is neither a checkpoint-set directory nor a generation pointer",
+            source.display()
+        );
+    }
+
+    let mut available = Vec::new();
+    for name in ["current.json", "previous.json"] {
+        let candidate = source.join(name);
+        if !candidate.exists() {
+            continue;
+        }
+        match read_restore_pointer(&candidate) {
+            Ok(pointer) if pointer.generation_id == generation_id => return Ok(candidate),
+            Ok(pointer) => available.push(pointer.generation_id),
+            Err(error) => available.push(format!("{name}: invalid ({error})")),
+        }
+    }
+
+    if available.is_empty() {
+        bail!(
+            "Unverified restore source: {} contains no current.json or previous.json generation pointer",
+            source.display()
+        );
+    }
+    bail!(
+        "Generation '{}' is not selected by current.json or previous.json in {} (available: {}). Restore requires an explicitly named retained generation pointer.",
+        generation_id,
+        source.display(),
+        available.join(", ")
+    )
+}
+
+fn read_restore_pointer(path: &Path) -> Result<RestorePointer> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        bail!(
+            "Unverified restore source: pointer {} must be a regular non-symlink file",
+            path.display()
+        );
+    }
+    let bytes = std::fs::read(path)?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| {
+        anyhow!(
+            "Unverified restore source: {} is not a valid generation pointer: {}",
+            path.display(),
+            error
+        )
+    })?;
+    reject_archaeology_view(&value, path)?;
+    serde_json::from_value(value).map_err(|error| {
+        anyhow!(
+            "Unverified restore source: {} is missing required generation pointer fields: {}",
+            path.display(),
+            error
+        )
+    })
+}
+
+fn reject_archaeology_view(value: &serde_json::Value, path: &Path) -> Result<()> {
+    let object = match value.as_object() {
+        Some(object) => object,
+        None => return Ok(()),
+    };
+    let explicitly_non_importable =
+        object.get("importable") == Some(&serde_json::Value::Bool(false));
+    let archaeology_marker = ["artifact_kind", "kind", "$schema"]
+        .iter()
+        .filter_map(|key| object.get(*key).and_then(serde_json::Value::as_str))
+        .any(|marker| marker.to_ascii_lowercase().contains("archaeology"));
+    if explicitly_non_importable || archaeology_marker {
+        bail!(
+            "Refusing R029 checkpoint archaeology view {}: archaeology artifacts are explicitly non-importable and cannot be used for restore",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn validate_sha256(hash: &str, field: &str) -> Result<()> {
+    if hash.len() != 64
+        || !hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        bail!(
+            "Unverified restore source: {} must be a lowercase 64-character SHA-256 digest",
+            field
+        );
+    }
+    Ok(())
+}
+
+fn verified_checkpoint_path(
+    base: &Path,
+    relative: &str,
+    expected_dir: &str,
+    expected_extension: &str,
+) -> Result<PathBuf> {
+    if relative.is_empty() || relative.contains('\\') || relative.split('/').any(str::is_empty) {
+        bail!("Unverified restore source: invalid checkpoint-relative path '{relative}'");
+    }
+    let path = Path::new(relative);
+    if path.is_absolute()
+        || path.components().count() != 2
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        bail!("Unverified restore source: invalid checkpoint-relative path '{relative}'");
+    }
+    if path
+        .components()
+        .next()
+        .and_then(|part| part.as_os_str().to_str())
+        != Some(expected_dir)
+        || path.extension().and_then(|ext| ext.to_str()) != Some(expected_extension)
+    {
+        bail!(
+            "Unverified restore source: '{}' must name a {}/*.{} generation object",
+            relative,
+            expected_dir,
+            expected_extension
+        );
+    }
+
+    let mut cursor = base.to_path_buf();
+    for component in path.components() {
+        let Component::Normal(component) = component else {
+            unreachable!("components were validated above")
+        };
+        cursor.push(component);
+        let metadata = std::fs::symlink_metadata(&cursor).map_err(|error| {
+            anyhow!(
+                "Unverified restore source: referenced object {} is missing or unreadable: {}",
+                cursor.display(),
+                error
+            )
+        })?;
+        if metadata.file_type().is_symlink() {
+            bail!(
+                "Unverified restore source: referenced path {} contains a symlink",
+                cursor.display()
+            );
+        }
+    }
+    if !std::fs::metadata(&cursor)?.is_file() {
+        bail!(
+            "Unverified restore source: referenced object {} is not a regular file",
+            cursor.display()
+        );
+    }
+    let canonical_base = std::fs::canonicalize(base)?;
+    let canonical = std::fs::canonicalize(&cursor)?;
+    if !canonical.starts_with(&canonical_base) {
+        bail!(
+            "Unverified restore source: referenced object {} resolves outside {}",
+            cursor.display(),
+            base.display()
+        );
+    }
+    Ok(cursor)
+}
+
+fn verify_content_addressed_file(path: &Path, expected_hash: &str, label: &str) -> Result<()> {
+    validate_sha256(expected_hash, label)?;
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("");
+    if stem != expected_hash {
+        bail!(
+            "Unverified restore source: {} {} is not named by its declared SHA-256 {}",
+            label,
+            path.display(),
+            expected_hash
+        );
+    }
+    let actual = calculate_file_hash(path)?;
+    if actual != expected_hash {
+        bail!(
+            "Unverified restore source: {} hash mismatch for {} (declared {}, actual {})",
+            label,
+            path.display(),
+            expected_hash,
+            actual
+        );
+    }
+    Ok(())
+}
+
+fn verify_restore_root_file(
+    path: &Path,
+    expected_hash: &str,
+    generation_id: &str,
+    mode: CheckpointMode,
+    label: &str,
+) -> Result<()> {
+    validate_sha256(expected_hash, label)?;
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("");
+    let legacy_generation_root = mode == CheckpointMode::Monolithic && stem == generation_id;
+    if stem != expected_hash && !legacy_generation_root {
+        bail!(
+            "Unverified restore source: {} {} is named by neither its declared SHA-256 {} nor its selected generation {}",
+            label,
+            path.display(),
+            expected_hash,
+            generation_id
+        );
+    }
+    let actual = calculate_file_hash(path)?;
+    if actual != expected_hash {
+        bail!(
+            "Unverified restore source: {} hash mismatch for {} (declared {}, actual {})",
+            label,
+            path.display(),
+            expected_hash,
+            actual
+        );
+    }
+    Ok(())
+}
+
+fn required_manifest_usize(manifest: &serde_json::Value, field: &str) -> Result<usize> {
+    manifest
+        .get(field)
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| {
+            anyhow!("Unverified restore source: manifest field '{field}' is missing or invalid")
+        })
+}
+
+fn verify_monolithic_restore_records(root: &Path) -> Result<()> {
+    for (line_index, line) in BufReader::new(File::open(root)?).lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            bail!(
+                "Unverified restore source: blank record at {}:{}",
+                root.display(),
+                line_index + 1
+            );
+        }
+        let record: serde_json::Value = serde_json::from_str(&line).map_err(|error| {
+            anyhow!(
+                "Unverified restore source: malformed record at {}:{}: {}",
+                root.display(),
+                line_index + 1,
+                error
+            )
+        })?;
+        reject_archaeology_view(&record, root)?;
+        if !matches!(
+            record
+                .get("record_type")
+                .and_then(serde_json::Value::as_str),
+            Some("issue" | "event" | "provenance_receipt")
+        ) {
+            bail!(
+                "Unverified restore source: {}:{} is not a typed forensic checkpoint record",
+                root.display(),
+                line_index + 1
+            );
+        }
+    }
+    Ok(())
+}
+
+fn verify_sharded_restore_closure(
+    base: &Path,
+    manifest_path: &Path,
+    pointer: &RestorePointer,
+) -> Result<()> {
+    let bytes = std::fs::read(manifest_path)?;
+    let manifest: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|error| anyhow!("Unverified restore source: invalid sharded manifest: {error}"))?;
+    reject_archaeology_view(&manifest, manifest_path)?;
+
+    if manifest.get("format").and_then(serde_json::Value::as_str) != Some("checkpoint-set-v1")
+        || manifest
+            .get("schema_version")
+            .and_then(serde_json::Value::as_u64)
+            != Some(1)
+        || manifest.get("profile").and_then(serde_json::Value::as_str) != Some("native-v1")
+        || manifest
+            .get("partition_algorithm")
+            .and_then(serde_json::Value::as_str)
+            != Some("sha256-hex-prefix")
+    {
+        bail!("Unverified restore source: unsupported or incomplete sharded manifest metadata");
+    }
+    if manifest
+        .get("store_uuid")
+        .and_then(serde_json::Value::as_str)
+        != Some(pointer.store_uuid.as_str())
+        || manifest
+            .get("snapshot_sequence")
+            .and_then(serde_json::Value::as_i64)
+            != Some(pointer.snapshot_sequence)
+    {
+        bail!("Unverified restore source: manifest identity or snapshot sequence disagrees with pointer");
+    }
+    if manifest
+        .get("partition_thresholds")
+        .and_then(CheckpointThresholds::from_manifest_json)
+        .is_none()
+    {
+        bail!("Unverified restore source: manifest partition_thresholds are invalid");
+    }
+
+    let manifest_issue_count = required_manifest_usize(&manifest, "issue_count")?;
+    let manifest_event_count = required_manifest_usize(&manifest, "event_count")?;
+    let manifest_receipt_count = required_manifest_usize(&manifest, "receipt_count")?;
+    let manifest_total = required_manifest_usize(&manifest, "total_record_count")?;
+    if (
+        manifest_issue_count,
+        manifest_event_count,
+        manifest_receipt_count,
+        manifest_total,
+    ) != (
+        pointer.issue_count,
+        pointer.event_count,
+        pointer.receipt_count,
+        pointer.total_record_count,
+    ) {
+        bail!("Unverified restore source: manifest counts disagree with generation pointer");
+    }
+
+    let mut seen_paths = HashSet::new();
+    let mut verified_counts = [0usize; 3];
+    for (index, (field, expected_role, expected_record_type)) in [
+        ("issue_shards", "issues", "issue"),
+        ("event_shards", "events", "event"),
+        (
+            "receipt_shards",
+            "provenance_receipts",
+            "provenance_receipt",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let shards = manifest
+            .get(field)
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| anyhow!("Unverified restore source: manifest missing {field}"))?;
+        for shard in shards {
+            let path = shard
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| anyhow!("Unverified restore source: {field} entry missing path"))?;
+            let hash = shard
+                .get("sha256")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    anyhow!("Unverified restore source: {field} entry missing sha256")
+                })?;
+            let byte_length = shard
+                .get("byte_length")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| {
+                    anyhow!("Unverified restore source: {field} entry missing byte_length")
+                })?;
+            let record_count = shard
+                .get("record_count")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok())
+                .ok_or_else(|| {
+                    anyhow!("Unverified restore source: {field} entry missing record_count")
+                })?;
+            if shard.get("role").and_then(serde_json::Value::as_str) != Some(expected_role) {
+                bail!("Unverified restore source: {field} entry has the wrong semantic role");
+            }
+            if !seen_paths.insert(path.to_string()) {
+                bail!("Unverified restore source: duplicate sharded object reference '{path}'");
+            }
+            let object = verified_checkpoint_path(base, path, "objects", "jsonl")?;
+            verify_content_addressed_file(&object, hash, "sharded object")?;
+            if std::fs::metadata(&object)?.len() != byte_length {
+                bail!(
+                    "Unverified restore source: byte length mismatch for {}",
+                    object.display()
+                );
+            }
+            let file = File::open(&object)?;
+            let mut actual_records = 0usize;
+            for (line_index, line) in BufReader::new(file).lines().enumerate() {
+                let line = line?;
+                if line.is_empty() {
+                    bail!(
+                        "Unverified restore source: blank record at {}:{}",
+                        object.display(),
+                        line_index + 1
+                    );
+                }
+                let record: serde_json::Value = serde_json::from_str(&line).map_err(|error| {
+                    anyhow!(
+                        "Unverified restore source: malformed record at {}:{}: {}",
+                        object.display(),
+                        line_index + 1,
+                        error
+                    )
+                })?;
+                reject_archaeology_view(&record, &object)?;
+                if record
+                    .get("record_type")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(expected_record_type)
+                {
+                    bail!(
+                        "Unverified restore source: {} contains a record outside its declared {} role",
+                        object.display(),
+                        expected_role
+                    );
+                }
+                actual_records += 1;
+            }
+            if actual_records != record_count {
+                bail!(
+                    "Unverified restore source: record count mismatch for {} (declared {}, actual {})",
+                    object.display(),
+                    record_count,
+                    actual_records
+                );
+            }
+            verified_counts[index] += actual_records;
+        }
+    }
+    if verified_counts
+        != [
+            pointer.issue_count,
+            pointer.event_count,
+            pointer.receipt_count,
+        ]
+    {
+        bail!(
+            "Unverified restore source: sharded object counts {:?} disagree with pointer ({}, {}, {})",
+            verified_counts,
+            pointer.issue_count,
+            pointer.event_count,
+            pointer.receipt_count
+        );
+    }
+    Ok(())
+}
+
 /// Stage forensic checkpoint from input path
 fn stage_forensic_checkpoint(input_path: &Path) -> Result<ForensicStaging> {
     // Check if input is a directory (sharded/pointer) or file (monolithic)
@@ -1250,8 +1955,22 @@ fn stage_forensic_checkpoint(input_path: &Path) -> Result<ForensicStaging> {
         }
     } else {
         // Single file - treat as monolithic
+        reject_archaeology_source_file(input_path)?;
         stage_monolithic_checkpoint(input_path)
     }
+}
+
+/// Classify a standalone JSON archaeology document before the JSONL parser
+/// reports an incidental line-level syntax error. A streaming deserializer
+/// reads only the first JSON value, so normal multi-record checkpoints do not
+/// need to be buffered as one file.
+fn reject_archaeology_source_file(input_path: &Path) -> Result<()> {
+    let file = File::open(input_path)?;
+    let mut deserializer = serde_json::Deserializer::from_reader(file);
+    if let Ok(value) = serde_json::Value::deserialize(&mut deserializer) {
+        reject_archaeology_view(&value, input_path)?;
+    }
+    Ok(())
 }
 
 /// Stage a checkpoint referenced by a `current.json` pointer, dispatching on
@@ -1268,6 +1987,7 @@ fn stage_pointer_checkpoint(pointer_path: &Path) -> Result<ForensicStaging> {
     let pointer_data = std::fs::read_to_string(pointer_path)?;
     let pointer: serde_json::Value =
         serde_json::from_str(&pointer_data).map_err(|e| anyhow!("Invalid pointer JSON: {}", e))?;
+    reject_archaeology_view(&pointer, pointer_path)?;
 
     let mode = pointer
         .get("mode")
@@ -1341,6 +2061,7 @@ fn stage_monolithic_checkpoint(input_path: &Path) -> Result<ForensicStaging> {
         // Parse record envelope or legacy issue
         let record: serde_json::Value = serde_json::from_str(&line)
             .map_err(|e| anyhow!("Line {}: malformed JSON: {}", line_num, e))?;
+        reject_archaeology_view(&record, input_path)?;
 
         // Check if this is a forensic record with record_type
         if let Some(record_type) = record.get("record_type").and_then(|v| v.as_str()) {
@@ -1547,6 +2268,7 @@ fn stage_sharded_checkpoint(pointer_path: &Path) -> Result<ForensicStaging> {
 
     let manifest: serde_json::Value = serde_json::from_str(&manifest_data)
         .map_err(|e| anyhow!("Invalid manifest JSON: {}", e))?;
+    reject_archaeology_view(&manifest, &manifest_full_path)?;
 
     // Extract metadata
     let store_uuid = manifest
@@ -1707,6 +2429,7 @@ fn process_shard_file(
                 e
             )
         })?;
+        reject_archaeology_view(&record, shard_path)?;
 
         let record_type = record
             .get("record_type")
@@ -1896,7 +2619,32 @@ fn validate_forensic_checkpoint(
     store: &mut SqliteStore,
     _dry_run: bool,
 ) -> Result<()> {
+    validate_forensic_contents(staging)?;
+
+    // Mode-specific validation
+    match mode {
+        ImportMode::RestoreIntoEmpty => {
+            validate_restore_constraints(store, staging)?;
+        }
+        ImportMode::Merge => {
+            validate_merge_constraints(store, staging)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate every source-intrinsic forensic invariant. R036 calls this only
+/// after verifying the generation pointer and complete content-addressed
+/// closure, and before it inspects or mutates the target.
+fn validate_forensic_contents(staging: &ForensicStaging) -> Result<()> {
     for issue in &staging.issues {
+        if issue.schema_ref.as_deref() != Some("urn:bead-rs:schema:issue:native-v1") {
+            bail!(
+                "Issue '{}' does not declare the native-v1 issue schema",
+                issue.id
+            );
+        }
         issue
             .validate()
             .map_err(|error| anyhow!("Issue '{}' failed validation: {}", issue.id, error))?;
@@ -1911,16 +2659,86 @@ fn validate_forensic_checkpoint(
     // Validate event sequence continuity
     validate_event_sequence(staging)?;
 
-    // Mode-specific validation
-    match mode {
-        ImportMode::RestoreIntoEmpty => {
-            validate_restore_constraints(store, staging)?;
+    validate_forensic_events(staging)?;
+    validate_forensic_receipts(staging)?;
+
+    Ok(())
+}
+
+fn validate_forensic_events(staging: &ForensicStaging) -> Result<()> {
+    let issue_ids: HashSet<&str> = staging
+        .issues
+        .iter()
+        .map(|issue| issue.id.as_str())
+        .collect();
+    for event in &staging.events {
+        if event.schema_ref != "urn:bead-rs:schema:event:native-v1" {
+            bail!("Forensic event does not declare the native-v1 event schema");
         }
-        ImportMode::Merge => {
-            validate_merge_constraints(store, staging)?;
+        if event.origin_store_uuid.trim().is_empty() || event.origin_event_sequence <= 0 {
+            bail!("Forensic event has an invalid origin identity");
+        }
+        if event.kind.trim().is_empty() || event.time.trim().is_empty() {
+            bail!(
+                "Forensic event ({}, {}) has an empty kind or time",
+                event.origin_store_uuid,
+                event.origin_event_sequence
+            );
+        }
+        if let Some(issue_id) = event.issue_id.as_deref() {
+            if !issue_ids.contains(issue_id) {
+                bail!(
+                    "Forensic event ({}, {}) references missing issue {}",
+                    event.origin_store_uuid,
+                    event.origin_event_sequence,
+                    issue_id
+                );
+            }
         }
     }
+    Ok(())
+}
 
+fn validate_forensic_receipts(staging: &ForensicStaging) -> Result<()> {
+    for receipt in &staging.receipts {
+        if receipt.schema_ref != "urn:bead-rs:schema:provenance-receipt:native-v1"
+            || !matches!(receipt.kind.as_str(), "restore" | "merge")
+            || receipt.source_store_uuid.trim().is_empty()
+            || receipt.target_store_uuid.trim().is_empty()
+            || receipt.actor.trim().is_empty()
+            || receipt.created_at.trim().is_empty()
+            || receipt.result != "success"
+            || receipt.counts.issues < 0
+            || receipt.counts.events < 0
+            || receipt.counts.provenance_receipts < 0
+        {
+            bail!(
+                "Provenance receipt '{}' has invalid required fields",
+                receipt.receipt_id
+            );
+        }
+        validate_sha256(
+            &receipt.source_root_sha256,
+            "provenance receipt source_root_sha256",
+        )?;
+        validate_sha256(&receipt.receipt_sha256, "provenance receipt receipt_sha256")?;
+        let mut hasher = Sha256::new();
+        hasher.update(&receipt.receipt_id);
+        hasher.update(&receipt.kind);
+        hasher.update(&receipt.source_root_sha256);
+        hasher.update(&receipt.actor);
+        hasher.update(&receipt.created_at);
+        hasher.update(&receipt.result);
+        let expected = format!("{:x}", hasher.finalize());
+        if receipt.receipt_sha256 != expected {
+            bail!(
+                "Provenance receipt '{}' hash mismatch (declared {}, calculated {})",
+                receipt.receipt_id,
+                receipt.receipt_sha256,
+                expected
+            );
+        }
+    }
     Ok(())
 }
 
@@ -2058,33 +2876,27 @@ fn validate_event_sequence(staging: &ForensicStaging) -> Result<()> {
         return Ok(()); // No events to validate
     }
 
-    let first_event = &staging.events[0];
-    if first_event.origin_event_sequence != 1 {
-        bail!(
-            "Event sequence does not start at 1: starts at {}",
-            first_event.origin_event_sequence
-        );
-    }
-
-    for window in staging.events.windows(2) {
-        let prev = &window[0];
-        let curr = &window[1];
-
-        if prev.origin_store_uuid != curr.origin_store_uuid {
+    let mut previous_origin = "";
+    let mut previous_sequence = 0i64;
+    for event in &staging.events {
+        if event.origin_store_uuid != previous_origin {
+            if event.origin_event_sequence != 1 {
+                bail!(
+                    "Event sequence for origin {} does not start at 1: starts at {}",
+                    event.origin_store_uuid,
+                    event.origin_event_sequence
+                );
+            }
+            previous_origin = &event.origin_store_uuid;
+        } else if event.origin_event_sequence != previous_sequence + 1 {
             bail!(
-                "Event origin UUID changed: {} vs {}",
-                prev.origin_store_uuid,
-                curr.origin_store_uuid
+                "Event sequence gap for origin {}: expected {}, found {}",
+                event.origin_store_uuid,
+                previous_sequence + 1,
+                event.origin_event_sequence
             );
         }
-
-        if curr.origin_event_sequence != prev.origin_event_sequence + 1 {
-            bail!(
-                "Event sequence gap: expected {}, found {}",
-                prev.origin_event_sequence + 1,
-                curr.origin_event_sequence
-            );
-        }
+        previous_sequence = event.origin_event_sequence;
     }
 
     Ok(())
@@ -2175,28 +2987,205 @@ fn validate_event_prefix(conn: &rusqlite::Connection, staging: &ForensicStaging)
 
 /// Execute restore-into-empty operation
 /// Counts of what an import actually wrote, for accurate reporting.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 struct ImportCounts {
     inserted: usize,
     updated: usize,
     retained: usize,
     events_imported: i64,
     receipts_processed: usize,
+    receipt: Option<SerializedReceipt>,
+    summary_event_sequence: Option<i64>,
+    displaced: RestoreDisplacedCounts,
+}
+
+/// Activate a previously verified named generation into the initialized
+/// target store. The source verifier is intentionally a separate first step:
+/// the CLI can run it before creating a missing database, satisfying R036's
+/// no-target-mutation-before-source-verification rule.
+pub fn restore_verified_generation(
+    store: &mut SqliteStore,
+    verified: VerifiedRestoreSource,
+    actor: &str,
+    allow_non_empty: bool,
+) -> Result<RestoreReport> {
+    validate_restore_actor(actor)?;
+    validate_forensic_contents(&verified.staging)?;
+
+    // Recheck the immutable root immediately before target inspection. The
+    // CLI verifies the full source a second time after any auto-initialization;
+    // this final root check closes the last mutation boundary.
+    let root = verified_checkpoint_path(
+        verified
+            .pointer_path
+            .parent()
+            .ok_or_else(|| anyhow!("Restore pointer has no checkpoint-set directory"))?,
+        &verified.root_path,
+        match verified.mode {
+            CheckpointMode::Monolithic => "objects",
+            CheckpointMode::Sharded => "manifests",
+        },
+        match verified.mode {
+            CheckpointMode::Monolithic => "jsonl",
+            CheckpointMode::Sharded => "json",
+        },
+    )?;
+    verify_restore_root_file(
+        &root,
+        &verified.root_sha256,
+        &verified.generation_id,
+        verified.mode,
+        "restore root",
+    )?;
+
+    let counts =
+        execute_restore_into_empty(store, &verified.staging, actor, allow_non_empty, true)?;
+    let replacing = !counts.displaced.is_empty();
+    let receipt = counts
+        .receipt
+        .ok_or_else(|| anyhow!("Restore committed without returning its provenance receipt"))?;
+    let summary_event_sequence = counts
+        .summary_event_sequence
+        .ok_or_else(|| anyhow!("Restore committed without returning its summary event"))?;
+
+    Ok(RestoreReport {
+        generation_id: verified.generation_id,
+        mode: verified.mode.as_str().to_string(),
+        source_pointer: verified.pointer_path.display().to_string(),
+        source_root_path: verified.root_path,
+        source_root_sha256: verified.root_sha256,
+        source_store_uuid: verified.source_store_uuid.clone(),
+        target_store_uuid: verified.source_store_uuid,
+        snapshot_sequence: verified.snapshot_sequence,
+        actor: actor.to_string(),
+        issues_restored: counts.inserted,
+        events_restored: counts.events_imported as usize,
+        provenance_receipts_restored: verified.staging.receipt_count,
+        restore_receipt_id: receipt.receipt_id,
+        restore_receipt_sha256: receipt.receipt_sha256,
+        summary_event_sequence,
+        non_empty_override: replacing && allow_non_empty,
+        displaced: if replacing {
+            counts.displaced
+        } else {
+            RestoreDisplacedCounts::default()
+        },
+    })
+}
+
+fn validate_restore_actor(actor: &str) -> Result<()> {
+    if actor.trim().is_empty() {
+        bail!("Restore actor cannot be empty");
+    }
+    if actor.len() > 255 {
+        bail!("Restore actor cannot exceed 255 bytes");
+    }
+    if actor.contains(char::is_control) {
+        bail!("Restore actor cannot contain control characters");
+    }
+    Ok(())
+}
+
+fn read_restore_target_counts(conn: &rusqlite::Connection) -> Result<RestoreDisplacedCounts> {
+    fn count(conn: &rusqlite::Connection, table: &str) -> Result<usize> {
+        let sql = format!("SELECT COUNT(*) FROM {table}");
+        let count: i64 = conn
+            .query_row(&sql, [], |row| row.get(0))
+            .map_err(|error| {
+                anyhow!(
+                "Target is not a usable current bead-rs schema (cannot inspect {table}): {error}"
+            )
+            })?;
+        usize::try_from(count).map_err(|_| anyhow!("Invalid negative row count in {table}"))
+    }
+
+    Ok(RestoreDisplacedCounts {
+        issues: count(conn, "issues")?,
+        events: count(conn, "events")?,
+        provenance_receipts: count(conn, "provenance_receipts")?,
+        saved_views: count(conn, "saved_views")?,
+        recurrence_templates: count(conn, "recurrence_templates")?,
+    })
+}
+
+/// Clear every native semantic table before an explicitly authorized
+/// replacement restore. Unknown tables are deliberately untouched: the
+/// override replaces bead-rs state, not extension storage the operator did
+/// not authorize this implementation to interpret or drop.
+fn clear_native_restore_target(tx: &Transaction<'_>) -> Result<()> {
+    for table in [
+        "claim_telemetry",
+        "recurrence_materializations",
+        "scheduling_metrics",
+        "leases",
+        "external_references",
+        "issue_data",
+        "comments",
+        "dependencies",
+        "labels",
+        "issue_extensions",
+        "events",
+        "issues",
+        "provenance_receipts",
+        "saved_views",
+        "recurrence_templates",
+        "checkpoint_state",
+    ] {
+        tx.execute(&format!("DELETE FROM {table}"), [])?;
+    }
+    tx.execute("DELETE FROM workspace_claim_sequence", [])?;
+    tx.execute(
+        "INSERT INTO workspace_claim_sequence (sequence) VALUES (0)",
+        [],
+    )?;
+    Ok(())
 }
 
 fn execute_restore_into_empty(
     store: &mut SqliteStore,
     staging: &ForensicStaging,
     actor: &str,
+    allow_non_empty: bool,
+    record_summary_event: bool,
 ) -> Result<ImportCounts> {
     let conn = store.conn();
-    let tx = conn.unchecked_transaction()?;
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+
+    // Inspect and guard the target after BEGIN IMMEDIATE. Holding the write
+    // transaction here prevents another process from inserting state between
+    // the empty-target decision and activation.
+    let displaced = read_restore_target_counts(&tx)?;
+    if !displaced.is_empty() && !allow_non_empty {
+        bail!(
+            "Target database is not empty (issues={}, events={}, provenance_receipts={}, saved_views={}, recurrence_templates={}). Restore refused without mutation; inspect the target and rerun with --allow-non-empty only when replacing that native state is intended.",
+            displaced.issues,
+            displaced.events,
+            displaced.provenance_receipts,
+            displaced.saved_views,
+            displaced.recurrence_templates
+        );
+    }
+    let replacing = !displaced.is_empty();
+
+    if replacing && allow_non_empty {
+        clear_native_restore_target(&tx)?;
+    }
 
     // Adopt checkpoint store UUID
     tx.execute("UPDATE workspace SET uuid = ?1", [&staging.store_uuid])?;
 
     // Activate staged data
-    let (inserted, activation_sequence) = activate_forensic_import(&tx, staging)?;
+    let (inserted, _source_activation_sequence) = activate_forensic_import(&tx, staging)?;
+
+    // The summary event makes the explicit recovery itself auditable, beyond
+    // the source events it adopts. AUTOINCREMENT remains monotonic across an
+    // override, so replacing an older or smaller generation still advances
+    // the target's mutation sequence.
+    let summary_event_sequence = if record_summary_event {
+        Some(create_restore_summary(&tx, staging, actor, replacing)?)
+    } else {
+        None
+    };
 
     // Point local checkpoint bookkeeping at the generation just restored.
     // Without this the database still reports covered_event_sequence = 0 while
@@ -2219,17 +3208,19 @@ fn execute_restore_into_empty(
     )?;
 
     // Create restore receipt
-    let receipt = create_restore_receipt(&tx, staging, actor, activation_sequence)?;
+    let receipt = create_restore_receipt(&tx, staging, actor, summary_event_sequence)?;
 
     // Commit transaction
     tx.commit()?;
 
-    eprintln!(
-        "Restored {} issues, {} events",
-        inserted,
-        staging.events.len()
-    );
-    eprintln!("Restore receipt: {}", receipt.receipt_id);
+    if !record_summary_event {
+        eprintln!(
+            "Restored {} issues, {} events",
+            inserted,
+            staging.events.len()
+        );
+        eprintln!("Restore receipt: {}", receipt.receipt_id);
+    }
 
     Ok(ImportCounts {
         inserted,
@@ -2238,6 +3229,9 @@ fn execute_restore_into_empty(
         events_imported: staging.events.len() as i64,
         // +1 for the restore receipt created above
         receipts_processed: staging.receipts.len() + 1,
+        receipt: Some(receipt),
+        summary_event_sequence,
+        displaced,
     })
 }
 
@@ -2280,6 +3274,9 @@ fn execute_merge(
         events_imported: staging.events.len() as i64,
         // +1 for the merge receipt created above
         receipts_processed: staging.receipts.len() + 1,
+        receipt: Some(receipt),
+        summary_event_sequence: Some(activation_sequence),
+        displaced: RestoreDisplacedCounts::default(),
     })
 }
 
@@ -2467,12 +3464,42 @@ fn import_receipts(tx: &Transaction, staging: &ForensicStaging) -> Result<()> {
     Ok(())
 }
 
+/// Append the audit event for the explicit recovery operation itself. Source
+/// events are restored verbatim; this additional local event records who
+/// performed the activation and whether native target state was replaced.
+fn create_restore_summary(
+    tx: &Transaction<'_>,
+    staging: &ForensicStaging,
+    actor: &str,
+    replaced_non_empty: bool,
+) -> Result<i64> {
+    let detail = serde_json::json!({
+        "source_store_uuid": staging.store_uuid,
+        "source_root_sha256": staging.input_hash,
+        "snapshot_sequence": staging.snapshot_sequence,
+        "issues_restored": staging.issue_count,
+        "events_restored": staging.event_count,
+        "provenance_receipts_restored": staging.receipt_count,
+        "replaced_non_empty_target": replaced_non_empty,
+    });
+    tx.execute(
+        "INSERT INTO events (issue_id, kind, actor, time, detail)
+         VALUES (NULL, 'checkpoint_restored', ?1, ?2, ?3)",
+        params![
+            actor,
+            format_rfc3339(SystemTime::now()),
+            serde_json::to_string(&detail)?
+        ],
+    )?;
+    Ok(tx.last_insert_rowid())
+}
+
 /// Create restore receipt
 fn create_restore_receipt(
     tx: &Transaction,
     staging: &ForensicStaging,
     actor: &str,
-    _activation_sequence: i64,
+    summary_event_sequence: Option<i64>,
 ) -> Result<SerializedReceipt> {
     let receipt_id = format!("restore-{}", uuid());
     let now = format!(
@@ -2507,7 +3534,7 @@ fn create_restore_receipt(
         created_at: now.clone(),
         counts,
         result: "success".to_string(),
-        summary_event_identity: None,
+        summary_event_identity: summary_event_sequence.map(|sequence| format!("local-{sequence}")),
         receipt_sha256: receipt_hash,
     };
 
@@ -5283,6 +6310,15 @@ fn read_all_events(tx: &Transaction) -> Result<Vec<EventRecord>> {
             row.get(0)
         })
         .unwrap_or_default();
+    let explicit_local_max: i64 = tx
+        .query_row(
+            "SELECT COALESCE(MAX(origin_event_sequence), 0)
+             FROM events WHERE origin_store_uuid = ?1",
+            [&local_store_uuid],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    let mut next_local_origin_sequence = explicit_local_max + 1;
 
     let mut stmt = tx.prepare(
         "SELECT sequence, issue_id, kind, actor, time, detail,
@@ -5320,13 +6356,24 @@ fn read_all_events(tx: &Transaction) -> Result<Vec<EventRecord>> {
             _local_ingestion_sequence,
         ) = row?;
 
-        // Preserve a foreign origin verbatim; synthesize a local one otherwise.
-        // `sequence` is the AUTOINCREMENT primary key, so it is unique and
-        // monotonic — exactly the properties event identity requires.
-        let origin_store_uuid = origin_store_uuid
-            .filter(|uuid| !uuid.is_empty())
-            .unwrap_or_else(|| local_store_uuid.clone());
-        let origin_event_sequence = origin_event_sequence.unwrap_or(sequence);
+        // Preserve complete imported identities verbatim. Locally-created
+        // events carry NULL origin columns; number those after this store's
+        // highest explicit imported identity, in local ingestion order. This
+        // is deliberately independent of the SQLite primary key: an override
+        // restore must retain that key's monotonicity for mutation/publication
+        // detection even when it replaces the prior event corpus.
+        let (origin_store_uuid, origin_event_sequence) = match (
+            origin_store_uuid.filter(|uuid| !uuid.is_empty()),
+            origin_event_sequence,
+        ) {
+            (Some(uuid), Some(origin_sequence)) => (uuid, origin_sequence),
+            (Some(uuid), None) if uuid != local_store_uuid => (uuid, sequence),
+            _ => {
+                let origin_sequence = next_local_origin_sequence;
+                next_local_origin_sequence += 1;
+                (local_store_uuid.clone(), origin_sequence)
+            }
+        };
 
         let event = EventRecord {
             schema_ref: "urn:bead-rs:schema:event:native-v1".to_string(),
@@ -5341,6 +6388,13 @@ fn read_all_events(tx: &Transaction) -> Result<Vec<EventRecord>> {
 
         events.push(event);
     }
+
+    // The checkpoint wire order is origin identity order, independent of the
+    // local ingestion order represented by the SQLite primary key.
+    events.sort_by(|left, right| {
+        (&left.origin_store_uuid, left.origin_event_sequence)
+            .cmp(&(&right.origin_store_uuid, right.origin_event_sequence))
+    });
 
     Ok(events)
 }

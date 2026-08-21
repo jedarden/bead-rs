@@ -281,26 +281,82 @@ pub fn run_diagnostics_with_scopes(
 
         // 6b. Ready-frontier eligibility (issues held by an assignee alone)
         match check_ready_frontier(store) {
-            Ok(msg) => {
-                checks.push(DiagnosticCheck {
-                    name: "ready_frontier".to_string(),
-                    status: DiagnosticStatus::Ok,
-                    message: msg.clone(),
-                    scope: Some("dependencies".to_string()),
-                    details: Some(serde_json::json!({
-                        "message": msg
-                    })),
-                });
+            Ok(report) => {
+                if report.has_held_issues {
+                    // Determine if we have any potentially abandoned assignments
+                    let has_abandoned = !report.held_ids.is_empty();
+                    let has_intentional = !report.intentionally_held_ids.is_empty();
+
+                    // Build message based on what we found
+                    let message = if has_abandoned && has_intentional {
+                        format!(
+                            "{} open issue(s) are assigned and excluded from the ready frontier ({} intentionally held). Potentially abandoned: {}. An assigned open issue is not an active claim (a claim sets in_progress).",
+                            report.held_count + report.intentionally_held_ids.len(),
+                            report.intentionally_held_ids.len(),
+                            report.held_ids.iter().take(5).cloned().collect::<Vec<_>>().join(", ")
+                        )
+                    } else if has_abandoned {
+                        format!(
+                            "{} open issue(s) are assigned and excluded from the ready frontier: {}. An assigned open issue is not an active claim (a claim sets in_progress).",
+                            report.held_count,
+                            report.held_ids.iter().take(5).cloned().collect::<Vec<_>>().join(", ")
+                        )
+                    } else {
+                        format!(
+                            "{} open issue(s) are intentionally held and excluded from the ready frontier. Mark issues with 'intentionally-held' or 'parked' labels to suppress this warning.",
+                            report.intentionally_held_ids.len()
+                        )
+                    };
+
+                    checks.push(DiagnosticCheck {
+                        name: "ready_frontier".to_string(),
+                        status: if has_abandoned {
+                            DiagnosticStatus::Warning
+                        } else {
+                            DiagnosticStatus::Ok
+                        },
+                        message,
+                        scope: Some("dependencies".to_string()),
+                        details: Some(serde_json::json!({
+                            "held_count": report.held_count,
+                            "held_ids": report.held_ids,
+                            "intentionally_held_count": report.intentionally_held_ids.len(),
+                            "intentionally_held_ids": report.intentionally_held_ids,
+                            "reason_codes": report.reason_codes,
+                            "remedy": report.remedy,
+                            "explanation": "Open issues with assignees are excluded from the ready frontier. Use the 'intentionally-held' or 'parked' labels to mark deliberate reservations."
+                        })),
+                    });
+
+                    if has_abandoned {
+                        has_warnings = true;
+                    }
+                } else {
+                    checks.push(DiagnosticCheck {
+                        name: "ready_frontier".to_string(),
+                        status: DiagnosticStatus::Ok,
+                        message: "Ready frontier OK: no open issues are held by an assignee"
+                            .to_string(),
+                        scope: Some("dependencies".to_string()),
+                        details: Some(serde_json::json!({
+                            "held_count": 0,
+                            "held_ids": [],
+                            "intentionally_held_count": 0,
+                            "intentionally_held_ids": [],
+                            "reason_codes": []
+                        })),
+                    });
+                }
             }
             Err(e) => {
-                has_warnings = true;
+                has_errors = true;
                 checks.push(DiagnosticCheck {
                     name: "ready_frontier".to_string(),
-                    status: DiagnosticStatus::Warning,
-                    message: format!("Ready frontier warning: {}", e),
+                    status: DiagnosticStatus::Error,
+                    message: format!("Ready frontier check error: {}", e),
                     scope: Some("dependencies".to_string()),
                     details: Some(serde_json::json!({
-                        "warning": e.to_string()
+                        "error": e.to_string()
                     })),
                 });
             }
@@ -1119,57 +1175,134 @@ fn check_temporary_files(store: &impl Store) -> Result<String> {
 /// so this is a warning and never an automatic repair: only the operator knows
 /// whether a given assignment is still meaningful. The remedy is
 /// `bead update <id> --clear-assignee`.
-fn check_ready_frontier(store: &impl Store) -> Result<String> {
+///
+/// R035: This check emits R001 semantic reason codes rather than prose and
+/// provides a machine-readable list of held IDs. Future work may add a way to
+/// declare intentionally-held assignments so the warning remains meaningful in
+/// workspaces that park work on purpose.
+fn check_ready_frontier(store: &impl Store) -> Result<ReadyFrontierReport> {
     let config = store.get_workspace_config()?;
     let db_path = config.root.join(".beads/beads.db");
 
     let conn = open_configured_connection(&db_path)
         .map_err(|e| Error::Integrity(format!("Failed to open database: {}", e)))?;
 
+    // Query for open issues with assignees, including their labels
     let mut stmt = conn
         .prepare(
-            "SELECT id FROM issues
-             WHERE base_status = 'open'
-               AND assignee IS NOT NULL
-               AND TRIM(assignee) != ''
-             ORDER BY id",
+            "SELECT i.id, GROUP_CONCAT(l.label, ',') as labels
+             FROM issues i
+             LEFT JOIN labels l ON i.id = l.issue_id
+             WHERE i.base_status = 'open'
+               AND i.assignee IS NOT NULL
+               AND TRIM(i.assignee) != ''
+             GROUP BY i.id
+             ORDER BY i.id",
         )
         .map_err(|e| Error::Integrity(format!("Failed to prepare statement: {}", e)))?;
 
-    let held: Vec<String> = stmt
-        .query_map([], |row| row.get::<_, String>(0))
+    let held_result: Vec<(String, Option<String>)> = stmt
+        .query_map([], |row| {
+            let id: String = row.get(0)?;
+            let labels: Option<String> = row.get(1)?;
+            Ok((id, labels))
+        })
         .map_err(|e| Error::Integrity(format!("Failed to query issues: {}", e)))?
         .filter_map(|r| r.ok())
         .collect();
 
-    if held.is_empty() {
-        return Ok("Ready frontier OK: no open issues are held by an assignee".to_string());
+    if held_result.is_empty() {
+        return Ok(ReadyFrontierReport {
+            has_held_issues: false,
+            held_count: 0,
+            held_ids: vec![],
+            intentionally_held_ids: vec![],
+            reason_codes: vec![],
+            remedy: None,
+        });
     }
 
-    // Name a bounded sample so the warning is actionable without flooding output
-    // on a workspace that has accumulated hundreds of them.
-    const SAMPLE: usize = 5;
-    let sample = held
-        .iter()
-        .take(SAMPLE)
-        .map(String::as_str)
-        .collect::<Vec<_>>()
-        .join(", ");
-    let suffix = if held.len() > SAMPLE {
-        format!(", and {} more", held.len() - SAMPLE)
-    } else {
-        String::new()
-    };
+    // Separate intentionally-held assignments from potentially abandoned ones
+    // Convention: labels 'intentionally-held' or 'parked' mark deliberate reservations
+    let intentionally_held_label = "intentionally-held";
+    let parked_label = "parked";
 
-    Err(Error::workspace(format!(
-        "{} open issue(s) are assigned and therefore excluded from the ready frontier, \
-         so no worker can claim them: {}{}. \
-         An assigned open issue is not an active claim (a claim sets in_progress). \
-         Clear the ones that are no longer meaningful with `bead update <id> --clear-assignee`",
-        held.len(),
-        sample,
-        suffix
-    )))
+    let mut held_ids = Vec::new();
+    let mut intentionally_held_ids = Vec::new();
+    let mut reason_codes = Vec::new();
+
+    for (id, labels) in held_result {
+        let labels_str = labels.as_deref().unwrap_or("");
+        let is_intentionally_held = labels_str.contains(intentionally_held_label)
+            || labels_str.contains(parked_label);
+
+        if is_intentionally_held {
+            intentionally_held_ids.push(id.clone());
+        } else {
+            held_ids.push(id.clone());
+        }
+    }
+
+    // Build reason codes based on what we found
+    if !held_ids.is_empty() {
+        reason_codes.push(crate::service::claim::ReasonCode::OpenIssueHeldByAssignee);
+    }
+    if !intentionally_held_ids.is_empty() {
+        reason_codes.push(crate::service::claim::ReasonCode::IntentionallyHeldAssignment);
+    }
+
+    Ok(ReadyFrontierReport::from_reason_codes(
+        held_ids,
+        intentionally_held_ids,
+        reason_codes,
+    ))
+}
+
+/// Structured report for ready frontier check (R035)
+///
+/// This provides machine-readable output with R001 reason codes and complete
+/// lists of held IDs, not embedded in prose. It distinguishes between
+/// potentially abandoned assignments and intentionally-held work.
+#[derive(Debug, Clone)]
+pub struct ReadyFrontierReport {
+    /// Whether any open issues are held by assignees (either category)
+    pub has_held_issues: bool,
+
+    /// Count of potentially abandoned held issues (excluding intentionally-held)
+    pub held_count: usize,
+
+    /// Potentially abandoned held issue IDs (machine-readable)
+    pub held_ids: Vec<String>,
+
+    /// Intentionally-held issue IDs (marked with 'intentionally-held' or 'parked' labels)
+    pub intentionally_held_ids: Vec<String>,
+
+    /// R001 semantic reason codes explaining the conditions (as strings for JSON)
+    pub reason_codes: Vec<String>,
+
+    /// Exact remedy command for clearing held assignments
+    pub remedy: Option<String>,
+}
+
+impl ReadyFrontierReport {
+    /// Create a new report from ReasonCode enums
+    pub fn from_reason_codes(
+        held_ids: Vec<String>,
+        intentionally_held_ids: Vec<String>,
+        reason_codes: Vec<crate::service::claim::ReasonCode>,
+    ) -> Self {
+        let reason_code_strings: Vec<String> =
+            reason_codes.iter().map(|rc| rc.code_string()).collect();
+
+        Self {
+            has_held_issues: !held_ids.is_empty() || !intentionally_held_ids.is_empty(),
+            held_count: held_ids.len(),
+            held_ids,
+            intentionally_held_ids,
+            reason_codes: reason_code_strings,
+            remedy: Some("bead update <id> --clear-assignee".to_string()),
+        }
+    }
 }
 
 /// Calculate SHA-256 hash of a file
