@@ -10,7 +10,7 @@ mod store;
 
 use crate::cli::{Cli, Command};
 use crate::error::{Error, Result};
-use crate::service::checkpoint::CheckpointMode;
+
 use crate::service::claim::ClaimResult;
 use crate::service::policy::{validate_workspace_policy, WorkspaceConfig};
 use crate::service::scheduling::SchedulingPolicy;
@@ -985,15 +985,24 @@ fn cmd_sync_flush_only(opts: cli::SyncFlushOptions) -> Result<()> {
         // No explicit output - use F017 forensic checkpoint
         let checkpoint_base = config.root.join(".beads");
 
-        // Determine checkpoint mode (default to monolithic for now)
-        let mode = CheckpointMode::Monolithic;
+        // Reject --profile for forensic checkpoint (not supported)
+        if opts.profile.is_some() {
+            return Err(Error::validation(
+                "--profile is not supported for forensic checkpoint (checkpoint mode is determined by .beads/config.json)",
+            ));
+        }
 
-        // Publish forensic checkpoint
-        let result = service::publish_forensic_checkpoint(&mut store, mode, &checkpoint_base)?;
+        // Mode comes from the recorded checkpoint configuration and the
+        // section 6.1.1 thresholds: `.beads/config.json` may force a mode,
+        // otherwise the publisher selects adaptively from the size of the
+        // would-be monolith against the threshold table it also resolves.
+        let checkpoint_config = service::load_checkpoint_config(&checkpoint_base)?;
+        let result =
+            service::publish_forensic_checkpoint(&mut store, &checkpoint_config, &checkpoint_base)?;
 
         // Print success message
         eprintln!("Flushed forensic checkpoint:");
-        eprintln!("  Mode: {}", mode.as_str());
+        eprintln!("  Mode: {}", result.mode.as_str());
         eprintln!("  Generation: {}", result.generation_id);
         eprintln!("  Issues: {}", result.issue_count);
         eprintln!("  Events: {}", result.event_count);
