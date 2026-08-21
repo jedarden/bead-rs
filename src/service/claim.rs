@@ -479,7 +479,10 @@ fn claim_with_fencing_token(
 ///
 /// This function evaluates every issue for eligibility without exposing SQL
 /// details, providing the diagnostic information needed for decision traces.
-fn collect_eligibility_factors(
+/// Read-only: callers inside a write transaction can snapshot the factors
+/// before mutating, then assemble the trace with [`build_decision_trace`] so
+/// it reflects decision-time state.
+pub fn collect_eligibility_factors(
     tx: &Transaction,
     _assignee: &str,
 ) -> Result<Vec<EligibilityFactors>> {
@@ -612,13 +615,34 @@ fn build_eligibility_summary(factors: &[EligibilityFactors]) -> EligibilitySumma
 /// Create a decision trace for claim operations
 ///
 /// This function builds a machine-readable explanation of the claim decision
-/// without revealing SQL or private store details.
+/// without revealing SQL or private store details. Factors are collected from
+/// current workspace state; callers that mutate before explaining must
+/// snapshot with [`collect_eligibility_factors`] first and use
+/// [`build_decision_trace`] instead, so the trace reflects decision-time
+/// state rather than the mutation's result.
+// Public library API; the binary snapshots factors itself (see cmd_claim),
+// so this may show as unused when compiling the bin target.
+#[allow(dead_code)]
 pub fn create_decision_trace(
     tx: &Transaction,
     selected_issue_id: Option<&str>,
     assignee: &str,
 ) -> Result<DecisionTrace> {
     let factors = collect_eligibility_factors(tx, assignee)?;
+    Ok(build_decision_trace(factors, selected_issue_id, assignee))
+}
+
+/// Assemble a decision trace from pre-collected eligibility factors
+///
+/// Split from [`create_decision_trace`] so a caller inside a write
+/// transaction can snapshot the factors before claiming and still explain
+/// the selection it actually made. Collecting after the claim would describe
+/// the just-claimed issue as in_progress/ineligible in its own trace.
+pub fn build_decision_trace(
+    factors: Vec<EligibilityFactors>,
+    selected_issue_id: Option<&str>,
+    assignee: &str,
+) -> DecisionTrace {
     let eligibility_summary = build_eligibility_summary(&factors);
 
     let has_selection = selected_issue_id.is_some();
@@ -653,7 +677,7 @@ pub fn create_decision_trace(
         }
     }
 
-    Ok(DecisionTrace {
+    DecisionTrace {
         version: DECISION_TRACE_VERSION.to_string(),
         has_selection,
         selected_issue_id: selected_issue_id.map(|s| s.to_string()),
@@ -662,7 +686,7 @@ pub fn create_decision_trace(
         selected_factors,
         assignee: assignee.to_string(),
         policy: "fifo-v1".to_string(),
-    })
+    }
 }
 
 /// Find an in_progress issue currently held by the given assignee
@@ -761,12 +785,15 @@ fn find_eligible_issue(tx: &Transaction) -> Result<Option<String>> {
 /// Perform claim operation with optional decision trace
 ///
 /// This function wraps the standard claim operation with optional decision trace
-/// collection for diagnostic purposes. The decision trace is nonmutating and
-/// only reads data to explain the claim decision.
+/// collection for diagnostic purposes. The trace is assembled from an
+/// eligibility snapshot taken before the claim runs, so it explains the
+/// decision as it was made — never from post-claim state, which would
+/// describe the just-claimed issue as in_progress/ineligible.
 ///
 /// Part of the library's public claim API. The CLI builds its `--why` trace
-/// from `create_decision_trace` over the claim it already made, so this
-/// wrapper may show as unused when compiling the binary.
+/// from `collect_eligibility_factors` + `build_decision_trace` around the
+/// claim it already made, so this wrapper may show as unused when compiling
+/// the binary.
 #[allow(dead_code)]
 pub fn claim_issue_with_trace(
     tx: &Transaction,
@@ -777,19 +804,18 @@ pub fn claim_issue_with_trace(
     include_trace: bool,
     single_claim: bool,
 ) -> Result<(ClaimResult, Option<DecisionTrace>)> {
-    // First perform the standard claim operation
-    let result = claim_issue(tx, assignee, model, harness, harness_version, single_claim)?;
-
-    // Collect decision trace if requested
-    let trace = if include_trace {
-        Some(create_decision_trace(
-            tx,
-            result.bead_id.as_deref(),
-            assignee,
-        )?)
+    // Snapshot eligibility before claiming so the trace reflects
+    // decision-time state
+    let factors = if include_trace {
+        Some(collect_eligibility_factors(tx, assignee)?)
     } else {
         None
     };
+
+    // Perform the standard claim operation
+    let result = claim_issue(tx, assignee, model, harness, harness_version, single_claim)?;
+
+    let trace = factors.map(|f| build_decision_trace(f, result.bead_id.as_deref(), assignee));
 
     Ok((result, trace))
 }

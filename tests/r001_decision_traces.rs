@@ -438,6 +438,93 @@ fn test_decision_trace_without_flag() {
 
 #[test]
 #[serial]
+fn test_claim_with_why_claims_exactly_one_issue() {
+    let temp = tempfile::tempdir().unwrap();
+    std::env::set_current_dir(temp.path()).unwrap();
+
+    // Initialize workspace
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["init", "--prefix", "test"])
+        .assert()
+        .success();
+
+    // Create several ready beads so a second hidden claim would have
+    // something to take
+    for title in ["First Issue", "Second Issue", "Third Issue"] {
+        Command::cargo_bin("bead")
+            .unwrap()
+            .args(["create", "--title", title, "--priority", "0"])
+            .assert()
+            .success();
+    }
+
+    // Claim once with --why
+    let claim_output = Command::cargo_bin("bead")
+        .unwrap()
+        .args(["claim", "--assignee", "w1", "--why", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&claim_output).expect("claim --json output should be valid JSON");
+
+    let claimed_id = json
+        .pointer("/claim_result/bead_id")
+        .and_then(|v| v.as_str())
+        .expect("claim_result.bead_id should be a string")
+        .to_string();
+
+    // The trace must explain the bead the claim actually selected, not a
+    // second hidden claim's bead
+    let selected_id = json
+        .pointer("/decision_trace/selected_issue_id")
+        .and_then(|v| v.as_str())
+        .expect("decision_trace.selected_issue_id should be a string");
+    assert_eq!(
+        selected_id, claimed_id,
+        "decision_trace.selected_issue_id must match claim_result.bead_id"
+    );
+
+    // The selected bead's factors must describe decision-time state —
+    // open, unassigned, eligible — not the post-claim in_progress state
+    let factors = json
+        .pointer("/decision_trace/selected_factors")
+        .expect("selected_factors should be present for a successful claim");
+    assert_eq!(factors["issue_id"].as_str(), Some(claimed_id.as_str()));
+    assert_eq!(factors["base_status"].as_str(), Some("open"));
+    assert_eq!(factors["is_assigned"].as_bool(), Some(false));
+    assert_eq!(factors["is_eligible"].as_bool(), Some(true));
+
+    // Exactly one issue may be in_progress afterwards: --why must not
+    // perform a second claim
+    let list_output = Command::cargo_bin("bead")
+        .unwrap()
+        .args(["list", "--status", "in_progress", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let list_str = String::from_utf8_lossy(&list_output);
+    let lines: Vec<&str> = list_str.lines().collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "expected exactly one in_progress issue after 'claim --why', got: {list_str}"
+    );
+    let in_progress: serde_json::Value =
+        serde_json::from_str(lines[0]).expect("list --json should emit one JSON object per line");
+    assert_eq!(in_progress["id"].as_str(), Some(claimed_id.as_str()));
+    assert_eq!(in_progress["assignee"].as_str(), Some("w1"));
+}
+
+#[test]
+#[serial]
 fn test_reason_code_serialization() {
     use bead_rs::service::claim::ReasonCode;
 

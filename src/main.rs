@@ -117,6 +117,18 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
     // Parse scheduling policy
     let policy = SchedulingPolicy::from_string(&opts.policy)?;
 
+    // Snapshot eligibility before the claim so the --why trace explains the
+    // decision as it was made (read-only; the claim below is the only
+    // mutation in this transaction)
+    let trace_factors = if opts.why {
+        Some(service::claim::collect_eligibility_factors(
+            &tx,
+            &opts.assignee,
+        )?)
+    } else {
+        None
+    };
+
     // Perform claim based on policy
     let (enhanced_result, claim_result) = if matches!(policy, SchedulingPolicy::FifoV1) {
         // Use existing FIFO claim for backward compatibility
@@ -155,19 +167,19 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
         (enhanced, claim)
     };
 
-    // Get decision trace if requested (backward compatibility with R001).
-    // The trace is built from the claim that already happened in this
-    // transaction — it must not perform a second claim, which would silently
-    // assign an extra issue to the assignee (and defeat --single-claim).
-    let trace = if opts.why {
-        Some(service::claim::create_decision_trace(
-            &tx,
+    // Build the decision trace if requested (backward compatibility with
+    // R001). Assembled from the pre-claim eligibility snapshot and the bead
+    // the claim actually selected — never from a second claim, which would
+    // silently assign an extra issue to the assignee (and defeat
+    // --single-claim), and never from post-claim state, which would describe
+    // the selected bead as in_progress/ineligible in its own trace.
+    let trace = trace_factors.map(|factors| {
+        service::claim::build_decision_trace(
+            factors,
             enhanced_result.bead_id.as_deref(),
             &opts.assignee,
-        )?)
-    } else {
-        None
-    };
+        )
+    });
 
     // Commit transaction
     tx.commit()
