@@ -845,6 +845,7 @@ EXAMPLES:
   bead sync import-only --input checkpoint/ --restore-into-empty --actor admin
   bead sync import-only --input backup.jsonl --merge --actor admin --dry-run
   bead sync import-only --input .beads/checkpoint --merge --actor system
+  bead sync import-only --input forensic.jsonl --diagnostics --dry-run
 
 VALIDATION PERFORMED:
   - Record type validation (issue, event, provenance_receipt)
@@ -858,6 +859,12 @@ VALIDATION PERFORMED:
 DRY RUN:
   With --dry-run: performs complete validation and reconciliation without
   activating state. Reports prospective counts, conflicts, and receipt preview.
+
+DIAGNOSTICS MODE (R014):
+  With --diagnostics: enables detailed validation failure collection (R014).
+  Incompatible with --restore-into-empty and --merge (uses simple import only).
+  Reports line numbers, JSON pointers, schema keywords, and semantic codes
+  for validation failures. Useful for debugging malformed checkpoint files.
 
 PROVENANCE:
   Both operations create immutable receipts stored in database and exported
@@ -917,10 +924,6 @@ pub struct SyncFlushOptions {
     /// Export an issue-only copy to this path instead of only updating .beads/checkpoint/
     #[arg(long)]
     pub output: Option<String>,
-
-    /// Profile for checkpoint format (not supported for issue-only export)
-    #[arg(long)]
-    pub profile: Option<String>,
 }
 
 /// Import operation mode
@@ -965,6 +968,10 @@ pub struct SyncImportOptions {
     /// Perform dry-run without activating state
     #[arg(long)]
     pub dry_run: bool,
+
+    /// Enable diagnostic mode (R014) with detailed validation failure collection
+    #[arg(long)]
+    pub diagnostics: bool,
 }
 
 /// Options for checkpoint status

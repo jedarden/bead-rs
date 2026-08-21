@@ -4,7 +4,7 @@
 .SH NAME
 bead sync flush\-only \- Flush checkpoint to JSONL file
 .SH SYNOPSIS
-\fBbead sync flush\-only\fR [\fB\-\-output\fR] [\fB\-\-profile\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBbead sync flush\-only\fR [\fB\-\-output\fR] [\fB\-h\fR|\fB\-\-help\fR] 
 .SH DESCRIPTION
 Atomically publish a checkpoint from the current database state.
 .PP
@@ -47,9 +47,6 @@ GIT INTEGRATION:
 .TP
 \fB\-\-output\fR=\fIOUTPUT\fR
 Export an issue\-only copy to this path instead of only updating .beads/checkpoint/
-.TP
-\fB\-\-profile\fR=\fIPROFILE\fR
-Profile for checkpoint format (not supported for issue\-only export)
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

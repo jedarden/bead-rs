@@ -4,7 +4,7 @@
 .SH NAME
 bead sync import\-only \- Import forensic checkpoint with restore or merge
 .SH SYNOPSIS
-\fBbead sync import\-only\fR <\fB\-\-input\fR> [\fB\-\-profile\fR] [\fB\-\-restore\-into\-empty\fR] [\fB\-\-merge\fR] [\fB\-\-actor\fR] [\fB\-\-dry\-run\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBbead sync import\-only\fR <\fB\-\-input\fR> [\fB\-\-profile\fR] [\fB\-\-restore\-into\-empty\fR] [\fB\-\-merge\fR] [\fB\-\-actor\fR] [\fB\-\-dry\-run\fR] [\fB\-\-diagnostics\fR] [\fB\-h\fR|\fB\-\-help\fR] 
 .SH DESCRIPTION
 Import and validate forensic checkpoint with atomic activation.
 .PP
@@ -34,6 +34,7 @@ EXAMPLES:
   bead sync import\-only \-\-input checkpoint/ \-\-restore\-into\-empty \-\-actor admin
   bead sync import\-only \-\-input backup.jsonl \-\-merge \-\-actor admin \-\-dry\-run
   bead sync import\-only \-\-input .beads/checkpoint \-\-merge \-\-actor system
+  bead sync import\-only \-\-input forensic.jsonl \-\-diagnostics \-\-dry\-run
 .PP
 VALIDATION PERFORMED:
   \- Record type validation (issue, event, provenance_receipt)
@@ -47,6 +48,12 @@ VALIDATION PERFORMED:
 DRY RUN:
   With \-\-dry\-run: performs complete validation and reconciliation without
   activating state. Reports prospective counts, conflicts, and receipt preview.
+.PP
+DIAGNOSTICS MODE (R014):
+  With \-\-diagnostics: enables detailed validation failure collection (R014).
+  Incompatible with \-\-restore\-into\-empty and \-\-merge (uses simple import only).
+  Reports line numbers, JSON pointers, schema keywords, and semantic codes
+  for validation failures. Useful for debugging malformed checkpoint files.
 .PP
 PROVENANCE:
   Both operations create immutable receipts stored in database and exported
@@ -80,6 +87,9 @@ Actor performing the import operation (required for restore/merge)
 .TP
 \fB\-\-dry\-run\fR
 Perform dry\-run without activating state
+.TP
+\fB\-\-diagnostics\fR
+Enable diagnostic mode (R014) with detailed validation failure collection
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)
