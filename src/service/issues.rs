@@ -358,7 +358,7 @@ fn generate_unique_id(conn: &Connection, prefix: &str) -> Result<String> {
         // readable; collisions are checked below and retried, so this is
         // not relying on the birthday bound alone.
         let mut rng = rand::thread_rng();
-        let bytes: [u8; 4] = rng.gen();
+        let bytes: [u8; 4] = rng.r#gen();
         let suffix = hex::encode(bytes);
 
         let id = format!("{}-{}", prefix, suffix);

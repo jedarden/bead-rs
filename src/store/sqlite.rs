@@ -141,7 +141,7 @@ impl SqliteStore {
     fn generate_uuid() -> String {
         use rand::Rng;
         let mut rng = rand::thread_rng();
-        let bytes: [u8; 16] = rng.gen();
+        let bytes: [u8; 16] = rng.r#gen();
         format!(
             "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
             bytes[0], bytes[1], bytes[2], bytes[3],

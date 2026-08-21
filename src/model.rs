@@ -464,7 +464,7 @@ pub fn current_timestamp() -> String {
 pub fn generate_issue_id() -> Result<String, Error> {
     let prefix = "bead";
     let mut rng = rand::thread_rng();
-    let bytes: [u8; 4] = rng.gen();
+    let bytes: [u8; 4] = rng.r#gen();
     let suffix = hex::encode(bytes);
     Ok(format!("{}-{}", prefix, suffix))
 }

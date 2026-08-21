@@ -30,7 +30,7 @@ carefully as its correctness.
 
 ## Engineering
 
-- Rust 1.75 is the initial MSRV.
+- Rust 1.85 is the MSRV (see [ADR-004](docs/adr/004-raise-msrv-to-1.85-and-edition-2024.md)).
 - Avoid `unsafe` code.
 - Use structured errors and nonzero exit codes for failures.
 - Every mutating operation must be atomic, auditable, and concurrency-tested.

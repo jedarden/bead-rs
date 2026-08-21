@@ -22,7 +22,8 @@ impl TestWorkspace {
         let workspace_path = temp_dir.path().to_path_buf();
 
         // Set HOME to temp directory for isolation
-        env::set_var("HOME", &workspace_path);
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { env::set_var("HOME", &workspace_path) };
 
         // Get the path to the locally built bead binary
         let current_exe = std::env::current_exe().expect("Failed to get current exe");
@@ -437,9 +438,7 @@ fn test_empty_queue_with_lease_request() {
 
     // Empty queue should return null bead_id and null lease
     assert!(result["bead_id"].is_null() || result["bead_id"].as_str().unwrap_or("").is_empty());
-    assert!(
-        result["lease"].is_null() || result["lease"].as_object().map_or(true, |o| o.is_empty())
-    );
+    assert!(result["lease"].is_null() || result["lease"].as_object().is_none_or(|o| o.is_empty()));
 }
 
 #[test]
@@ -458,9 +457,7 @@ fn test_lease_renewal_without_active_lease() {
 
     // Should return empty result since no lease exists to renew
     assert!(result["bead_id"].is_null() || result["bead_id"].as_str().unwrap_or("").is_empty());
-    assert!(
-        result["lease"].is_null() || result["lease"].as_object().map_or(true, |o| o.is_empty())
-    );
+    assert!(result["lease"].is_null() || result["lease"].as_object().is_none_or(|o| o.is_empty()));
 }
 
 #[test]

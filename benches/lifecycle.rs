@@ -162,7 +162,7 @@ impl BenchmarkConfig {
         Self {
             num_beads,
             num_workers,
-            seed: rand::thread_rng().gen(),
+            seed: rand::thread_rng().r#gen(),
             duration: None,
             workload: WorkloadType::ClaimClose,
             dataset_family: DatasetFamily::MixedLifecycle,
@@ -215,7 +215,7 @@ impl GeneratedDataset {
                 // Every issue is ready (no dependencies)
                 for i in 0..config.num_beads {
                     let issue = create_base_issue(
-                        format!("bead-{:016x}", rng.gen::<u64>()),
+                        format!("bead-{:016x}", rng.r#gen::<u64>()),
                         format!("Independent task {}", i),
                         2, // P2
                     );
@@ -233,7 +233,7 @@ impl GeneratedDataset {
 
                     for i in 0..chain_length {
                         let issue = create_base_issue(
-                            format!("bead-{:016x}", rng.gen::<u64>()),
+                            format!("bead-{:016x}", rng.r#gen::<u64>()),
                             format!("Chain {} task {}", chain, i),
                             2, // P2
                         );
@@ -257,7 +257,7 @@ impl GeneratedDataset {
                 // Initial frontier
                 for i in 0..frontier_size {
                     let issue = create_base_issue(
-                        format!("bead-{:016x}", rng.gen::<u64>()),
+                        format!("bead-{:016x}", rng.r#gen::<u64>()),
                         format!("Frontier task {}", i),
                         2, // P2
                     );
@@ -276,7 +276,7 @@ impl GeneratedDataset {
 
                     for i in 0..next_layer_size {
                         let issue = create_base_issue(
-                            format!("bead-{:016x}", rng.gen::<u64>()),
+                            format!("bead-{:016x}", rng.r#gen::<u64>()),
                             format!("Layer task {}", i),
                             2, // P2
                         );
@@ -312,7 +312,7 @@ impl GeneratedDataset {
                 for d in 0..diamond_count {
                     // Create diamond structure
                     let root = create_base_issue(
-                        format!("bead-{:016x}", rng.gen::<u64>()),
+                        format!("bead-{:016x}", rng.r#gen::<u64>()),
                         format!("Diamond {} root", d),
                         2, // P2
                     );
@@ -321,14 +321,14 @@ impl GeneratedDataset {
 
                     // Two intermediate tasks
                     let mid1 = create_base_issue(
-                        format!("bead-{:016x}", rng.gen::<u64>()),
+                        format!("bead-{:016x}", rng.r#gen::<u64>()),
                         format!("Diamond {} mid1", d),
                         2, // P2
                     );
                     let mid1_id = mid1.id.clone();
 
                     let mid2 = create_base_issue(
-                        format!("bead-{:016x}", rng.gen::<u64>()),
+                        format!("bead-{:016x}", rng.r#gen::<u64>()),
                         format!("Diamond {} mid2", d),
                         2, // P2
                     );
@@ -342,7 +342,7 @@ impl GeneratedDataset {
 
                     // Shared downstream task
                     let leaf = create_base_issue(
-                        format!("bead-{:016x}", rng.gen::<u64>()),
+                        format!("bead-{:016x}", rng.r#gen::<u64>()),
                         format!("Diamond {} leaf", d),
                         2, // P2
                     );
@@ -370,7 +370,7 @@ impl GeneratedDataset {
                 // Ready issues
                 for i in 0..ready_count {
                     let issue = create_base_issue(
-                        format!("bead-{:016x}", rng.gen::<u64>()),
+                        format!("bead-{:016x}", rng.r#gen::<u64>()),
                         format!("Ready task {}", i),
                         2, // P2
                     );
@@ -380,7 +380,7 @@ impl GeneratedDataset {
                 // Assigned issues
                 for i in 0..assigned_count {
                     let mut issue = create_base_issue(
-                        format!("bead-{:016x}", rng.gen::<u64>()),
+                        format!("bead-{:016x}", rng.r#gen::<u64>()),
                         format!("Assigned task {}", i),
                         2, // P2
                     );
@@ -392,7 +392,7 @@ impl GeneratedDataset {
                 // Closed issues
                 for i in 0..closed_count {
                     let mut issue = create_base_issue(
-                        format!("bead-{:016x}", rng.gen::<u64>()),
+                        format!("bead-{:016x}", rng.r#gen::<u64>()),
                         format!("Closed task {}", i),
                         2, // P2
                     );
@@ -409,7 +409,7 @@ impl GeneratedDataset {
                 let _blocker_start = issues.len();
                 for i in 0..(blocked_count / 2) {
                     let blocker = create_base_issue(
-                        format!("bead-{:016x}", rng.gen::<u64>()),
+                        format!("bead-{:016x}", rng.r#gen::<u64>()),
                         format!("Blocker task {}", i),
                         2, // P2
                     );
@@ -417,7 +417,7 @@ impl GeneratedDataset {
                     issues.push(blocker);
 
                     let blocked = create_base_issue(
-                        format!("bead-{:016x}", rng.gen::<u64>()),
+                        format!("bead-{:016x}", rng.r#gen::<u64>()),
                         format!("Blocked task {}", i),
                         2, // P2
                     );
@@ -442,7 +442,7 @@ impl GeneratedDataset {
             .filter(|i| {
                 i.base_status == BaseStatus::Open
                     && i.assignee.is_none()
-                    && i.manual_blocked.map_or(true, |blocked| !blocked)
+                    && i.manual_blocked.is_none_or(|blocked| !blocked)
                     && !blocked_ids.contains(i.id.as_str())
             })
             .count();
@@ -920,43 +920,47 @@ fn execute_mixed_workload(
                 6..=7 => {
                     // Release if has claim
                     let tx = store.conn().unchecked_transaction()?;
-                    if let Ok(claimed) = claim::claim_issue(&tx, assignee, None, None, None, false)
-                    {
-                        if let Some(bead_id) = &claimed.bead_id {
-                            tx.commit()?;
-                            lifecycle::release_issue(store.conn(), bead_id, None, None)?;
-                            metrics.releases += 1;
-                        } else {
+                    match claim::claim_issue(&tx, assignee, None, None, None, false) {
+                        Ok(claimed) => {
+                            if let Some(bead_id) = &claimed.bead_id {
+                                tx.commit()?;
+                                lifecycle::release_issue(store.conn(), bead_id, None, None)?;
+                                metrics.releases += 1;
+                            } else {
+                                tx.commit()?;
+                            }
+                        }
+                        _ => {
                             tx.commit()?;
                         }
-                    } else {
-                        tx.commit()?;
                     }
                 }
                 8..=9 => {
                     // Close and reopen
                     let tx = store.conn().unchecked_transaction()?;
-                    if let Ok(claimed) = claim::claim_issue(&tx, assignee, None, None, None, false)
-                    {
-                        if let Some(bead_id) = &claimed.bead_id {
-                            tx.commit()?;
+                    match claim::claim_issue(&tx, assignee, None, None, None, false) {
+                        Ok(claimed) => {
+                            if let Some(bead_id) = &claimed.bead_id {
+                                tx.commit()?;
 
-                            lifecycle::close_issue(
-                                store.conn(),
-                                bead_id,
-                                "benchmark cycle",
-                                None,
-                                None,
-                            )?;
-                            metrics.closes += 1;
+                                lifecycle::close_issue(
+                                    store.conn(),
+                                    bead_id,
+                                    "benchmark cycle",
+                                    None,
+                                    None,
+                                )?;
+                                metrics.closes += 1;
 
-                            lifecycle::reopen_issue(store.conn(), bead_id, None, None)?;
-                            metrics.reopens += 1;
-                        } else {
+                                lifecycle::reopen_issue(store.conn(), bead_id, None, None)?;
+                                metrics.reopens += 1;
+                            } else {
+                                tx.commit()?;
+                            }
+                        }
+                        _ => {
                             tx.commit()?;
                         }
-                    } else {
-                        tx.commit()?;
                     }
                 }
                 _ => unreachable!(),
@@ -1094,7 +1098,7 @@ fn main() -> Result<()> {
     // Parse command line arguments
     let mut num_beads = 1000;
     let mut num_workers = 4;
-    let mut seed = rand::thread_rng().gen();
+    let mut seed = rand::thread_rng().r#gen();
     let mut duration_secs = 60;
     let mut workload = WorkloadType::ClaimClose;
     let mut dataset_family = DatasetFamily::MixedLifecycle;

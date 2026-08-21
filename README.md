@@ -30,8 +30,9 @@ cargo install --path .          # installs the `bead` binary
 bead --version
 ```
 
-Requires Rust 1.75 or newer. SQLite is bundled; there is no system dependency
-and no network access at runtime.
+Requires Rust 1.85 or newer ([ADR-004](docs/adr/004-raise-msrv-to-1.85-and-edition-2024.md)).
+SQLite is bundled; there is no system dependency and no network access at
+runtime.
 
 ## Quick start
 
