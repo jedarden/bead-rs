@@ -20,9 +20,7 @@
 //! would understate the damage.
 
 use crate::error::{Error, Result};
-use crate::service::checkpoint::{
-    self, ForensicStaging, SerializedEvent, EventRecord,
-};
+use crate::service::checkpoint::{self, EventRecord, ForensicStaging, SerializedEvent};
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::path::Path;
@@ -119,8 +117,7 @@ pub fn classify(conn: &Connection, checkpoint_base: &Path) -> Result<Relationshi
     // no comparison — and no covered-ahead claim — is possible, but the
     // pointer is present and unusable, which is integrity damage, not
     // absence.
-    let Some(covered) = pointer.get("snapshot_sequence").and_then(|v| v.as_i64())
-    else {
+    let Some(covered) = pointer.get("snapshot_sequence").and_then(|v| v.as_i64()) else {
         return Ok(RelationshipVerdict::failing(
             "verified pointer: current.json does not declare an integer snapshot_sequence",
         ));
@@ -140,7 +137,12 @@ pub fn classify(conn: &Connection, checkpoint_base: &Path) -> Result<Relationshi
     }
 
     // covered > live: every qualifier must hold for remote-advanced.
-    Ok(classify_covered_ahead(conn, checkpoint_base, &pointer, live))
+    Ok(classify_covered_ahead(
+        conn,
+        checkpoint_base,
+        &pointer,
+        live,
+    ))
 }
 
 /// Evaluate the five remote-advanced qualifiers in specification order,
@@ -214,12 +216,7 @@ fn classify_covered_ahead(
     // Qualifier 2: valid staged stream.
     let staging = match checkpoint::stage_checkpoint_set(&checkpoint_dir) {
         Ok(staging) => staging,
-        Err(e) => {
-            return RelationshipVerdict::failing(format!(
-                "valid staged stream: {}",
-                e
-            ))
-        }
+        Err(e) => return RelationshipVerdict::failing(format!("valid staged stream: {}", e)),
     };
     if let Err(e) = checkpoint::validate_forensic_contents(&staging) {
         return RelationshipVerdict::failing(format!("valid staged stream: {}", e));

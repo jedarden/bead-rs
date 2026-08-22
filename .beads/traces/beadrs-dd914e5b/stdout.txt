@@ -1,0 +1,9 @@
+Implemented, pushed, verified, and closed.
+
+- Added the pinned Rust 1.85 lane and `Cargo.toml` drift guard in [bead-rs-ci-workflowtemplate.yml](/home/coding/declarative-config/k8s/iad-ci/argo-workflows/bead-rs-ci-workflowtemplate.yml:65).
+- Added secure private Forgejo cloning and an opt-in `msrv-only` verification path.
+- Pushed commits through `ad8988d4` to `declarative-config/main`.
+- Real workflow `bead-rs-ci-msrv-manual-ks5f5`: **Succeeded**. Rust 1.85 checked all targets in 59.80s.
+- Closed `beadrs-dd914e5b` with workflow name/phase evidence and flushed its checkpoint.
+
+The repository-wide resource checker still reports an unrelated pre-existing limit violation in `ytt-build.yaml`; the bead-rs template has no resource findings.

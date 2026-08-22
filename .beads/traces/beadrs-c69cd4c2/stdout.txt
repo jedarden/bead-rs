@@ -1,0 +1,9 @@
+Closed `beadrs-c69cd4c2`.
+
+- [Cargo.toml](/home/coding/bead-rs/Cargo.toml:4) declares edition 2024 and Rust 1.85.
+- Requested dependencies and lockfile are refreshed.
+- [CI template](/home/coding/declarative-config/k8s/iad-ci/argo-workflows/bead-rs-ci-workflowtemplate.yml:65) pins 1.85 and checks manifest drift.
+- Recorded workflow `bead-rs-ci-msrv-manual-ks5f5` succeeded.
+- Isolated ADR-004 snapshot passed fmt, Clippy, full tests, and Rust 1.85 checking.
+
+No new commit was created because all requested changes were already committed and pushed. Current HEAD has separate post-ADR formatting/test regressions from later R027/R028/R031 work; those concurrent edits were preserved.

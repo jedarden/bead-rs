@@ -1,0 +1,11 @@
+Implemented and shipped R031 atomic workspace-local resource locks.
+
+- Resource validation, migration, atomic claim acquisition, release/close/lease-expiry cleanup
+- `resource_conflict` readiness explanations
+- CLI and documentation explicitly scoped to one native workspace
+- Added conformance tests and help coverage
+
+Commit pushed: `aeddfd6`  
+Bead `beadrs-1ce8d4a6` closed.
+
+Verification: R031 tests passed; `cargo check --all-targets` passed. Full suite still has unrelated R028 fork documentation/Clippy failures.

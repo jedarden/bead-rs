@@ -1,0 +1,8 @@
+Completed, committed, pushed, and bead closed.
+
+- Refreshed dependencies and lockfile; documented caret/bounded ranges in ADR-004.
+- Regenerated 52 man pages.
+- Verification passed: full tests, conformance/concurrency, Clippy, fmt, Rust 1.85 check, and 40-report benchmark smoke (0 busy/conflicts).
+- Commits: `acd165d`, `79d3566`; pushed to `origin/main`.
+
+Unrelated concurrent worktree changes were preserved.

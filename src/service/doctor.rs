@@ -302,10 +302,17 @@ pub fn run_diagnostics_with_scopes(
                 has_warnings = true;
                 // R027: a remote-advanced checkpoint is an actionable
                 // diagnostic, so the details carry the stable state marker
-                // and the reconcile remedy alongside the message text.
-                let details = if e.to_string().starts_with(
-                    crate::service::reconcile::REMOTE_ADVANCED_MARKER,
-                ) {
+                // and the remedy alongside the message text. Match on the
+                // workspace variant's own payload, not the rendered Display
+                // string: the display carries a "Workspace error: " prefix,
+                // so a `to_string().starts_with` test never fires and the
+                // marker would silently vanish from every JSON report.
+                let is_remote_advanced = matches!(
+                    &e,
+                    Error::Workspace(message)
+                        if message.starts_with(crate::service::reconcile::REMOTE_ADVANCED_MARKER)
+                );
+                let details = if is_remote_advanced {
                     serde_json::json!({
                         "state": crate::service::reconcile::REMOTE_ADVANCED_MARKER,
                         "remedy": crate::service::reconcile::REMOTE_ADVANCED_REMEDY,
@@ -904,12 +911,13 @@ fn check_stale_in_progress(store: &impl Store) -> Result<StaleInProgressReport> 
             continue;
         }
 
-        let event_time = chrono::DateTime::parse_from_rfc3339(&candidate.last_event_at).map_err(|e| {
-            Error::Integrity(format!(
-                "Invalid latest event timestamp for in-progress issue {}: {}",
-                candidate.id, e
-            ))
-        })?;
+        let event_time =
+            chrono::DateTime::parse_from_rfc3339(&candidate.last_event_at).map_err(|e| {
+                Error::Integrity(format!(
+                    "Invalid latest event timestamp for in-progress issue {}: {}",
+                    candidate.id, e
+                ))
+            })?;
         let age_seconds = now
             .signed_duration_since(event_time.with_timezone(&chrono::Utc))
             .num_seconds();
@@ -1367,11 +1375,10 @@ fn check_forensic_checkpoint(
         crate::service::reconcile::SyncRelationship::CoveredAheadIntegrityFailure => {
             return Err(Error::Integrity(format!(
                 "covered-ahead integrity failure: {}",
-                verdict
-                    .failed_qualifier
-                    .as_deref()
-                    .unwrap_or("the checkpoint is ahead of the live store but failed its \
-                               qualification")
+                verdict.failed_qualifier.as_deref().unwrap_or(
+                    "the checkpoint is ahead of the live store but failed its \
+                               qualification"
+                )
             )));
         }
         _ => {}
@@ -1801,7 +1808,9 @@ fn check_uuid_divergence(store: &impl Store) -> Result<String> {
     if total_events > 0 {
         // Check for events that don't match current workspace UUID
         let current_uuid: String = conn
-            .query_row("SELECT uuid FROM workspace WHERE id = 1", [], |row| row.get(0))
+            .query_row("SELECT uuid FROM workspace WHERE id = 1", [], |row| {
+                row.get(0)
+            })
             .unwrap_or_else(|_| String::new());
 
         let mismatched_events: i64 = conn

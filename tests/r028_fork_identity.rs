@@ -26,9 +26,7 @@ fn create_forkable_workspace() -> (TempDir, WorkspaceConfig, Connection) {
     std::fs::create_dir_all(&checkpoint_dir).unwrap();
 
     // Initialize workspace
-    let config = SqliteStore::new()
-        .init_workspace("test-prefix")
-        .unwrap();
+    let config = SqliteStore::new().init_workspace("test-prefix").unwrap();
 
     // Open database connection
     let db_path = config.database_path();
@@ -63,15 +61,21 @@ fn create_forkable_workspace() -> (TempDir, WorkspaceConfig, Connection) {
                 receipt_sha256 TEXT NOT NULL
             )",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         conn.execute(
             "INSERT INTO provenance_receipts_new SELECT * FROM provenance_receipts",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         conn.execute("DROP TABLE provenance_receipts", []).unwrap();
-        conn.execute("ALTER TABLE provenance_receipts_new RENAME TO provenance_receipts", []).unwrap();
+        conn.execute(
+            "ALTER TABLE provenance_receipts_new RENAME TO provenance_receipts",
+            [],
+        )
+        .unwrap();
 
         // Recreate indexes
         conn.execute(
@@ -102,7 +106,8 @@ fn create_forkable_workspace() -> (TempDir, WorkspaceConfig, Connection) {
 /// Helper to set checkpoint to clean state
 fn set_clean_checkpoint(conn: &Connection) {
     // First, remove any existing checkpoint state to start fresh
-    conn.execute("DELETE FROM checkpoint_state WHERE id = 1", []).ok();
+    conn.execute("DELETE FROM checkpoint_state WHERE id = 1", [])
+        .ok();
 
     let max_sequence: i64 = conn
         .query_row("SELECT COALESCE(MAX(sequence), 0) FROM events", [], |row| {
@@ -167,7 +172,11 @@ fn test_fork_creates_fork_receipt() {
         )
         .unwrap();
 
-    assert_eq!(receipt_count, 1, "Expected exactly 1 fork receipt, but found {}", receipt_count);
+    assert_eq!(
+        receipt_count, 1,
+        "Expected exactly 1 fork receipt, but found {}",
+        receipt_count
+    );
 
     // Verify receipt contents
     let (receipt_id, source_uuid, target_uuid, actor): (String, String, String, String) = store
@@ -323,9 +332,7 @@ fn test_fork_requires_checkpoint() {
     std::fs::create_dir_all(&beads_dir).unwrap();
 
     // Initialize workspace WITHOUT checkpoint
-    let config = SqliteStore::new()
-        .init_workspace("test-prefix")
-        .unwrap();
+    let config = SqliteStore::new().init_workspace("test-prefix").unwrap();
 
     // Open database connection
     let db_path = config.database_path();
@@ -369,7 +376,10 @@ fn test_fork_validates_reason() {
     let result = fork_workspace_identity(&mut store, "test-actor", Some(&long_reason));
 
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("cannot exceed 4096"));
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("cannot exceed 4096"));
 }
 
 #[test]
@@ -390,7 +400,10 @@ fn test_fork_records_parent_generation() {
     let result = fork_workspace_identity(&mut store, "test-actor", None).unwrap();
 
     // Verify parent generation ID is recorded
-    assert_eq!(result.parent_generation_id, Some("test-gen-123".to_string()));
+    assert_eq!(
+        result.parent_generation_id,
+        Some("test-gen-123".to_string())
+    );
 }
 
 #[test]
@@ -442,9 +455,9 @@ fn test_fork_report_contains_all_required_fields() {
     assert!(!result.fork_receipt_sha256.is_empty());
     assert_eq!(result.actor, "test-actor");
     assert!(!result.created_at.is_empty());
-    assert!(result.issue_count >= 0);
-    assert!(result.event_count >= 0);
-    assert!(result.receipt_count >= 0);
+    // The counts depend on how much state the fixture staged before the
+    // fork; they are covered by test_fork_creates_fork_receipt. Only the
+    // summary event the fork itself appends is guaranteed present here.
     assert!(result.summary_event_sequence > 0);
     assert_eq!(result.reason, Some("Test reason".to_string()));
 }
