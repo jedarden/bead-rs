@@ -2331,7 +2331,7 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
     };
 
     if opts.repair {
-        // Run repairs - maintain narrow allowlist (only temp files)
+        // Run repairs - maintain narrow allowlist (temp files, structure dirs)
         eprintln!("Attempting repairs...");
         let mut store_wrapper = store::SqliteStore::new();
 
@@ -2351,7 +2351,9 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
         }
 
         // Note: Repairs stay narrowly allowlisted and never rewrite user semantic data
-        eprintln!("Repairs completed. Only operation-owned temporary files are removed.");
+        eprintln!(
+            "Repairs completed. Only operation-owned temporary files are removed and missing workspace structure directories are recreated."
+        );
     } else {
         // Run diagnostics with specified scopes
         let diagnostics = if scopes.len() == 1 && scopes[0] == service::doctor::DiagnosticScope::All

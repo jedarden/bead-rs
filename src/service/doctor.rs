@@ -605,6 +605,32 @@ pub fn run_repairs(store: &mut impl Store) -> Result<Vec<DiagnosticCheck>> {
         }
     }
 
+    // Recreate the receipts directory when missing. `check_workspace_config`
+    // requires it and `init` creates it, but nothing recreates it afterwards:
+    // the directory is untracked (git clean removes it) and runtime provenance
+    // receipts live in the `provenance_receipts` table, so nothing ever
+    // writes into it. Restoring it rebuilds the canonical init-era layout
+    // without touching user data.
+    let receipts_dir = beads_dir.join("receipts");
+    if !receipts_dir.exists() {
+        std::fs::create_dir_all(&receipts_dir).map_err(|e| Error::Io {
+            path: receipts_dir.clone(),
+            msg: e,
+        })?;
+        repairs.push(DiagnosticCheck {
+            name: "created_receipts_dir".to_string(),
+            status: DiagnosticStatus::Ok,
+            message: format!(
+                "Created missing receipts directory: {}",
+                receipts_dir.display()
+            ),
+            scope: Some("store".to_string()),
+            details: Some(serde_json::json!({
+                "created_path": receipts_dir.display().to_string()
+            })),
+        });
+    }
+
     Ok(repairs)
 }
 
