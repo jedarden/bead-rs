@@ -2757,8 +2757,12 @@ fn validate_forensic_events(staging: &ForensicStaging) -> Result<()> {
 
 fn validate_forensic_receipts(staging: &ForensicStaging) -> Result<()> {
     for receipt in &staging.receipts {
-        if receipt.schema_ref != "urn:bead-rs:schema:provenance-receipt:native-v1"
-            || !matches!(receipt.kind.as_str(), "restore" | "merge")
+        let generic_schema = "urn:bead-rs:schema:provenance-receipt:native-v1";
+        let legacy_fork_schema = "urn:bead-rs:schema:fork-receipt:native-v1";
+        let valid_schema = receipt.schema_ref == generic_schema
+            || (receipt.kind == "fork" && receipt.schema_ref == legacy_fork_schema);
+        if !valid_schema
+            || !matches!(receipt.kind.as_str(), "restore" | "merge" | "fork")
             || receipt.source_store_uuid.trim().is_empty()
             || receipt.target_store_uuid.trim().is_empty()
             || receipt.actor.trim().is_empty()
@@ -2773,11 +2777,28 @@ fn validate_forensic_receipts(staging: &ForensicStaging) -> Result<()> {
                 receipt.receipt_id
             );
         }
+        validate_sha256(&receipt.receipt_sha256, "provenance receipt receipt_sha256")?;
+
+        // The original R028 writer published fork receipts under its
+        // dedicated schema with an empty parent-root field and a hash over
+        // fields that the generic SQL projection did not retain. Pointer/root
+        // verification still authenticates those checkpoint bytes, but the
+        // projected receipt hash cannot be reconstructed. Accept that shipped
+        // shape narrowly; generic receipts retain the complete hash contract.
+        if receipt.kind == "fork" && receipt.schema_ref == legacy_fork_schema {
+            if fork_point_from_uuid(&receipt.target_store_uuid).is_none() {
+                bail!(
+                    "Fork receipt '{}' has an invalid target workspace identity",
+                    receipt.receipt_id
+                );
+            }
+            continue;
+        }
+
         validate_sha256(
             &receipt.source_root_sha256,
             "provenance receipt source_root_sha256",
         )?;
-        validate_sha256(&receipt.receipt_sha256, "provenance receipt receipt_sha256")?;
         let mut hasher = Sha256::new();
         hasher.update(&receipt.receipt_id);
         hasher.update(&receipt.kind);
@@ -2936,10 +2957,12 @@ fn validate_event_sequence(staging: &ForensicStaging) -> Result<()> {
     let mut previous_sequence = 0i64;
     for event in &staging.events {
         if event.origin_store_uuid != previous_origin {
-            if event.origin_event_sequence != 1 {
+            let expected_start = recorded_origin_start(staging, &event.origin_store_uuid);
+            if event.origin_event_sequence != expected_start {
                 bail!(
-                    "Event sequence for origin {} does not start at 1: starts at {}",
+                    "Event sequence for origin {} does not start at its recorded origin point {}: starts at {}",
                     event.origin_store_uuid,
+                    expected_start,
                     event.origin_event_sequence
                 );
             }
@@ -2956,6 +2979,42 @@ fn validate_event_sequence(staging: &ForensicStaging) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// The first valid event sequence for an origin. Native origins begin at 1.
+/// R028 fork identities retain the parent's global fork point in their UUID,
+/// so their first event is the fork summary at `fork_point + 1`; that exception
+/// is enabled only by a matching staged fork receipt.
+fn recorded_origin_start(staging: &ForensicStaging, origin: &str) -> i64 {
+    let is_recorded_fork = staging
+        .receipts
+        .iter()
+        .any(|receipt| receipt.kind == "fork" && receipt.target_store_uuid == origin);
+    if !is_recorded_fork {
+        return 1;
+    }
+
+    fork_point_from_uuid(origin)
+        .and_then(|fork_point| fork_point.checked_add(1))
+        .unwrap_or(1)
+}
+
+/// Parse the fork point from the R028 identity format
+/// `<parent-prefix>-fork-<fork-point>-<random-hex>`.
+fn fork_point_from_uuid(uuid: &str) -> Option<i64> {
+    let (parent_prefix, fork_suffix) = uuid.split_once("-fork-")?;
+    let (fork_point, random_suffix) = fork_suffix.split_once('-')?;
+    if parent_prefix.len() != 8
+        || !parent_prefix.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || random_suffix.len() != 16
+        || !random_suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    fork_point
+        .parse::<i64>()
+        .ok()
+        .filter(|point| *point >= 0 && *point < i64::MAX)
 }
 
 /// Validate restore-into-empty constraints
@@ -3229,13 +3288,23 @@ pub fn fork_workspace_identity(
         )
         .ok();
 
-    // Verify checkpoint is clean (not dirty)
+    // Verify the recorded generation and live store are exactly aligned.
+    // Covered-ahead is R027 reconcile input, not a clean state that may be
+    // re-originated safely.
     if let Some((covered_sequence, _)) = checkpoint_state {
         if covered_sequence < current_sequence {
             bail!(
                 "Cannot fork dirty workspace: checkpoint covers sequence {} but current sequence is {}. \
                  Run 'bead sync flush-only' first to publish a clean checkpoint.",
                 covered_sequence, current_sequence
+            );
+        }
+        if covered_sequence > current_sequence {
+            bail!(
+                "Cannot fork workspace while checkpoint is ahead: checkpoint covers sequence {} but current sequence is {}. \
+                 Run 'bead sync reconcile --actor <you>' first.",
+                covered_sequence,
+                current_sequence
             );
         }
     } else {
@@ -3316,34 +3385,27 @@ pub fn fork_workspace_identity(
         params![new_uuid],
     )?;
 
-    // Create summary event
-    let summary_sequence = current_sequence + 1;
-    let summary_event = EventRecord {
-        schema_ref: "urn:bead-rs:schema:event:native-v1".to_string(),
-        origin_store_uuid: new_uuid.clone(),
-        origin_event_sequence: summary_sequence,
-        issue_id: None,
-        kind: "workspace_forked".to_string(),
-        actor: actor.to_string(),
-        time: created_at.clone(),
-        detail: serde_json::json!({
-            "parent_store_uuid": parent_uuid,
-            "new_store_uuid": new_uuid,
-            "fork_receipt_id": receipt_id,
-            "reason": reason
-        }),
-    };
-
-    let event_json = serde_json::to_string(&summary_event)
+    // Create the summary as the first event of the fork origin. Its wire
+    // sequence retains the fork point for provenance, while SQLite allocates
+    // the independent live ingestion sequence. Letting AUTOINCREMENT assign
+    // the live key preserves its high-water rule after imported/restored
+    // histories instead of conflating that key with the wire sequence.
+    let fork_origin_sequence = current_sequence + 1;
+    let event_detail = serde_json::json!({
+        "parent_store_uuid": parent_uuid,
+        "new_store_uuid": new_uuid,
+        "fork_receipt_id": receipt_id,
+        "reason": reason
+    });
+    let event_json = serde_json::to_string(&event_detail)
         .map_err(|e| anyhow!("Failed to serialize fork summary event: {}", e))?;
 
     tx.execute(
-        "INSERT INTO events (sequence, origin_store_uuid, origin_event_sequence, issue_id, kind, actor, time, detail)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO events (origin_store_uuid, origin_event_sequence, issue_id, kind, actor, time, detail)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
-            summary_sequence,
             new_uuid,
-            summary_sequence,
+            fork_origin_sequence,
             None::<String>,
             "workspace_forked",
             actor,
@@ -3351,6 +3413,7 @@ pub fn fork_workspace_identity(
             event_json
         ],
     )?;
+    let summary_sequence = tx.last_insert_rowid();
 
     // Update checkpoint state to dirty (since we've changed the workspace identity)
     let updated_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
@@ -3754,7 +3817,7 @@ fn import_issues(tx: &Transaction, staging: &ForensicStaging) -> Result<usize> {
 fn import_dependencies(tx: &Transaction, staging: &ForensicStaging) -> Result<()> {
     for (blocked, blocker, kind) in &staging.dependencies {
         tx.execute(
-            "INSERT INTO dependencies (blocked_issue_id, blocker_issue_id, kind)
+            "INSERT OR IGNORE INTO dependencies (blocked_issue_id, blocker_issue_id, kind)
              VALUES (?1, ?2, ?3)",
             params![blocked, blocker, kind],
         )?;
@@ -3766,7 +3829,7 @@ fn import_dependencies(tx: &Transaction, staging: &ForensicStaging) -> Result<()
 fn import_labels(tx: &Transaction, staging: &ForensicStaging) -> Result<()> {
     for (issue_id, label) in &staging.labels {
         tx.execute(
-            "INSERT INTO labels (issue_id, label) VALUES (?1, ?2)",
+            "INSERT OR IGNORE INTO labels (issue_id, label) VALUES (?1, ?2)",
             params![issue_id, label],
         )?;
     }
@@ -3811,6 +3874,58 @@ fn import_receipts(tx: &Transaction, staging: &ForensicStaging) -> Result<()> {
     for receipt in &staging.receipts {
         let counts_json = serde_json::to_string(&receipt.counts)
             .map_err(|e| anyhow!("Failed to serialize receipt counts: {}", e))?;
+
+        // Reconcile imports a superset of this same store, so receipts in the
+        // common prefix are expected replays. Accept byte-equivalent receipt
+        // content idempotently and fail closed if one ID names different
+        // provenance.
+        let existing = tx
+            .query_row(
+                "SELECT schema_ref, kind, source_store_uuid, target_store_uuid,
+                        COALESCE(source_root_sha256, ''), actor, created_at,
+                        counts_json, result, summary_event_identity, receipt_sha256
+                 FROM provenance_receipts WHERE receipt_id = ?1",
+                [&receipt.receipt_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
+                        row.get::<_, Option<String>>(9)?,
+                        row.get::<_, String>(10)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        if let Some(existing) = existing {
+            let staged = (
+                receipt.schema_ref.clone(),
+                receipt.kind.clone(),
+                receipt.source_store_uuid.clone(),
+                receipt.target_store_uuid.clone(),
+                receipt.source_root_sha256.clone(),
+                receipt.actor.clone(),
+                receipt.created_at.clone(),
+                counts_json.clone(),
+                receipt.result.clone(),
+                receipt.summary_event_identity.clone(),
+                receipt.receipt_sha256.clone(),
+            );
+            if existing != staged {
+                bail!(
+                    "Provenance receipt ID conflict: '{}' has different content",
+                    receipt.receipt_id
+                );
+            }
+            continue;
+        }
 
         tx.execute(
             "INSERT INTO provenance_receipts (
@@ -7393,6 +7508,68 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    fn fork_sequence_staging(with_matching_receipt: bool) -> ForensicStaging {
+        let fork_uuid = "0123abcd-fork-52-0123456789abcdef".to_string();
+        let receipts = if with_matching_receipt {
+            vec![SerializedReceipt {
+                schema_ref: "urn:bead-rs:schema:fork-receipt:native-v1".to_string(),
+                receipt_id: "fork-test".to_string(),
+                kind: "fork".to_string(),
+                source_store_uuid: "0123abcd-parent".to_string(),
+                target_store_uuid: fork_uuid.clone(),
+                source_root_sha256: String::new(),
+                actor: "tester".to_string(),
+                created_at: "2026-08-22T00:00:00Z".to_string(),
+                counts: ReceiptCounts {
+                    issues: 0,
+                    events: 52,
+                    provenance_receipts: 0,
+                },
+                result: "success".to_string(),
+                summary_event_identity: None,
+                receipt_sha256: "0".repeat(64),
+            }]
+        } else {
+            Vec::new()
+        };
+        ForensicStaging {
+            issues: Vec::new(),
+            dependencies: Vec::new(),
+            labels: Vec::new(),
+            events: vec![SerializedEvent {
+                schema_ref: "urn:bead-rs:schema:event:native-v1".to_string(),
+                origin_store_uuid: fork_uuid.clone(),
+                origin_event_sequence: 53,
+                issue_id: None,
+                kind: "workspace_forked".to_string(),
+                actor: Some("tester".to_string()),
+                time: "2026-08-22T00:00:00Z".to_string(),
+                detail: serde_json::json!({}),
+            }],
+            receipts,
+            input_hash: "0".repeat(64),
+            store_uuid: fork_uuid,
+            snapshot_sequence: 53,
+            mode: CheckpointMode::Monolithic,
+            issue_count: 0,
+            event_count: 1,
+            receipt_count: usize::from(with_matching_receipt),
+        }
+    }
+
+    #[test]
+    fn fork_origin_start_is_anchored_to_matching_receipt() {
+        let recorded = fork_sequence_staging(true);
+        validate_forensic_contents(&recorded).unwrap();
+
+        let unrecorded = fork_sequence_staging(false);
+        let error = validate_forensic_contents(&unrecorded).unwrap_err();
+        assert!(
+            error.to_string().contains("recorded origin point 1"),
+            "unexpected validation error: {error}"
+        );
+    }
 
     #[test]
     fn test_flush_checkpoint_empty() {
