@@ -157,8 +157,13 @@ pub fn close_issue(
         return Err(Error::validation("Close reason cannot be empty"));
     }
 
+    // Process in a write transaction taken before the read, so the revision
+    // precondition and lease are validated against the snapshot the UPDATE
+    // lands on (see begin_lifecycle_transaction)
+    let mut tx = begin_lifecycle_transaction(conn)?;
+
     // Get current issue state
-    let issue = get_issue_for_update(conn, id)?.ok_or_else(|| Error::not_found(id))?;
+    let issue = get_issue_for_update(&tx, id)?.ok_or_else(|| Error::not_found(id))?;
 
     // Validate revision precondition if provided
     if let Some(expected_revision) = if_revision {
@@ -173,11 +178,9 @@ pub fn close_issue(
 
     // Validate lease if issue has an active lease
     if let Some(current_assignee) = &issue.assignee {
-        validate_lease_for_mutation(conn, id, current_assignee, fencing_token)?;
+        validate_lease_for_mutation(&tx, id, current_assignee, fencing_token)?;
     }
 
-    // Process in a write transaction
-    let mut tx = conn.unchecked_transaction()?;
     let result = close_issue_impl(&mut tx, &issue, reason)?;
 
     tx.commit()?;
@@ -191,8 +194,13 @@ pub fn reopen_issue(
     if_revision: Option<i64>,
     fencing_token: Option<i64>,
 ) -> Result<String> {
+    // Process in a write transaction taken before the read, so the revision
+    // precondition and lease are validated against the snapshot the UPDATE
+    // lands on (see begin_lifecycle_transaction)
+    let mut tx = begin_lifecycle_transaction(conn)?;
+
     // Get current issue state
-    let issue = get_issue_for_update(conn, id)?.ok_or_else(|| Error::not_found(id))?;
+    let issue = get_issue_for_update(&tx, id)?.ok_or_else(|| Error::not_found(id))?;
 
     // Validate revision precondition if provided
     if let Some(expected_revision) = if_revision {
@@ -207,11 +215,9 @@ pub fn reopen_issue(
 
     // Validate lease if issue has an active lease
     if let Some(current_assignee) = &issue.assignee {
-        validate_lease_for_mutation(conn, id, current_assignee, fencing_token)?;
+        validate_lease_for_mutation(&tx, id, current_assignee, fencing_token)?;
     }
 
-    // Process in a write transaction
-    let mut tx = conn.unchecked_transaction()?;
     let result = reopen_issue_impl(&mut tx, &issue)?;
 
     tx.commit()?;
@@ -349,8 +355,15 @@ fn update_issue_impl(
     params.push(now.clone());
     sql_parts.push("revision = revision + 1");
 
-    // Build the SQL and execute
-    let sql = format!("UPDATE issues SET {} WHERE id = ?", sql_parts.join(", "));
+    // The UPDATE is conditional on the revision the caller's transaction
+    // validated, so a row that moved anyway (a snapshot taken without the
+    // write lock) affects zero rows and fails as a conflict instead of
+    // overwriting the newer state.
+    let expected_revision = issue.revision.unwrap_or(1);
+    let sql = format!(
+        "UPDATE issues SET {} WHERE id = ? AND revision = ?",
+        sql_parts.join(", ")
+    );
 
     // Convert String params to &dyn ToSql for execution
     let params_refs: Vec<&dyn rusqlite::ToSql> =
@@ -360,7 +373,9 @@ fn update_issue_impl(
         let mut stmt = tx.prepare_cached(&sql)?;
         let mut all_params = params_refs;
         all_params.push(&issue.id as &dyn rusqlite::ToSql);
-        stmt.execute(all_params.as_slice())?;
+        all_params.push(&expected_revision as &dyn rusqlite::ToSql);
+        let changed = stmt.execute(all_params.as_slice())?;
+        ensure_revision_row_affected(changed, expected_revision)?;
     }
 
     // Append general update event if we made semantic changes
@@ -382,12 +397,16 @@ fn release_issue_impl(tx: &mut Transaction, issue: &Issue) -> Result<String> {
 
     match issue.base_status {
         BaseStatus::InProgress => {
-            // Semantic release: transition to open and clear assignee
+            // Semantic release: transition to open and clear assignee.
+            // Conditional on the validated revision -- see
+            // ensure_revision_row_affected.
+            let expected_revision = issue.revision.unwrap_or(1);
             {
                 let mut stmt = tx.prepare_cached(
-                    "UPDATE issues SET base_status = 'open', assignee = NULL, updated_at = ?, revision = revision + 1 WHERE id = ?"
+                    "UPDATE issues SET base_status = 'open', assignee = NULL, updated_at = ?, revision = revision + 1 WHERE id = ? AND revision = ?"
                 )?;
-                stmt.execute((&now, &issue.id))?;
+                let changed = stmt.execute((&now, &issue.id, expected_revision))?;
+                ensure_revision_row_affected(changed, expected_revision)?;
             }
 
             // Append release event
@@ -442,14 +461,18 @@ fn close_issue_impl(tx: &mut Transaction, issue: &Issue, reason: &str) -> Result
             ))
         }
         BaseStatus::Open | BaseStatus::InProgress | BaseStatus::Deferred => {
-            // Semantic close
+            // Semantic close. Conditional on the validated revision -- see
+            // ensure_revision_row_affected.
             let normalized_reason = reason.trim();
+            let expected_revision = issue.revision.unwrap_or(1);
             {
                 let mut stmt = tx.prepare_cached(
                     "UPDATE issues SET base_status = 'closed', closed_at = ?, close_reason = ?,
-                     manual_blocked = 0, updated_at = ?, revision = revision + 1 WHERE id = ?",
+                     manual_blocked = 0, updated_at = ?, revision = revision + 1 WHERE id = ? AND revision = ?",
                 )?;
-                stmt.execute((&now, &normalized_reason, &now, &issue.id))?;
+                let changed =
+                    stmt.execute((&now, &normalized_reason, &now, &issue.id, expected_revision))?;
+                ensure_revision_row_affected(changed, expected_revision)?;
             }
 
             // Append closed event
@@ -477,13 +500,16 @@ fn reopen_issue_impl(tx: &mut Transaction, issue: &Issue) -> Result<String> {
 
     match issue.base_status {
         BaseStatus::Closed => {
-            // Semantic reopen
+            // Semantic reopen. Conditional on the validated revision -- see
+            // ensure_revision_row_affected.
+            let expected_revision = issue.revision.unwrap_or(1);
             {
                 let mut stmt = tx.prepare_cached(
                     "UPDATE issues SET base_status = 'open', closed_at = NULL, close_reason = NULL,
-                     manual_blocked = 0, updated_at = ?, revision = revision + 1 WHERE id = ?",
+                     manual_blocked = 0, updated_at = ?, revision = revision + 1 WHERE id = ? AND revision = ?",
                 )?;
-                stmt.execute((&now, &issue.id))?;
+                let changed = stmt.execute((&now, &issue.id, expected_revision))?;
+                ensure_revision_row_affected(changed, expected_revision)?;
             }
 
             // Retain assignee if present
