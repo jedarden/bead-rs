@@ -1,0 +1,33 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead sync bisect" 1  "bead sync bisect " 
+.SH NAME
+bead sync bisect \- Search a verified checkpoint generation series
+.SH SYNOPSIS
+\fBbead sync bisect\fR [\fB\-\-query\fR] [\fB\-\-file\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-checkpoint\fR> 
+.SH DESCRIPTION
+Evaluate one safe query predicate against a caller\-ordered series of retained checkpoint artifacts.
+.PP
+Repeat \-\-checkpoint in chronological order. Each artifact may be a generation
+pointer, a pointer\-selected manifest, or a pointer\-selected monolithic object.
+Every artifact is completely verified before it is served. The command reports
+every generation with one or more matching issues; it deliberately scans rather
+than assuming an arbitrary predicate stays monotonic across history. Output is
+an explicitly non\-importable archaeology view.
+.PP
+EXAMPLES:
+  bead sync bisect \-\-checkpoint old/current.json \-\-checkpoint new/current.json \-\-file query.json
+  bead sync bisect \-\-checkpoint .beads/checkpoint/previous.json \-\-checkpoint .beads/checkpoint/current.json \-\-file query.json
+.SH OPTIONS
+.TP
+\fB\-\-checkpoint\fR \fI<CHECKPOINTS>\fR
+Checkpoint artifact, repeat in chronological order
+.TP
+\fB\-\-query\fR \fI<QUERY>\fR
+Query specification as inline JSON
+.TP
+\fB\-\-file\fR \fI<FILE>\fR
+Query specification file (JSON format)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

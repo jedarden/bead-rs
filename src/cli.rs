@@ -143,6 +143,20 @@ operations are idempotent, so they are safe to run repeatedly.
     )]
     Label(LabelCommand),
 
+    /// Manage workspace-local resource declarations
+    #[command(
+        subcommand,
+        long_about = "Declare local resource keys for atomic claim exclusion.
+
+Resource locks are scheduling exclusions inside this one native workspace. They
+are not distributed locks and do not coordinate different stores.
+
+  bead resource add <ID> --key <KEY>
+  bead resource remove <ID> --key <KEY>
+  bead resource list <ID>"
+    )]
+    Resource(ResourceCommand),
+
     /// Manage dependencies
     #[command(
         subcommand,
@@ -336,13 +350,20 @@ PRIORITIES:
 EXAMPLES:
   bead create --title \"Fix authentication bug\" --priority 0
   bead create --title \"Update documentation\" --priority 2 --label docs
+  bead create --title \"Build image\" --resource-key docker:daemon --resource-key gpu:0
   bead create --title \"Materialize tracker work\" --unique-ref github:issue-123
   bead create --title \"Add search feature\" --assignee alice --label feature --label backend
   bead create --title \"Code review PR-123\" --description \"Review changes for user auth\"
 
 ISSUE TYPES:
   Common types include: task, bug, feature, improvement, documentation
-  Custom types can be specified as needed (no validation is performed)."
+  Custom types can be specified as needed (no validation is performed).
+
+RESOURCE KEYS:
+  --resource-key declares a normalized, case-sensitive key used only for
+  scheduling exclusion inside this native workspace. It is not a distributed
+  lock. Claims acquire every declared key atomically; release, close, and
+  expired leases return keys. Use `bead resource add|remove|list` after create."
 )]
 pub struct CreateOptions {
     /// Issue title (required)
@@ -368,6 +389,10 @@ pub struct CreateOptions {
     /// Labels to add (can be specified multiple times)
     #[arg(long)]
     pub label: Vec<String>,
+
+    /// Workspace-local resource key (can be specified multiple times)
+    #[arg(long = "resource-key")]
+    pub resource_keys: Vec<String>,
 
     /// Idempotency binding in NAMESPACE:KEY form
     #[arg(long = "unique-ref")]
@@ -525,6 +550,12 @@ LEASED CLAIMS:
 
   Standard non-leased claims remain the default and maintain backward compatibility.
   Leased claims add safety for distributed fleets and crash recovery scenarios.
+
+RESOURCE LOCKS:
+  A claim acquires every declared key as one workspace-local set. A ready issue
+  needing a held key is skipped; `--why` and `bead why --json` report reason code
+  `resource_conflict`. This has no effect outside this native store and is not a
+  distributed lock.
 
 SINGLE-CLAIM GUARD:
   --single-claim refuses the claim when this assignee already holds an
@@ -986,6 +1017,61 @@ Use --dry-run to validate checkpoints before risking database mutation."
     )]
     ImportOnly(SyncImportOptions),
 
+    /// Reconcile a remote-advanced checkpoint into the live store (R027)
+    #[command(
+        name = "reconcile",
+        about = "Merge a pulled, verified, ahead-of-live checkpoint into this workspace",
+        long_about = "Reconcile the durable checkpoint into the live store (R027).
+
+The Git-transported workflow commits .beads/checkpoint/ and not
+.beads/beads.db, so after pulling another machine's flush the checkpoint can
+contain work the live database does not -- the remote-advanced state. This
+command recognizes exactly that state and merges the checkpoint into the live
+store through the same machinery `sync import-only --merge` uses: one
+transaction, conflict detection, issue reconciliation by timestamp, an
+actor-attributed merge provenance receipt, and a merge summary event.
+
+QUALIFICATION:
+  Reconcile acts on the workspace's own durable checkpoint against the
+  workspace's own live store; there is no --input. It proceeds only when
+  the checkpoint is remote-advanced:
+  - the pointer verifies (supported mode, hashes, no unresolved tombstones,
+    agreeing compatibility view)
+  - the selected generation stages and passes forensic validation
+  - the checkpoint's store UUID equals this workspace's UUID
+  - every live event appears in the checkpoint with identical public content
+  - the recorded checkpoint state does not claim more history than the
+    live store holds
+  Any other checkpoint-ahead-of-live shape is an integrity failure and is
+  refused without mutation. bead-rs never runs Git; it observes the store
+  relationship, not the transport that produced it.
+
+PUBLICATION:
+  Reconcile never publishes a checkpoint generation by its own action. Under
+  the automatic publication default the post-commit chokepoint publishes the
+  generation covering the merge; with publication suppressed the workspace
+  is left dirty for `bead sync flush-only`, exactly like any other committed
+  mutation. Reconcile is idempotent at the state level: once reconciled and
+  published the relationship is no longer remote-advanced and a second run
+  reports nothing to reconcile.
+
+EXAMPLES:
+  bead sync reconcile --actor jed                        # after git pull
+  bead sync reconcile --actor jed --dry-run              # prospective counts only
+
+EXIT CODES:
+  0 - Reconcile committed (or dry-run validated)
+  2 - Nothing to reconcile: relationship is absent, aligned, or behind
+      (behind names `bead sync flush-only`)
+  5 - Covered-ahead integrity failure; the first failed qualifier is named
+
+WORKFLOW:
+  Pull, reconcile, then work. Mutating before reconciling is operator error:
+  the local event lands under a pointer that already claims its sequence and
+  the next classification fails closed instead of silently succeeding."
+    )]
+    Reconcile(SyncReconcileOptions),
+
     /// Report checkpoint status and readiness to commit
     #[command(
         name = "status",
@@ -1017,9 +1103,17 @@ EXAMPLES:
 
 OUTPUT:
   --format json prints one JSON object with checkpoint_present, mode,
-  generation_id, live_sequence, covered_sequence, dirty, root_path,
-  root_hash, root_verified, view_agrees, unresolved_tombstones,
-  changed_paths, ready_to_commit, and not_ready_reasons."
+  generation_id, live_sequence, covered_sequence, relationship, dirty,
+  root_path, root_hash, root_verified, view_agrees, unresolved_tombstones,
+  changed_paths, ready_to_commit, and not_ready_reasons.
+
+RELATIONSHIP (R027):
+  The sync relationship between the live store and the durable checkpoint:
+  absent, behind (live has unflushed work; run `bead sync flush-only`),
+  aligned, remote-advanced (a pulled checkpoint is a verified superset ahead
+  of the live store; run `bead sync reconcile --actor <you>`), or
+  covered-ahead-integrity-failure (the checkpoint is ahead but failed its
+  qualification; the first failed qualifier is named in the reasons)."
     )]
     Status(SyncStatusOptions),
 
@@ -1058,6 +1152,48 @@ EXAMPLES:
   bead sync bisect --checkpoint .beads/checkpoint/previous.json --checkpoint .beads/checkpoint/current.json --file query.json"
     )]
     Bisect(SyncBisectOptions),
+
+    /// Fork workspace identity (R028)
+    #[command(
+        name = "fork",
+        about = "Fork workspace identity under a new UUID",
+        long_about = "Create a new workspace UUID derived from the current workspace.
+
+This command implements R028: an explicit operator command that re-origins a
+cloned workspace under a new store UUID recorded in a provenance-chained receipt.
+Forking enables clones of one repository to become distinct origins whose event
+streams merge composably under existing different-UUID rules instead of being
+rejected as same-UUID divergence.
+
+WHEN TO FORK:
+  - After git cloning a repository with an existing bead workspace
+  - Before making changes that should not merge back as same-UUID events
+  - When multiple independent workers need separate event streams
+
+WHAT FORK DOES:
+  1. Validates workspace has a clean checkpoint (not dirty)
+  2. Generates new UUID with provenance to parent UUID
+  3. Records fork receipt in provenance_receipts table
+  4. Updates workspace.uuid in database
+  5. Creates summary event in events table
+  6. Marks checkpoint dirty (requiring flush after fork)
+
+AFTER FORKING:
+  - Run 'bead sync flush-only' to publish the forked checkpoint
+  - Commit both .beads/config.json (new UUID) and checkpoint to git
+  - The forked workspace is now a distinct origin
+  - Can merge back into parent using 'bead sync import-only --merge'
+
+EXAMPLES:
+  bead sync fork --reason 'Forking for experimental branch'
+  bead sync fork --actor 'team-lead'
+
+NOT FORKING:
+  Forking is never implicit or inferred. Only this explicit command creates a
+new workspace UUID. Running commands in a cloned workspace without forking will
+fail on same-UUID divergence during merge."
+    )]
+    Fork(SyncForkOptions),
 }
 
 /// Options for flushing checkpoint
@@ -1124,6 +1260,18 @@ pub struct SyncStatusOptions {
     pub format: String,
 }
 
+/// Options for reconciling a remote-advanced checkpoint (R027)
+#[derive(Parser, Debug)]
+pub struct SyncReconcileOptions {
+    /// Actor performing the reconcile (required, attributed in the merge receipt)
+    #[arg(long)]
+    pub actor: String,
+
+    /// Perform dry-run validation without mutating the live store
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
 /// Positional artifacts for one historical semantic delta.
 #[derive(Parser, Debug)]
 pub struct SyncDiffOptions {
@@ -1148,6 +1296,22 @@ pub struct SyncBisectOptions {
     /// Query specification file (JSON format)
     #[arg(long, conflicts_with = "query")]
     pub file: Option<String>,
+}
+
+/// Options for forking workspace identity (R028)
+#[derive(Parser, Debug)]
+pub struct SyncForkOptions {
+    /// Actor performing the fork operation (required)
+    #[arg(long)]
+    pub actor: String,
+
+    /// Human-readable explanation for the fork (optional, max 4096 bytes)
+    #[arg(long)]
+    pub reason: Option<String>,
+
+    /// Output format: text or json
+    #[arg(long, default_value = "text")]
+    pub format: String,
 }
 
 /// Label management commands
@@ -1195,6 +1359,52 @@ IDEMPOTENCY:
   This makes label management safe and declarative."
     )]
     Remove(LabelRemoveOptions),
+}
+
+/// Workspace-local resource declaration commands.
+#[derive(Subcommand, Debug)]
+pub enum ResourceCommand {
+    /// Add one or more normalized local resource keys
+    Add(ResourceAddOptions),
+
+    /// Remove one or more local resource keys
+    Remove(ResourceRemoveOptions),
+
+    /// List declared local resource keys
+    List(ResourceListOptions),
+}
+
+#[derive(Parser, Debug)]
+pub struct ResourceAddOptions {
+    /// Issue ID
+    pub id: String,
+    /// Resource key; repeat for multiple keys
+    #[arg(long = "key", required = true)]
+    pub keys: Vec<String>,
+    /// Fencing token for a leased in-progress issue
+    #[arg(long)]
+    pub fencing_token: Option<i64>,
+}
+
+#[derive(Parser, Debug)]
+pub struct ResourceRemoveOptions {
+    /// Issue ID
+    pub id: String,
+    /// Resource key; repeat for multiple keys
+    #[arg(long = "key", required = true)]
+    pub keys: Vec<String>,
+    /// Fencing token for a leased in-progress issue
+    #[arg(long)]
+    pub fencing_token: Option<i64>,
+}
+
+#[derive(Parser, Debug)]
+pub struct ResourceListOptions {
+    /// Issue ID
+    pub id: String,
+    /// Output JSON
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Options for adding a label

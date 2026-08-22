@@ -1,0 +1,17 @@
+{
+  "bead_id": "beadrs-3be01f97",
+  "agent": "claude-code-glm-5",
+  "provider": "anthropic",
+  "model": "glm-5.3",
+  "exit_code": 0,
+  "outcome": "success",
+  "duration_ms": 2457230,
+  "input_tokens": null,
+  "output_tokens": null,
+  "cost_usd": null,
+  "captured_at": "2026-08-21T02:45:09.569611020Z",
+  "trace_format": "claude_json",
+  "pruned": false,
+  "template_version": null,
+  "timeout_reason": null
+}

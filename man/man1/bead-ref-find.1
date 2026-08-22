@@ -4,7 +4,7 @@
 .SH NAME
 bead ref find \- Find issues by external reference
 .SH SYNOPSIS
-\fBbead ref find\fR <\fB\-\-namespace\fR> <\fB\-\-value\fR> [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBbead ref find\fR [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-namespace\fR> <\fB\-\-value\fR> 
 .SH DESCRIPTION
 Find issues that have a specific external reference value.
 .PP
@@ -27,10 +27,10 @@ OUTPUT:
   Empty list if no matching issues are found.
 .SH OPTIONS
 .TP
-\fB\-\-namespace\fR=\fINAMESPACE\fR
+\fB\-\-namespace\fR \fI<NAMESPACE>\fR
 Reference namespace
 .TP
-\fB\-\-value\fR=\fIVALUE\fR
+\fB\-\-value\fR \fI<VALUE>\fR
 Reference value
 .TP
 \fB\-\-json\fR

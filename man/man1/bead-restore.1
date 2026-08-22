@@ -4,7 +4,7 @@
 .SH NAME
 bead restore \- Restore one named, verified checkpoint generation
 .SH SYNOPSIS
-\fBbead restore\fR <\fB\-\-source\fR> <\fB\-\-generation\fR> <\fB\-\-actor\fR> [\fB\-\-allow\-non\-empty\fR] [\fB\-\-prefix\fR] [\fB\-\-format\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBbead restore\fR [\fB\-\-allow\-non\-empty\fR] [\fB\-\-prefix\fR] [\fB\-\-format\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-source\fR> <\fB\-\-generation\fR> <\fB\-\-actor\fR> 
 .SH DESCRIPTION
 Restore one named immutable checkpoint generation as an explicit recovery operation.
 .PP
@@ -34,22 +34,22 @@ the lower\-level interchange and reconciliation primitive; doctor stays
 read\-only and never invokes restore automatically.
 .SH OPTIONS
 .TP
-\fB\-\-source\fR=\fIPATH\fR
+\fB\-\-source\fR \fI<PATH>\fR
 Checkpoint\-set directory or current.json/previous.json pointer
 .TP
-\fB\-\-generation\fR=\fIGENERATION\fR
+\fB\-\-generation\fR \fI<GENERATION>\fR
 Exact generation ID recorded by the selected immutable pointer
 .TP
-\fB\-\-actor\fR=\fIACTOR\fR
+\fB\-\-actor\fR \fI<ACTOR>\fR
 Actor responsible for this recovery operation
 .TP
 \fB\-\-allow\-non\-empty\fR
 Atomically replace native semantic state when the target is non\-empty
 .TP
-\fB\-\-prefix\fR=\fIPREFIX\fR [default: bead]
+\fB\-\-prefix\fR \fI<PREFIX>\fR [default: bead]
 Prefix used only when this command initializes a workspace with no config
 .TP
-\fB\-\-format\fR=\fIFORMAT\fR [default: text]
+\fB\-\-format\fR \fI<FORMAT>\fR [default: text]
 Output format: text or json
 .TP
 \fB\-h\fR, \fB\-\-help\fR

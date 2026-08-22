@@ -5,6 +5,7 @@
 
 use crate::error::{Error, Result};
 use crate::store::{open_configured_connection, Store};
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -250,6 +251,34 @@ pub fn run_diagnostics_with_scopes(
             }
         }
 
+        // 3. Same-UUID divergence detection (R028)
+        match check_uuid_divergence(store) {
+            Ok(msg) => {
+                checks.push(DiagnosticCheck {
+                    name: "uuid_divergence".to_string(),
+                    status: DiagnosticStatus::Ok,
+                    message: msg.clone(),
+                    scope: Some("store".to_string()),
+                    details: Some(serde_json::json!({
+                        "message": msg
+                    })),
+                });
+            }
+            Err(e) => {
+                has_errors = true;
+                checks.push(DiagnosticCheck {
+                    name: "uuid_divergence".to_string(),
+                    status: DiagnosticStatus::Error,
+                    message: format!("UUID divergence detected: {}", e),
+                    scope: Some("store".to_string()),
+                    details: Some(serde_json::json!({
+                        "error": e.to_string(),
+                        "remedy": "Run 'bead sync fork --actor <WHO> [--reason <WHY>]' to create a distinct workspace identity",
+                        "explanation": "This workspace has the same UUID as another workspace but divergent event histories. Forking creates a new UUID while recording provenance to the parent."
+                    })),
+                });
+            }
+        }
     }
 
     // Backup scope checks (checkpoint state, generations, freshness)
@@ -271,14 +300,28 @@ pub fn run_diagnostics_with_scopes(
             }
             Err(e) => {
                 has_warnings = true;
+                // R027: a remote-advanced checkpoint is an actionable
+                // diagnostic, so the details carry the stable state marker
+                // and the reconcile remedy alongside the message text.
+                let details = if e.to_string().starts_with(
+                    crate::service::reconcile::REMOTE_ADVANCED_MARKER,
+                ) {
+                    serde_json::json!({
+                        "state": crate::service::reconcile::REMOTE_ADVANCED_MARKER,
+                        "remedy": crate::service::reconcile::REMOTE_ADVANCED_REMEDY,
+                        "warning": e.to_string()
+                    })
+                } else {
+                    serde_json::json!({
+                        "warning": e.to_string()
+                    })
+                };
                 checks.push(DiagnosticCheck {
                     name: "checkpoint_freshness".to_string(),
                     status: DiagnosticStatus::Warning,
                     message: format!("Checkpoint freshness warning: {}", e),
                     scope: Some("backup".to_string()),
-                    details: Some(serde_json::json!({
-                        "warning": e.to_string()
-                    })),
+                    details: Some(details),
                 });
             }
         }
@@ -1295,6 +1338,45 @@ fn check_forensic_checkpoint(
     let pointer: serde_json::Value = serde_json::from_str(&pointer_content)
         .map_err(|e| Error::Integrity(format!("Failed to parse current.json: {}", e)))?;
 
+    // R027: classify the sync relationship before the recorded-state
+    // agreement checks below fire. In the remote-advanced relationship the
+    // database legitimately records the last local publication while the
+    // pointer records the pulled one, so presenting that disagreement as a
+    // generation/sequence integrity fault would misdiagnose the one
+    // covered-ahead state that has a remedy. Remote-advanced is reported as
+    // a distinct actionable diagnostic (a Warning, not an integrity failure
+    // and not silent health) carrying the stable `remote-advanced` marker
+    // and the reconcile remedy; doctor never reconciles, including under
+    // `--repair`. Every other checkpoint-ahead-of-live shape stays an
+    // integrity failure, now naming the first failed qualifier.
+    let verdict = crate::service::reconcile::classify(conn, &config.root.join(".beads"))?;
+    match verdict.relationship {
+        crate::service::reconcile::SyncRelationship::RemoteAdvanced => {
+            let covered = pointer
+                .get("snapshot_sequence")
+                .and_then(|v| v.as_i64())
+                .unwrap_or_default();
+            return Err(Error::workspace(format!(
+                "{}: pulled checkpoint (covered {}) is ahead of the live store (live {}); {}",
+                crate::service::reconcile::REMOTE_ADVANCED_MARKER,
+                covered,
+                current_sequence,
+                crate::service::reconcile::REMOTE_ADVANCED_REMEDY
+            )));
+        }
+        crate::service::reconcile::SyncRelationship::CoveredAheadIntegrityFailure => {
+            return Err(Error::Integrity(format!(
+                "covered-ahead integrity failure: {}",
+                verdict
+                    .failed_qualifier
+                    .as_deref()
+                    .unwrap_or("the checkpoint is ahead of the live store but failed its \
+                               qualification")
+            )));
+        }
+        _ => {}
+    }
+
     // Get checkpoint state from database
     let covered_sequence: i64 = conn
         .query_row(
@@ -1663,6 +1745,84 @@ fn calculate_file_hash(path: &Path) -> Result<String> {
     let result = hasher.finalize();
 
     Ok(format!("{:x}", result))
+}
+
+/// Check for same-UUID divergence (R028)
+///
+/// Detects when the current workspace has the same UUID as another workspace
+/// but divergent event histories, which indicates a clone without explicit
+/// forking. This condition will cause conflicts during merge operations.
+///
+/// Returns Ok if no divergence is detected, Err with remediation advice if
+/// divergence is found.
+fn check_uuid_divergence(store: &impl Store) -> Result<String> {
+    let config = store.get_workspace_config()?;
+    let db_path = config.root.join(".beads/beads.db");
+
+    let conn = open_configured_connection(&db_path)
+        .map_err(|e| Error::Integrity(format!("Failed to open database: {}", e)))?;
+
+    // Check for fork receipts - if any exist, this workspace has already been forked
+    let fork_receipt_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM provenance_receipts WHERE kind = 'fork'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    if fork_receipt_count > 0 {
+        // This is a forked workspace - no divergence issue
+        return Ok(format!(
+            "Workspace is a fork ({} fork receipts)",
+            fork_receipt_count
+        ));
+    }
+
+    // Check events for multiple origin store UUIDs (divergence indicator)
+    let uuid_check: Result<(Vec<String>, i64)> = conn
+        .query_row(
+            "SELECT COUNT(DISTINCT origin_store_uuid), COUNT(*) FROM events",
+            [],
+            |row| {
+                let _distinct_uuids: i64 = row.get(0)?;
+                let _total_events: i64 = row.get(1)?;
+                Ok((Vec::<String>::new(), _distinct_uuids))
+            },
+        )
+        .map_err(|e| Error::Integrity(format!("Failed to query event UUIDs: {}", e)));
+
+    let (_distinct_uuids, total_events) = match uuid_check {
+        Ok((_, count)) => (Vec::<String>::new(), count),
+        Err(e) => return Err(e),
+    };
+
+    // If we have events but no fork receipt, check if this looks like a clone
+    if total_events > 0 {
+        // Check for events that don't match current workspace UUID
+        let current_uuid: String = conn
+            .query_row("SELECT uuid FROM workspace WHERE id = 1", [], |row| row.get(0))
+            .unwrap_or_else(|_| String::new());
+
+        let mismatched_events: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE origin_store_uuid != ?1",
+                params![current_uuid],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        if mismatched_events > 0 {
+            return Err(Error::Integrity(format!(
+                "Workspace has {} events from a different store UUID without a fork receipt. \
+                 This indicates a cloned workspace that needs explicit forking. \
+                 Run 'bead sync fork --actor <WHO> [--reason <WHY>]' to create a distinct identity.",
+                mismatched_events
+            )));
+        }
+    }
+
+    Ok("No UUID divergence detected".to_string())
 }
 
 /// Detect cycles in the dependency graph using DFS

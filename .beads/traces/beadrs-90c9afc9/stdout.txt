@@ -1,0 +1,7 @@
+Implemented, committed, and pushed R034.
+
+- Commit: `dabb78f feat(beadrs-90c9afc9): diagnose stale in-progress claims`
+- Adds versioned doctor config, `stale_in_progress` reason code, advisory stale-claim warnings with age and `bead release <id>` remedy, and lease exclusion.
+- Added specification and four focused tests.
+- Verified: `cargo test --test r034_stale_in_progress` — passed.
+- Closed bead `beadrs-90c9afc9`.

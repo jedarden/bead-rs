@@ -492,6 +492,7 @@ impl GeneratedDataset {
                 issue.issue_type.clone(),
                 None,   // assignee
                 vec![], // labels
+                vec![], // resource keys
             )?;
             id_map.insert(issue.id.clone(), created.id);
         }

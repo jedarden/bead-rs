@@ -4,7 +4,7 @@
 .SH NAME
 bead compare \- Compare issue representation across two profiles
 .SH SYNOPSIS
-\fBbead compare\fR <\fB\-\-id\fR> <\fB\-\-source\fR> <\fB\-\-target\fR> [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBbead compare\fR [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-id\fR> <\fB\-\-source\fR> <\fB\-\-target\fR> 
 .SH DESCRIPTION
 Compare how an issue is represented in two different profiles.
 Reports preserved, transformed, omitted, and unsupported semantic fields.
@@ -18,13 +18,13 @@ The command fails with exit code 3 if the issue is not found,
 or exit code 2 if either profile is not supported.
 .SH OPTIONS
 .TP
-\fB\-\-id\fR=\fIID\fR
+\fB\-\-id\fR \fI<ID>\fR
 Issue ID to compare
 .TP
-\fB\-\-source\fR=\fISOURCE\fR
+\fB\-\-source\fR \fI<SOURCE>\fR
 Source profile name
 .TP
-\fB\-\-target\fR=\fITARGET\fR
+\fB\-\-target\fR \fI<TARGET>\fR
 Target profile name
 .TP
 \fB\-\-json\fR

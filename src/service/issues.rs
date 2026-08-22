@@ -4,6 +4,7 @@
 
 use crate::error::{Error, Result};
 use crate::model::{validate_reference_key, validate_reference_namespace, BaseStatus, Issue};
+use crate::service::resource_locks::{declare_resource_keys, get_resource_keys};
 use crate::store::WorkspaceConfig;
 use rand::Rng;
 use rusqlite::{Connection, OptionalExtension};
@@ -40,6 +41,7 @@ pub fn create_issue(
     issue_type: Option<String>,
     assignee: Option<String>,
     labels: Vec<String>,
+    resource_keys: Vec<String>,
 ) -> Result<Issue> {
     create_issue_with_unique_ref(
         conn,
@@ -50,6 +52,7 @@ pub fn create_issue(
         issue_type,
         assignee,
         labels,
+        resource_keys,
         None,
     )
     .map(|result| result.issue)
@@ -67,6 +70,7 @@ pub fn create_issue_with_unique_ref(
     issue_type: Option<String>,
     assignee: Option<String>,
     labels: Vec<String>,
+    resource_keys: Vec<String>,
     unique_ref: Option<&str>,
 ) -> Result<CreateIssueResult> {
     // Validate inputs
@@ -200,6 +204,8 @@ pub fn create_issue_with_unique_ref(
             label_stmt.execute((&id, &label))?;
         }
     }
+
+    declare_resource_keys(conn, &id, &resource_keys)?;
 
     // Fetch the created issue
     let issue = get_issue_by_id(conn, &id)?.ok_or_else(|| {
@@ -387,7 +393,19 @@ pub fn list_issues(
         query.push_str(" AND base_status = 'open' AND (manual_blocked IS NULL OR manual_blocked = 0) AND assignee IS NULL AND NOT EXISTS (
             SELECT 1 FROM dependencies WHERE blocked_issue_id = issues.id AND kind = 'blocks'
             AND blocker_issue_id IN (SELECT id FROM issues WHERE base_status != 'closed')
+        ) AND NOT EXISTS (
+            SELECT 1 FROM issue_resource_keys candidate_key
+            JOIN resource_locks held_lock ON held_lock.resource_key = candidate_key.resource_key
+            WHERE candidate_key.issue_id = issues.id
+              AND held_lock.issue_id != issues.id
+              AND (held_lock.lease_fencing_token IS NULL OR EXISTS (
+                  SELECT 1 FROM leases active_lease
+                  WHERE active_lease.issue_id = held_lock.issue_id
+                    AND active_lease.fencing_token = held_lock.lease_fencing_token
+                    AND active_lease.expires_at > ?
+              ))
         )");
+        params.push(crate::service::resource_locks::now_string());
     }
 
     // Order by priority (ASC), created_at (ASC), then id (ASC) for FIFO claim order
@@ -432,8 +450,16 @@ pub fn list_issues(
 
     let mut issues = Vec::new();
     for issue_result in issue_iter {
-        issues
-            .push(issue_result.map_err(|e| Error::Internal(anyhow::anyhow!("Row error: {}", e)))?);
+        let mut issue =
+            issue_result.map_err(|e| Error::Internal(anyhow::anyhow!("Row error: {}", e)))?;
+        let keys = get_resource_keys(conn, &issue.id)?;
+        if !keys.is_empty() {
+            issue.extensions.insert(
+                crate::service::resource_locks::RESOURCE_KEYS_EXTENSION.to_string(),
+                serde_json::json!(keys),
+            );
+        }
+        issues.push(issue);
     }
 
     Ok(issues)
@@ -474,7 +500,18 @@ pub fn get_issue_by_id(conn: &Connection, id: &str) -> Result<Option<Issue>> {
         })
         .optional()?;
 
-    Ok(issue)
+    issue
+        .map(|mut issue| {
+            let keys = get_resource_keys(conn, &issue.id)?;
+            if !keys.is_empty() {
+                issue.extensions.insert(
+                    crate::service::resource_locks::RESOURCE_KEYS_EXTENSION.to_string(),
+                    serde_json::json!(keys),
+                );
+            }
+            Ok(issue)
+        })
+        .transpose()
 }
 
 /// Generate a unique issue ID

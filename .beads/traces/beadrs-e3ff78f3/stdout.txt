@@ -1,0 +1,8 @@
+Completed and pushed as `d0f7f1e`; bead `beadrs-e3ff78f3` closed.
+
+- MSRV raised to Rust 1.85; edition 2024 enabled.
+- ADR-004 references updated in `README.md` and `AGENTS.md`.
+- Edition fixes, formatting, clippy, pinned check, and man-page reproducibility passed.
+- Man pages required no changes.
+
+The checkout still contains unrelated concurrent edits, which were preserved.

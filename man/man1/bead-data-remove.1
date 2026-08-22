@@ -4,7 +4,7 @@
 .SH NAME
 bead data remove \- Remove a structured data value from an issue
 .SH SYNOPSIS
-\fBbead data remove\fR <\fB\-\-id\fR> <\fB\-\-namespace\fR> [\fB\-h\fR|\fB\-\-help\fR] 
+\fBbead data remove\fR [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-id\fR> <\fB\-\-namespace\fR> 
 .SH DESCRIPTION
 Remove a structured data value from an issue (idempotent).
 .PP
@@ -25,10 +25,10 @@ ATOMICITY:
   \- Validates that the issue exists before removal
 .SH OPTIONS
 .TP
-\fB\-\-id\fR=\fIID\fR
+\fB\-\-id\fR \fI<ID>\fR
 Issue ID
 .TP
-\fB\-\-namespace\fR=\fINAMESPACE\fR
+\fB\-\-namespace\fR \fI<NAMESPACE>\fR
 Data namespace
 .TP
 \fB\-h\fR, \fB\-\-help\fR

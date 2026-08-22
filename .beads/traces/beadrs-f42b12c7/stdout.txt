@@ -1,0 +1,8 @@
+R026 gate evidence completed and pushed in commit `59ffeed`.
+
+- [Evidence report](</home/coding/bead-rs/docs/verification/r026-activation-gate-2026-08-21.md>)
+- 55 targeted R026 tests passed.
+- 1,000 automatic publication cycles passed with bounded objects and clean status.
+- F015 matrix: 40 reports, 0 busy/conflict failures; 6 explicitly resource-limited lanes recorded.
+- Bead `beadrs-f42b12c7` closed.
+- Unrelated concurrent source/worktree changes were preserved.

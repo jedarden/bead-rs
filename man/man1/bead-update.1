@@ -52,22 +52,22 @@ All updates are atomic. Invalid transitions or conflicts exit with code 4
 without changing any fields or timestamps.
 .SH OPTIONS
 .TP
-\fB\-\-status\fR=\fISTATUS\fR
+\fB\-\-status\fR \fI<STATUS>\fR
 New status
 .TP
-\fB\-\-assignee\fR=\fIASSIGNEE\fR
+\fB\-\-assignee\fR \fI<ASSIGNEE>\fR
 New assignee
 .TP
 \fB\-\-clear\-assignee\fR
 Clear assignee (only for open assigned issues)
 .TP
-\fB\-\-notes\fR=\fINOTES\fR
+\fB\-\-notes\fR \fI<NOTES>\fR
 New notes
 .TP
-\fB\-\-if\-revision\fR=\fIIF_REVISION\fR
+\fB\-\-if\-revision\fR \fI<IF_REVISION>\fR
 Expected revision for optimistic concurrency control
 .TP
-\fB\-\-fencing\-token\fR=\fIFENCING_TOKEN\fR
+\fB\-\-fencing\-token\fR \fI<FENCING_TOKEN>\fR
 Fencing token for lease validation (advanced usage)
 .TP
 \fB\-\-dry\-run\fR

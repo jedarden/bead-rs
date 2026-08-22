@@ -21,7 +21,9 @@ pub mod lifecycle;
 pub mod query;
 
 pub mod recurrence;
+pub mod reconcile;
 pub mod rehearsal;
+pub mod resource_locks;
 pub mod scheduling;
 pub mod schema;
 pub mod why;
@@ -39,10 +41,11 @@ pub use changes::{
     get_changes_since, get_gap_info, get_snapshot_identity, validate_cursor, Cursor,
 };
 pub use checkpoint::{
-    acquire_checkpoint_publication_lock, flush_checkpoint, forensic_checkpoint_status,
-    import_checkpoint_with_diagnostics, import_forensic_checkpoint, load_checkpoint_config,
-    publish_forensic_checkpoint, publish_forensic_checkpoint_holding, read_covered_event_sequence,
-    read_live_event_sequence, restore_verified_generation, verify_restore_source, CheckpointConfig,
+    acquire_checkpoint_publication_lock, flush_checkpoint, fork_workspace_identity,
+    forensic_checkpoint_status, import_checkpoint_with_diagnostics, import_forensic_checkpoint,
+    load_checkpoint_config, publish_forensic_checkpoint, publish_forensic_checkpoint_holding,
+    read_covered_event_sequence, read_live_event_sequence, restore_verified_generation,
+    verify_restore_source, CheckpointConfig, ForkReport,
 };
 // The publication-lock guard type is public library API (callers that
 // publish through `publish_forensic_checkpoint_holding` name it) but the
@@ -72,10 +75,10 @@ pub use external_refs::{
     add_external_reference, find_issues_by_reference, list_external_references,
     remove_external_reference,
 };
-pub use issues::get_issue_by_id;
-pub use issues::list_issues;
 #[allow(unused_imports)]
 pub use issues::{create_issue, create_issue_with_unique_ref, CreateOutcome};
+pub use issues::get_issue_by_id;
+pub use issues::list_issues;
 pub use leases::{validate_lease_for_mutation, LeaseClaimResult};
 pub use lifecycle::{close_issue, release_issue, reopen_issue, update_issue};
 pub use query::{

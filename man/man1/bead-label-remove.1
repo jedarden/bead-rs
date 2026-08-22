@@ -4,7 +4,7 @@
 .SH NAME
 bead label remove \- Remove a label from an issue
 .SH SYNOPSIS
-\fBbead label remove\fR <\fB\-\-label\fR> [\fB\-h\fR|\fB\-\-help\fR] <\fIID\fR> 
+\fBbead label remove\fR [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-label\fR> <\fIID\fR> 
 .SH DESCRIPTION
 Remove a label from an issue (idempotent).
 .PP
@@ -20,7 +20,7 @@ IDEMPOTENCY:
   This makes label management safe and declarative.
 .SH OPTIONS
 .TP
-\fB\-\-label\fR=\fILABEL\fR
+\fB\-\-label\fR \fI<LABEL>\fR
 Label to remove
 .TP
 \fB\-h\fR, \fB\-\-help\fR

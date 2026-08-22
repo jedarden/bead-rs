@@ -4,7 +4,7 @@
 .SH NAME
 bead query \- Execute safe query language queries
 .SH SYNOPSIS
-\fBbead query\fR [\fB\-\-file\fR] [\fB\-\-json\fR] [\fB\-\-output\-json\fR] [\fB\-\-save\-as\fR] [\fB\-\-list\-views\fR] [\fB\-\-view\fR] [\fB\-\-delete\-view\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBbead query\fR [\fB\-\-file\fR] [\fB\-\-json\fR] [\fB\-\-checkpoint\fR] [\fB\-\-output\-json\fR] [\fB\-\-save\-as\fR] [\fB\-\-list\-views\fR] [\fB\-\-view\fR] [\fB\-\-delete\-view\fR] [\fB\-h\fR|\fB\-\-help\fR] 
 .SH DESCRIPTION
 Execute queries using the safe query language (R004).
 .PP
@@ -27,13 +27,16 @@ SUPPORTED FIELDS:
 EXAMPLES:
   bead query \-\-file open_high.json                     # Query from a file
   bead query \-\-json \*(Aq{"version":"v1"}\*(Aq                 # Inline query text
+  bead query \-\-checkpoint .beads/checkpoint/previous.json \-\-file open_high.json
   bead query \-\-file alice_work.json \-\-output\-json      # Machine\-readable results
   bead query \-\-file open_high.json \-\-save\-as hot       # Save as a named view
   bead query \-\-view hot \-\-output\-json                  # Run a saved view
   bead query \-\-list\-views                              # List saved views
 .PP
 Note: \-\-json supplies the query document itself. Use \-\-output\-json to render
-results as JSON.
+results as JSON. \-\-checkpoint selects a verified historical generation and
+always renders an explicitly non\-importable JSON archaeology view; saved\-view
+operations are deliberately unavailable against historical state.
 .PP
 QUERY FORMAT:
   {
@@ -57,25 +60,28 @@ The query command never exposes raw SQL or internal schema details.
 All field names are validated against a public whitelist.
 .SH OPTIONS
 .TP
-\fB\-\-file\fR=\fIFILE\fR
+\fB\-\-file\fR \fI<FILE>\fR
 Query specification file (JSON format)
 .TP
-\fB\-\-json\fR=\fIJSON\fR
+\fB\-\-json\fR \fI<JSON>\fR
 Query specification as inline JSON
+.TP
+\fB\-\-checkpoint\fR \fI<CHECKPOINT>\fR
+Verified historical checkpoint artifact (pointer, manifest, or monolithic object)
 .TP
 \fB\-\-output\-json\fR
 Output results in JSON format
 .TP
-\fB\-\-save\-as\fR=\fISAVE_AS\fR
+\fB\-\-save\-as\fR \fI<SAVE_AS>\fR
 Save query as a named view
 .TP
 \fB\-\-list\-views\fR
 List all saved views
 .TP
-\fB\-\-view\fR=\fIVIEW\fR
+\fB\-\-view\fR \fI<VIEW>\fR
 Execute a saved view
 .TP
-\fB\-\-delete\-view\fR=\fIDELETE_VIEW\fR
+\fB\-\-delete\-view\fR \fI<DELETE_VIEW>\fR
 Delete a saved view
 .TP
 \fB\-h\fR, \fB\-\-help\fR

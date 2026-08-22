@@ -24,7 +24,7 @@ Exactly one of \-\-latest, \-\-since, \-\-snapshot, or \-\-validate is expected.
 This feed is local to the workspace; bead\-rs performs no network access.
 .SH OPTIONS
 .TP
-\fB\-\-since\fR=\fISINCE\fR
+\fB\-\-since\fR \fI<SINCE>\fR
 Get changes since this cursor position (sequence number or cursor string)
 .TP
 \fB\-\-latest\fR
@@ -33,7 +33,7 @@ Get the latest cursor position for tracking
 \fB\-\-snapshot\fR
 Get the current snapshot identity
 .TP
-\fB\-\-validate\fR=\fIVALIDATE\fR
+\fB\-\-validate\fR \fI<VALIDATE>\fR
 Validate a cursor and check for gaps
 .TP
 \fB\-\-json\fR

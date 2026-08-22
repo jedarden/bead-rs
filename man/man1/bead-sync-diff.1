@@ -1,0 +1,30 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead sync diff" 1  "bead sync diff " 
+.SH NAME
+bead sync diff \- Diff two verified checkpoint generations
+.SH SYNOPSIS
+\fBbead sync diff\fR [\fB\-h\fR|\fB\-\-help\fR] <\fIFROM\fR> <\fITO\fR> 
+.SH DESCRIPTION
+Compare two retained checkpoint generations without importing either one.
+.PP
+Each argument may be a generation pointer, a pointer\-selected sharded manifest,
+or a pointer\-selected monolithic object. bead\-rs resolves manifests and objects
+back to current.json or previous.json, then runs the complete named\-generation
+verifier before materializing an ephemeral read\-only view. The JSON response
+contains issue\- and event\-level added, removed, and changed semantic records.
+It is explicitly non\-importable.
+.PP
+EXAMPLES:
+  bead sync diff .beads/checkpoint/previous.json .beads/checkpoint/current.json
+  bead sync diff old/manifests/<HASH>.json new/objects/<HASH>.jsonl
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIFROM\fR>
+Earlier checkpoint artifact (pointer, manifest, or monolithic object)
+.TP
+<\fITO\fR>
+Later checkpoint artifact (pointer, manifest, or monolithic object)

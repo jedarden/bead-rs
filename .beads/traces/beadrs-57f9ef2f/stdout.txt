@@ -1,0 +1,11 @@
+Implemented and pushed R032.
+
+- Added atomic `--unique-ref NAMESPACE:KEY` bindings with concurrent deduplication.
+- Added `EXISTING` and `EXISTING_CLOSED` outputs.
+- Added R011 checkpoint projection and migration.
+- Added four tests, including concurrent race coverage.
+
+Verification passed in an isolated clean tree: fmt, Clippy, unit tests, and all R032 tests.
+
+Commit: `92ed33e`  
+Bead `beadrs-57f9ef2f` closed.

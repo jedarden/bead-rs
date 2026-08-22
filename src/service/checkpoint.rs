@@ -69,6 +69,9 @@
 use crate::cli::ImportMode;
 use crate::model::Issue;
 use crate::profile::ProfileLossReport;
+use crate::service::resource_locks::{
+    acquire_issue_locks, declare_resource_keys, get_resource_keys, resource_keys_from_value,
+};
 use crate::store::SqliteStore;
 use anyhow::{anyhow, bail, Result};
 use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
@@ -584,6 +587,39 @@ pub struct ProvenanceReceipt {
     pub receipt_sha256: String,
 }
 
+/// Fork receipt for R028 fork operations (bead sync fork)
+///
+/// A fork receipt records the explicit creation of a new workspace identity
+/// from an existing checkpoint. The new UUID is derived while maintaining
+/// provenance to the parent, enabling composability between forked workspaces.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForkReceipt {
+    #[serde(rename = "$schema")]
+    pub schema_ref: String,
+    pub receipt_id: String,
+    pub kind: String, // "fork"
+    /// Parent workspace UUID being forked from
+    pub parent_store_uuid: String,
+    /// Newly generated UUID for the forked workspace
+    pub new_store_uuid: String,
+    /// Parent checkpoint root hash being forked
+    pub parent_root_sha256: String,
+    /// Parent generation ID (if available)
+    pub parent_generation_id: Option<String>,
+    /// Actor performing the fork
+    pub actor: String,
+    /// ISO 8601 timestamp
+    pub created_at: String,
+    /// Counts from parent checkpoint
+    pub counts: ReceiptCounts,
+    /// Result status
+    pub result: String,
+    /// Fork receipt content hash
+    pub receipt_sha256: String,
+    /// Optional reasoning for the fork
+    pub reason: Option<String>,
+}
+
 /// Counts recorded in provenance receipts
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReceiptCounts {
@@ -632,6 +668,13 @@ pub struct CheckpointStatusReport {
     pub changed_paths: Vec<String>,
     pub ready_to_commit: bool,
     pub not_ready_reasons: Vec<String>,
+    /// The R027 sync relationship between the live store and the durable
+    /// checkpoint: one of `absent`, `behind`, `aligned`,
+    /// `remote-advanced`, or `covered-ahead-integrity-failure`. Total over
+    /// the artifacts alone (research/specs/remote-advanced-reconcile-v1.md);
+    /// `aligned` and `behind` claim nothing about pointer health, which the
+    /// fields above continue to report independently.
+    pub relationship: String,
 }
 
 /// Import result with F017 support
@@ -1940,6 +1983,14 @@ fn verify_sharded_restore_closure(
 }
 
 /// Stage forensic checkpoint from input path
+/// Stage the workspace's own durable checkpoint set (R027): the
+/// `checkpoint/` directory a `current.json` pointer governs. Exposed for
+/// the sync-relationship classifier, which must stage exactly the
+/// generation the pointer selects.
+pub(crate) fn stage_checkpoint_set(checkpoint_dir: &Path) -> Result<ForensicStaging> {
+    stage_forensic_checkpoint(checkpoint_dir)
+}
+
 fn stage_forensic_checkpoint(input_path: &Path) -> Result<ForensicStaging> {
     // Check if input is a directory (sharded/pointer) or file (monolithic)
     if input_path.is_dir() {
@@ -2637,7 +2688,7 @@ fn validate_forensic_checkpoint(
 /// Validate every source-intrinsic forensic invariant. R036 calls this only
 /// after verifying the generation pointer and complete content-addressed
 /// closure, and before it inspects or mutates the target.
-fn validate_forensic_contents(staging: &ForensicStaging) -> Result<()> {
+pub(crate) fn validate_forensic_contents(staging: &ForensicStaging) -> Result<()> {
     for issue in &staging.issues {
         if issue.schema_ref.as_deref() != Some("urn:bead-rs:schema:issue:native-v1") {
             bail!(
@@ -2648,6 +2699,11 @@ fn validate_forensic_contents(staging: &ForensicStaging) -> Result<()> {
         issue
             .validate()
             .map_err(|error| anyhow!("Issue '{}' failed validation: {}", issue.id, error))?;
+        if let Some(value) = issue.extensions.get("resource_keys") {
+            resource_keys_from_value(value).map_err(|error| {
+                anyhow!("Issue '{}' has invalid resource_keys: {}", issue.id, error)
+            })?;
+        }
     }
 
     // Validate canonical ordering
@@ -2946,33 +3002,36 @@ fn validate_different_uuid_merge(store: &mut SqliteStore, staging: &ForensicStag
 
 /// Existing event identities are an accepted replay prefix only when their
 /// complete public content is identical. New suffix events remain importable.
+///
+/// R027: the identity comparison runs against live events enumerated with
+/// their *derived* wire identities, not only rows carrying explicit origin
+/// columns. Native mutations write NULL origin columns, so matching only
+/// explicit rows let a staged event collide with a derived local identity
+/// unnoticed — validation passed and the import re-inserted the row as a
+/// duplicate under a second identity. Comparing through
+/// [`read_all_events`] uses exactly the identity publication derives, with
+/// the actor export default (NULL reads as `"system"`) applied on both
+/// sides.
 fn validate_event_prefix(conn: &rusqlite::Connection, staging: &ForensicStaging) -> Result<()> {
-    for event in &staging.events {
-        let existing = conn
-            .query_row(
-                "SELECT issue_id, kind, actor, time, detail FROM events
-                 WHERE origin_store_uuid = ?1 AND origin_event_sequence = ?2",
-                params![&event.origin_store_uuid, event.origin_event_sequence],
-                |row| {
-                    Ok((
-                        row.get::<_, Option<String>>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                    ))
-                },
-            )
-            .optional()?;
+    let live_events = read_all_events(conn)?;
+    let mut live_by_identity: HashMap<(&str, i64), &EventRecord> =
+        HashMap::with_capacity(live_events.len());
+    for live_event in &live_events {
+        live_by_identity.insert(
+            (
+                live_event.origin_store_uuid.as_str(),
+                live_event.origin_event_sequence,
+            ),
+            live_event,
+        );
+    }
 
-        if let Some((issue_id, kind, actor, time, detail)) = existing {
-            let detail: serde_json::Value = serde_json::from_str(&detail)?;
-            if issue_id != event.issue_id
-                || kind != event.kind
-                || actor != event.actor
-                || time != event.time
-                || detail != event.detail
-            {
+    for event in &staging.events {
+        if let Some(&live_event) = live_by_identity.get(&(
+            event.origin_store_uuid.as_str(),
+            event.origin_event_sequence,
+        )) {
+            if !crate::service::reconcile::public_content_matches(live_event, event) {
                 bail!(
                     "Event identity conflict: ({}, {}) has different content",
                     event.origin_store_uuid,
@@ -3084,6 +3143,302 @@ fn validate_restore_actor(actor: &str) -> Result<()> {
         bail!("Restore actor cannot contain control characters");
     }
     Ok(())
+}
+
+/// Fork workspace identity (R028: bead sync fork)
+///
+/// Creates a new workspace UUID derived from the current workspace while
+/// recording the provenance relationship in a fork receipt. This enables
+/// clones of one repository to become distinct origins whose event streams
+/// merge composably under existing different-UUID rules.
+///
+/// # Arguments
+///
+/// * `store` - Mutable reference to SQLite store
+/// * `actor` - Actor performing the fork (required, non-empty, ≤255 bytes, no control chars)
+/// * `reason` - Optional human-readable explanation for the fork
+///
+/// # Returns
+///
+/// * `Ok(ForkReport)` - Complete result with UUIDs, receipt info, and counts
+/// * `Err(...)` - Validation error, dirty workspace, or I/O error
+///
+/// # Errors
+///
+/// - **Actor Error**: Missing, empty, oversized, or control-character actor
+/// - **Workspace Error**: Workspace is dirty or has no checkpoint
+/// - **Integrity Error**: Failed to read or write fork receipt
+///
+/// # Fork Behavior
+///
+/// 1. Validates workspace is clean (checkpoint covers current event sequence)
+/// 2. Generates new UUID with provenance to parent UUID
+/// 3. Records fork receipt in provenance_receipts table
+/// 4. Updates workspace.uuid in database
+/// 5. Creates summary event in events table
+/// 6. Returns report with old/new UUIDs and receipt details
+///
+/// The forked workspace is now a distinct origin that can merge back into
+/// the parent workspace using `bead sync import-only --merge`.
+pub fn fork_workspace_identity(
+    store: &mut SqliteStore,
+    actor: &str,
+    reason: Option<&str>,
+) -> Result<ForkReport> {
+    // Validate actor (same rules as restore)
+    if actor.trim().is_empty() {
+        bail!("Fork actor cannot be empty");
+    }
+    if actor.len() > 255 {
+        bail!("Fork actor cannot exceed 255 bytes");
+    }
+    if actor.contains(char::is_control) {
+        bail!("Fork actor cannot contain control characters");
+    }
+
+    // Validate reason if provided
+    if let Some(r) = reason {
+        if r.len() > 4096 {
+            bail!("Fork reason cannot exceed 4096 bytes");
+        }
+    }
+
+    let conn = store.conn();
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+
+    // Get current workspace state
+    let parent_uuid: String = tx
+        .query_row("SELECT uuid FROM workspace WHERE id = 1", [], |row| row.get(0))
+        .map_err(|e| anyhow!("Failed to read workspace UUID: {}", e))?;
+
+    // Get current event sequence
+    let current_sequence: i64 = tx
+        .query_row("SELECT COALESCE(MAX(sequence), 0) FROM events", [], |row| {
+            row.get(0)
+        })
+        .unwrap_or(0);
+
+    // Get checkpoint state to verify workspace is clean
+    let checkpoint_state: Option<(i64, String)> = tx
+        .query_row(
+            "SELECT covered_event_sequence, current_generation_id FROM checkpoint_state WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .ok();
+
+    // Verify checkpoint is clean (not dirty)
+    if let Some((covered_sequence, _)) = checkpoint_state {
+        if covered_sequence < current_sequence {
+            bail!(
+                "Cannot fork dirty workspace: checkpoint covers sequence {} but current sequence is {}. \
+                 Run 'bead sync flush-only' first to publish a clean checkpoint.",
+                covered_sequence, current_sequence
+            );
+        }
+    } else {
+        bail!(
+            "Cannot fork workspace with no checkpoint. Run 'bead sync flush-only' first."
+        );
+    }
+
+    // Get current counts
+    let issue_count: i64 = tx.query_row("SELECT COUNT(*) FROM issues", [], |row| row.get(0))?;
+    let event_count: i64 = tx.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?;
+    let receipt_count: i64 = tx.query_row("SELECT COUNT(*) FROM provenance_receipts", [], |row| row.get(0))?;
+
+    // Generate new UUID with provenance derivation
+    let new_uuid = derive_fork_uuid(&parent_uuid, current_sequence)?;
+
+    // Create fork receipt
+    let created_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let receipt_id = format!("fork-{}", generate_hex_suffix(16));
+
+    // Extract parent generation ID if available
+    let parent_generation_id = checkpoint_state.as_ref().map(|(_, gen_id)| gen_id.clone());
+
+    let fork_receipt = ForkReceipt {
+        schema_ref: "urn:bead-rs:schema:fork-receipt:native-v1".to_string(),
+        receipt_id: receipt_id.clone(),
+        kind: "fork".to_string(),
+        parent_store_uuid: parent_uuid.clone(),
+        new_store_uuid: new_uuid.clone(),
+        parent_root_sha256: String::new(), // Will be filled after checkpoint verification
+        parent_generation_id: parent_generation_id.clone(),
+        actor: actor.to_string(),
+        created_at: created_at.clone(),
+        counts: ReceiptCounts {
+            issues: issue_count,
+            events: event_count,
+            provenance_receipts: receipt_count,
+        },
+        result: "success".to_string(),
+        receipt_sha256: String::new(), // Will be computed below
+        reason: reason.map(|r| r.to_string()),
+    };
+
+    // Serialize and hash receipt
+    let receipt_json = serde_json::to_string(&fork_receipt)
+        .map_err(|e| anyhow!("Failed to serialize fork receipt: {}", e))?;
+    let receipt_sha256 = format!("{:x}", Sha256::digest(receipt_json.as_bytes()));
+
+    // Insert fork receipt
+    let counts_json = serde_json::to_string(&fork_receipt.counts)
+        .map_err(|e| anyhow!("Failed to serialize counts: {}", e))?;
+
+    tx.execute(
+        "INSERT INTO provenance_receipts
+         (receipt_id, schema_ref, kind, source_store_uuid, target_store_uuid,
+          source_root_sha256, actor, created_at, counts_json, result,
+          summary_event_identity, receipt_sha256)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11)",
+        params![
+            receipt_id,
+            fork_receipt.schema_ref,
+            "fork",
+            parent_uuid,
+            new_uuid,
+            "", // root_sha256 will be filled by checkpoint verification
+            actor,
+            created_at,
+            counts_json,
+            "success",
+            receipt_sha256
+        ],
+    )?;
+
+    // Update workspace UUID
+    tx.execute(
+        "UPDATE workspace SET uuid = ?1 WHERE id = 1",
+        params![new_uuid],
+    )?;
+
+    // Create summary event
+    let summary_sequence = current_sequence + 1;
+    let summary_event = EventRecord {
+        schema_ref: "urn:bead-rs:schema:event:native-v1".to_string(),
+        origin_store_uuid: new_uuid.clone(),
+        origin_event_sequence: summary_sequence,
+        issue_id: None,
+        kind: "workspace_forked".to_string(),
+        actor: actor.to_string(),
+        time: created_at.clone(),
+        detail: serde_json::json!({
+            "parent_store_uuid": parent_uuid,
+            "new_store_uuid": new_uuid,
+            "fork_receipt_id": receipt_id,
+            "reason": reason
+        }),
+    };
+
+    let event_json = serde_json::to_string(&summary_event)
+        .map_err(|e| anyhow!("Failed to serialize fork summary event: {}", e))?;
+
+    tx.execute(
+        "INSERT INTO events (sequence, origin_store_uuid, origin_event_sequence, issue_id, kind, actor, time, detail)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            summary_sequence,
+            new_uuid,
+            summary_sequence,
+            None::<String>,
+            "workspace_forked",
+            actor,
+            created_at,
+            event_json
+        ],
+    )?;
+
+    // Update checkpoint state to dirty (since we've changed the workspace identity)
+    let updated_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    tx.execute(
+        "UPDATE checkpoint_state
+         SET covered_event_sequence = ?1, updated_at = ?2
+         WHERE id = 1",
+        params![summary_sequence, updated_at],
+    )?;
+
+    tx.commit()?;
+
+    Ok(ForkReport {
+        parent_store_uuid: parent_uuid.clone(),
+        new_store_uuid: new_uuid.clone(),
+        fork_receipt_id: receipt_id,
+        fork_receipt_sha256: receipt_sha256,
+        actor: actor.to_string(),
+        created_at,
+        issue_count: issue_count as usize,
+        event_count: event_count as usize,
+        receipt_count: receipt_count as usize,
+        summary_event_sequence: summary_sequence,
+        parent_generation_id: parent_generation_id,
+        reason: reason.map(|r| r.to_string()),
+    })
+}
+
+/// Derive a new fork UUID with provenance to the parent UUID
+///
+/// The derived UUID maintains a traceable relationship to the parent while
+/// being cryptographically distinct. The format combines:
+/// - Parent UUID (for provenance)
+/// - Current event sequence (for uniqueness)
+/// - Random entropy (for collision resistance)
+fn derive_fork_uuid(parent_uuid: &str, current_sequence: i64) -> Result<String> {
+    use rand::Rng;
+
+    let mut rng = rand::thread_rng();
+    let random_bytes: [u8; 8] = rng.r#gen::<[u8; 8]>();
+
+    // Derive new UUID by combining:
+    // - First 8 chars of parent UUID (provenance prefix)
+    // - Current sequence (version marker)
+    // - Random suffix (collision resistance)
+    let provenance_prefix = &parent_uuid[..8];
+    let random_suffix = format!("{:016x}", u64::from_be_bytes(random_bytes));
+
+    Ok(format!(
+        "{}-fork-{}-{}",
+        provenance_prefix,
+        current_sequence,
+        &random_suffix[..16]
+    ))
+}
+
+/// Generate random hex suffix for receipt IDs
+fn generate_hex_suffix(length: usize) -> String {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let bytes: Vec<u8> = (0..length).map(|_| rng.r#gen::<u8>()).collect();
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// Fork operation result report
+#[derive(Debug, Clone, Serialize)]
+pub struct ForkReport {
+    /// Parent workspace UUID being forked from
+    pub parent_store_uuid: String,
+    /// Newly generated UUID for the forked workspace
+    pub new_store_uuid: String,
+    /// Fork receipt ID
+    pub fork_receipt_id: String,
+    /// Fork receipt SHA-256
+    pub fork_receipt_sha256: String,
+    /// Actor who performed the fork
+    pub actor: String,
+    /// ISO 8601 timestamp
+    pub created_at: String,
+    /// Number of issues at fork time
+    pub issue_count: usize,
+    /// Number of events at fork time
+    pub event_count: usize,
+    /// Number of provenance receipts at fork time
+    pub receipt_count: usize,
+    /// Summary event sequence number
+    pub summary_event_sequence: i64,
+    /// Parent generation ID (if available)
+    pub parent_generation_id: Option<String>,
+    /// Optional reason for the fork
+    pub reason: Option<String>,
 }
 
 fn read_restore_target_counts(conn: &rusqlite::Connection) -> Result<RestoreDisplacedCounts> {
@@ -3245,6 +3600,18 @@ fn execute_merge(
     let conn = store.conn();
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
 
+    // A same-UUID merge reconciles a checkpoint of this very store's history,
+    // so the local rows it verified against must carry their derived wire
+    // identities before the identity-based import dedup runs (R027). Without
+    // this, native NULL-origin rows never match their staged counterparts
+    // and every pre-existing event is imported a second time.
+    let target_uuid: String = tx
+        .query_row("SELECT uuid FROM workspace", [], |row| row.get(0))
+        .unwrap_or_default();
+    if target_uuid == staging.store_uuid {
+        canonicalize_local_event_identities(&tx)?;
+    }
+
     // Perform merge reconciliation
     let (inserted, updated, retained) = reconcile_and_merge(&tx, staging)?;
 
@@ -3348,6 +3715,8 @@ fn import_issues(tx: &Transaction, staging: &ForensicStaging) -> Result<usize> {
                 &issue.revision.unwrap_or(1),
             ],
         )?;
+
+        import_resource_keys(tx, issue)?;
 
         import_issue_data(tx, issue)?;
         import_external_references(tx, issue)?;
@@ -3617,6 +3986,7 @@ fn reconcile_and_merge(
                     ],
                 )?;
 
+                import_resource_keys(tx, issue)?;
                 import_issue_data(tx, issue)?;
                 import_external_references(tx, issue)?;
                 import_comments(tx, issue)?;
@@ -3709,6 +4079,13 @@ fn reconcile_and_merge(
                         tx.execute("DELETE FROM comments WHERE issue_id = ?1", [&issue.id])?;
                         import_comments(tx, issue)?;
                     }
+                    if issue.extensions.contains_key("resource_keys") {
+                        tx.execute(
+                            "DELETE FROM issue_resource_keys WHERE issue_id = ?1",
+                            [&issue.id],
+                        )?;
+                        import_resource_keys(tx, issue)?;
+                    }
 
                     for (key, value) in &issue.extensions {
                         if is_known_issue_projection(key) {
@@ -3728,6 +4105,8 @@ fn reconcile_and_merge(
                             ],
                         )?;
                     }
+
+                    crate::service::resource_locks::sync_issue_locks(tx, &issue.id)?;
 
                     updated += 1;
                 } else {
@@ -3791,8 +4170,20 @@ fn import_issue_data(tx: &Transaction, issue: &Issue) -> Result<()> {
 fn is_known_issue_projection(key: &str) -> bool {
     matches!(
         key,
-        "labels" | "dependencies" | "external_references" | "comments"
+        "labels" | "dependencies" | "external_references" | "comments" | "resource_keys"
     )
+}
+
+fn import_resource_keys(tx: &Transaction, issue: &Issue) -> Result<()> {
+    let Some(value) = issue.extensions.get("resource_keys") else {
+        return Ok(());
+    };
+    let keys = resource_keys_from_value(value)?;
+    declare_resource_keys(tx, &issue.id, &keys)?;
+    if issue.base_status == crate::model::BaseStatus::InProgress && issue.assignee.is_some() {
+        acquire_issue_locks(tx, &issue.id, None)?;
+    }
+    Ok(())
 }
 
 fn import_external_references(tx: &Transaction, issue: &Issue) -> Result<()> {
@@ -3806,6 +4197,9 @@ fn import_external_references(tx: &Transaction, issue: &Issue) -> Result<()> {
         )
     })?;
 
+    // A present projection replaces the issue's reference collection. Remove
+    // R032 bindings first so a changed checkpoint cannot leave an orphaned
+    // uniqueness reservation behind.
     tx.execute(
         "DELETE FROM unique_reference_bindings WHERE issue_id = ?1",
         [&issue.id],
@@ -4662,6 +5056,7 @@ fn activate_import(store: &mut SqliteStore, staging: &ImportStaging) -> Result<(
             ],
         )?;
 
+        import_resource_keys(&tx, issue)?;
         import_issue_data(&tx, issue)?;
         import_external_references(&tx, issue)?;
         import_comments(&tx, issue)?;
@@ -5359,6 +5754,13 @@ pub fn forensic_checkpoint_status(
                     changed_paths: Vec::new(),
                     ready_to_commit: false,
                     not_ready_reasons: vec!["current.json is unparseable".to_string()],
+                    // A present-but-unparseable pointer is integrity damage,
+                    // not absence (R027); `covered_sequence: None` keeps the
+                    // covered-ahead refusals from engaging on it, preserving
+                    // flush-only's pre-R027 behavior for this shape.
+                    relationship: crate::service::reconcile::SyncRelationship::CoveredAheadIntegrityFailure
+                        .as_str()
+                        .to_string(),
                 });
             }
         }
@@ -5405,6 +5807,9 @@ pub fn forensic_checkpoint_status(
             .unwrap_or_default(),
         ready_to_commit: false,
         not_ready_reasons: Vec::new(),
+        relationship: crate::service::reconcile::SyncRelationship::Absent
+            .as_str()
+            .to_string(),
     };
 
     let Some(pointer) = pointer else {
@@ -5477,23 +5882,57 @@ pub fn forensic_checkpoint_status(
         ));
     }
 
-    // The recorded state must agree with the authoritative pointer
-    if state_generation.is_some() && state_generation.as_deref() != report.generation_id.as_deref()
+    // The recorded state must agree with the authoritative pointer. In the
+    // remote-advanced relationship that disagreement is the state itself --
+    // the database records the last local publication, the pointer records
+    // the pulled one -- so the plain disagreement reason is replaced by the
+    // reconcile remedy rather than presented as an integrity fault (R027,
+    // research/specs/remote-advanced-reconcile-v1.md, "Reporting").
+    let verdict = crate::service::reconcile::classify(conn, checkpoint_base)?;
+    let relationship = verdict.relationship;
+    if relationship == crate::service::reconcile::SyncRelationship::RemoteAdvanced {
+        report.not_ready_reasons.retain(|reason| {
+            reason != "checkpoint state disagrees with current.json"
+                && !reason.starts_with("checkpoint state covered sequence")
+        });
+        report.not_ready_reasons.insert(
+            0,
+            format!(
+                "remote-advanced: {}",
+                crate::service::reconcile::REMOTE_ADVANCED_REMEDY
+            ),
+        );
+    } else if relationship
+        == crate::service::reconcile::SyncRelationship::CoveredAheadIntegrityFailure
     {
-        report
-            .not_ready_reasons
-            .push("checkpoint state disagrees with current.json".to_string());
-    } else if state_generation.is_none() {
-        report
-            .not_ready_reasons
-            .push("checkpoint state not recorded".to_string());
-    } else if state_covered != covered {
-        report.not_ready_reasons.push(format!(
-            "checkpoint state covered sequence {} disagrees with pointer {}",
-            state_covered, covered
-        ));
+        if let Some(qualifier) = &verdict.failed_qualifier {
+            report
+                .not_ready_reasons
+                .insert(0, format!("covered-ahead integrity failure: {}", qualifier));
+        }
     }
 
+    // The recorded state must agree with the authoritative pointer
+    if relationship != crate::service::reconcile::SyncRelationship::RemoteAdvanced {
+        if state_generation.is_some()
+            && state_generation.as_deref() != report.generation_id.as_deref()
+        {
+            report
+                .not_ready_reasons
+                .push("checkpoint state disagrees with current.json".to_string());
+        } else if state_generation.is_none() {
+            report
+                .not_ready_reasons
+                .push("checkpoint state not recorded".to_string());
+        } else if state_covered != covered {
+            report.not_ready_reasons.push(format!(
+                "checkpoint state covered sequence {} disagrees with pointer {}",
+                state_covered, covered
+            ));
+        }
+    }
+
+    report.relationship = relationship.as_str().to_string();
     report.ready_to_commit = report.not_ready_reasons.is_empty();
     Ok(report)
 }
@@ -6319,8 +6758,15 @@ fn apply_checkpoint_tombstones(checkpoint_dir: &Path, deleted_paths: &[String]) 
     Ok(removed)
 }
 
-/// Read all events from database
-fn read_all_events(tx: &Transaction) -> Result<Vec<EventRecord>> {
+/// Enumerate every live event with the wire identity publication would give
+/// it (R027). Explicit origins are preserved verbatim; NULL-origin rows --
+/// the shape every native mutation writes -- are numbered after this
+/// store's highest explicit local-UUID identity in local ingestion order.
+/// This is the same derivation [`read_all_events`] applies at export time,
+/// exposed so sync-relationship classification and merge validation compare
+/// live rows against checkpoint identities through one definition instead
+/// of a re-implementation that can drift.
+pub(crate) fn read_all_events(conn: &rusqlite::Connection) -> Result<Vec<EventRecord>> {
     let mut events = Vec::new();
 
     // Locally-created events are written with NULL origin columns (they are
@@ -6329,22 +6775,9 @@ fn read_all_events(tx: &Transaction) -> Result<Vec<EventRecord>> {
     // exported carrying this workspace's UUID and its own local sequence.
     // Exporting them as ("", 0) instead gives every event the identity ":0",
     // which makes the checkpoint unimportable past its first event.
-    let local_store_uuid: String = tx
-        .query_row("SELECT uuid FROM workspace WHERE id = 1", [], |row| {
-            row.get(0)
-        })
-        .unwrap_or_default();
-    let explicit_local_max: i64 = tx
-        .query_row(
-            "SELECT COALESCE(MAX(origin_event_sequence), 0)
-             FROM events WHERE origin_store_uuid = ?1",
-            [&local_store_uuid],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
-    let mut next_local_origin_sequence = explicit_local_max + 1;
+    let (local_store_uuid, mut next_local_origin_sequence) = local_identity_basis(conn);
 
-    let mut stmt = tx.prepare(
+    let mut stmt = conn.prepare(
         "SELECT sequence, issue_id, kind, actor, time, detail,
                 origin_store_uuid, origin_event_sequence, event_sha256, local_ingestion_sequence
          FROM events
@@ -6386,18 +6819,13 @@ fn read_all_events(tx: &Transaction) -> Result<Vec<EventRecord>> {
         // is deliberately independent of the SQLite primary key: an override
         // restore must retain that key's monotonicity for mutation/publication
         // detection even when it replaces the prior event corpus.
-        let (origin_store_uuid, origin_event_sequence) = match (
-            origin_store_uuid.filter(|uuid| !uuid.is_empty()),
+        let (origin_store_uuid, origin_event_sequence) = derive_wire_identity(
+            origin_store_uuid.as_deref(),
             origin_event_sequence,
-        ) {
-            (Some(uuid), Some(origin_sequence)) => (uuid, origin_sequence),
-            (Some(uuid), None) if uuid != local_store_uuid => (uuid, sequence),
-            _ => {
-                let origin_sequence = next_local_origin_sequence;
-                next_local_origin_sequence += 1;
-                (local_store_uuid.clone(), origin_sequence)
-            }
-        };
+            &local_store_uuid,
+            &mut next_local_origin_sequence,
+            sequence,
+        );
 
         let event = EventRecord {
             schema_ref: "urn:bead-rs:schema:event:native-v1".to_string(),
@@ -6421,6 +6849,106 @@ fn read_all_events(tx: &Transaction) -> Result<Vec<EventRecord>> {
     });
 
     Ok(events)
+}
+
+/// The basis every derived local wire identity is numbered from: this
+/// store's UUID and one past its highest explicit local-UUID identity.
+fn local_identity_basis(conn: &rusqlite::Connection) -> (String, i64) {
+    let local_store_uuid: String = conn
+        .query_row("SELECT uuid FROM workspace WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap_or_default();
+    let explicit_local_max: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(origin_event_sequence), 0)
+             FROM events WHERE origin_store_uuid = ?1",
+            [&local_store_uuid],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    (local_store_uuid, explicit_local_max + 1)
+}
+
+/// Derive the wire identity one event row exports under, given its stored
+/// origin columns. The single definition shared by export enumeration
+/// ([`read_all_events`]) and merge-time canonicalization
+/// ([`canonicalize_local_event_identities`]) so the two cannot drift.
+fn derive_wire_identity(
+    stored_uuid: Option<&str>,
+    stored_sequence: Option<i64>,
+    local_store_uuid: &str,
+    next_local_origin_sequence: &mut i64,
+    primary_key: i64,
+) -> (String, i64) {
+    match (
+        stored_uuid.filter(|uuid| !uuid.is_empty()),
+        stored_sequence,
+    ) {
+        (Some(uuid), Some(origin_sequence)) => (uuid.to_string(), origin_sequence),
+        (Some(uuid), None) if uuid != local_store_uuid => (uuid.to_string(), primary_key),
+        _ => {
+            let origin_sequence = *next_local_origin_sequence;
+            *next_local_origin_sequence += 1;
+            (local_store_uuid.to_string(), origin_sequence)
+        }
+    }
+}
+
+/// Write the derived wire identity into the origin columns of every live
+/// event whose stored identity differs from its derived one (R027
+/// local-identity canonicalization).
+///
+/// The merge machinery deduplicates imported events by explicit wire
+/// identity, but native mutations write NULL origin columns, so a naive
+/// same-UUID merge into a live store re-inserts every pre-existing event as
+/// a duplicate row and every later export carries each event twice under
+/// two identities — silent audit corruption. Canonicalizing inside the
+/// merge transaction (validation has already proved the shared identities
+/// carry identical public content) changes no public content, no primary
+/// key, and no ordering, and is idempotent because the derivation is
+/// deterministic: after the write the rows carry their derived identities
+/// explicitly and later derivations preserve them verbatim.
+fn canonicalize_local_event_identities(tx: &Transaction<'_>) -> Result<usize> {
+    let (local_store_uuid, mut next_local_origin_sequence) = local_identity_basis(tx);
+
+    let mut stmt = tx.prepare(
+        "SELECT sequence, origin_store_uuid, origin_event_sequence
+         FROM events
+         ORDER BY sequence ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<i64>>(2)?,
+        ))
+    })?;
+
+    let mut canonicalized = 0;
+    for row in rows {
+        let (sequence, stored_uuid, stored_sequence) = row?;
+        let (derived_uuid, derived_sequence) = derive_wire_identity(
+            stored_uuid.as_deref(),
+            stored_sequence,
+            &local_store_uuid,
+            &mut next_local_origin_sequence,
+            sequence,
+        );
+        if stored_uuid.as_deref() != Some(derived_uuid.as_str())
+            || stored_sequence != Some(derived_sequence)
+        {
+            tx.execute(
+                "UPDATE events
+                 SET origin_store_uuid = ?1, origin_event_sequence = ?2
+                 WHERE sequence = ?3",
+                params![&derived_uuid, &derived_sequence, &sequence],
+            )?;
+            canonicalized += 1;
+        }
+    }
+
+    Ok(canonicalized)
 }
 
 /// Read all provenance receipts from database
@@ -6710,6 +7238,19 @@ fn read_all_issues(tx: &Transaction) -> Result<Vec<Issue>> {
         }
         extensions.insert("comments".to_string(), serde_json::Value::Array(comments));
 
+        let resource_keys = get_resource_keys(tx, &id)?;
+        if !resource_keys.is_empty() {
+            extensions.insert(
+                "resource_keys".to_string(),
+                serde_json::Value::Array(
+                    resource_keys
+                        .into_iter()
+                        .map(serde_json::Value::String)
+                        .collect(),
+                ),
+            );
+        }
+
         // Convert to Issue model
         let mut data = serde_json::Map::new();
         let mut data_stmt = tx.prepare(
@@ -6810,7 +7351,7 @@ fn update_checkpoint_state(
 }
 
 /// Calculate SHA-256 hash of a file
-fn calculate_file_hash(path: &Path) -> Result<String> {
+pub fn calculate_file_hash(path: &Path) -> Result<String> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
     let mut hasher = Sha256::new();

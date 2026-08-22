@@ -1,0 +1,17 @@
+{
+  "bead_id": "beadrs-90c9afc9",
+  "agent": "codex-gpt-5.6-terra-xhigh",
+  "provider": "openai",
+  "model": "gpt-5.6-terra",
+  "exit_code": 0,
+  "outcome": "success",
+  "duration_ms": 1255695,
+  "input_tokens": null,
+  "output_tokens": null,
+  "cost_usd": null,
+  "captured_at": "2026-08-22T04:46:21.704159182Z",
+  "trace_format": "openai_jsonl",
+  "pruned": false,
+  "template_version": null,
+  "timeout_reason": null
+}

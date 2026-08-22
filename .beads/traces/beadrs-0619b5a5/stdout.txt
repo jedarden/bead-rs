@@ -1,0 +1,8 @@
+Implemented and pushed R026 cycle 1 as commit `49e2b4b`.
+
+- Invalid `checkpoint.auto_flush` no longer silently disables publication.
+- Mutations now report the defined post-commit split while preserving committed state.
+- Added regression and configuration-validation coverage.
+- Exact pushed commit passed formatting, Clippy, full tests, and doc tests.
+
+The bead could not be closed because `beadrs-0619b5a5` disappeared from the live SQLite store during concurrent workspace activity; both `bead update` and `bead close` returned “Issue not found.” I did not reconstruct or directly modify the tracking database.

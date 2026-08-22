@@ -1,0 +1,8 @@
+Implemented, committed, pushed, and closed `beadrs-bf2ef9d8`.
+
+- Mutating handlers now acquire `BEGIN IMMEDIATE` before their first database read.
+- Read-only deferred snapshots remain unchanged.
+- Added contention regression coverage in [connection_pragmas.rs](/home/coding/bead-rs/tests/connection_pragmas.rs:119).
+- `cargo fmt --check`, Clippy with warnings denied, and the full test suite pass.
+- Pushed commits `134f270` and `8bded77` to `origin/main`.
+- Preserved unrelated checkpoint, manpage, and release-note changes.

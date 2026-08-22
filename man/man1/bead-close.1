@@ -4,7 +4,7 @@
 .SH NAME
 bead close \- Close an issue
 .SH SYNOPSIS
-\fBbead close\fR <\fB\-\-reason\fR> [\fB\-\-if\-revision\fR] [\fB\-\-fencing\-token\fR] [\fB\-\-dry\-run\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIID\fR> 
+\fBbead close\fR [\fB\-\-if\-revision\fR] [\fB\-\-fencing\-token\fR] [\fB\-\-dry\-run\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-reason\fR> <\fIID\fR> 
 .SH DESCRIPTION
 Close an issue with a required reason.
 .PP
@@ -49,13 +49,13 @@ IDEMPOTENCY:
 Dependent issues may become ready when their last blocker is closed.
 .SH OPTIONS
 .TP
-\fB\-\-reason\fR=\fIREASON\fR
+\fB\-\-reason\fR \fI<REASON>\fR
 Close reason (required)
 .TP
-\fB\-\-if\-revision\fR=\fIIF_REVISION\fR
+\fB\-\-if\-revision\fR \fI<IF_REVISION>\fR
 Expected revision for optimistic concurrency control
 .TP
-\fB\-\-fencing\-token\fR=\fIFENCING_TOKEN\fR
+\fB\-\-fencing\-token\fR \fI<FENCING_TOKEN>\fR
 Fencing token for lease validation (advanced usage)
 .TP
 \fB\-\-dry\-run\fR

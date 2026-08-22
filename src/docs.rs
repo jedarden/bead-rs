@@ -35,7 +35,7 @@ fn generate_man_page(
     // Render under the fully-qualified name so the NAME and SYNOPSIS sections
     // read `bead recurrence create`, not a bare, ambiguous `create`.
     //
-    // clap 4.5's `Command::name` takes `impl Into<Str>`, which this version
+    // clap 4.x's `Command::name` takes `impl Into<Str>`, which this version
     // implements only for `&'static str`. The leak is bounded by the number of
     // commands in the tree and happens once per generation run.
     let static_name: &'static str = Box::leak(full_name.clone().into_boxed_str());

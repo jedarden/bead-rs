@@ -1,0 +1,8 @@
+R026 was already implemented and activated on `main`; I verified its gate evidence in [r026-activation-gate-2026-08-21.md](/home/coding/bead-rs/docs/verification/r026-activation-gate-2026-08-21.md).
+
+- `cargo test` passed in an isolated temp root.
+- R026 focused suites passed: mode selection, tombstones, publication locking, mutation-event contract, and post-commit publication.
+- `cargo clippy --all-targets -- -D warnings` passed.
+- `cargo fmt --check` is blocked solely by an unrelated in-progress R027 edit to `src/service/checkpoint.rs`.
+
+No source changes were needed, so no commit or push was created. I recorded the finding and closed `beadrs-dfc58aed`.

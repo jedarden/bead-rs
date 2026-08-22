@@ -64,6 +64,27 @@ revision.
   conformance, concurrency, and section 3.5.10 benchmark lanes rerun and the
   recorded benchmark budget rechecked.
 
+### Dependency refresh (2026-08-22)
+
+The post-migration refresh uses non-exact manifest ranges and commits the
+resulting `Cargo.lock` resolution. This keeps routine compatible patch releases
+available while making every build in this revision reproducible and reviewable.
+
+| Dependency | Manifest range | Resolved version | Pinning decision |
+| --- | --- | --- | --- |
+| `rusqlite` | `0.40.2` | `0.40.2` | caret range within the 0.40 API line; the bundled SQLite change is covered by the store/concurrency lanes |
+| `clap` | `4.6.6` | `4.6.6` | caret range within the 4.6 API line; help output is regenerated and tested |
+| `clap_mangen` | `0.3.3` | `0.3.3` | caret range within the 0.3 API line; generated man pages are regenerated and byte-checked |
+| `time` | `>=0.3.45, <0.3.46` | `0.3.45` | bounded non-exact range; 0.3.45 is the latest 0.3 release compatible with the Rust 1.85 lane, while 0.3.46+ requires Rust 1.88 |
+| `tempfile` | `3.27.0` | `3.27.0` | caret range within the 3.x API line |
+| `assert_cmd` | `2.2.2` | `2.2.2` | caret range within the 2.x API line |
+| `uuid` | `1.24.1` | `1.24.1` | caret range within the 1.x API line |
+| `fs2` | `0.4.3` | `0.4.3` | caret range within the 0.4 API line; this is the current release |
+
+The exact versions above are lockfile resolutions, not exact manifest pins.
+Any future update must rerun the help/man-page, conformance, concurrency,
+benchmark-budget, and `cargo +1.85 check --all-targets` gates together.
+
 A future MSRV advance requires a plan revision citing a new ADR or an
 explicit revision of this one; the floor never moves silently.
 

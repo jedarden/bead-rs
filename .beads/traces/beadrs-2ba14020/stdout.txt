@@ -1,0 +1,8 @@
+Implemented R029 checkpoint archaeology and closed the bead.
+
+- Added `query --checkpoint`, `sync diff`, and `sync bisect` with verified ephemeral historical views.
+- Added explicit non-importable output markers and import refusal coverage.
+- Added spec, README guidance, and conformance tests.
+- Verified: `cargo fmt --check`, strict Clippy, and full `cargo test` all pass.
+- Committed and pushed: `4a1b013 feat(beadrs-2ba14020): add checkpoint archaeology`
+- Closed `beadrs-2ba14020`.
