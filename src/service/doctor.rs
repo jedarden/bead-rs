@@ -1233,8 +1233,8 @@ fn check_ready_frontier(store: &impl Store) -> Result<ReadyFrontierReport> {
 
     for (id, labels) in held_result {
         let labels_str = labels.as_deref().unwrap_or("");
-        let is_intentionally_held = labels_str.contains(intentionally_held_label)
-            || labels_str.contains(parked_label);
+        let is_intentionally_held =
+            labels_str.contains(intentionally_held_label) || labels_str.contains(parked_label);
 
         if is_intentionally_held {
             intentionally_held_ids.push(id.clone());

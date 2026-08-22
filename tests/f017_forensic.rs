@@ -66,7 +66,12 @@ fn test_f017_monolithic_checkpoint_basic() {
     // Create some issues
     for i in 1..=3 {
         Command::new(&bead)
-            .args(["create", "--title", &format!("Issue {}", i)])
+            .args([
+                "--no-auto-flush",
+                "create",
+                "--title",
+                &format!("Issue {}", i),
+            ])
             .current_dir(workspace)
             .output()
             .expect("Failed to create issue");

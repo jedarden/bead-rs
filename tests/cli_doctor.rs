@@ -25,7 +25,9 @@ fn test_doctor_basic() {
     let temp_dir = temp.path();
     let original_home = std::env::var("HOME").ok();
 
-    unsafe { std::env::set_var("HOME", temp_dir); }
+    unsafe {
+        std::env::set_var("HOME", temp_dir);
+    }
     std::env::set_current_dir(temp_dir).unwrap();
 
     // Initialize workspace
@@ -49,9 +51,13 @@ fn test_doctor_basic() {
 
     // Cleanup
     if let Some(home) = original_home {
-        unsafe { std::env::set_var("HOME", home); }
+        unsafe {
+            std::env::set_var("HOME", home);
+        }
     } else {
-        unsafe { std::env::remove_var("HOME"); }
+        unsafe {
+            std::env::remove_var("HOME");
+        }
     }
 }
 
@@ -229,9 +235,12 @@ fn test_doctor_rejects_inconsistent_close_metadata() {
 fn test_doctor_reports_open_issue_held_by_assignee() {
     let temp = tempfile::tempdir().unwrap();
     let temp_dir = temp.path();
+    let original_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let original_home = std::env::var("HOME").ok();
 
-    unsafe { std::env::set_var("HOME", temp_dir); }
+    unsafe {
+        std::env::set_var("HOME", temp_dir);
+    }
     std::env::set_current_dir(temp_dir).unwrap();
 
     Command::cargo_bin("bead")
@@ -266,9 +275,9 @@ fn test_doctor_reports_open_issue_held_by_assignee() {
         .unwrap()
         .args(["doctor"])
         .assert()
-        .stderr(predicates::str::contains("Ready frontier warning"))
+        .stderr(predicates::str::contains("WARN ready_frontier"))
         .stderr(predicates::str::contains(id))
-        .stderr(predicates::str::contains("--clear-assignee"));
+        .stderr(predicates::str::contains("not an active claim"));
 
     // Clearing the assignee returns it to the frontier and silences the warning.
     Command::cargo_bin("bead")
@@ -282,6 +291,17 @@ fn test_doctor_reports_open_issue_held_by_assignee() {
         .args(["doctor"])
         .assert()
         .stderr(predicates::str::contains("Ready frontier OK"));
+
+    if let Some(home) = original_home {
+        unsafe {
+            std::env::set_var("HOME", home);
+        }
+    } else {
+        unsafe {
+            std::env::remove_var("HOME");
+        }
+    }
+    std::env::set_current_dir(original_dir).unwrap();
 }
 
 #[test]
@@ -290,12 +310,14 @@ fn test_ready_frontier_emits_r001_reason_codes() {
     let temp = tempfile::tempdir().unwrap();
     let temp_dir = temp.path();
 
-    // Store original directory and HOME to restore later
-    let original_dir = std::env::current_dir().unwrap();
+    // Use a stable directory and preserve HOME so cleanup is order-independent.
+    let original_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let original_home = std::env::var("HOME").ok();
 
     // Set HOME to the temp directory to avoid interfering with user's actual workspace
-    unsafe { std::env::set_var("HOME", temp_dir); }
+    unsafe {
+        std::env::set_var("HOME", temp_dir);
+    }
 
     // Change to the temporary directory
     std::env::set_current_dir(temp_dir).unwrap();
@@ -338,18 +360,17 @@ fn test_ready_frontier_emits_r001_reason_codes() {
         .args(["list", "--json"])
         .output()
         .unwrap();
-    let list_json: serde_json::Value = serde_json::from_slice(&list_output.stdout).unwrap();
-
-    if let Some(issues) = list_json.as_array() {
-        for issue in issues {
-            if let Some(id) = issue.get("id").and_then(|i| i.as_str()) {
-                Command::cargo_bin("bead")
-                    .unwrap()
-                    .args(["update", id, "--assignee", "worker-1"])
-                    .assert()
-                    .success();
-            }
+    for line in list_output.stdout.split(|byte| *byte == b'\n') {
+        if line.is_empty() {
+            continue;
         }
+        let issue: serde_json::Value = serde_json::from_slice(line).unwrap();
+        let id = issue.get("id").and_then(|value| value.as_str()).unwrap();
+        Command::cargo_bin("bead")
+            .unwrap()
+            .args(["update", id, "--assignee", "worker-1"])
+            .assert()
+            .success();
     }
 
     // Run doctor with JSON output and validate structured reason codes
@@ -400,7 +421,7 @@ fn test_ready_frontier_emits_r001_reason_codes() {
         .and_then(|r| r.as_array())
         .unwrap();
     assert!(
-        reason_codes.len() >= 1,
+        !reason_codes.is_empty(),
         "Should have at least one reason code"
     );
 
@@ -431,9 +452,13 @@ fn test_ready_frontier_emits_r001_reason_codes() {
 
     // Cleanup: restore original HOME and directory
     if let Some(home) = original_home {
-        unsafe { std::env::set_var("HOME", home); }
+        unsafe {
+            std::env::set_var("HOME", home);
+        }
     } else {
-        unsafe { std::env::remove_var("HOME"); }
+        unsafe {
+            std::env::remove_var("HOME");
+        }
     }
     std::env::set_current_dir(original_dir).unwrap();
 }

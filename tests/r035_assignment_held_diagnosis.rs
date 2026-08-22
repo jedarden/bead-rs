@@ -6,7 +6,6 @@
 //! reason codes with machine-readable output.
 
 use assert_cmd::Command;
-use predicates::prelude::*;
 use serde_json::Value;
 use serial_test::serial;
 use std::path::Path;
@@ -50,13 +49,11 @@ fn r035_conformance_healthy_to_warning_to_cleared() {
         .expect("ready_frontier check should be present");
 
     assert_eq!(
-        frontier_check["status"],
-        "ok",
+        frontier_check["status"], "ok",
         "Initial state should be healthy"
     );
     assert_eq!(
-        frontier_check["details"]["held_count"],
-        0,
+        frontier_check["details"]["held_count"], 0,
         "Should have no held issues initially"
     );
 
@@ -75,24 +72,16 @@ fn r035_conformance_healthy_to_warning_to_cleared() {
         .expect("ready_frontier check should be present");
 
     assert_eq!(
-        frontier_check["status"],
-        "warning",
+        frontier_check["status"], "warning",
         "Held issue should trigger warning"
     );
     assert_eq!(
-        frontier_check["details"]["held_count"],
-        1,
+        frontier_check["details"]["held_count"], 1,
         "Should report one held issue"
     );
 
-    let held_ids = frontier_check["details"]["held_ids"]
-        .as_array()
-        .unwrap();
-    assert_eq!(
-        held_ids.len(),
-        1,
-        "held_ids should contain exactly one ID"
-    );
+    let held_ids = frontier_check["details"]["held_ids"].as_array().unwrap();
+    assert_eq!(held_ids.len(), 1, "held_ids should contain exactly one ID");
     assert_eq!(
         held_ids[0].as_str().unwrap(),
         id,
@@ -119,8 +108,7 @@ fn r035_conformance_healthy_to_warning_to_cleared() {
 
     // Verify doctor has warnings in overall status
     assert_eq!(
-        doctor_json["has_warnings"],
-        true,
+        doctor_json["has_warnings"], true,
         "Doctor should report has_warnings=true"
     );
 
@@ -137,13 +125,11 @@ fn r035_conformance_healthy_to_warning_to_cleared() {
         .expect("ready_frontier check should be present");
 
     assert_eq!(
-        frontier_check["status"],
-        "ok",
+        frontier_check["status"], "ok",
         "Cleared issue should return to healthy state"
     );
     assert_eq!(
-        frontier_check["details"]["held_count"],
-        0,
+        frontier_check["details"]["held_count"], 0,
         "Should have no held issues after clearing"
     );
 }
@@ -161,7 +147,10 @@ fn r035_intentionally_held_assignment_mechanism() {
     run(workspace, &["update", &id, "--assignee", "lead-developer"]);
 
     // Mark it as intentionally held using the label convention
-    run(workspace, &["label", "add", &id, "--label", "intentionally-held"]);
+    run(
+        workspace,
+        &["label", "add", &id, "--label", "intentionally-held"],
+    );
 
     // Verify doctor treats it differently (OK status, not warning)
     let output = run(workspace, &["doctor", "--json"]);
@@ -174,8 +163,7 @@ fn r035_intentionally_held_assignment_mechanism() {
         .expect("ready_frontier check should be present");
 
     assert_eq!(
-        frontier_check["status"],
-        "ok",
+        frontier_check["status"], "ok",
         "Intentionally-held assignment should not trigger warning"
     );
 
@@ -215,8 +203,7 @@ fn r035_intentionally_held_assignment_mechanism() {
 
     // Doctor overall should not have warnings
     assert_eq!(
-        doctor_json["has_warnings"],
-        false,
+        doctor_json["has_warnings"], false,
         "Doctor should report has_warnings=false when all holds are intentional"
     );
 }
@@ -245,8 +232,7 @@ fn r035_parked_label_convention() {
         .expect("ready_frontier check should be present");
 
     assert_eq!(
-        frontier_check["status"],
-        "ok",
+        frontier_check["status"], "ok",
         "Parked assignment should not trigger warning"
     );
 
@@ -274,11 +260,26 @@ fn r035_mixed_intentional_and_abandoned_assignments() {
     let abandoned_id = create_issue(workspace, "Abandoned assignment");
 
     // Assign both
-    run(workspace, &["update", &intentional_id, "--assignee", "worker-1"]);
-    run(workspace, &["update", &abandoned_id, "--assignee", "worker-2"]);
+    run(
+        workspace,
+        &["update", &intentional_id, "--assignee", "worker-1"],
+    );
+    run(
+        workspace,
+        &["update", &abandoned_id, "--assignee", "worker-2"],
+    );
 
     // Mark only the first as intentional
-    run(workspace, &["label", "add", &intentional_id, "--label", "intentionally-held"]);
+    run(
+        workspace,
+        &[
+            "label",
+            "add",
+            &intentional_id,
+            "--label",
+            "intentionally-held",
+        ],
+    );
 
     // Verify both are tracked separately
     let output = run(workspace, &["doctor", "--json"]);
@@ -291,8 +292,7 @@ fn r035_mixed_intentional_and_abandoned_assignments() {
         .expect("ready_frontier check should be present");
 
     assert_eq!(
-        frontier_check["status"],
-        "warning",
+        frontier_check["status"], "warning",
         "Mixed state should still warn about abandoned assignments"
     );
 
@@ -384,8 +384,7 @@ fn r035_doctor_never_clears_assignee_even_under_repair() {
         .expect("ready_frontier check should still warn");
 
     assert_eq!(
-        frontier_check["status"],
-        "warning",
+        frontier_check["status"], "warning",
         "Issue should still be diagnosed as held"
     );
 }
