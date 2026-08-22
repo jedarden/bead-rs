@@ -304,3 +304,4 @@
 {"adapter":"codex-gpt-5.6-sol-xhigh","bead":"beadrs-d2e1b26f","event":"dispatch","model":"gpt-5.6-sol","strand":"explore","ts":"2026-08-22T07:10:10.744654565+00:00","worker":"sol-claudeprint"}
 {"bead":"beadrs-d6f98dab","event":"claim","strand":"explore","ts":"2026-08-22T07:10:40.498758564+00:00","worker":"g47-agentscribe"}
 {"adapter":"claude-code-glm-4.7","bead":"beadrs-d6f98dab","event":"dispatch","model":"glm-4.7","strand":"explore","ts":"2026-08-22T07:10:40.519848962+00:00","worker":"g47-agentscribe"}
+{"bead":"beadrs-e854d52a","duration_ms":1547097,"event":"complete","exit_code":0,"outcome":"success","strand":"explore","ts":"2026-08-22T07:11:33.234639018+00:00","worker":"g5-tcb"}

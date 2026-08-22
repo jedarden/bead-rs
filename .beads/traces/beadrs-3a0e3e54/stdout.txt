@@ -1,0 +1,10 @@
+Implemented and pushed as `dee7123`.
+
+- Renewal now targets the matching assignee and fencing token.
+- Added append-only lease history migration and documentation.
+- Added two-epoch renewal regression test.
+- R002 tests: 12/12 passed.
+- Migration tests: 3/3 passed.
+- Bead `beadrs-3a0e3e54` closed.
+
+Full `cargo test` retains two unrelated pre-existing failures in docs and manifest tests.
