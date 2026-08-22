@@ -1647,6 +1647,7 @@ CHECKS PERFORMED:
 
 REPAIRS PERFORMED (with --repair):
   - Remove proven-stale operation-owned temporary files
+  - Recreate missing workspace structure directories (receipts)
   - Rebuild checkpoint views from authoritative database state
   - Create missing safe indexes
   - Repair checkpoint state through atomic flush

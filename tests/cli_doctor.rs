@@ -161,6 +161,63 @@ fn test_doctor_repair_temp_files() {
 
 #[test]
 #[serial]
+fn test_doctor_repair_creates_missing_receipts_dir() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    // Save original directory to restore later. An earlier test may leave
+    // the process working directory pointing into its (now deleted) tempdir,
+    // so fall back to a stable directory instead of unwrapping.
+    let original_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
+
+    std::env::set_current_dir(root).unwrap();
+
+    // Initialize workspace
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["init", "--prefix", "test"])
+        .assert()
+        .success();
+
+    // Remove the receipts directory to simulate a workspace that lost it
+    // (it is untracked, so a git clean removes it and nothing recreates it)
+    let receipts_dir = root.join(".beads/receipts");
+    std::fs::remove_dir_all(&receipts_dir).unwrap();
+
+    // Diagnostics should flag the missing directory as an error
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["doctor"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("receipts directory not found"));
+
+    // Repair should recreate it
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["doctor", "--repair"])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("FIXED"))
+        .stderr(predicates::str::contains("created_receipts_dir"));
+
+    // Verify the directory was recreated
+    assert!(receipts_dir.exists());
+
+    // Diagnostics now pass the workspace_config check
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["doctor"])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("OK workspace_config"));
+
+    // Restore original directory before dropping temp
+    std::env::set_current_dir(original_dir).unwrap();
+}
+
+#[test]
+#[serial]
 fn test_doctor_after_flush() {
     let temp = tempfile::tempdir().unwrap();
     std::env::set_current_dir(temp.path()).unwrap();
