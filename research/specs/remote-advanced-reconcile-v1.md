@@ -49,8 +49,12 @@ Two boundaries are absolute:
 - The **staged stream** is the checkpoint generation selected by the pointer,
   loaded through the forensic staging machinery and passing its
   source-intrinsic validation: schema declarations, canonical ordering,
-  dependency existence and acyclicity, and per-origin event continuity from
-  sequence 1.
+  dependency existence and acyclicity, and per-origin event continuity. A
+  native origin starts at sequence 1. An R028 fork origin instead starts at
+  the fork point plus 1 only when a staged `fork` receipt names that origin
+  and the fork identity encodes the same point; later events remain contiguous.
+  This is the compatibility-preserving sequence design fixed by
+  `fork-identity-v1.md`, not a general relaxation for truncated streams.
 - The pointer is **verified** when it parses, declares a supported mode, a
   nonempty store UUID, a nonnegative snapshot sequence, and an active root
   whose bytes hash to the pointer's declared SHA-256; when no
@@ -82,7 +86,8 @@ covered-ahead state fail-closed:
 
 1. **Verified pointer.** The pointer is verified as defined above.
 2. **Valid staged stream.** The pointer-selected generation stages and passes
-   source-intrinsic forensic validation.
+   source-intrinsic forensic validation, including the receipt-anchored R028
+   fork-origin start rule above.
 3. **Same origin.** The pointer UUID equals the workspace UUID. A checkpoint
    from a different store is a foreign merge input (`sync import-only
    --merge`), never a remote-advanced reconciliation.

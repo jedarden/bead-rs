@@ -4,12 +4,10 @@
 //! Forking creates a new workspace UUID with provenance tracking,
 //! enabling clones of one repository to become distinct origins.
 
+use assert_cmd::Command;
 use bead_rs::service::checkpoint::fork_workspace_identity;
-use bead_rs::store::SqliteStore;
-use bead_rs::store::WorkspaceConfig;
-use bead_rs::Store;
+use bead_rs::store::{open_configured_connection, SqliteStore, WorkspaceConfig};
 use rusqlite::{params, Connection};
-use sha2::Digest;
 use tempfile::TempDir;
 
 /// Helper to create a test workspace with a clean checkpoint
@@ -17,88 +15,32 @@ fn create_forkable_workspace() -> (TempDir, WorkspaceConfig, Connection) {
     let temp_dir = TempDir::new().unwrap();
     let root = temp_dir.path();
 
-    // Create .beads directory structure
-    let beads_dir = root.join(".beads");
-    std::fs::create_dir_all(&beads_dir).unwrap();
-
-    // Create checkpoint directory
-    let checkpoint_dir = beads_dir.join("checkpoint");
-    std::fs::create_dir_all(&checkpoint_dir).unwrap();
-
-    // Initialize workspace
-    let config = SqliteStore::new().init_workspace("test-prefix").unwrap();
+    // Initialize in the temporary directory through a child process. The
+    // library initializer derives its root from the process-wide cwd, so
+    // calling it directly here made every parallel test open and mutate the
+    // repository's real workspace instead of its TempDir.
+    Command::cargo_bin("bead")
+        .unwrap()
+        .current_dir(root)
+        .args(["init", "--prefix", "test-prefix"])
+        .assert()
+        .success();
 
     // Open database connection
-    let db_path = config.database_path();
-    let conn = Connection::open(&db_path).unwrap();
-
-    // Enable foreign keys
-    conn.execute("PRAGMA foreign_keys = ON", []).unwrap();
-
-    // Get current schema version
-    let current_version: i64 = conn
-        .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
-            row.get(0)
-        })
-        .unwrap_or(0);
-
-    // Apply migration_12 if not already applied (R028 adds 'fork' to provenance_receipts kinds)
-    if current_version < 12 {
-        // Manually apply migration_12 to add 'fork' to the kind constraint
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS provenance_receipts_new (
-                receipt_id TEXT NOT NULL PRIMARY KEY,
-                schema_ref TEXT NOT NULL DEFAULT 'urn:bead-rs:schema:provenance-receipt:native-v1',
-                kind TEXT NOT NULL CHECK (kind IN ('restore', 'merge', 'fork')),
-                source_store_uuid TEXT NOT NULL,
-                target_store_uuid TEXT NOT NULL,
-                source_root_sha256 TEXT,
-                actor TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                counts_json TEXT NOT NULL,
-                result TEXT NOT NULL,
-                summary_event_identity TEXT,
-                receipt_sha256 TEXT NOT NULL
-            )",
+    let db_path = root.join(".beads/beads.db");
+    let conn = open_configured_connection(&db_path).unwrap();
+    let (uuid, prefix) = conn
+        .query_row(
+            "SELECT uuid, prefix FROM workspace WHERE id = 1",
             [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-
-        conn.execute(
-            "INSERT INTO provenance_receipts_new SELECT * FROM provenance_receipts",
-            [],
-        )
-        .unwrap();
-
-        conn.execute("DROP TABLE provenance_receipts", []).unwrap();
-        conn.execute(
-            "ALTER TABLE provenance_receipts_new RENAME TO provenance_receipts",
-            [],
-        )
-        .unwrap();
-
-        // Recreate indexes
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS provenance_receipts_source_uuid ON provenance_receipts (source_store_uuid)",
-            [],
-        ).unwrap();
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS provenance_receipts_target_uuid ON provenance_receipts (target_store_uuid)",
-            [],
-        ).unwrap();
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS provenance_receipts_source_root ON provenance_receipts (source_root_sha256)",
-            [],
-        ).unwrap();
-
-        // Record migration with a simple checksum
-        let migration_sql = "migration_12_r028_fork_receipt_kind";
-        let checksum = format!("{:x}", sha2::Sha256::digest(migration_sql.as_bytes()));
-        conn.execute(
-            "INSERT INTO schema_migrations (version, applied_at, checksum) VALUES (?1, datetime('now'), ?2)",
-            params![12i64, checksum],
-        ).unwrap();
-    }
+    let config = WorkspaceConfig {
+        root: root.to_path_buf(),
+        uuid,
+        prefix,
+    };
 
     (temp_dir, config, conn)
 }
@@ -262,6 +204,39 @@ fn test_fork_creates_summary_event() {
 }
 
 #[test]
+fn test_fork_keeps_live_and_wire_sequences_independent() {
+    let (_temp_dir, _config, conn) = create_forkable_workspace();
+
+    // Advance SQLite's AUTOINCREMENT high-water mark without leaving a live
+    // event. The fork point is therefore 0, while the next live key is 42.
+    conn.execute(
+        "INSERT INTO events (sequence, issue_id, kind, actor, time, detail)
+         VALUES (41, NULL, 'test', 'actor', datetime('now'), '{}')",
+        [],
+    )
+    .unwrap();
+    conn.execute("DELETE FROM events", []).unwrap();
+    set_clean_checkpoint(&conn);
+
+    let mut store = SqliteStore::from_conn(conn);
+    let result = fork_workspace_identity(&mut store, "test-actor", None).unwrap();
+
+    let (live_sequence, wire_sequence): (i64, i64) = store
+        .conn()
+        .query_row(
+            "SELECT sequence, origin_event_sequence
+             FROM events WHERE kind = 'workspace_forked'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(live_sequence, 42);
+    assert_eq!(result.summary_event_sequence, live_sequence);
+    assert_eq!(wire_sequence, 1);
+    assert!(result.new_store_uuid.contains("-fork-0-"));
+}
+
+#[test]
 fn test_fork_marks_checkpoint_dirty() {
     let (_temp_dir, _config, conn) = create_forkable_workspace();
 
@@ -298,6 +273,8 @@ fn test_fork_marks_checkpoint_dirty() {
 fn test_fork_requires_clean_checkpoint() {
     let (_temp_dir, _config, conn) = create_forkable_workspace();
 
+    set_clean_checkpoint(&conn);
+
     // Simulate dirty checkpoint by adding an event
     conn.execute(
         "INSERT INTO events (sequence, origin_store_uuid, origin_event_sequence, issue_id, kind, actor, time, detail)
@@ -324,19 +301,9 @@ fn test_fork_requires_clean_checkpoint() {
 
 #[test]
 fn test_fork_requires_checkpoint() {
-    let temp_dir = TempDir::new().unwrap();
-    let root = temp_dir.path();
-
-    // Create .beads directory structure
-    let beads_dir = root.join(".beads");
-    std::fs::create_dir_all(&beads_dir).unwrap();
-
-    // Initialize workspace WITHOUT checkpoint
-    let config = SqliteStore::new().init_workspace("test-prefix").unwrap();
-
-    // Open database connection
-    let db_path = config.database_path();
-    let conn = Connection::open(&db_path).unwrap();
+    // A fresh initialized workspace has only the placeholder checkpoint_state
+    // row; no generation has been published yet.
+    let (_temp_dir, _config, conn) = create_forkable_workspace();
 
     // Fork should fail when no checkpoint exists
     let mut store = SqliteStore::from_conn(conn);
