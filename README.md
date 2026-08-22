@@ -179,7 +179,9 @@ Exit codes are stable across every command:
   `--policy`.
 - **Leases.** `bead claim --lease-ttl SECONDS` issues a lease with a
   monotonically increasing fencing token, so a crashed or partitioned worker
-  cannot mutate work that has since been reassigned.
+  cannot mutate work that has since been reassigned. Lease rows are retained
+  per claim epoch; release and close leave the audit history intact, and a
+  later leased claim appends a new row. The highest token is the latest epoch.
 - **Single-claim guard.** `bead claim --single-claim` refuses the claim when
   the assignee already holds an `in_progress` issue in the workspace, failing
   with exit 4 and reason code `assignee_has_active_claim` naming the blocking

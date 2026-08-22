@@ -380,8 +380,11 @@ fn claim_with_renewal(
         .query_row(
             "SELECT l.issue_id FROM leases l
              JOIN issues i ON i.id = l.issue_id
-             WHERE l.assignee = ?1 AND l.expires_at > ?2
-             ORDER BY l.expires_at ASC
+             WHERE l.assignee = ?1
+               AND i.assignee = l.assignee
+               AND i.base_status = 'in_progress'
+               AND l.expires_at > ?2
+             ORDER BY l.fencing_token DESC, l.expires_at ASC
              LIMIT 1",
             [assignee, &now],
             |row| row.get(0),
@@ -453,7 +456,11 @@ fn claim_with_fencing_token(
         .query_row(
             "SELECT l.issue_id, l.fencing_token FROM leases l
              JOIN issues i ON i.id = l.issue_id
-             WHERE l.assignee = ?1 AND l.expires_at > ?2 AND l.fencing_token = ?3
+             WHERE l.assignee = ?1
+               AND i.assignee = l.assignee
+               AND i.base_status = 'in_progress'
+               AND l.expires_at > ?2
+               AND l.fencing_token = ?3
              LIMIT 1",
             [assignee, &now, &expected_token.to_string()],
             |row| Ok((Some(row.get::<_, String>(0)?), Some(row.get::<_, i64>(1)?))),

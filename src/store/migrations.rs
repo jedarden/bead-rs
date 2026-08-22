@@ -7,7 +7,7 @@ use rusqlite::{Connection, Result as SqliteResult};
 use sha2::{Digest, Sha256};
 
 /// Current migration version
-pub const CURRENT_VERSION: i64 = 11;
+pub const CURRENT_VERSION: i64 = 13;
 
 /// Apply all pending migrations to the database
 pub fn apply_migrations(conn: &Connection) -> SqliteResult<()> {
@@ -79,6 +79,7 @@ fn get_migration(version: i64) -> Migration {
         10 => migration_10(),
         11 => migration_11(),
         12 => migration_12(),
+        13 => migration_13(),
         v => panic!("Unknown migration version: {}", v),
     }
 }
@@ -649,6 +650,44 @@ CREATE INDEX IF NOT EXISTS provenance_receipts_target_uuid
     ON provenance_receipts (target_store_uuid);
 CREATE INDEX IF NOT EXISTS provenance_receipts_source_root
     ON provenance_receipts (source_root_sha256);
+"#;
+
+    Migration {
+        sql: sql.to_string(),
+    }
+}
+
+/// Migration 13: retain one append-only lease row per claim epoch (R002)
+///
+/// Migration 4 originally used issue_id as the lease primary key. Lease
+/// history is now intentionally append-only, so a released issue can be
+/// leased again without overwriting the prior epoch. Existing rows are
+/// preserved while a surrogate row identity removes the one-row-per-issue
+/// restriction.
+fn migration_13() -> Migration {
+    let sql = r#"
+CREATE TABLE leases_history_new (
+    lease_id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    issue_id TEXT NOT NULL,
+    assignee TEXT NOT NULL,
+    fencing_token INTEGER NOT NULL,
+    expires_at TEXT NOT NULL,
+    renewed_at TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE
+);
+
+INSERT INTO leases_history_new
+    (issue_id, assignee, fencing_token, expires_at, renewed_at, created_at)
+SELECT issue_id, assignee, fencing_token, expires_at, renewed_at, created_at
+FROM leases;
+
+DROP TABLE leases;
+ALTER TABLE leases_history_new RENAME TO leases;
+
+CREATE INDEX leases_expiry ON leases (expires_at);
+CREATE INDEX leases_fencing ON leases (issue_id, assignee, fencing_token);
+CREATE INDEX leases_assignee ON leases (assignee, expires_at);
 "#;
 
     Migration {
