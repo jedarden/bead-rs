@@ -591,6 +591,35 @@ fn registry() -> Vec<RegisteredCommand> {
             reason: "read-only checkpoint freshness report",
             invoke: |_| vec!["sync".into(), "status".into()],
         },
+        RegisteredCommand {
+            path: "bead sync diff",
+            class: NonMutating,
+            reason: "verifies and compares retained generations in an ephemeral view",
+            invoke: |f| {
+                let checkpoint = f.restore_checkpoint.join("current.json");
+                vec![
+                    "sync".into(),
+                    "diff".into(),
+                    checkpoint.display().to_string(),
+                    checkpoint.display().to_string(),
+                ]
+            },
+        },
+        RegisteredCommand {
+            path: "bead sync bisect",
+            class: NonMutating,
+            reason: "queries retained generations in an ephemeral read-only view",
+            invoke: |f| {
+                vec![
+                    "sync".into(),
+                    "bisect".into(),
+                    "--checkpoint".into(),
+                    f.restore_checkpoint.join("current.json").display().to_string(),
+                    "--query".into(),
+                    "{\"version\":\"v1\",\"predicates\":[{\"field\":\"base_status\",\"operator\":\"equals\",\"value\":\"open\"}],\"sort\":[]}".into(),
+                ]
+            },
+        },
     ];
 
     cmds.sort_by(|a, b| a.path.cmp(b.path));

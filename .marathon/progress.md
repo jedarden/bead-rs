@@ -1657,3 +1657,19 @@ The mission remains **ACTIVE BLOCKED** awaiting external dependency resolution. 
   - `cargo test --test checkpoint_mode_selection invalid_recorded_checkpoint_config_is_rejected -- --exact`: passed.
   - `cargo clippy --all-targets -- -D warnings`: passed.
   - `cargo test`: passed, including all integration and documentation tests.
+
+## 2026-08-22 — R029 checkpoint archaeology
+
+- Added verified, read-only materialization of retained checkpoint generations
+  for `query --checkpoint`, semantic `sync diff`, and caller-ordered
+  predicate search with `sync bisect`.
+- Each view verifies the named generation's hashes, counts, and ordering
+  before it is queried, and emits an explicit non-importable archaeology
+  marker. Import entry points reject those outputs before touching a target.
+- Added the R029 contract, operator documentation, and conformance coverage
+  for monolithic and sharded generations, tampering, semantic deltas, and
+  import rejection.
+- Verification against an isolated clean `HEAD + R029` snapshot (using a
+  task-private temporary directory) passed `cargo fmt --check`,
+  `cargo clippy --all-targets -- -D warnings`, and
+  `cargo test` (including the 5 R029 scenarios and command-contract suite).

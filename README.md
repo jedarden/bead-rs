@@ -99,6 +99,20 @@ and reports the exact generation and record counts restored. Bare
 `sync import-only` remains the lower-level interchange/merge primitive, not the
 doctor-recommended disaster-recovery path.
 
+For read-only historical inspection, use checkpoint archaeology rather than
+importing a generation:
+
+```bash
+bead query --checkpoint .beads/checkpoint/previous.json --file open-work.json
+bead sync diff .beads/checkpoint/previous.json .beads/checkpoint/current.json
+bead sync bisect --checkpoint old/current.json --checkpoint new/current.json --file query.json
+```
+
+Each command verifies the retained pointer and its complete object closure
+before serving an ephemeral view. A manifest or monolithic root is accepted
+only when `current.json` or `previous.json` selects it. Archaeology JSON is
+explicitly non-importable; it is useful evidence, never a recovery source.
+
 `bead doctor` runs read-only integrity checks across store, backup, schema,
 dependencies, and comments; `--repair` performs only safe, non-speculative
 repairs, and `--rehearse` proves the recovery path by restoring into a throwaway

@@ -1301,7 +1301,31 @@ fn cmd_sync(cmd: cli::SyncCommand) -> Result<()> {
         cli::SyncCommand::FlushOnly(opts) => cmd_sync_flush_only(opts),
         cli::SyncCommand::ImportOnly(opts) => cmd_sync_import_only(opts),
         cli::SyncCommand::Status(opts) => cmd_sync_status(opts),
+        cli::SyncCommand::Diff(opts) => cmd_sync_diff(opts),
+        cli::SyncCommand::Bisect(opts) => cmd_sync_bisect(opts),
     }
+}
+
+fn cmd_sync_diff(opts: cli::SyncDiffOptions) -> Result<()> {
+    let report = service::diff_checkpoints(
+        std::path::Path::new(&opts.from),
+        std::path::Path::new(&opts.to),
+    )?;
+    println!("{}", serde_json::to_string(&report)?);
+    Ok(())
+}
+
+fn cmd_sync_bisect(opts: cli::SyncBisectOptions) -> Result<()> {
+    let query_json = read_query_document(opts.file.as_deref(), opts.query.as_deref())?;
+    let query = service::parse_query(&query_json)?;
+    let checkpoints = opts
+        .checkpoints
+        .iter()
+        .map(std::path::PathBuf::from)
+        .collect::<Vec<_>>();
+    let report = service::bisect_checkpoints(&checkpoints, &query)?;
+    println!("{}", serde_json::to_string(&report)?);
+    Ok(())
 }
 
 fn cmd_sync_flush_only(opts: cli::SyncFlushOptions) -> Result<()> {
@@ -1533,6 +1557,7 @@ fn cmd_sync_import_only(opts: cli::SyncImportOptions) -> Result<()> {
             input_path.display()
         )));
     }
+    service::reject_archaeology_input(&input_path)?;
 
     // Open database connection
     let db_path = config.database_path();
@@ -1639,6 +1664,7 @@ fn cmd_sync_import_diagnostics(opts: cli::SyncImportOptions) -> Result<()> {
             input_path.display()
         )));
     }
+    service::reject_archaeology_input(&input_path)?;
 
     // Run diagnostics import (R014)
     eprintln!("Running import diagnostics (R014)...");
@@ -2088,6 +2114,23 @@ fn cmd_schema(command: cli::SchemaCommand) -> Result<()> {
 }
 
 fn cmd_query(opts: cli::QueryOptions) -> Result<()> {
+    if let Some(checkpoint) = opts.checkpoint.as_deref() {
+        if opts.list_views
+            || opts.delete_view.is_some()
+            || opts.view.is_some()
+            || opts.save_as.is_some()
+        {
+            return Err(Error::cli_usage(
+                "--checkpoint is read-only and cannot be combined with saved-view operations",
+            ));
+        }
+        let query_json = read_query_document(opts.file.as_deref(), opts.json.as_deref())?;
+        let query = service::parse_query(&query_json)?;
+        let report = service::query_checkpoint(std::path::Path::new(checkpoint), &query)?;
+        println!("{}", serde_json::to_string(&report)?);
+        return Ok(());
+    }
+
     // Discover workspace
     let config = store::WorkspaceConfig::discover()?
         .ok_or_else(|| Error::cli_usage("No bead workspace found. Run 'bead init' first."))?;
@@ -2113,16 +2156,7 @@ fn cmd_query(opts: cli::QueryOptions) -> Result<()> {
     }
 
     // Load query from file or inline JSON
-    let query_json = if let Some(file_path) = opts.file {
-        std::fs::read_to_string(&file_path)
-            .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to read query file: {}", e)))?
-    } else if let Some(inline_json) = opts.json {
-        inline_json
-    } else {
-        return Err(Error::cli_usage(
-            "Query specification required. Use --file <path> or --json '<query>'",
-        ));
-    };
+    let query_json = read_query_document(opts.file.as_deref(), opts.json.as_deref())?;
 
     // Parse and validate query
     let query = service::parse_query(&query_json)?;
@@ -2163,6 +2197,21 @@ fn cmd_query(opts: cli::QueryOptions) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn read_query_document(file: Option<&str>, inline: Option<&str>) -> Result<String> {
+    match (file, inline) {
+        (Some(_), Some(_)) => Err(Error::cli_usage(
+            "Specify exactly one query document source: --file <path> or --json/--query '<query>'",
+        )),
+        (Some(path), None) => std::fs::read_to_string(path).map_err(|error| {
+            Error::Internal(anyhow::anyhow!("Failed to read query file: {error}"))
+        }),
+        (None, Some(json)) => Ok(json.to_string()),
+        (None, None) => Err(Error::cli_usage(
+            "Query specification required. Use --file <path> or --json '<query>'",
+        )),
+    }
 }
 
 fn cmd_list_views(conn: &rusqlite::Connection) -> Result<()> {

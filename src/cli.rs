@@ -1010,6 +1010,42 @@ OUTPUT:
   changed_paths, ready_to_commit, and not_ready_reasons."
     )]
     Status(SyncStatusOptions),
+
+    /// Diff two verified checkpoint generations without import
+    #[command(
+        about = "Diff two verified checkpoint generations",
+        long_about = "Compare two retained checkpoint generations without importing either one.
+
+Each argument may be a generation pointer, a pointer-selected sharded manifest,
+or a pointer-selected monolithic object. bead-rs resolves manifests and objects
+back to current.json or previous.json, then runs the complete named-generation
+verifier before materializing an ephemeral read-only view. The JSON response
+contains issue- and event-level added, removed, and changed semantic records.
+It is explicitly non-importable.
+
+EXAMPLES:
+  bead sync diff .beads/checkpoint/previous.json .beads/checkpoint/current.json
+  bead sync diff old/manifests/<HASH>.json new/objects/<HASH>.jsonl"
+    )]
+    Diff(SyncDiffOptions),
+
+    /// Search a verified checkpoint generation series with a safe predicate
+    #[command(
+        about = "Search a verified checkpoint generation series",
+        long_about = "Evaluate one safe query predicate against a caller-ordered series of retained checkpoint artifacts.
+
+Repeat --checkpoint in chronological order. Each artifact may be a generation
+pointer, a pointer-selected manifest, or a pointer-selected monolithic object.
+Every artifact is completely verified before it is served. The command reports
+every generation with one or more matching issues; it deliberately scans rather
+than assuming an arbitrary predicate stays monotonic across history. Output is
+an explicitly non-importable archaeology view.
+
+EXAMPLES:
+  bead sync bisect --checkpoint old/current.json --checkpoint new/current.json --file query.json
+  bead sync bisect --checkpoint .beads/checkpoint/previous.json --checkpoint .beads/checkpoint/current.json --file query.json"
+    )]
+    Bisect(SyncBisectOptions),
 }
 
 /// Options for flushing checkpoint
@@ -1074,6 +1110,32 @@ pub struct SyncStatusOptions {
     /// Output format: text or json
     #[arg(long, default_value = "text")]
     pub format: String,
+}
+
+/// Positional artifacts for one historical semantic delta.
+#[derive(Parser, Debug)]
+pub struct SyncDiffOptions {
+    /// Earlier checkpoint artifact (pointer, manifest, or monolithic object)
+    pub from: String,
+
+    /// Later checkpoint artifact (pointer, manifest, or monolithic object)
+    pub to: String,
+}
+
+/// Predicate-driven search across caller-supplied historical checkpoints.
+#[derive(Parser, Debug)]
+pub struct SyncBisectOptions {
+    /// Checkpoint artifact, repeat in chronological order
+    #[arg(long = "checkpoint", required = true)]
+    pub checkpoints: Vec<String>,
+
+    /// Query specification as inline JSON
+    #[arg(long, conflicts_with = "file")]
+    pub query: Option<String>,
+
+    /// Query specification file (JSON format)
+    #[arg(long, conflicts_with = "query")]
+    pub file: Option<String>,
 }
 
 /// Label management commands
@@ -1445,13 +1507,16 @@ SUPPORTED FIELDS:
 EXAMPLES:
   bead query --file open_high.json                     # Query from a file
   bead query --json '{\"version\":\"v1\"}'                 # Inline query text
+  bead query --checkpoint .beads/checkpoint/previous.json --file open_high.json
   bead query --file alice_work.json --output-json      # Machine-readable results
   bead query --file open_high.json --save-as hot       # Save as a named view
   bead query --view hot --output-json                  # Run a saved view
   bead query --list-views                              # List saved views
 
 Note: --json supplies the query document itself. Use --output-json to render
-results as JSON.
+results as JSON. --checkpoint selects a verified historical generation and
+always renders an explicitly non-importable JSON archaeology view; saved-view
+operations are deliberately unavailable against historical state.
 
 QUERY FORMAT:
   {
@@ -1482,6 +1547,10 @@ pub struct QueryOptions {
     /// Query specification as inline JSON
     #[arg(long)]
     pub json: Option<String>,
+
+    /// Verified historical checkpoint artifact (pointer, manifest, or monolithic object)
+    #[arg(long)]
+    pub checkpoint: Option<String>,
 
     /// Output results in JSON format
     #[arg(long)]

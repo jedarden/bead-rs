@@ -3,6 +3,7 @@
 //! This module provides business logic for issue operations, claiming,
 //! dependencies, checkpoint management, diagnostics, and capabilities.
 
+pub mod archaeology;
 pub mod capabilities;
 pub mod changes;
 pub mod checkpoint;
@@ -25,6 +26,14 @@ pub mod scheduling;
 pub mod schema;
 pub mod why;
 
+// Archaeology report types are public library API; the binary uses the command
+// functions but not every exported report type directly.
+#[allow(unused_imports)]
+pub use archaeology::{
+    bisect_checkpoints, diff_checkpoints, query_checkpoint, reject_archaeology_input,
+    ArchaeologyBisectReport, ArchaeologyDiffReport, ArchaeologyQueryReport,
+    ARCHAEOLOGY_ARTIFACT_KIND,
+};
 pub use capabilities::generate_capabilities;
 pub use changes::{
     get_changes_since, get_gap_info, get_snapshot_identity, validate_cursor, Cursor,
