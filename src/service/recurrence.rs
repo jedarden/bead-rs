@@ -10,7 +10,7 @@ use crate::error::{Error, Result};
 use crate::model::recurrence::{
     CreateTemplateRequest, RecurrenceMaterialization, RecurrenceTemplate,
 };
-use rusqlite::Connection;
+use rusqlite::{Connection, Transaction, TransactionBehavior};
 
 /// Create a new recurrence template
 pub fn create_template(
@@ -20,8 +20,10 @@ pub fn create_template(
     let template = request.into_template(None)?;
     template.validate()?;
 
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+
     // Check if template ID already exists
-    let exists: bool = conn
+    let exists: bool = tx
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM recurrence_templates WHERE id = ?)",
             [&template.id],
@@ -35,8 +37,6 @@ pub fn create_template(
             template.id
         )));
     }
-
-    let tx = conn.unchecked_transaction()?;
 
     // Insert template
     let description_str = template.description.as_deref().unwrap_or("");
@@ -131,10 +131,10 @@ pub fn list_templates(conn: &Connection) -> Result<Vec<RecurrenceTemplate>> {
 pub fn delete_template(conn: &mut Connection, template_id: &str) -> Result<()> {
     crate::model::validate_issue_id(template_id)?;
 
-    // Verify template exists
-    get_template(conn, template_id)?;
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
 
-    let tx = conn.unchecked_transaction()?;
+    // Verify template exists
+    get_template(&tx, template_id)?;
 
     // Delete template (CASCADE will handle materializations)
     let rows_affected = tx.execute(
@@ -178,13 +178,13 @@ pub fn materialize_next_occurrence(
 ) -> Result<(String, RecurrenceMaterialization)> {
     crate::model::validate_issue_id(template_id)?;
 
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+
     // Get template
-    let template = get_template(conn, template_id)?;
+    let template = get_template(&tx, template_id)?;
 
     // Get next sequence
-    let sequence = get_next_sequence(conn, template_id)?;
-
-    let tx = conn.unchecked_transaction()?;
+    let sequence = get_next_sequence(&tx, template_id)?;
 
     // Generate occurrence issue ID
     let issue_id = crate::model::generate_issue_id()?;

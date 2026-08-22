@@ -3,7 +3,7 @@
 use crate::error::{Error, ValidationError};
 use crate::service::conditions::{evaluate_condition, ConditionExpr, IssueContext};
 use crate::store::SqliteStore;
-use rusqlite::Connection;
+use rusqlite::{Connection, Transaction, TransactionBehavior};
 
 /// Adds a label to an issue.
 ///
@@ -12,7 +12,7 @@ use rusqlite::Connection;
 /// an idempotent no-op appends none.
 pub fn add_label(store: &mut SqliteStore, issue_id: &str, label: &str) -> Result<(), Error> {
     let conn = store.conn();
-    let tx = conn.unchecked_transaction()?;
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
 
     // Verify issue exists
     let issue_exists = tx
@@ -56,7 +56,7 @@ pub fn add_label(store: &mut SqliteStore, issue_id: &str, label: &str) -> Result
 /// same transaction; an idempotent no-op appends none.
 pub fn remove_label(store: &mut SqliteStore, issue_id: &str, label: &str) -> Result<(), Error> {
     let conn = store.conn();
-    let tx = conn.unchecked_transaction()?;
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
 
     // Verify issue exists
     let issue_exists = tx
@@ -146,7 +146,7 @@ pub fn add_dependency(
     }
 
     let conn = store.conn();
-    let tx = conn.unchecked_transaction()?;
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
 
     // Verify both issues exist
     let blocked_exists = tx
@@ -285,7 +285,7 @@ pub fn remove_dependency(
     kind: Option<&str>,
 ) -> Result<(), Error> {
     let conn = store.conn();
-    let tx = conn.unchecked_transaction()?;
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
 
     // Idempotent delete: removing a non-existent edge commits no semantic
     // mutation, so it must append no event.

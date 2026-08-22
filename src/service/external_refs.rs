@@ -9,7 +9,7 @@ use crate::model::{
     ExternalReference,
 };
 use crate::store::SqliteStore;
-use rusqlite::OptionalExtension;
+use rusqlite::{OptionalExtension, Transaction, TransactionBehavior};
 
 /// Add an external reference to an issue
 ///
@@ -39,7 +39,7 @@ pub fn add_external_reference(
         .map_err(|e| Error::validation(e.to_string()))?;
 
     let conn = store.conn();
-    let tx = conn.unchecked_transaction()?;
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
 
     // Check if issue exists
     let issue_exists = tx
@@ -147,7 +147,7 @@ pub fn remove_external_reference(
     validate_reference_key(key).map_err(|e| Error::validation(e.to_string()))?;
 
     let conn = store.conn();
-    let tx = conn.unchecked_transaction()?;
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
 
     // Idempotent delete: removing a non-existent reference commits no semantic
     // mutation, so it must append no event.

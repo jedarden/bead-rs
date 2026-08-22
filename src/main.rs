@@ -16,6 +16,7 @@ use crate::service::policy::{validate_workspace_policy, WorkspaceConfig};
 use crate::service::scheduling::SchedulingPolicy;
 use crate::store::Store;
 use clap::Parser;
+use rusqlite::{Transaction, TransactionBehavior};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -459,9 +460,9 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
     let conn = store::open_configured_connection(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
-    // Use an immediate transaction for atomicity
-    let tx = conn
-        .unchecked_transaction()
+    // Acquire the write lock before claim eligibility is read. SQLite cannot
+    // wait on a deferred read-to-write upgrade, even with busy_timeout set.
+    let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to start transaction: {}", e)))?;
 
     // Parse scheduling policy
@@ -640,9 +641,8 @@ fn cmd_create(opts: cli::CreateOptions) -> Result<()> {
     let conn = store::open_configured_connection(&db_path)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
-    // Use a transaction for atomicity
-    let tx = conn
-        .unchecked_transaction()
+    // Acquire the write lock before create checks for an unused generated ID.
+    let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to start transaction: {}", e)))?;
 
     // Create the issue

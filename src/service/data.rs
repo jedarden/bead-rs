@@ -7,7 +7,7 @@
 
 use crate::error::{Error, Result};
 use crate::store::SqliteStore;
-use rusqlite::OptionalExtension;
+use rusqlite::{OptionalExtension, Transaction, TransactionBehavior};
 
 /// Set a structured data value for an issue
 ///
@@ -25,7 +25,7 @@ pub fn set_data(
     value: &serde_json::Value,
 ) -> Result<()> {
     let conn = store.conn();
-    let tx = conn.unchecked_transaction()?;
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
 
     // Verify issue exists
     let issue_exists: bool = tx.query_row(
@@ -193,7 +193,7 @@ pub fn list_data(store: &mut SqliteStore, issue_id: &str) -> Result<Vec<(String,
 /// same transaction; an idempotent no-op remove appends none.
 pub fn remove_data(store: &mut SqliteStore, issue_id: &str, namespace: &str) -> Result<()> {
     let conn = store.conn();
-    let tx = conn.unchecked_transaction()?;
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
 
     // Verify issue exists
     let issue_exists: bool = tx.query_row(

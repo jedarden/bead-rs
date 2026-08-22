@@ -21,7 +21,7 @@ fn create_workspace() -> TempDir {
 
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "bead"])
+        .args(["--skip-foreign-workspace", "init", "--prefix", "bead"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -68,14 +68,9 @@ fn test_open_configured_connection_applies_store_pragmas() {
 /// this shared opener replaced). Both connections come from the same
 /// opener the command handlers use.
 ///
-/// Known limit, deliberate out-of-scope: SQLite does not invoke the busy
-/// handler when a connection that already holds a read snapshot (a
-/// DEFERRED transaction that has read) attempts to upgrade to a write
-/// transaction -- that path returns `SQLITE_BUSY` immediately regardless
-/// of `busy_timeout`. The mutating handlers' `unchecked_transaction()`
-/// calls are deferred, so handler-vs-handler write contention on that
-/// path is a separate defect from the pragma routing these tests pin
-/// down.
+/// Mutating handlers avoid SQLite's busy-handler exception for deferred
+/// read-to-write upgrades by acquiring an immediate transaction before their
+/// first read. The next test pins that handler-specific behavior separately.
 #[test]
 fn test_configured_connection_waits_for_concurrent_writer() {
     let temp_dir = create_workspace();
@@ -115,5 +110,60 @@ fn test_configured_connection_waits_for_concurrent_writer() {
     assert!(
         elapsed >= Duration::from_millis(1200),
         "write must have waited for the 2s lock hold, took {elapsed:?}"
+    );
+}
+
+/// A mutating service handler must acquire its write lock before its first
+/// read. Before the immediate-transaction fix, `add_label` began a deferred
+/// transaction, read the issue, and then failed its INSERT immediately with
+/// `SQLITE_BUSY`; SQLite does not invoke `busy_timeout` while upgrading an
+/// existing read snapshot. With `BEGIN IMMEDIATE`, lock acquisition waits for
+/// the configured timeout and the mutation proceeds after the holder commits.
+#[test]
+fn test_mutating_handler_waits_before_reading_under_write_contention() {
+    let temp_dir = create_workspace();
+
+    let issue_id = Command::cargo_bin("bead")
+        .unwrap()
+        .args(["--no-auto-flush", "create", "--title", "contention target"])
+        .current_dir(temp_dir.path())
+        .output()
+        .unwrap();
+    assert!(issue_id.status.success());
+    let issue_id = String::from_utf8(issue_id.stdout).unwrap();
+    let issue_id = issue_id.trim().to_string();
+
+    let db_path = temp_dir.path().join(".beads/beads.db");
+    let waiting = bead_rs::store::open_configured_connection(&db_path).unwrap();
+    let holder = bead_rs::store::open_configured_connection(&db_path).unwrap();
+    holder.execute("BEGIN IMMEDIATE", []).unwrap();
+
+    let start = Instant::now();
+    let waiter = std::thread::spawn(move || {
+        let mut store = bead_rs::store::SqliteStore::from_conn(waiting);
+        bead_rs::service::add_label(&mut store, &issue_id, "waited").unwrap();
+        store
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM labels WHERE issue_id = ?1 AND label = 'waited'",
+                [&issue_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+    });
+
+    std::thread::sleep(Duration::from_secs(1));
+    holder.execute("COMMIT", []).unwrap();
+    drop(holder);
+
+    assert_eq!(
+        waiter.join().unwrap(),
+        1,
+        "the waiting mutation must commit"
+    );
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed >= Duration::from_millis(700),
+        "handler must have waited for the 1s write lock, took {elapsed:?}"
     );
 }

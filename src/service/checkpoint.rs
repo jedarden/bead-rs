@@ -3242,7 +3242,7 @@ fn execute_merge(
     actor: &str,
 ) -> Result<ImportCounts> {
     let conn = store.conn();
-    let tx = conn.unchecked_transaction()?;
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
 
     // Perform merge reconciliation
     let (inserted, updated, retained) = reconcile_and_merge(&tx, staging)?;
@@ -4603,7 +4603,7 @@ fn verify_empty_target(store: &mut SqliteStore) -> Result<()> {
 #[allow(dead_code)]
 fn activate_import(store: &mut SqliteStore, staging: &ImportStaging) -> Result<(usize, i64)> {
     let conn = store.conn();
-    let tx = conn.unchecked_transaction()?;
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
 
     // Insert all issues
     for issue in &staging.issues {
@@ -4820,7 +4820,7 @@ pub fn flush_checkpoint(store: &mut SqliteStore, output_path: &Path) -> Result<F
 
     // Now do the atomic update in a write transaction
     let conn = store.conn();
-    let tx = conn.unchecked_transaction()?;
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
 
     // Atomic rename from temp to target
     std::fs::rename(&temp_path, output_path)?;
@@ -5122,7 +5122,7 @@ pub fn publish_forensic_checkpoint_holding(
     let root_hash = publication.root_hash;
     let root_path = publication.root_path;
     let conn = store.conn();
-    let tx = conn.unchecked_transaction()?;
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
 
     // Preserve old pointer as previous.json using atomic rename
     let current_pointer_path = checkpoint_dir.join("current.json");
