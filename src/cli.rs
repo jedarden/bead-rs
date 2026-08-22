@@ -1365,12 +1365,43 @@ IDEMPOTENCY:
 #[derive(Subcommand, Debug)]
 pub enum ResourceCommand {
     /// Add one or more normalized local resource keys
+    #[command(
+        long_about = "Add normalized resource declarations to an issue.
+
+The keys are scheduling exclusions in this native workspace only. They are
+not distributed locks. A claimed issue holds every declared key as one
+atomic set; adding keys to an in-progress issue requires its lease fencing
+token when applicable.
+
+EXAMPLE:
+  bead resource add <ID> --key gpu:0 --key docker:daemon"
+    )]
     Add(ResourceAddOptions),
 
     /// Remove one or more local resource keys
+    #[command(
+        long_about = "Remove normalized resource declarations from an issue.
+
+This changes scheduling metadata in the current native workspace only; it
+does not coordinate or unlock resources in another store. Removing keys from
+an in-progress issue requires its lease fencing token when applicable.
+
+EXAMPLE:
+  bead resource remove <ID> --key gpu:0"
+    )]
     Remove(ResourceRemoveOptions),
 
     /// List declared local resource keys
+    #[command(
+        long_about = "List normalized resource declarations for an issue.
+
+The result describes scheduling keys in this native workspace only. Resource
+declarations are not distributed-lock state and do not describe another
+workspace.
+
+EXAMPLE:
+  bead resource list <ID> --json"
+    )]
     List(ResourceListOptions),
 }
 
