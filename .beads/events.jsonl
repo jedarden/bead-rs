@@ -305,3 +305,14 @@
 {"bead":"beadrs-d6f98dab","event":"claim","strand":"explore","ts":"2026-08-22T07:10:40.498758564+00:00","worker":"g47-agentscribe"}
 {"adapter":"claude-code-glm-4.7","bead":"beadrs-d6f98dab","event":"dispatch","model":"glm-4.7","strand":"explore","ts":"2026-08-22T07:10:40.519848962+00:00","worker":"g47-agentscribe"}
 {"bead":"beadrs-e854d52a","duration_ms":1547097,"event":"complete","exit_code":0,"outcome":"success","strand":"explore","ts":"2026-08-22T07:11:33.234639018+00:00","worker":"g5-tcb"}
+{"bead":"beadrs-d6f98dab","duration_ms":246442,"event":"complete","exit_code":0,"outcome":"success","strand":"explore","ts":"2026-08-22T07:14:46.974281021+00:00","worker":"g47-agentscribe"}
+{"bead":"beadrs-d2e1b26f","duration_ms":1284078,"event":"complete","exit_code":0,"outcome":"success","strand":"explore","ts":"2026-08-22T07:31:34.830772071+00:00","worker":"sol-claudeprint"}
+{"bead":"beadrs-e854d52a","duration_ms":2921643,"event":"complete","exit_code":0,"outcome":"success","strand":"pluck","ts":"2026-08-22T07:40:56.471412092+00:00","worker":"g5-beadrs"}
+{"bead":"beadrs-dfc58aed","event":"claim","strand":"pluck","ts":"2026-08-22T17:52:08.546596397+00:00","worker":"g5-beadrs"}
+{"adapter":"claude-code-glm-5","bead":"beadrs-dfc58aed","event":"dispatch","model":"glm-5.3","strand":"pluck","ts":"2026-08-22T17:52:08.564179559+00:00","worker":"g5-beadrs"}
+{"bead":"beadrs-dfc58aed","duration_ms":1308791,"event":"complete","exit_code":0,"outcome":"success","strand":"pluck","ts":"2026-08-22T18:13:57.361939247+00:00","worker":"g5-beadrs"}
+{"bead":"beadrs-c69cd4c2","event":"claim","strand":"auto","ts":"2026-08-22T18:13:57.417104039+00:00","worker":"g5-beadrs"}
+{"adapter":"claude-code-glm-5","bead":"beadrs-c69cd4c2","event":"dispatch","model":"glm-5.3","strand":"auto","ts":"2026-08-22T18:13:57.419741611+00:00","worker":"g5-beadrs"}
+{"bead":"beadrs-c69cd4c2","duration_ms":311047,"event":"complete","exit_code":0,"outcome":"success","strand":"auto","ts":"2026-08-22T18:19:08.475507846+00:00","worker":"g5-beadrs"}
+{"bead":"beadrs-e3694591","event":"claim","strand":"pluck","ts":"2026-08-22T18:25:07.287034646+00:00","worker":"g5-beadrs"}
+{"adapter":"claude-code-glm-5","bead":"beadrs-e3694591","event":"dispatch","model":"glm-5.3","strand":"pluck","ts":"2026-08-22T18:25:07.327562869+00:00","worker":"g5-beadrs"}
