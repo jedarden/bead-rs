@@ -365,6 +365,12 @@ impl Store for SqliteStore {
                 "version": 1,
                 "uuid": uuid,
                 "prefix": effective_prefix,
+                "doctor": {
+                    "stale_in_progress": {
+                        "version": crate::service::doctor::STALE_IN_PROGRESS_CONFIG_VERSION,
+                        "max_age_seconds": crate::service::doctor::DEFAULT_STALE_IN_PROGRESS_MAX_AGE_SECONDS
+                    }
+                },
                 "created_at": time::OffsetDateTime::now_utc()
                     .format(&time::format_description::well_known::Rfc3339)
                     .unwrap_or_else(|_| "unknown".to_string())

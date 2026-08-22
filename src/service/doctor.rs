@@ -78,6 +78,32 @@ impl DiagnosticScope {
     }
 }
 
+/// Version of the stale in-progress diagnostic configuration.
+///
+/// Kept separate from the top-level workspace identity version: it describes
+/// the meaning of just `doctor.stale_in_progress` in `.beads/config.json`.
+pub const STALE_IN_PROGRESS_CONFIG_VERSION: u32 = 1;
+
+/// Default inactivity interval for ordinary claims when a workspace created
+/// before R034 has no explicit `doctor.stale_in_progress` section yet.
+pub const DEFAULT_STALE_IN_PROGRESS_MAX_AGE_SECONDS: u64 = 24 * 60 * 60;
+
+/// Versioned workspace configuration for the R034 stale-claim diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StaleInProgressConfig {
+    version: u32,
+    max_age_seconds: u64,
+}
+
+impl Default for StaleInProgressConfig {
+    fn default() -> Self {
+        Self {
+            version: STALE_IN_PROGRESS_CONFIG_VERSION,
+            max_age_seconds: DEFAULT_STALE_IN_PROGRESS_MAX_AGE_SECONDS,
+        }
+    }
+}
+
 /// Run diagnostics on the workspace
 pub fn run_diagnostics(store: &impl Store) -> Result<DoctorDiagnostics> {
     run_diagnostics_with_scopes(store, &[DiagnosticScope::All])
@@ -155,6 +181,75 @@ pub fn run_diagnostics_with_scopes(
                 });
             }
         }
+
+        // 2b. Stale ordinary in-progress claims (R034). Leased claims are
+        // deliberately excluded: R002 owns their expiry and fencing policy.
+        match check_stale_in_progress(store) {
+            Ok(report) if report.stale_issues.is_empty() => {
+                checks.push(DiagnosticCheck {
+                    name: "stale_in_progress".to_string(),
+                    status: DiagnosticStatus::Ok,
+                    message: format!(
+                        "No non-leased in-progress beads have been inactive for more than {} seconds",
+                        report.max_age_seconds
+                    ),
+                    scope: Some("store".to_string()),
+                    details: Some(serde_json::json!({
+                        "config_version": report.config_version,
+                        "max_age_seconds": report.max_age_seconds,
+                        "stale_count": 0,
+                        "stale_issues": [],
+                        "reason_codes": []
+                    })),
+                });
+            }
+            Ok(report) => {
+                let listed = report
+                    .stale_issues
+                    .iter()
+                    .map(|issue| {
+                        format!(
+                            "{} ({} seconds old; {})",
+                            issue.id, issue.age_seconds, issue.remedy
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                has_warnings = true;
+                checks.push(DiagnosticCheck {
+                    name: "stale_in_progress".to_string(),
+                    status: DiagnosticStatus::Warning,
+                    message: format!(
+                        "{} non-leased in-progress bead(s) have had no event for more than {} seconds: {}",
+                        report.stale_issues.len(),
+                        report.max_age_seconds,
+                        listed
+                    ),
+                    scope: Some("store".to_string()),
+                    details: Some(serde_json::json!({
+                        "config_version": report.config_version,
+                        "max_age_seconds": report.max_age_seconds,
+                        "stale_count": report.stale_issues.len(),
+                        "stale_issues": report.stale_issues,
+                        "reason_codes": [crate::service::claim::ReasonCode::StaleInProgress.code_string()]
+                    })),
+                });
+            }
+            Err(e) => {
+                has_errors = true;
+                checks.push(DiagnosticCheck {
+                    name: "stale_in_progress".to_string(),
+                    status: DiagnosticStatus::Error,
+                    message: format!("Stale in-progress check error: {}", e),
+                    scope: Some("store".to_string()),
+                    details: Some(serde_json::json!({
+                        "error": e.to_string(),
+                        "reason_codes": [crate::service::claim::ReasonCode::StaleInProgress.code_string()]
+                    })),
+                });
+            }
+        }
+
     }
 
     // Backup scope checks (checkpoint state, generations, freshness)
@@ -541,6 +636,257 @@ fn check_database_integrity(store: &impl Store) -> Result<String> {
             "Integrity check returned no result".to_string(),
         )),
     }
+}
+
+/// Load the versioned R034 inactivity threshold from workspace configuration.
+///
+/// The section is optional for workspaces created before R034; those retain a
+/// documented version-1 default. Once present, both the version and positive
+/// threshold are required so an operator cannot silently get a diagnostic with
+/// guessed semantics after a future configuration change.
+fn load_stale_in_progress_config(store: &impl Store) -> Result<StaleInProgressConfig> {
+    let workspace = store.get_workspace_config()?;
+    let config_path = workspace.root.join(".beads/config.json");
+    let raw = std::fs::read_to_string(&config_path).map_err(|e| Error::Io {
+        path: config_path.clone(),
+        msg: e,
+    })?;
+    let config: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
+        Error::workspace(format!(
+            "Invalid .beads/config.json while loading doctor.stale_in_progress: {}",
+            e
+        ))
+    })?;
+
+    let Some(doctor) = config.get("doctor") else {
+        return Ok(StaleInProgressConfig::default());
+    };
+    if doctor.is_null() {
+        return Ok(StaleInProgressConfig::default());
+    }
+    let doctor = doctor.as_object().ok_or_else(|| {
+        Error::workspace(".beads/config.json doctor must be an object".to_string())
+    })?;
+
+    let Some(stale_in_progress) = doctor.get("stale_in_progress") else {
+        return Ok(StaleInProgressConfig::default());
+    };
+    if stale_in_progress.is_null() {
+        return Ok(StaleInProgressConfig::default());
+    }
+    let stale_in_progress = stale_in_progress.as_object().ok_or_else(|| {
+        Error::workspace(
+            ".beads/config.json doctor.stale_in_progress must be an object".to_string(),
+        )
+    })?;
+
+    let version = stale_in_progress
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            Error::workspace(
+                ".beads/config.json doctor.stale_in_progress.version must be an integer"
+                    .to_string(),
+            )
+        })?;
+    if version != u64::from(STALE_IN_PROGRESS_CONFIG_VERSION) {
+        return Err(Error::workspace(format!(
+            "Unsupported doctor.stale_in_progress version {} (supported: {})",
+            version, STALE_IN_PROGRESS_CONFIG_VERSION
+        )));
+    }
+
+    let max_age_seconds = stale_in_progress
+        .get("max_age_seconds")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            Error::workspace(
+                ".beads/config.json doctor.stale_in_progress.max_age_seconds must be an integer"
+                    .to_string(),
+            )
+        })?;
+    if max_age_seconds == 0 || max_age_seconds > i64::MAX as u64 {
+        return Err(Error::workspace(
+            ".beads/config.json doctor.stale_in_progress.max_age_seconds must be between 1 and i64::MAX"
+                .to_string(),
+        ));
+    }
+
+    Ok(StaleInProgressConfig {
+        version: STALE_IN_PROGRESS_CONFIG_VERSION,
+        max_age_seconds,
+    })
+}
+
+/// Whether the last claim that still defines the current lifecycle epoch was
+/// a leased R002 claim.
+///
+/// Lease rows are intentionally retained as per-issue fencing-token history,
+/// so their existence alone cannot identify an ordinary current claim. The
+/// claim event records whether that epoch acquired a lease; a later release,
+/// close, or reopen ends that epoch. Malformed claim detail is treated as
+/// leased so diagnostics never recommend `release` for a possibly fenced R002
+/// claim.
+fn current_claim_epoch_is_leased(
+    last_claim_sequence: Option<i64>,
+    last_claim_detail: Option<&str>,
+    last_exit_sequence: Option<i64>,
+    has_lease_row: bool,
+) -> bool {
+    let Some(last_claim_sequence) = last_claim_sequence else {
+        return false;
+    };
+    if last_exit_sequence.is_some_and(|sequence| sequence > last_claim_sequence) {
+        return false;
+    }
+
+    let Some(detail) = last_claim_detail else {
+        return has_lease_row;
+    };
+    let Ok(detail) = serde_json::from_str::<serde_json::Value>(detail) else {
+        return true;
+    };
+
+    if let Some(with_lease) = detail
+        .get("with_lease")
+        .and_then(serde_json::Value::as_bool)
+    {
+        return with_lease;
+    }
+
+    detail.get("action").and_then(serde_json::Value::as_str) == Some("claim_with_fencing_token")
+        || detail
+            .get("new_fencing_token")
+            .is_some_and(|value| !value.is_null())
+        || has_lease_row
+}
+
+/// A stale ordinary claim returned by the R034 doctor diagnostic.
+#[derive(Debug, Clone, Serialize)]
+struct StaleInProgressIssue {
+    id: String,
+    last_event_at: String,
+    age_seconds: u64,
+    remedy: String,
+}
+
+/// Complete result of the R034 stale ordinary-claim query.
+#[derive(Debug, Clone)]
+struct StaleInProgressReport {
+    config_version: u32,
+    max_age_seconds: u64,
+    stale_issues: Vec<StaleInProgressIssue>,
+}
+
+/// Database projection used only while evaluating the R034 diagnostic.
+struct StaleClaimCandidate {
+    id: String,
+    last_event_at: String,
+    last_claim_sequence: Option<i64>,
+    last_claim_detail: Option<String>,
+    last_exit_sequence: Option<i64>,
+    has_lease_row: bool,
+}
+
+/// Find stale non-leased in-progress beads without mutating any workspace
+/// state (R034).
+///
+/// The latest audit event is selected by event sequence: event sequence is the
+/// native append order and remains well-defined even when imported timestamps
+/// originate from systems with different clocks. An event exactly on the
+/// threshold is not stale; the configured interval is exceeded strictly.
+fn check_stale_in_progress(store: &impl Store) -> Result<StaleInProgressReport> {
+    let config = load_stale_in_progress_config(store)?;
+    let workspace = store.get_workspace_config()?;
+    let db_path = workspace.root.join(".beads/beads.db");
+    let conn = open_configured_connection(&db_path)
+        .map_err(|e| Error::Integrity(format!("Failed to open database: {}", e)))?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT i.id,
+                    latest_event.time,
+                    latest_claim.sequence,
+                    latest_claim.detail,
+                    (
+                        SELECT MAX(exit_event.sequence)
+                        FROM events exit_event
+                        WHERE exit_event.issue_id = i.id
+                          AND exit_event.kind IN ('released', 'closed', 'reopened')
+                    ) AS last_exit_sequence,
+                    EXISTS(
+                        SELECT 1 FROM leases lease WHERE lease.issue_id = i.id
+                    ) AS has_lease_row
+             FROM issues i
+             JOIN events latest_event ON latest_event.sequence = (
+                 SELECT MAX(event.sequence)
+                 FROM events event
+                 WHERE event.issue_id = i.id
+             )
+             LEFT JOIN events latest_claim ON latest_claim.sequence = (
+                 SELECT MAX(claim_event.sequence)
+                 FROM events claim_event
+                 WHERE claim_event.issue_id = i.id
+                   AND claim_event.kind = 'claimed'
+             )
+             WHERE i.base_status = 'in_progress'
+             ORDER BY i.id",
+        )
+        .map_err(|e| Error::Integrity(format!("Failed to prepare stale-claim query: {}", e)))?;
+
+    let candidates: Vec<StaleClaimCandidate> = stmt
+        .query_map([], |row| {
+            Ok(StaleClaimCandidate {
+                id: row.get(0)?,
+                last_event_at: row.get(1)?,
+                last_claim_sequence: row.get(2)?,
+                last_claim_detail: row.get(3)?,
+                last_exit_sequence: row.get(4)?,
+                has_lease_row: row.get::<_, i64>(5)? != 0,
+            })
+        })
+        .map_err(|e| Error::Integrity(format!("Failed to query stale claims: {}", e)))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| Error::Integrity(format!("Failed to read stale-claim rows: {}", e)))?;
+
+    let now = chrono::Utc::now();
+    let mut stale_issues = Vec::new();
+    for candidate in candidates {
+        if current_claim_epoch_is_leased(
+            candidate.last_claim_sequence,
+            candidate.last_claim_detail.as_deref(),
+            candidate.last_exit_sequence,
+            candidate.has_lease_row,
+        ) {
+            continue;
+        }
+
+        let event_time = chrono::DateTime::parse_from_rfc3339(&candidate.last_event_at).map_err(|e| {
+            Error::Integrity(format!(
+                "Invalid latest event timestamp for in-progress issue {}: {}",
+                candidate.id, e
+            ))
+        })?;
+        let age_seconds = now
+            .signed_duration_since(event_time.with_timezone(&chrono::Utc))
+            .num_seconds();
+        if age_seconds <= config.max_age_seconds as i64 {
+            continue;
+        }
+
+        stale_issues.push(StaleInProgressIssue {
+            remedy: format!("bead release {}", candidate.id),
+            id: candidate.id,
+            last_event_at: candidate.last_event_at,
+            age_seconds: age_seconds as u64,
+        });
+    }
+
+    Ok(StaleInProgressReport {
+        config_version: config.version,
+        max_age_seconds: config.max_age_seconds,
+        stale_issues,
+    })
 }
 
 /// Check checkpoint state with freshness analysis (handles both pre-F017 and F017 formats)

@@ -69,6 +69,11 @@ pub enum ReasonCode {
     /// Open issue is intentionally held under its current assignee
     /// and should not be warned about (operator-declared state)
     IntentionallyHeldAssignment,
+
+    /// An ordinary (non-leased) in-progress issue has had no recent audit
+    /// event. Doctor reports this advisory scheduling condition; it never
+    /// releases the issue automatically.
+    StaleInProgress,
 }
 
 impl ReasonCode {
