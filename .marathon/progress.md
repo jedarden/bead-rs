@@ -1745,3 +1745,36 @@ snapshot re-verification corrected the record and repaired what it caught:
   need their own repair bead. main.rs's dead `check_near_miss_flags` (two
   collapsible_if, one unused import) belongs to in-flight R037 work, and
   cli/main/mod carry rustfmt drift that in-flight R033 will land formatted.
+- Re-registering the commands also surfaced a real R027xR028 interaction,
+  reproducible in the contract sweep: after `bead sync fork` re-origins a
+  workspace mid-stream, the new origin's events legitimately start at the
+  fork-time sequence (52 in the sweep fixture), but forensic validation's
+  per-origin "must start at 1" rule rejects any checkpoint carrying that
+  origin — so `bead sync reconcile` refuses a same-UUID superset pulled
+  from a forked workspace with `covered-ahead integrity failure - valid
+  staged stream: Event sequence for origin <fork-uuid> does not start at
+  1`. The registry keeps the honest entry (the sweep stays red on exactly
+  this defect); repairing it means anchoring a fork origin's expected
+  starting sequence to its fork receipt, which belongs to the R028 repair
+  bead, not to R027.
+
+### Dispatch-3 close-out (2026-08-22)
+
+- Re-verified R027 on current main (past the R037 landing): the 13
+  conformance scenarios in `tests/r027_remote_advanced_reconcile.rs` all
+  pass against the committed tree — taxonomy, reconcile merge, no
+  duplicated wire identities, dry-run inertness, exit-2/exit-5 refusals,
+  flush-only's exit-4/exit-5 covered-ahead refusals, and doctor's
+  remote-advanced vs integrity-failure distinction.
+- Current-main redness remains exactly where dispatch-2 recorded it, none
+  of it R027's: r028_fork_identity still 8/13 (same five), the
+  mutating-command contract sweep fails only on `manifest commit` /
+  `manifest dry-run` (in-flight R033's shape), and rustfmt drift sits in
+  `cli.rs`/`main.rs`/`manifest.rs`/`tests/r033_bulk_manifests.rs` — not in
+  any R027 file.
+- The committed man-page set predates the run-4 commands: regenerating
+  from the current help tree adds `bead-sync-reconcile.1` alongside
+  fork/manifest/resource pages and touches four leaf pages, spanning four
+  beads' commands. Regeneration is deferred to a single shared closing
+  gate rather than landed piecemeal under R027; no run-4 bead regenerated
+  its pages, and R033's CLI surface is still moving.
