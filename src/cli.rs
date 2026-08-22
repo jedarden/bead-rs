@@ -317,7 +317,14 @@ pub struct RestoreOptions {
 
 Creates a new issue with the specified title and optional metadata.
 The issue ID is automatically generated and printed on success.
-Prints only the issue ID followed by a newline on success.
+Fresh creates print only the issue ID followed by a newline; idempotent
+reference hits use the explicit result prefixes described below.
+
+IDEMPOTENT CREATION:
+  --unique-ref NAMESPACE:KEY atomically binds a stable external identity.
+  A repeated create returns `EXISTING ID`; a repeated create whose binding
+  points to a closed issue returns `EXISTING_CLOSED ID` so callers can stop
+  retrying finished work.
 
 PRIORITIES:
   0 = urgent (immediate incident, safety, or release-blocking)
@@ -329,6 +336,7 @@ PRIORITIES:
 EXAMPLES:
   bead create --title \"Fix authentication bug\" --priority 0
   bead create --title \"Update documentation\" --priority 2 --label docs
+  bead create --title \"Materialize tracker work\" --unique-ref github:issue-123
   bead create --title \"Add search feature\" --assignee alice --label feature --label backend
   bead create --title \"Code review PR-123\" --description \"Review changes for user auth\"
 
@@ -360,6 +368,10 @@ pub struct CreateOptions {
     /// Labels to add (can be specified multiple times)
     #[arg(long)]
     pub label: Vec<String>,
+
+    /// Idempotency binding in NAMESPACE:KEY form
+    #[arg(long = "unique-ref")]
+    pub unique_ref: Option<String>,
 }
 
 /// Options for listing issues

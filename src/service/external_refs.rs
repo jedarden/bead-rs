@@ -9,7 +9,7 @@ use crate::model::{
     ExternalReference,
 };
 use crate::store::SqliteStore;
-use rusqlite::{OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
 
 /// Add an external reference to an issue
 ///
@@ -27,6 +27,12 @@ pub fn add_external_reference(
     key: &str,
     value: &str,
 ) -> Result<(), Error> {
+    if key == crate::service::issues::UNIQUE_REF_EXTERNAL_KEY {
+        return Err(Error::validation(
+            "The 'unique-ref' reference key is reserved; use `create --unique-ref NAMESPACE:KEY`",
+        ));
+    }
+
     // Validate inputs
     let reference = ExternalReference {
         issue_id: issue_id.to_string(),
@@ -149,6 +155,19 @@ pub fn remove_external_reference(
     let conn = store.conn();
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
 
+    let unique_binding_key: Option<String> =
+        if key == crate::service::issues::UNIQUE_REF_EXTERNAL_KEY {
+            tx.query_row(
+                "SELECT value FROM external_references
+             WHERE issue_id = ?1 AND namespace = ?2 AND key = ?3",
+                [&issue_id, &namespace, &key],
+                |row| row.get(0),
+            )
+            .optional()?
+        } else {
+            None
+        };
+
     // Idempotent delete: removing a non-existent reference commits no semantic
     // mutation, so it must append no event.
     let removed = tx.execute(
@@ -156,6 +175,14 @@ pub fn remove_external_reference(
          WHERE issue_id = ?1 AND namespace = ?2 AND key = ?3",
         [&issue_id, &namespace, &key],
     )?;
+
+    if let Some(unique_binding_key) = unique_binding_key {
+        tx.execute(
+            "DELETE FROM unique_reference_bindings
+             WHERE namespace = ?1 AND key = ?2 AND issue_id = ?3",
+            params![namespace, unique_binding_key, issue_id],
+        )?;
+    }
 
     // Record the mutation as an audit event inside this transaction: the live
     // event sequence is the dirtiness signal (plan 6.2.1 P3), so an unrecorded

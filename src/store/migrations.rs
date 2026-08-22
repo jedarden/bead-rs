@@ -7,7 +7,7 @@ use rusqlite::{Connection, Result as SqliteResult};
 use sha2::{Digest, Sha256};
 
 /// Current migration version
-pub const CURRENT_VERSION: i64 = 9;
+pub const CURRENT_VERSION: i64 = 11;
 
 /// Apply all pending migrations to the database
 pub fn apply_migrations(conn: &Connection) -> SqliteResult<()> {
@@ -76,6 +76,8 @@ fn get_migration(version: i64) -> Migration {
         7 => migration_7(),
         8 => migration_8(),
         9 => migration_9(),
+        10 => migration_10(),
+        11 => migration_11(),
         v => panic!("Unknown migration version: {}", v),
     }
 }
@@ -548,6 +550,56 @@ INSERT OR IGNORE INTO workspace_claim_sequence (sequence) VALUES (0);
     }
 }
 
+/// Migration 10: workspace-local atomic resource locks (R031)
+fn migration_10() -> Migration {
+    let sql = r#"
+CREATE TABLE IF NOT EXISTS issue_resource_keys (
+    issue_id TEXT NOT NULL,
+    resource_key TEXT NOT NULL,
+    PRIMARY KEY (issue_id, resource_key),
+    FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS issue_resource_keys_key
+    ON issue_resource_keys (resource_key, issue_id);
+
+CREATE TABLE IF NOT EXISTS resource_locks (
+    resource_key TEXT NOT NULL PRIMARY KEY,
+    issue_id TEXT NOT NULL,
+    lease_fencing_token INTEGER,
+    acquired_at TEXT NOT NULL,
+    FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS resource_locks_issue
+    ON resource_locks (issue_id);
+"#;
+
+    Migration {
+        sql: sql.to_string(),
+    }
+}
+
+/// Migration 11: atomic create idempotency bindings (R032)
+fn migration_11() -> Migration {
+    let sql = r#"
+CREATE TABLE IF NOT EXISTS unique_reference_bindings (
+    namespace TEXT NOT NULL,
+    key TEXT NOT NULL,
+    issue_id TEXT NOT NULL,
+    PRIMARY KEY (namespace, key),
+    FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS unique_reference_bindings_issue
+    ON unique_reference_bindings (issue_id);
+"#;
+
+    Migration {
+        sql: sql.to_string(),
+    }
+}
+
 /// Calculate SHA-256 checksum of a migration
 fn migration_checksum(sql: &str) -> String {
     let mut hasher = Sha256::new();
@@ -597,6 +649,9 @@ mod tests {
             "provenance_receipts",
             "leases",
             "external_references",
+            "unique_reference_bindings",
+            "issue_resource_keys",
+            "resource_locks",
         ];
 
         for table in &tables {

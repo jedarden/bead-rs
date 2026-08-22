@@ -3118,6 +3118,7 @@ fn clear_native_restore_target(tx: &Transaction<'_>) -> Result<()> {
         "recurrence_materializations",
         "scheduling_metrics",
         "leases",
+        "unique_reference_bindings",
         "external_references",
         "issue_data",
         "comments",
@@ -3805,6 +3806,11 @@ fn import_external_references(tx: &Transaction, issue: &Issue) -> Result<()> {
         )
     })?;
 
+    tx.execute(
+        "DELETE FROM unique_reference_bindings WHERE issue_id = ?1",
+        [&issue.id],
+    )?;
+
     for reference in references {
         let reference = reference
             .as_object()
@@ -3821,6 +3827,10 @@ fn import_external_references(tx: &Transaction, issue: &Issue) -> Result<()> {
                     )
                 })
         };
+        let is_unique = reference
+            .get("unique_ref")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
         tx.execute(
             "INSERT INTO external_references (issue_id, namespace, key, value)
              VALUES (?1, ?2, ?3, ?4)",
@@ -3831,6 +3841,20 @@ fn import_external_references(tx: &Transaction, issue: &Issue) -> Result<()> {
                 member("value")?
             ],
         )?;
+        if is_unique {
+            if member("key")? != crate::service::issues::UNIQUE_REF_EXTERNAL_KEY {
+                return Err(anyhow!(
+                    "Issue '{}' unique external reference must use key '{}'",
+                    issue.id,
+                    crate::service::issues::UNIQUE_REF_EXTERNAL_KEY
+                ));
+            }
+            tx.execute(
+                "INSERT INTO unique_reference_bindings (namespace, key, issue_id)
+                 VALUES (?1, ?2, ?3)",
+                params![member("namespace")?, member("value")?, &issue.id],
+            )?;
+        }
     }
 
     Ok(())
@@ -6637,15 +6661,26 @@ fn read_all_issues(tx: &Transaction) -> Result<Vec<Issue>> {
 
         let mut references = Vec::new();
         let mut reference_stmt = tx.prepare(
-            "SELECT namespace, key, value FROM external_references
+            "SELECT namespace, key, value,
+                    EXISTS(
+                        SELECT 1 FROM unique_reference_bindings binding
+                        WHERE binding.namespace = external_references.namespace
+                          AND binding.key = external_references.value
+                          AND binding.issue_id = external_references.issue_id
+                    ) AS is_unique
+             FROM external_references
              WHERE issue_id = ?1 ORDER BY namespace, key, value",
         )?;
         let reference_rows = reference_stmt.query_map([&id], |row| {
-            Ok(serde_json::json!({
+            let mut reference = serde_json::json!({
                 "namespace": row.get::<_, String>("namespace")?,
                 "key": row.get::<_, String>("key")?,
                 "value": row.get::<_, String>("value")?,
-            }))
+            });
+            if row.get::<_, bool>("is_unique")? {
+                reference["unique_ref"] = serde_json::Value::Bool(true);
+            }
+            Ok(reference)
         })?;
         for reference in reference_rows {
             references.push(reference?);

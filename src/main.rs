@@ -661,7 +661,7 @@ fn cmd_create(opts: cli::CreateOptions) -> Result<()> {
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to start transaction: {}", e)))?;
 
     // Create the issue
-    let issue = service::create_issue(
+    let result = service::create_issue_with_unique_ref(
         &tx,
         &config,
         opts.title,
@@ -670,14 +670,25 @@ fn cmd_create(opts: cli::CreateOptions) -> Result<()> {
         opts.issue_type,
         opts.assignee,
         opts.label,
+        opts.unique_ref.as_deref(),
     )?;
 
     // Commit transaction
     tx.commit()
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to commit transaction: {}", e)))?;
 
-    // Print only the ID on success
-    println!("{}", issue.id);
+    // Preserve the legacy bare-ID output for fresh creates. Ref hits carry an
+    // explicit result class so automation can distinguish a new bead from a
+    // reused open or closed bead.
+    match result.outcome {
+        service::CreateOutcome::Created => println!("{}", result.issue.id),
+        service::CreateOutcome::Existing { closed: true } => {
+            println!("EXISTING_CLOSED {}", result.issue.id)
+        }
+        service::CreateOutcome::Existing { closed: false } => {
+            println!("EXISTING {}", result.issue.id)
+        }
+    }
 
     Ok(())
 }

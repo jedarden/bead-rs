@@ -3,14 +3,34 @@
 //! This module provides the business logic for creating, listing, and showing issues.
 
 use crate::error::{Error, Result};
-use crate::model::{BaseStatus, Issue};
+use crate::model::{validate_reference_key, validate_reference_namespace, BaseStatus, Issue};
 use crate::store::WorkspaceConfig;
 use rand::Rng;
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashMap;
 
+/// R011 key used for the external-reference projection of an R032 binding.
+pub const UNIQUE_REF_EXTERNAL_KEY: &str = "unique-ref";
+
+/// Result classification for an idempotent create operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreateOutcome {
+    /// A new issue and its reference binding were committed.
+    Created,
+    /// The reference was already bound to an existing issue.
+    Existing { closed: bool },
+}
+
+/// Issue plus the result classification needed by the CLI output contract.
+#[derive(Debug, Clone)]
+pub struct CreateIssueResult {
+    pub issue: Issue,
+    pub outcome: CreateOutcome,
+}
+
 /// Create a new issue
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 pub fn create_issue(
     conn: &Connection,
     config: &WorkspaceConfig,
@@ -21,6 +41,34 @@ pub fn create_issue(
     assignee: Option<String>,
     labels: Vec<String>,
 ) -> Result<Issue> {
+    create_issue_with_unique_ref(
+        conn,
+        config,
+        title,
+        description,
+        priority,
+        issue_type,
+        assignee,
+        labels,
+        None,
+    )
+    .map(|result| result.issue)
+}
+
+/// Create an issue and, when requested, bind an R032 unique reference in the
+/// same caller-owned transaction as the issue insert.
+#[allow(clippy::too_many_arguments)]
+pub fn create_issue_with_unique_ref(
+    conn: &Connection,
+    config: &WorkspaceConfig,
+    title: String,
+    description: Option<String>,
+    priority: i64,
+    issue_type: Option<String>,
+    assignee: Option<String>,
+    labels: Vec<String>,
+    unique_ref: Option<&str>,
+) -> Result<CreateIssueResult> {
     // Validate inputs
     if title.is_empty() {
         return Err(Error::validation("Title cannot be empty"));
@@ -55,6 +103,27 @@ pub fn create_issue(
         }
     }
 
+    let unique_ref = unique_ref.map(parse_unique_ref).transpose()?;
+
+    // The caller normally holds an IMMEDIATE transaction. This lookup makes
+    // the common ref-hit path read-only; the unique binding primary key below
+    // remains the authoritative race guard for callers using a deferred
+    // transaction.
+    if let Some((namespace, key)) = unique_ref.as_ref() {
+        let existing_id: Option<String> = conn
+            .query_row(
+                "SELECT issue_id FROM unique_reference_bindings
+                 WHERE namespace = ?1 AND key = ?2",
+                [namespace, key],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        if let Some(existing_id) = existing_id {
+            return existing_create_result(conn, &existing_id);
+        }
+    }
+
     // Generate unique issue ID
     let id = generate_unique_id(conn, &config.prefix)?;
 
@@ -85,6 +154,38 @@ pub fn create_issue(
         &schema_ref,
     ))?;
 
+    if let Some((namespace, key)) = unique_ref.as_ref() {
+        // INSERT OR IGNORE lets a deferred caller lose the binding race
+        // without leaking the issue it tentatively inserted. The command
+        // path uses an IMMEDIATE transaction, so this is also the exact
+        // transaction boundary that serializes concurrent creates.
+        let binding_inserted = conn.execute(
+            "INSERT OR IGNORE INTO unique_reference_bindings
+             (namespace, key, issue_id) VALUES (?1, ?2, ?3)",
+            (namespace, key, &id),
+        )?;
+
+        if binding_inserted == 0 {
+            conn.execute("DELETE FROM issues WHERE id = ?1", [&id])?;
+            let existing_id: String = conn.query_row(
+                "SELECT issue_id FROM unique_reference_bindings
+                 WHERE namespace = ?1 AND key = ?2",
+                [namespace, key],
+                |row| row.get(0),
+            )?;
+            return existing_create_result(conn, &existing_id);
+        }
+
+        // R011 represents this shorthand as namespace / unique-ref / value.
+        // The dedicated binding table above supplies the namespace/key
+        // uniqueness that ordinary R011 rows intentionally do not have.
+        conn.execute(
+            "INSERT INTO external_references (issue_id, namespace, key, value)
+             VALUES (?1, ?2, ?3, ?4)",
+            (&id, namespace, UNIQUE_REF_EXTERNAL_KEY, key),
+        )?;
+    }
+
     // Record the creation as an audit event on the caller's connection, so it
     // commits (or rolls back) in the same transaction as the insert above. The
     // live event sequence is the dirtiness signal (plan 6.2.1 P3), so an
@@ -105,7 +206,34 @@ pub fn create_issue(
         Error::Internal(anyhow::anyhow!("Failed to retrieve newly created issue"))
     })?;
 
-    Ok(issue)
+    Ok(CreateIssueResult {
+        issue,
+        outcome: CreateOutcome::Created,
+    })
+}
+
+/// Parse and validate the public `NAMESPACE:KEY` spelling for R032.
+fn parse_unique_ref(value: &str) -> Result<(String, String)> {
+    let (namespace, key) = value
+        .split_once(':')
+        .ok_or_else(|| Error::validation("unique-ref must use NAMESPACE:KEY form"))?;
+    validate_reference_namespace(namespace).map_err(|e| Error::validation(e.to_string()))?;
+    validate_reference_key(key).map_err(|e| Error::validation(e.to_string()))?;
+    Ok((namespace.to_string(), key.to_string()))
+}
+
+fn existing_create_result(conn: &Connection, issue_id: &str) -> Result<CreateIssueResult> {
+    let issue = get_issue_by_id(conn, issue_id)?.ok_or_else(|| {
+        Error::Integrity(format!(
+            "Unique reference binding points to missing issue {}",
+            issue_id
+        ))
+    })?;
+    let closed = issue.base_status.is_closed();
+    Ok(CreateIssueResult {
+        issue,
+        outcome: CreateOutcome::Existing { closed },
+    })
 }
 
 /// Append the audit event for a newly created issue
