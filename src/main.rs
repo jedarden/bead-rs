@@ -41,8 +41,11 @@ fn main() -> ExitCode {
 struct PublicationProbe {
     /// Workspace the command will run against
     config: store::WorkspaceConfig,
-    /// Resolved checkpoint configuration (publication reuses it)
-    checkpoint_config: service::CheckpointConfig,
+    /// Resolved checkpoint configuration, or the error that prevents
+    /// publication. Retaining the error lets read-only commands remain usable
+    /// while a semantic mutation reports the required split outcome instead
+    /// of silently leaving the checkpoint behind.
+    checkpoint_config: anyhow::Result<service::CheckpointConfig>,
     /// Live event sequence before dispatch
     sequence_before: i64,
 }
@@ -59,10 +62,11 @@ struct PublicationProbe {
 /// item 7) disarms publication for this one invocation before the
 /// configuration is even consulted, so the flag wins over the key in both
 /// directions: a workspace that opted in does not publish, and one already
-/// suppressed stays that way. Everything else -- no workspace, unreadable
-/// configuration, unreadable sequence -- disarms publication and lets the
-/// command behave exactly as it would today; the chokepoint must not fail
-/// or alter a command that would otherwise succeed. `probe` (not
+/// suppressed stays that way. No workspace or an unreadable sequence disarms
+/// publication and lets the command behave exactly as it would today. An
+/// invalid checkpoint configuration is different: the probe retains that
+/// error so a read-only command can still run, but a semantic mutation cannot
+/// succeed silently without publication. `probe` (not
 /// `discover`) is deliberate: an uninitialized workspace is an error to
 /// `discover`, and `init` and `doctor` must keep handling that state.
 fn publication_probe(no_auto_flush: bool) -> Option<PublicationProbe> {
@@ -75,13 +79,16 @@ fn publication_probe(no_auto_flush: bool) -> Option<PublicationProbe> {
         _ => return None,
     };
 
-    let checkpoint_config = service::load_checkpoint_config(&config.root.join(".beads")).ok()?;
-    if !checkpoint_config.auto_flush_enabled() {
-        return None;
-    }
-
     let conn = open_checkpoint_connection(&config.database_path())?;
     let sequence_before = service::read_live_event_sequence(&conn)?;
+
+    let checkpoint_config = service::load_checkpoint_config(&config.root.join(".beads"));
+    if checkpoint_config
+        .as_ref()
+        .is_ok_and(|config| !config.auto_flush_enabled())
+    {
+        return None;
+    }
 
     Some(PublicationProbe {
         config,
@@ -134,7 +141,10 @@ fn open_checkpoint_connection(db_path: &std::path::Path) -> Option<rusqlite::Con
 /// [`Error::PostCommitPublicationFailed`] rather than whatever the
 /// underlying error would have printed on its own. The disarm paths (no
 /// connection, unreadable sequence, nothing to publish) stay silent
-/// successes: they are decisions not to publish, not failures to.
+/// successes: they are decisions not to publish, not failures to. A malformed
+/// checkpoint configuration is retained by the probe and reaches this
+/// boundary only when the command advanced the event sequence, so it reports
+/// the same post-commit split instead of failing open.
 fn publish_after_commit(probe: &PublicationProbe) -> Result<()> {
     publish_committed_state(probe).map_err(|source| Error::PostCommitPublicationFailed { source })
 }
@@ -155,6 +165,11 @@ fn publish_committed_state(probe: &PublicationProbe) -> anyhow::Result<()> {
         // any pre-existing dirtiness for `sync flush-only` to publish.
         return Ok(());
     }
+
+    let checkpoint_config = probe
+        .checkpoint_config
+        .as_ref()
+        .map_err(|source| anyhow::anyhow!(source.to_string()))?;
 
     let checkpoint_base = probe.config.root.join(".beads");
     if service::read_covered_event_sequence(&checkpoint_base)
@@ -188,7 +203,7 @@ fn publish_committed_state(probe: &PublicationProbe) -> anyhow::Result<()> {
     service::publish_forensic_checkpoint_holding(
         &publication_lock,
         &mut store,
-        &probe.checkpoint_config,
+        checkpoint_config,
         &checkpoint_base,
     )?;
 

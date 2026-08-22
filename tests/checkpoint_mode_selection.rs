@@ -310,6 +310,11 @@ fn invalid_recorded_checkpoint_config_is_rejected() {
     for (tag, section, expected) in [
         ("bad-mode", json!({ "mode": "bogus" }), "checkpoint.mode"),
         (
+            "bad-auto-flush",
+            json!({ "auto_flush": "sometimes" }),
+            "checkpoint.auto_flush",
+        ),
+        (
             "zero-limit",
             json!({ "thresholds": json!({ "version": 1, "max_monolith_issue_records": 0 }) }),
             "checkpoint.thresholds",
@@ -318,7 +323,14 @@ fn invalid_recorded_checkpoint_config_is_rejected() {
         let workspace = temp_workspace(tag);
         init_workspace(&workspace);
         write_checkpoint_config(&workspace, section);
-        create_issues(&workspace, 1);
+        // The invalid setting also prevents automatic publication. Suppress
+        // that post-commit path explicitly so this test can reach and assert
+        // the explicit flush's configuration validation; R026's mutation
+        // behavior is covered in post_commit_publication.rs.
+        run_ok(
+            &workspace,
+            &["--no-auto-flush", "create", "--title", "Issue 1"],
+        );
         let output = flush(&workspace);
         assert!(
             !output.status.success(),

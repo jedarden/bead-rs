@@ -710,6 +710,78 @@ fn publication_failure_reports_the_split_without_rolling_back() {
     assert_covers_live(workspace, "after the remedy the split message names");
 }
 
+/// An invalid automatic-publication setting must not turn the R026 default
+/// into a silent opt-out. Read-only commands remain usable because they have
+/// nothing to publish, but a semantic mutation reports the post-commit split,
+/// preserves its normal success output, and leaves an explicitly visible
+/// dirty checkpoint until the operator fixes the configuration and flushes.
+#[test]
+fn invalid_auto_flush_config_fails_closed_after_a_committed_mutation() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    run(workspace, &["init", "--prefix", "badcfg"]);
+    create_issue(workspace, "published before invalid config");
+    assert_covers_live(workspace, "setup: compiled default publishes");
+
+    let config_path = workspace.join(".beads/config.json");
+    let mut config: Value =
+        serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+    config
+        .as_object_mut()
+        .unwrap()
+        .entry("checkpoint")
+        .or_insert(Value::Object(Default::default()))
+        .as_object_mut()
+        .unwrap()
+        .insert("auto_flush".into(), Value::String("invalid".into()));
+    fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+
+    // Invalid checkpoint configuration must not break read-only inspection.
+    bead(workspace).args(["list", "--json"]).assert().success();
+
+    let before = status(workspace);
+    let output = bead(workspace)
+        .args(["create", "--title", "committed with invalid config"])
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let issue_id = stdout.trim();
+    assert!(
+        issue_id.starts_with("badcfg-") && stdout.lines().count() == 1,
+        "the committed mutation's normal output must survive, got {stdout:?}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("checkpoint publication failed after the mutation committed"),
+        "the invalid setting must report the split outcome, got {stderr:?}"
+    );
+    assert!(
+        stderr.contains("checkpoint.auto_flush must be a boolean"),
+        "the error must identify the invalid setting, got {stderr:?}"
+    );
+
+    // The mutation committed, while the checkpoint did not move silently.
+    bead(workspace)
+        .args(["show", issue_id, "--json"])
+        .assert()
+        .success();
+    let dirty = status(workspace);
+    assert_eq!(dirty["dirty"], Value::Bool(true));
+    assert_eq!(
+        dirty["live_sequence"].as_i64().unwrap(),
+        before["live_sequence"].as_i64().unwrap() + 1
+    );
+    assert_eq!(dirty["covered_sequence"], before["covered_sequence"]);
+
+    set_auto_flush(workspace, true);
+    run(workspace, &["sync", "flush-only"]);
+    assert_covers_live(workspace, "after repairing configuration and flushing");
+}
+
 /// Automatic publication is silent on success: `bead create` still prints
 /// only the new ID plus LF (plan 6.2.1 item 6).
 #[test]

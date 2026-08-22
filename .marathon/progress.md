@@ -1633,3 +1633,27 @@ The mission remains **ACTIVE BLOCKED** awaiting external dependency resolution. 
   - `cargo fmt --check`: passed.
   - `cargo clippy --all-targets -- -D warnings`: passed.
   - `cargo test`: passed, including all 9 R036 scenarios and doc tests.
+
+## 2026-08-22 — R026 malformed configuration fails closed
+
+- Reproduced an automatic-publication fail-open: a non-boolean
+  `checkpoint.auto_flush` let `bead create` commit and exit 0 while the
+  checkpoint stayed silently behind the live event sequence.
+- The shared publication probe now retains checkpoint-configuration errors.
+  Read-only commands remain usable, while a semantic mutation reports the
+  defined post-commit split (exit 1, normal success output preserved, dirty
+  checkpoint visible) instead of treating malformed configuration as an
+  implicit opt-out.
+- The explicit-flush invalid-configuration matrix now covers invalid
+  `auto_flush` alongside invalid mode and thresholds.
+- Added a regression scenario that proves the mutation remains committed,
+  the invalid key is identified, inspection still works, and repairing the
+  configuration followed by `sync flush-only` closes the gap.
+- Verification used a task-private `/var/tmp` directory because unrelated
+  foreign `.beads` directories under the host's normal temporary parents make
+  discovery stop by design:
+  - `cargo fmt --check`: passed.
+  - `cargo test --test post_commit_publication`: 13 passed.
+  - `cargo test --test checkpoint_mode_selection invalid_recorded_checkpoint_config_is_rejected -- --exact`: passed.
+  - `cargo clippy --all-targets -- -D warnings`: passed.
+  - `cargo test`: passed, including all integration and documentation tests.
