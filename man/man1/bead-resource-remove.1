@@ -1,0 +1,29 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead resource remove" 1  "bead resource remove " 
+.SH NAME
+bead resource remove \- Remove one or more local resource keys
+.SH SYNOPSIS
+\fBbead resource remove\fR [\fB\-\-fencing\-token\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-key\fR> <\fIID\fR> 
+.SH DESCRIPTION
+Remove normalized resource declarations from an issue.
+.PP
+This changes scheduling metadata in the current native workspace only; it
+does not coordinate or unlock resources in another store. Removing keys from
+an in\-progress issue requires its lease fencing token when applicable.
+.PP
+EXAMPLE:
+  bead resource remove <ID> \-\-key gpu:0
+.SH OPTIONS
+.TP
+\fB\-\-key\fR \fI<KEYS>\fR
+Resource key; repeat for multiple keys
+.TP
+\fB\-\-fencing\-token\fR \fI<FENCING_TOKEN>\fR
+Fencing token for a leased in\-progress issue
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIID\fR>
+Issue ID

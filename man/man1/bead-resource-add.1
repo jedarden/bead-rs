@@ -1,0 +1,30 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead resource add" 1  "bead resource add " 
+.SH NAME
+bead resource add \- Add one or more normalized local resource keys
+.SH SYNOPSIS
+\fBbead resource add\fR [\fB\-\-fencing\-token\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-key\fR> <\fIID\fR> 
+.SH DESCRIPTION
+Add normalized resource declarations to an issue.
+.PP
+The keys are scheduling exclusions in this native workspace only. They are
+not distributed locks. A claimed issue holds every declared key as one
+atomic set; adding keys to an in\-progress issue requires its lease fencing
+token when applicable.
+.PP
+EXAMPLE:
+  bead resource add <ID> \-\-key gpu:0 \-\-key docker:daemon
+.SH OPTIONS
+.TP
+\fB\-\-key\fR \fI<KEYS>\fR
+Resource key; repeat for multiple keys
+.TP
+\fB\-\-fencing\-token\fR \fI<FENCING_TOKEN>\fR
+Fencing token for a leased in\-progress issue
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIID\fR>
+Issue ID

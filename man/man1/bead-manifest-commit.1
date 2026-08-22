@@ -1,0 +1,32 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead manifest commit" 1  "bead manifest commit " 
+.SH NAME
+bead manifest commit \- Apply every manifest operation in one all\-or\-none transaction
+.SH SYNOPSIS
+\fBbead manifest commit\fR [\fB\-\-format\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-input\fR> 
+.SH DESCRIPTION
+Execute a manifest\*(Aqs operations in array order inside one SQLite
+transaction and commit exactly once.
+.PP
+Any failure rolls back everything: no partial issue, label, edge, event,
+lock, or revision survives. Because the whole manifest is one command
+invocation committing one transaction, the automatic post\-commit chokepoint
+publishes at most one checkpoint generation covering the entire manifest \-\-
+N commands would publish N generations, one manifest publishes one. A
+manifest that changes nothing semantic publishes no generation at all.
+Publication failures after the commit are the standard split outcome: the
+manifest stays committed, exit 1, and \*(Aqbead sync flush\-only\*(Aq is the remedy.
+.PP
+  bead manifest commit \-\-input plan.json
+  bead manifest commit \-\-input plan.json \-\-format json   # result map with real IDs
+.SH OPTIONS
+.TP
+\fB\-\-input\fR \fI<INPUT>\fR
+Path to the manifest JSON file
+.TP
+\fB\-\-format\fR \fI<FORMAT>\fR [default: text]
+Output format: text or json
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

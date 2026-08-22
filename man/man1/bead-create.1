@@ -4,7 +4,7 @@
 .SH NAME
 bead create \- Create a new issue
 .SH SYNOPSIS
-\fBbead create\fR [\fB\-\-description\fR] [\fB\-\-priority\fR] [\fB\-\-issue\-type\fR] [\fB\-\-assignee\fR] [\fB\-\-label\fR] [\fB\-\-unique\-ref\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-title\fR> 
+\fBbead create\fR [\fB\-\-description\fR] [\fB\-\-priority\fR] [\fB\-\-issue\-type\fR] [\fB\-\-assignee\fR] [\fB\-\-label\fR] [\fB\-\-resource\-key\fR] [\fB\-\-unique\-ref\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-title\fR> 
 .SH DESCRIPTION
 Create a new issue in the workspace.
 .PP
@@ -29,6 +29,7 @@ PRIORITIES:
 EXAMPLES:
   bead create \-\-title "Fix authentication bug" \-\-priority 0
   bead create \-\-title "Update documentation" \-\-priority 2 \-\-label docs
+  bead create \-\-title "Build image" \-\-resource\-key docker:daemon \-\-resource\-key gpu:0
   bead create \-\-title "Materialize tracker work" \-\-unique\-ref github:issue\-123
   bead create \-\-title "Add search feature" \-\-assignee alice \-\-label feature \-\-label backend
   bead create \-\-title "Code review PR\-123" \-\-description "Review changes for user auth"
@@ -36,6 +37,12 @@ EXAMPLES:
 ISSUE TYPES:
   Common types include: task, bug, feature, improvement, documentation
   Custom types can be specified as needed (no validation is performed).
+.PP
+RESOURCE KEYS:
+  \-\-resource\-key declares a normalized, case\-sensitive key used only for
+  scheduling exclusion inside this native workspace. It is not a distributed
+  lock. Claims acquire every declared key atomically; release, close, and
+  expired leases return keys. Use `bead resource add|remove|list` after create.
 .SH OPTIONS
 .TP
 \fB\-\-title\fR \fI<TITLE>\fR
@@ -55,6 +62,9 @@ Assignee (optional)
 .TP
 \fB\-\-label\fR \fI<LABEL>\fR
 Labels to add (can be specified multiple times)
+.TP
+\fB\-\-resource\-key\fR \fI<RESOURCE_KEYS>\fR
+Workspace\-local resource key (can be specified multiple times)
 .TP
 \fB\-\-unique\-ref\fR \fI<UNIQUE_REF>\fR
 Idempotency binding in NAMESPACE:KEY form

@@ -32,6 +32,9 @@ Flush checkpoint to JSONL file
 bead sync\-import\-only(1)
 Import forensic checkpoint with restore or merge
 .TP
+bead sync\-reconcile(1)
+Merge a pulled, verified, ahead\-of\-live checkpoint into this workspace
+.TP
 bead sync\-status(1)
 Report checkpoint status and readiness to commit
 .TP
@@ -40,6 +43,9 @@ Diff two verified checkpoint generations
 .TP
 bead sync\-bisect(1)
 Search a verified checkpoint generation series
+.TP
+bead sync\-fork(1)
+Fork workspace identity under a new UUID
 .TP
 bead sync\-help(1)
 Print this message or the help of the given subcommand(s)

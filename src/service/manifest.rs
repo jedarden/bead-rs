@@ -195,9 +195,7 @@ pub fn parse_manifest(content: &str) -> Result<Manifest> {
         .get("manifest_version")
         .ok_or_else(|| Error::integrity("manifest is missing 'manifest_version'"))?
         .as_i64()
-        .ok_or_else(|| {
-            Error::integrity("'manifest_version' must be the integer 1".to_string())
-        })?;
+        .ok_or_else(|| Error::integrity("'manifest_version' must be the integer 1".to_string()))?;
     if version != MANIFEST_VERSION {
         return Err(Error::integrity(format!(
             "unsupported manifest_version {} (this bead-rs understands version {})",
@@ -241,27 +239,34 @@ fn parse_operation(index: usize, value: &Value) -> Result<ManifestOp> {
         .as_str()
         .ok_or_else(|| malformed("'op' must be a string".to_string()))?;
 
+    // The `op` discriminator has been consumed by the match below; strip it
+    // so each closed-schema struct rejects unknown fields without rejecting
+    // its own kind tag.
+    let mut fields = object.clone();
+    fields.remove("op");
+    let body = Value::Object(fields);
+
     let parsed = match kind {
         "create" => ManifestOp::Create(
-            serde_json::from_value(value.clone()).map_err(|error| malformed(error.to_string()))?,
+            serde_json::from_value(body.clone()).map_err(|error| malformed(error.to_string()))?,
         ),
         "update" => ManifestOp::Update(
-            serde_json::from_value(value.clone()).map_err(|error| malformed(error.to_string()))?,
+            serde_json::from_value(body.clone()).map_err(|error| malformed(error.to_string()))?,
         ),
         "label_add" => ManifestOp::LabelAdd(
-            serde_json::from_value(value.clone()).map_err(|error| malformed(error.to_string()))?,
+            serde_json::from_value(body.clone()).map_err(|error| malformed(error.to_string()))?,
         ),
         "label_remove" => ManifestOp::LabelRemove(
-            serde_json::from_value(value.clone()).map_err(|error| malformed(error.to_string()))?,
+            serde_json::from_value(body.clone()).map_err(|error| malformed(error.to_string()))?,
         ),
         "dep_add" => ManifestOp::DepAdd(
-            serde_json::from_value(value.clone()).map_err(|error| malformed(error.to_string()))?,
+            serde_json::from_value(body.clone()).map_err(|error| malformed(error.to_string()))?,
         ),
         "dep_remove" => ManifestOp::DepRemove(
-            serde_json::from_value(value.clone()).map_err(|error| malformed(error.to_string()))?,
+            serde_json::from_value(body.clone()).map_err(|error| malformed(error.to_string()))?,
         ),
         "close" => ManifestOp::Close(
-            serde_json::from_value(value.clone()).map_err(|error| malformed(error.to_string()))?,
+            serde_json::from_value(body.clone()).map_err(|error| malformed(error.to_string()))?,
         ),
         other => {
             return Err(malformed(format!(
@@ -493,11 +498,7 @@ fn execute_operation_in_tx(
             let blocked = resolve_target(&dep.blocked, locals).map_err(context)?;
             let blocker = resolve_target(&dep.blocker, locals).map_err(context)?;
             let added = crate::service::dependencies::add_dependency_in_tx(
-                tx,
-                &blocked,
-                &blocker,
-                &dep.kind,
-                None,
+                tx, &blocked, &blocker, &dep.kind, None,
             )
             .map_err(context)?;
             json!({
@@ -563,7 +564,8 @@ fn snapshot_of(conn: &Connection, issue: &Issue) -> Result<IssueSnapshot> {
 
 /// Labels attached to an issue, sorted for stable comparison.
 fn labels_of(conn: &Connection, id: &str) -> Result<Vec<String>> {
-    let mut stmt = conn.prepare_cached("SELECT label FROM labels WHERE issue_id = ?1 ORDER BY label")?;
+    let mut stmt =
+        conn.prepare_cached("SELECT label FROM labels WHERE issue_id = ?1 ORDER BY label")?;
     let labels = stmt
         .query_map([&id], |row| row.get::<_, String>(0))?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -571,10 +573,10 @@ fn labels_of(conn: &Connection, id: &str) -> Result<Vec<String>> {
 }
 
 fn issue_snapshot(conn: &Connection, id: &str) -> Result<Option<IssueSnapshot>> {
-    Ok(crate::service::issues::get_issue_by_id(conn, id)?
+    crate::service::issues::get_issue_by_id(conn, id)?
         .as_ref()
         .map(|issue| snapshot_of(conn, issue))
-        .transpose()?)
+        .transpose()
 }
 
 /// Build the delta result for update/close: outcome, semantic_change, and a
@@ -632,11 +634,7 @@ fn diff_snapshots(before: &IssueSnapshot, after: &IssueSnapshot) -> Value {
         json!(before.base_status),
         json!(after.base_status),
     );
-    field(
-        "assignee",
-        json!(before.assignee),
-        json!(after.assignee),
-    );
+    field("assignee", json!(before.assignee), json!(after.assignee));
     field(
         "manual_blocked",
         json!(before.manual_blocked),
@@ -712,9 +710,11 @@ fn with_operation_context(index: usize, kind: &str, error: Error) -> Error {
 }
 
 fn read_sequence(conn: &Connection) -> Result<i64> {
-    Ok(conn.query_row("SELECT COALESCE(MAX(sequence), 0) FROM events", [], |row| {
-        row.get(0)
-    })?)
+    Ok(
+        conn.query_row("SELECT COALESCE(MAX(sequence), 0) FROM events", [], |row| {
+            row.get(0)
+        })?,
+    )
 }
 
 /// Execute the manifest and roll everything back, reporting the delta a
@@ -785,33 +785,45 @@ mod tests {
     #[test]
     fn refuses_unknown_version_op_and_fields() {
         assert!(parse_manifest(r#"{"manifest_version": 2, "operations": []}"#).is_err());
-        assert!(parse_manifest(r#"{"manifest_version": 1, "operations": [
-            {"op": "reopen", "id": "bead-x"}]}"#)
+        assert!(parse_manifest(
+            r#"{"manifest_version": 1, "operations": [
+            {"op": "reopen", "id": "bead-x"}]}"#
+        )
         .is_err());
-        assert!(parse_manifest(r#"{"manifest_version": 1, "operations": [
-            {"op": "create", "title": "t", "mystery": true}]}"#)
+        assert!(parse_manifest(
+            r#"{"manifest_version": 1, "operations": [
+            {"op": "create", "title": "t", "mystery": true}]}"#
+        )
         .is_err());
     }
 
     #[test]
     fn refuses_forward_and_undefined_references() {
-        assert!(parse_manifest(r#"{"manifest_version": 1, "operations": [
+        assert!(parse_manifest(
+            r#"{"manifest_version": 1, "operations": [
             {"op": "close", "id": "$a", "reason": "r"},
-            {"op": "create", "local_id": "a", "title": "t"}]}"#)
+            {"op": "create", "local_id": "a", "title": "t"}]}"#
+        )
         .is_err());
-        assert!(parse_manifest(r#"{"manifest_version": 1, "operations": [
-            {"op": "label_add", "id": "$nope", "label": "x"}]}"#)
+        assert!(parse_manifest(
+            r#"{"manifest_version": 1, "operations": [
+            {"op": "label_add", "id": "$nope", "label": "x"}]}"#
+        )
         .is_err());
     }
 
     #[test]
     fn refuses_duplicate_local_ids_and_fieldless_updates() {
-        assert!(parse_manifest(r#"{"manifest_version": 1, "operations": [
+        assert!(parse_manifest(
+            r#"{"manifest_version": 1, "operations": [
             {"op": "create", "local_id": "a", "title": "t"},
-            {"op": "create", "local_id": "a", "title": "u"}]}"#)
+            {"op": "create", "local_id": "a", "title": "u"}]}"#
+        )
         .is_err());
-        assert!(parse_manifest(r#"{"manifest_version": 1, "operations": [
-            {"op": "update", "id": "bead-x"}]}"#)
+        assert!(parse_manifest(
+            r#"{"manifest_version": 1, "operations": [
+            {"op": "update", "id": "bead-x"}]}"#
+        )
         .is_err());
     }
 
