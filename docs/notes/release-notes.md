@@ -29,18 +29,16 @@ regeneration was verified byte-reproducible at the closing gate — two
 independent `cargo run --bin generate-man-pages` runs from a clean tree
 produce byte-identical output across all 50 pages.
 
-**Wording retained by design.** The final gate sweep for the
-never-implicit-flush wording families (`flush implicit`, `flushes implicitly`,
-`implicit flush`, `implicitly flush`, `never flush`, `nothing flush`) finds
-exactly two matches in the repository, both classified by the wording
-inventory and retained:
+**Wording retained by design.** The final gate sweep for the legacy wording
+families that described explicit publication as the only path finds exactly
+two matches in the repository, both classified by the wording inventory and
+retained:
 
-- `docs/adr/009` — "never flush a checkpoint before pulling" is the separate
-  pull-before-flush ordering rule for multi-machine workspaces; it is
-  orthogonal to implicit versus automatic and survives.
-- `docs/adr/003` Context — "nothing flushes implicitly" quotes the pre-flip
-  contract this ADR ended; it is decision history, and the ADR's status header
-  records the activation.
+- `docs/adr/009` — the separate pull-before-flush ordering rule for
+  multi-machine workspaces is orthogonal to automatic publication and
+  survives.
+- `docs/adr/003` Context — the pre-flip contract this ADR ended remains as
+  decision history, and the ADR's status header records the activation.
 
 Plan revision-history text describing the pre-flip explicit-flush default
 remains as history and matches none of the wording families verbatim.
@@ -53,9 +51,9 @@ explicitly rather than leaving it silently stale. Verified at the closing
 gate (2026-08-22): that file now carries the post-flip authority model —
 automatic publication after every successful mutation, the two suppression
 hatches, and `bead sync flush-only` as the idempotent check — with its one
-remaining "nothing flushes implicitly" mention correctly scoped to binaries
-built before the activation. Its "never flush a checkpoint before `git
-pull`" line is the ADR-009 ordering rule and is expected to survive. The
+remaining pre-activation note correctly scoped to binaries built before the
+activation. Its pull-ordering line is the ADR-009 rule and is expected to
+survive. The
 external update has therefore landed; any workspace still running a
 pre-activation binary must keep treating explicit `bead sync flush-only` as
 the only publication path.
