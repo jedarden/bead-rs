@@ -44,6 +44,12 @@ LEASED CLAIMS:
   Standard non\-leased claims remain the default and maintain backward compatibility.
   Leased claims add safety for distributed fleets and crash recovery scenarios.
 .PP
+RESOURCE LOCKS:
+  A claim acquires every declared key as one workspace\-local set. A ready issue
+  needing a held key is skipped; `\-\-why` and `bead why \-\-json` report reason code
+  `resource_conflict`. This has no effect outside this native store and is not a
+  distributed lock.
+.PP
 SINGLE\-CLAIM GUARD:
   \-\-single\-claim refuses the claim when this assignee already holds an
   in_progress issue in this workspace. The refusal fails with exit code 4

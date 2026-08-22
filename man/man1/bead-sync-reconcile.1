@@ -1,0 +1,66 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead sync reconcile" 1  "bead sync reconcile " 
+.SH NAME
+bead sync reconcile \- Merge a pulled, verified, ahead\-of\-live checkpoint into this workspace
+.SH SYNOPSIS
+\fBbead sync reconcile\fR [\fB\-\-dry\-run\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-actor\fR> 
+.SH DESCRIPTION
+Reconcile the durable checkpoint into the live store (R027).
+.PP
+The Git\-transported workflow commits .beads/checkpoint/ and not
+\&.beads/beads.db, so after pulling another machine\*(Aqs flush the checkpoint can
+contain work the live database does not \-\- the remote\-advanced state. This
+command recognizes exactly that state and merges the checkpoint into the live
+store through the same machinery `sync import\-only \-\-merge` uses: one
+transaction, conflict detection, issue reconciliation by timestamp, an
+actor\-attributed merge provenance receipt, and a merge summary event.
+.PP
+QUALIFICATION:
+  Reconcile acts on the workspace\*(Aqs own durable checkpoint against the
+  workspace\*(Aqs own live store; there is no \-\-input. It proceeds only when
+  the checkpoint is remote\-advanced:
+  \- the pointer verifies (supported mode, hashes, no unresolved tombstones,
+    agreeing compatibility view)
+  \- the selected generation stages and passes forensic validation
+  \- the checkpoint\*(Aqs store UUID equals this workspace\*(Aqs UUID
+  \- every live event appears in the checkpoint with identical public content
+  \- the recorded checkpoint state does not claim more history than the
+    live store holds
+  Any other checkpoint\-ahead\-of\-live shape is an integrity failure and is
+  refused without mutation. bead\-rs never runs Git; it observes the store
+  relationship, not the transport that produced it.
+.PP
+PUBLICATION:
+  Reconcile never publishes a checkpoint generation by its own action. Under
+  the automatic publication default the post\-commit chokepoint publishes the
+  generation covering the merge; with publication suppressed the workspace
+  is left dirty for `bead sync flush\-only`, exactly like any other committed
+  mutation. Reconcile is idempotent at the state level: once reconciled and
+  published the relationship is no longer remote\-advanced and a second run
+  reports nothing to reconcile.
+.PP
+EXAMPLES:
+  bead sync reconcile \-\-actor jed                        # after git pull
+  bead sync reconcile \-\-actor jed \-\-dry\-run              # prospective counts only
+.PP
+EXIT CODES:
+  0 \- Reconcile committed (or dry\-run validated)
+  2 \- Nothing to reconcile: relationship is absent, aligned, or behind
+      (behind names `bead sync flush\-only`)
+  5 \- Covered\-ahead integrity failure; the first failed qualifier is named
+.PP
+WORKFLOW:
+  Pull, reconcile, then work. Mutating before reconciling is operator error:
+  the local event lands under a pointer that already claims its sequence and
+  the next classification fails closed instead of silently succeeding.
+.SH OPTIONS
+.TP
+\fB\-\-actor\fR \fI<ACTOR>\fR
+Actor performing the reconcile (required, attributed in the merge receipt)
+.TP
+\fB\-\-dry\-run\fR
+Perform dry\-run validation without mutating the live store
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

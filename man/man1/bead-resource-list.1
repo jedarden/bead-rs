@@ -1,0 +1,26 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead resource list" 1  "bead resource list " 
+.SH NAME
+bead resource list \- List declared local resource keys
+.SH SYNOPSIS
+\fBbead resource list\fR [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIID\fR> 
+.SH DESCRIPTION
+List normalized resource declarations for an issue.
+.PP
+The result describes scheduling keys in this native workspace only. Resource
+declarations are not distributed\-lock state and do not describe another
+workspace.
+.PP
+EXAMPLE:
+  bead resource list <ID> \-\-json
+.SH OPTIONS
+.TP
+\fB\-\-json\fR
+Output JSON
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIID\fR>
+Issue ID

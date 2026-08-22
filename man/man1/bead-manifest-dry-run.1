@@ -1,0 +1,31 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead manifest dry-run" 1  "bead manifest dry-run " 
+.SH NAME
+bead manifest dry\-run \- Report a manifest\*(Aqs full semantic delta without mutating anything
+.SH SYNOPSIS
+\fBbead manifest dry\-run\fR [\fB\-\-format\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-input\fR> 
+.SH DESCRIPTION
+Validate and execute a manifest inside one transaction that is
+always rolled back.
+.PP
+The report is exact: document validation failures, not\-found targets,
+transition refusals, revision and lease guards, and cycle detection all fire
+against the same pinned snapshot a commit would run on, so a dry\-run that
+succeeds commits. Nothing is written: no event is appended durably, no
+sequence advances, no checkpoint generation is published. Created IDs in the
+report are provisional \-\- only a commit\*(Aqs result map carries real IDs;
+correlate through the create\*(Aqs local_id.
+.PP
+  bead manifest dry\-run \-\-input plan.json
+  bead manifest dry\-run \-\-input plan.json \-\-format json
+.SH OPTIONS
+.TP
+\fB\-\-input\fR \fI<INPUT>\fR
+Path to the manifest JSON file
+.TP
+\fB\-\-format\fR \fI<FORMAT>\fR [default: text]
+Output format: text or json
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

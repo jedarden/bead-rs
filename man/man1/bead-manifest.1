@@ -1,0 +1,39 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead manifest" 1  "bead manifest " 
+.SH NAME
+bead manifest \- Materialize a bulk transaction manifest
+.SH SYNOPSIS
+\fBbead manifest\fR [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+Apply a versioned JSON manifest of existing command primitives
+as one all\-or\-none transaction (R033).
+.PP
+A manifest composes creates, updates, label and dependency mutations, and
+closes into a single atomic unit: every operation is exactly one existing
+command\*(Aqs semantics, applied in array order inside one SQLite transaction,
+publishing at most one checkpoint generation for the whole manifest instead
+of one per command. Newly created beads are named with a `local_id` other
+operations reference as `$name`.
+.PP
+  bead manifest dry\-run \-\-input plan.json     # report the semantic delta, mutate nothing
+  bead manifest commit  \-\-input plan.json     # apply everything or nothing
+  bead manifest commit  \-\-input plan.json \-\-format json   # machine\-readable result map
+.PP
+Version 1 refuses any semantics a single existing command does not already
+have: no control flow, no query\-scoped mutation, no new field semantics.
+Schema and rules: research/specs/bulk\-manifests\-v1.md.
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.SH SUBCOMMANDS
+.TP
+bead manifest\-dry\-run(1)
+Report a manifest\*(Aqs full semantic delta without mutating anything
+.TP
+bead manifest\-commit(1)
+Apply every manifest operation in one all\-or\-none transaction
+.TP
+bead manifest\-help(1)
+Print this message or the help of the given subcommand(s)

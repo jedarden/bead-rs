@@ -1,0 +1,56 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead sync fork" 1  "bead sync fork " 
+.SH NAME
+bead sync fork \- Fork workspace identity under a new UUID
+.SH SYNOPSIS
+\fBbead sync fork\fR [\fB\-\-reason\fR] [\fB\-\-format\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-actor\fR> 
+.SH DESCRIPTION
+Create a new workspace UUID derived from the current workspace.
+.PP
+This command implements R028: an explicit operator command that re\-origins a
+cloned workspace under a new store UUID recorded in a provenance\-chained receipt.
+Forking enables clones of one repository to become distinct origins whose event
+streams merge composably under existing different\-UUID rules instead of being
+rejected as same\-UUID divergence.
+.PP
+WHEN TO FORK:
+  \- After git cloning a repository with an existing bead workspace
+  \- Before making changes that should not merge back as same\-UUID events
+  \- When multiple independent workers need separate event streams
+.PP
+WHAT FORK DOES:
+  1. Validates workspace has a clean checkpoint (not dirty)
+  2. Generates new UUID with provenance to parent UUID
+  3. Records fork receipt in provenance_receipts table
+  4. Updates workspace.uuid in database
+  5. Creates summary event in events table
+  6. Marks checkpoint dirty (requiring flush after fork)
+.PP
+AFTER FORKING:
+  \- Run \*(Aqbead sync flush\-only\*(Aq to publish the forked checkpoint
+  \- Commit both .beads/config.json (new UUID) and checkpoint to git
+  \- The forked workspace is now a distinct origin
+  \- Can merge back into parent using \*(Aqbead sync import\-only \-\-merge\*(Aq
+.PP
+EXAMPLES:
+  bead sync fork \-\-actor \*(Aqteam\-lead\*(Aq \-\-reason \*(AqForking for experimental branch\*(Aq
+  bead sync fork \-\-actor \*(Aqteam\-lead\*(Aq
+.PP
+NOT FORKING:
+  Forking is never implicit or inferred. Only this explicit command creates a
+new workspace UUID. Running commands in a cloned workspace without forking will
+fail on same\-UUID divergence during merge.
+.SH OPTIONS
+.TP
+\fB\-\-actor\fR \fI<ACTOR>\fR
+Actor performing the fork operation (required)
+.TP
+\fB\-\-reason\fR \fI<REASON>\fR
+Human\-readable explanation for the fork (optional, max 4096 bytes)
+.TP
+\fB\-\-format\fR \fI<FORMAT>\fR [default: text]
+Output format: text or json
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

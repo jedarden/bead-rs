@@ -33,9 +33,17 @@ EXAMPLES:
 .PP
 OUTPUT:
   \-\-format json prints one JSON object with checkpoint_present, mode,
-  generation_id, live_sequence, covered_sequence, dirty, root_path,
-  root_hash, root_verified, view_agrees, unresolved_tombstones,
+  generation_id, live_sequence, covered_sequence, relationship, dirty,
+  root_path, root_hash, root_verified, view_agrees, unresolved_tombstones,
   changed_paths, ready_to_commit, and not_ready_reasons.
+.PP
+RELATIONSHIP (R027):
+  The sync relationship between the live store and the durable checkpoint:
+  absent, behind (live has unflushed work; run `bead sync flush\-only`),
+  aligned, remote\-advanced (a pulled checkpoint is a verified superset ahead
+  of the live store; run `bead sync reconcile \-\-actor <you>`), or
+  covered\-ahead\-integrity\-failure (the checkpoint is ahead but failed its
+  qualification; the first failed qualifier is named in the reasons).
 .SH OPTIONS
 .TP
 \fB\-\-format\fR \fI<FORMAT>\fR [default: text]

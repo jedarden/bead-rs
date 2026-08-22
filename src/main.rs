@@ -994,12 +994,14 @@ fn cmd_close(opts: cli::CloseOptions) -> Result<()> {
     }
 
     // Validate that --reason was provided
-    let reason = opts.reason.ok_or_else(|| {
-        Error::cli_usage("close requires a non-empty --reason argument")
-    })?;
+    let reason = opts
+        .reason
+        .ok_or_else(|| Error::cli_usage("close requires a non-empty --reason argument"))?;
 
     if reason.trim().is_empty() {
-        return Err(Error::cli_usage("close reason cannot be empty"));
+        // Same wording as the service-layer validation in lifecycle.rs so
+        // the CLI-arg check and the command agree on one message.
+        return Err(Error::cli_usage("Close reason cannot be empty"));
     }
 
     // Discover workspace
@@ -1529,29 +1531,46 @@ fn print_manifest_report(report: &service::ManifestReport, format: &str) -> Resu
     };
     println!(
         "manifest v{} {}: {} operations, {} semantic changes (workspace sequence {})",
-        report.manifest_version, mode, report.operations, report.semantic_changes,
+        report.manifest_version,
+        mode,
+        report.operations,
+        report.semantic_changes,
         report.workspace_sequence
     );
 
     for result in &report.results {
         let index = result.get("index").and_then(|v| v.as_i64()).unwrap_or(0);
         let op = result.get("op").and_then(|v| v.as_str()).unwrap_or("?");
-        let outcome = result.get("outcome").and_then(|v| v.as_str()).unwrap_or("?");
+        let outcome = result
+            .get("outcome")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
         let target = match op {
             "create" => {
-                let issue_id = result.get("issue_id").and_then(|v| v.as_str()).unwrap_or("?");
+                let issue_id = result
+                    .get("issue_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
                 match result.get("local_id").and_then(|v| v.as_str()) {
                     Some(local_id) => format!("local '{local_id}' -> {issue_id}"),
                     None => issue_id.to_string(),
                 }
             }
-            "update" | "close" | "label_add" | "label_remove" => {
-                result.get("id").and_then(|v| v.as_str()).unwrap_or("?").to_string()
-            }
+            "update" | "close" | "label_add" | "label_remove" => result
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?")
+                .to_string(),
             "dep_add" | "dep_remove" => format!(
                 "{} -> {}",
-                result.get("blocked").and_then(|v| v.as_str()).unwrap_or("?"),
-                result.get("blocker").and_then(|v| v.as_str()).unwrap_or("?")
+                result
+                    .get("blocked")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?"),
+                result
+                    .get("blocker")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?")
             ),
             _ => "?".to_string(),
         };

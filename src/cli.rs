@@ -422,9 +422,13 @@ pub struct CreateOptions {
     pub unique_ref: Option<String>,
 
     // Hidden flags for R037 near-miss detection
+    /// Near-miss trap: create has no --status; a new issue starts open.
+    /// Set a status after creation with 'bead update <id> --status'.
     #[arg(long, hide = true)]
     pub status: Option<String>,
 
+    /// Near-miss trap: create has no --notes; supply notes later with
+    /// 'bead update <id> --notes'.
     #[arg(long, hide = true)]
     pub notes: Option<String>,
 }
@@ -733,18 +737,28 @@ pub struct UpdateOptions {
     pub dry_run: bool,
 
     // Hidden flags for R037 near-miss detection
+    /// Near-miss trap: title is immutable after create; this update flag
+    /// does not exist. Set the title at creation time.
     #[arg(long, hide = true)]
     pub title: Option<String>,
 
+    /// Near-miss trap: description is immutable after create; this update
+    /// flag does not exist. Set the description at creation time.
     #[arg(long, hide = true)]
     pub description: Option<String>,
 
+    /// Near-miss trap: priority is immutable after create; this update
+    /// flag does not exist. Set the priority at creation time.
     #[arg(long, hide = true)]
     pub priority: Option<i64>,
 
+    /// Near-miss trap: issue type is immutable after create; this update
+    /// flag does not exist. Set the issue type at creation time.
     #[arg(long = "issue-type", hide = true)]
     pub issue_type_hidden: Option<String>,
 
+    /// Near-miss trap: labels are managed by 'bead label add|remove', not
+    /// by update.
     #[arg(long, hide = true)]
     pub label: Option<String>,
 }
@@ -873,6 +887,8 @@ pub struct CloseOptions {
     pub dry_run: bool,
 
     // Hidden flag for R037 near-miss detection (--body should be --reason)
+    /// Near-miss trap: close takes --reason, not --body. Pass the closing
+    /// reason with 'bead close <id> --reason'.
     #[arg(long, hide = true)]
     pub body: Option<String>,
 }
@@ -1415,8 +1431,7 @@ IDEMPOTENCY:
 #[derive(Subcommand, Debug)]
 pub enum ResourceCommand {
     /// Add one or more normalized local resource keys
-    #[command(
-        long_about = "Add normalized resource declarations to an issue.
+    #[command(long_about = "Add normalized resource declarations to an issue.
 
 The keys are scheduling exclusions in this native workspace only. They are
 not distributed locks. A claimed issue holds every declared key as one
@@ -1424,34 +1439,29 @@ atomic set; adding keys to an in-progress issue requires its lease fencing
 token when applicable.
 
 EXAMPLE:
-  bead resource add <ID> --key gpu:0 --key docker:daemon"
-    )]
+  bead resource add <ID> --key gpu:0 --key docker:daemon")]
     Add(ResourceAddOptions),
 
     /// Remove one or more local resource keys
-    #[command(
-        long_about = "Remove normalized resource declarations from an issue.
+    #[command(long_about = "Remove normalized resource declarations from an issue.
 
 This changes scheduling metadata in the current native workspace only; it
 does not coordinate or unlock resources in another store. Removing keys from
 an in-progress issue requires its lease fencing token when applicable.
 
 EXAMPLE:
-  bead resource remove <ID> --key gpu:0"
-    )]
+  bead resource remove <ID> --key gpu:0")]
     Remove(ResourceRemoveOptions),
 
     /// List declared local resource keys
-    #[command(
-        long_about = "List normalized resource declarations for an issue.
+    #[command(long_about = "List normalized resource declarations for an issue.
 
 The result describes scheduling keys in this native workspace only. Resource
 declarations are not distributed-lock state and do not describe another
 workspace.
 
 EXAMPLE:
-  bead resource list <ID> --json"
-    )]
+  bead resource list <ID> --json")]
     List(ResourceListOptions),
 }
 
