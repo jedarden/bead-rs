@@ -357,7 +357,9 @@ fn active_lease_token(tx: &Transaction, issue_id: &str) -> Result<Option<i64>> {
     Ok(tx
         .query_row(
             "SELECT fencing_token FROM leases
-             WHERE issue_id = ?1 AND expires_at > ?2",
+             WHERE issue_id = ?1 AND expires_at > ?2
+             ORDER BY fencing_token DESC
+             LIMIT 1",
             rusqlite::params![issue_id, now],
             |row| row.get(0),
         )

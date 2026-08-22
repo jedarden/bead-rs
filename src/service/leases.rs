@@ -3,6 +3,11 @@
 //! This module implements R002's fenced claim leases with expiring claims,
 //! renewals, and monotonically increasing fencing tokens for safe recovery from
 //! crashed or disconnected agents.
+//!
+//! Lease rows are append-only claim-epoch history. Releasing or closing an
+//! issue does not remove its rows: later claims append a new row and use the
+//! maximum fencing token for that issue. This preserves the high-water mark
+//! while allowing audit consumers to distinguish every claim epoch.
 
 use crate::error::Result;
 use rusqlite::{OptionalExtension, Transaction};
@@ -130,13 +135,12 @@ pub fn renew_lease(
     let ttl = ttl_seconds.clamp(MIN_LEASE_TTL, MAX_LEASE_TTL);
 
     // Check if a valid lease exists for this assignee
-    let existing_lease = get_active_lease(tx, issue_id, assignee)?;
-    if existing_lease.is_none() {
-        return Err(crate::Error::LeaseExpired(format!(
+    let existing_lease = get_active_lease(tx, issue_id, assignee)?.ok_or_else(|| {
+        crate::Error::LeaseExpired(format!(
             "No active lease found for issue {} and assignee {}",
             issue_id, assignee
-        )));
-    }
+        ))
+    })?;
 
     // Calculate new expiry time
     let now = OffsetDateTime::now_utc();
@@ -162,21 +166,34 @@ pub fn renew_lease(
                 e
             ))
         })?;
+    let previous_fencing_token = existing_lease.fencing_token.to_string();
 
-    // Update the lease record
-    tx.execute(
-        "UPDATE leases
-         SET assignee = ?1, fencing_token = ?2, expires_at = ?3, renewed_at = ?4
-         WHERE issue_id = ?5",
-        [
-            assignee,
-            &fencing_token.to_string(),
-            &expires_at_str,
-            &now_str,
-            issue_id,
-        ],
-    )
-    .map_err(|e| crate::Error::Internal(anyhow::anyhow!("Failed to renew lease: {}", e)))?;
+    // Update only the active row that was checked above. A previous claim by
+    // another assignee may still have an unexpired historical row; filtering
+    // by both assignee and the checked fencing token prevents renewal from
+    // rewriting that history (or more than one row).
+    let changed = tx
+        .execute(
+            "UPDATE leases
+             SET assignee = ?1, fencing_token = ?2, expires_at = ?3, renewed_at = ?4
+             WHERE issue_id = ?5 AND assignee = ?1 AND fencing_token = ?6",
+            [
+                assignee,
+                &fencing_token.to_string(),
+                &expires_at_str,
+                &now_str,
+                issue_id,
+                &previous_fencing_token,
+            ],
+        )
+        .map_err(|e| crate::Error::Internal(anyhow::anyhow!("Failed to renew lease: {}", e)))?;
+
+    if changed != 1 {
+        return Err(crate::Error::LeaseExpired(format!(
+            "Lease for issue {} and assignee {} is no longer active",
+            issue_id, assignee
+        )));
+    }
 
     crate::service::resource_locks::update_issue_lock_lease_token(tx, issue_id, fencing_token)?;
 
@@ -212,7 +229,9 @@ pub fn get_active_lease(
         .query_row(
             "SELECT issue_id, assignee, fencing_token, expires_at, renewed_at, created_at
              FROM leases
-             WHERE issue_id = ?1 AND assignee = ?2 AND expires_at > ?3",
+             WHERE issue_id = ?1 AND assignee = ?2 AND expires_at > ?3
+             ORDER BY fencing_token DESC
+             LIMIT 1",
             [issue_id, assignee, &now],
             |row| {
                 Ok(Lease {
@@ -289,10 +308,15 @@ pub fn validate_lease_for_mutation(
             // 3. Lease rows exist only from a previous claim epoch (the issue
             //    was released/closed and later re-claimed or reassigned)
 
-            // Look at who owns the (single) lease row for this issue, if any
+            // Look at who owns the latest lease row for this issue, if any.
+            // Older rows are historical epochs and must not decide ownership
+            // for the current claim.
             let lease_row_assignee: Option<String> = conn
                 .query_row(
-                    "SELECT assignee FROM leases WHERE issue_id = ?1",
+                    "SELECT assignee FROM leases
+                     WHERE issue_id = ?1
+                     ORDER BY fencing_token DESC
+                     LIMIT 1",
                     [issue_id],
                     |row| row.get(0),
                 )
@@ -396,39 +420,39 @@ pub fn has_active_lease(tx: &Transaction, issue_id: &str) -> Result<bool> {
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "unknown".to_string());
 
-    let count: i64 = tx
+    let current_is_active: i64 = tx
         .query_row(
-            "SELECT COUNT(*) FROM leases WHERE issue_id = ?1 AND expires_at > ?2",
+            "SELECT EXISTS(
+                 SELECT 1
+                 FROM leases current_lease
+                 WHERE current_lease.issue_id = ?1
+                   AND current_lease.fencing_token = (
+                       SELECT MAX(history.fencing_token)
+                       FROM leases history
+                       WHERE history.issue_id = ?1
+                   )
+                   AND current_lease.expires_at > ?2
+             )",
             [issue_id, &now],
             |row| row.get(0),
         )
         .unwrap_or(0);
 
-    Ok(count > 0)
+    Ok(current_is_active != 0)
 }
 
-/// Clean up expired leases from an issue
+/// Retain lease history for an issue.
 ///
-/// This function removes expired lease records, typically called when an issue
-/// is claimed by a new assignee or when leases are renewed.
+/// Lease rows are append-only so fencing-token history remains auditable and
+/// the per-issue high-water mark cannot regress. This compatibility helper is
+/// intentionally a no-op; expired rows are harmless historical records.
 ///
 /// # Arguments
 /// * `tx` - Database transaction
 /// * `issue_id` - ID of the issue to clean up
 #[allow(dead_code)]
 pub fn cleanup_expired_leases(tx: &Transaction, issue_id: &str) -> Result<()> {
-    let now = OffsetDateTime::now_utc()
-        .format(&time::format_description::well_known::Rfc3339)
-        .unwrap_or_else(|_| "unknown".to_string());
-
-    tx.execute(
-        "DELETE FROM leases WHERE issue_id = ?1 AND expires_at <= ?2",
-        [issue_id, &now],
-    )
-    .map_err(|e| {
-        crate::Error::Internal(anyhow::anyhow!("Failed to cleanup expired leases: {}", e))
-    })?;
-
+    let _ = (tx, issue_id);
     Ok(())
 }
 

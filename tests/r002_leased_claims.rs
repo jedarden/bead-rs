@@ -4,6 +4,7 @@
 //! renewals, and monotonically increasing fencing tokens for safe recovery from
 //! crashed or disconnected agents.
 
+use rusqlite::Connection;
 use std::env;
 use std::path::PathBuf;
 use std::process::Command;
@@ -42,7 +43,7 @@ impl TestWorkspace {
 
         // Initialize workspace using the local bead binary
         let output = Command::new(&bead_path)
-            .args(["init", "--prefix", "test"])
+            .args(["init", "--prefix", "test", "--skip-foreign-workspace"])
             .current_dir(&workspace_path)
             .output()
             .expect("Failed to run bead init");
@@ -176,6 +177,96 @@ fn test_lease_renewal() {
 
     assert_eq!(renewed_fencing_token, initial_fencing_token + 1);
     assert_eq!(renew_result["bead_id"].as_str(), Some(issue_id));
+}
+
+#[test]
+fn test_lease_renewal_preserves_historical_rows() {
+    let workspace = TestWorkspace::new();
+
+    workspace.run_bead(&["create", "--title", "Task 1", "--priority", "0"]);
+
+    let first_claim = workspace.run_bead(&[
+        "claim",
+        "--assignee",
+        "alice",
+        "--lease-ttl",
+        "60",
+        "--json",
+    ]);
+    assert!(first_claim.status.success());
+    let first_result: serde_json::Value = serde_json::from_slice(&first_claim.stdout).unwrap();
+    let issue_id = first_result["bead_id"].as_str().unwrap().to_string();
+
+    let release = workspace.run_bead(&["release", &issue_id]);
+    assert!(
+        release.status.success(),
+        "release failed: {}",
+        String::from_utf8_lossy(&release.stderr)
+    );
+
+    let second_claim =
+        workspace.run_bead(&["claim", "--assignee", "bob", "--lease-ttl", "60", "--json"]);
+    assert!(
+        second_claim.status.success(),
+        "second leased claim failed: {}",
+        String::from_utf8_lossy(&second_claim.stderr)
+    );
+    let second_result: serde_json::Value = serde_json::from_slice(&second_claim.stdout).unwrap();
+    assert_eq!(second_result["bead_id"].as_str(), Some(issue_id.as_str()));
+
+    let read_lease_rows = || {
+        let conn = Connection::open(workspace.workspace_path.join(".beads/beads.db")).unwrap();
+        let mut statement = conn
+            .prepare(
+                "SELECT assignee, fencing_token, expires_at
+                 FROM leases
+                 WHERE issue_id = ?1
+                 ORDER BY fencing_token ASC",
+            )
+            .unwrap();
+        statement
+            .query_map([&issue_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+
+    let before_renewal = read_lease_rows();
+    assert_eq!(before_renewal.len(), 2);
+    assert_eq!(before_renewal[0].0, "alice");
+    assert_eq!(before_renewal[0].1, 1);
+    assert_eq!(before_renewal[1].0, "bob");
+    assert_eq!(before_renewal[1].1, 2);
+
+    let renewal = workspace.run_bead(&[
+        "claim",
+        "--assignee",
+        "bob",
+        "--renew-lease",
+        "--lease-ttl",
+        "120",
+        "--json",
+    ]);
+    assert!(
+        renewal.status.success(),
+        "renewal failed: {}",
+        String::from_utf8_lossy(&renewal.stderr)
+    );
+    let renewal_result: serde_json::Value = serde_json::from_slice(&renewal.stdout).unwrap();
+    assert_eq!(renewal_result["lease"]["fencing_token"], 3);
+
+    let after_renewal = read_lease_rows();
+    assert_eq!(after_renewal.len(), 2);
+    assert_eq!(after_renewal[0], before_renewal[0]);
+    assert_eq!(after_renewal[1].0, "bob");
+    assert_eq!(after_renewal[1].1, 3);
+    assert_ne!(after_renewal[1].2, before_renewal[1].2);
 }
 
 #[test]
