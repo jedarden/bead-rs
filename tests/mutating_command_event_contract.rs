@@ -369,6 +369,98 @@ fn registry() -> Vec<RegisteredCommand> {
                 ]
             },
         },
+        RegisteredCommand {
+            path: "bead sync reconcile",
+            class: Mutating,
+            reason: "reconciling a remote-advanced checkpoint merges the pulled events into \
+                     the live store and appends a merge summary event",
+            invoke: |f| {
+                // Reproduce the Git-transported pull using workspace
+                // artifacts only (ADR-009: bead-rs never runs Git): clone
+                // the workspace wholesale -- the clone shares this store's
+                // UUID (R028) -- advance the clone by one issue (its
+                // automatic flush publishes the covering generation), then
+                // deliver that checkpoint back over this workspace's own.
+                // The live store is left the strict subset that the
+                // reconcile command exists to absorb.
+                let clone_home = tempfile::tempdir().expect("clone tempdir");
+                let clone = clone_home.path().join("clone");
+                copy_tree(&f.workspace, &clone);
+                create_issue(&clone, "pulled advancement");
+                std::fs::remove_dir_all(f.workspace.join(".beads/checkpoint")).unwrap();
+                copy_tree(
+                    &clone.join(".beads/checkpoint"),
+                    &f.workspace.join(".beads/checkpoint"),
+                );
+                vec![
+                    "sync".into(),
+                    "reconcile".into(),
+                    "--actor".into(),
+                    "contract-probe".into(),
+                ]
+            },
+        },
+        // ---- local resource declarations (R031) ----
+        RegisteredCommand {
+            path: "bead resource add",
+            class: Mutating,
+            reason: "declaring keys appends a `resource_keys_added` audit event in the \
+                     declaring transaction",
+            invoke: |f| {
+                vec![
+                    "resource".into(),
+                    "add".into(),
+                    f.update_target.clone(),
+                    "--key".into(),
+                    "probe:gpu0".into(),
+                ]
+            },
+        },
+        RegisteredCommand {
+            path: "bead resource list",
+            class: NonMutating,
+            reason: "read-only listing of an issue's declared keys",
+            invoke: |f| vec!["resource".into(), "list".into(), f.update_target.clone()],
+        },
+        RegisteredCommand {
+            path: "bead resource remove",
+            class: Mutating,
+            reason: "removing keys appends a `resource_keys_removed` audit event in the \
+                     removing transaction",
+            invoke: |f| {
+                vec![
+                    "resource".into(),
+                    "remove".into(),
+                    f.update_target.clone(),
+                    "--key".into(),
+                    "probe:gpu0".into(),
+                ]
+            },
+        },
+        // ---- workspace identity and remote reconciliation ----
+        RegisteredCommand {
+            path: "bead sync fork",
+            class: Mutating,
+            reason: "forking re-origins the workspace under a new store UUID and appends a \
+                     fork summary event plus a provenance receipt",
+            invoke: |f| {
+                // Fork refuses a dirty checkpoint. The sweep's earlier
+                // mutations publish under the automatic default, but an
+                // explicit flush keeps that cleanliness hold regardless of
+                // publication suppression, so the classification does not
+                // depend on where the entry sorts.
+                bead(&f.workspace)
+                    .args(["sync", "flush-only"])
+                    .assert()
+                    .success();
+                vec![
+                    "sync".into(),
+                    "fork".into(),
+                    "--actor".into(),
+                    "contract-probe".into(),
+                ]
+            },
+        },
         // ---- inspection ----
         RegisteredCommand {
             path: "bead list",
@@ -617,6 +709,52 @@ fn registry() -> Vec<RegisteredCommand> {
                     f.restore_checkpoint.join("current.json").display().to_string(),
                     "--query".into(),
                     "{\"version\":\"v1\",\"predicates\":[{\"field\":\"base_status\",\"operator\":\"equals\",\"value\":\"open\"}],\"sort\":[]}".into(),
+                ]
+            },
+        },
+        RegisteredCommand {
+            path: "bead manifest commit",
+            class: Mutating,
+            reason: "a committed manifest appends the union of its operations' audit \
+                     events in the manifest's single transaction (R033)",
+            invoke: |f| {
+                let manifest_path = f.workspace.join("contract-probe-manifest.json");
+                std::fs::write(
+                    &manifest_path,
+                    concat!(
+                        r#"{"manifest_version": 1, "operations": ["#,
+                        r#"{"op": "create", "local_id": "probe", "title": "contract probe manifest"}]}"#
+                    ),
+                )
+                .expect("write contract-probe manifest");
+                vec![
+                    "manifest".into(),
+                    "commit".into(),
+                    "--input".into(),
+                    manifest_path.display().to_string(),
+                ]
+            },
+        },
+        RegisteredCommand {
+            path: "bead manifest dry-run",
+            class: NonMutating,
+            reason: "executes the whole manifest inside one transaction that is always \
+                     rolled back; no event survives (R033)",
+            invoke: |f| {
+                let manifest_path = f.workspace.join("contract-probe-manifest.json");
+                std::fs::write(
+                    &manifest_path,
+                    concat!(
+                        r#"{"manifest_version": 1, "operations": ["#,
+                        r#"{"op": "create", "local_id": "probe", "title": "contract probe manifest"}]}"#
+                    ),
+                )
+                .expect("write contract-probe manifest");
+                vec![
+                    "manifest".into(),
+                    "dry-run".into(),
+                    "--input".into(),
+                    manifest_path.display().to_string(),
                 ]
             },
         },

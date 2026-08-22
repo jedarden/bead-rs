@@ -17,158 +17,9 @@ use crate::service::scheduling::SchedulingPolicy;
 use crate::store::Store;
 use clap::Parser;
 use rusqlite::{Transaction, TransactionBehavior};
-use std::collections::HashMap;
-use std::env;
-use std::process::{ExitCode, Termination};
-
-/// Check for near-miss flags and provide helpful error messages (R037)
-///
-/// This function runs before clap parsing to catch common flag mistakes
-/// and provide domain-specific guidance instead of bare parser errors.
-fn check_near_miss_flags(args: impl IntoIterator<Item = String>) {
-    let args: Vec<String> = args.into_iter().collect();
-
-    // Skip if no args or just the program name
-    if args.len() < 2 {
-        return;
-    }
-
-    // Find the command position
-    let command_pos = args.iter().position(|a| !a.starts_with('-'));
-    if command_pos.is_none() || command_pos.unwrap() == 0 {
-        return; // No command found or first arg is command
-    }
-
-    let command = &args[command_pos.unwrap()];
-    let args_map: HashMap<&str, &str> = args
-        .windows(2)
-        .filter_map(|w| {
-            if w[0].starts_with('-') && !w[1].starts_with('-') {
-                Some((w[0].as_str(), w[1].as_str()))
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    // Check for update command with immutable fields
-    if command == "update" {
-        if let Some(id) = args.get(command_pos.unwrap() + 1) {
-            if !id.starts_with('-') {
-                let mut errors = Vec::new();
-
-                if args_map.contains_key("--title") {
-                    errors.push("title is immutable after create");
-                }
-                if args_map.contains_key("--description") {
-                    errors.push("description is immutable after create");
-                }
-                if args_map.contains_key("--priority") {
-                    errors.push("priority is immutable after create");
-                }
-                if args_map.contains_key("--issue-type") {
-                    errors.push("issue_type is immutable after create");
-                }
-                if args_map.contains_key("--issue_type") {
-                    errors.push("issue_type is immutable after create");
-                }
-                if args_map.contains_key("--label") || args_map.contains_key("--labels") {
-                    errors.push("labels are managed via 'bead label add|remove'");
-                }
-
-                if !errors.is_empty() {
-                    eprintln!("bead: update command cannot modify immutable fields:");
-                    for err in &errors {
-                        eprintln!("  - {}", err);
-                    }
-                    eprintln!();
-                    eprintln!("Domain rule: title, description, priority, issue_type, and labels are");
-                    eprintln!("set at creation time and cannot be changed via update.");
-                    eprintln!();
-                    eprintln!("Remedies:");
-                    eprintln!("  • Immutable fields: create a new issue with 'bead create'");
-                    eprintln!("  • Labels: use 'bead label add <ID> --label <LABEL>'");
-                    eprintln!("    or 'bead label remove <ID> --label <LABEL>'");
-                    eprintln!();
-                    eprintln!("Run 'bead update --help' for the list of mutable fields.");
-                    ExitCode::from(2u8).report();
-                }
-            }
-        }
-    }
-
-    // Check for close command with --body (should be --reason)
-    if command == "close" {
-        if args.iter().any(|a| a == "--body") {
-            eprintln!("bead: close command requires '--reason', not '--body'");
-            eprintln!();
-            eprintln!("Domain rule: close requires a non-empty reason argument.");
-            eprintln!();
-            eprintln!("Remedy: use 'bead close <ID> --reason \"<reason>\"'");
-            eprintln!();
-            eprintln!("Example:");
-            eprintln!("  bead close bead-123abc456789def --reason \"Completed successfully\"");
-            eprintln!();
-            eprintln!("Run 'bead close --help' for complete usage.");
-            ExitCode::from(2u8).report();
-        }
-    }
-
-    // Check for create command with update-only fields
-    if command == "create" {
-        let mut errors = Vec::new();
-
-        if args_map.contains_key("--status") {
-            errors.push("--status: new issues are always 'open'");
-        }
-        if args_map.contains_key("--assignee") {
-            errors.push("--assignee: use at creation time or 'bead update'");
-        }
-        if args_map.contains_key("--notes") {
-            errors.push("--notes: use 'bead update' to add notes after creation");
-        }
-
-        if !errors.is_empty() {
-            eprintln!("bead: create command does not accept these arguments:");
-            for err in &errors {
-                eprintln!("  - {}", err);
-            }
-            eprintln!();
-            eprintln!("Domain rule: create initializes an issue with basic fields.");
-            eprintln!();
-            eprintln!("Remedies:");
-            eprintln!("  • Assignment: use 'bead create --assignee <WHO>' at creation time");
-            eprintln!("  • Status: new issues start as 'open'; use 'bead update' to change status");
-            eprintln!("  • Notes: use 'bead update <ID> --notes \"<notes>\"' after creation");
-            eprintln!();
-            eprintln!("Run 'bead create --help' for complete usage.");
-            ExitCode::from(2u8).report();
-        }
-    }
-
-    // Check for label command without add/remove subcommand
-    if command == "label" {
-        if args.iter().any(|a| a == "--label" || a == "-l") &&
-           !args.iter().any(|a| a == "add" || a == "remove") {
-            eprintln!("bead: label command requires 'add' or 'remove' subcommand");
-            eprintln!();
-            eprintln!("Domain rule: labels are managed through explicit subcommands.");
-            eprintln!();
-            eprintln!("Remedies:");
-            eprintln!("  • Add label: 'bead label add <ID> --label <LABEL>'");
-            eprintln!("  • Remove label: 'bead label remove <ID> --label <LABEL>'");
-            eprintln!();
-            eprintln!("Run 'bead label --help' for complete usage.");
-            ExitCode::from(2u8).report();
-        }
-    }
-}
+use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    // Check for near-miss flags before clap parsing (R037)
-    // TODO: Implement check_near_miss_flags function
-    // check_near_miss_flags(std::env::args());
-
     // Parse CLI arguments
     // Use parse() instead of try_parse() so --help and --version are handled automatically
     let cli = Cli::parse();
@@ -439,6 +290,7 @@ fn dispatch_command(cli: Cli) -> Result<()> {
         Command::Resource(opts) => cmd_resource(opts),
         Command::Dep(opts) => cmd_dep(opts),
         Command::Ref(opts) => cmd_ref(opts),
+        Command::Manifest(opts) => cmd_manifest(opts),
         Command::Sync(opts) => cmd_sync(opts),
         Command::Doctor(opts) => cmd_doctor(opts),
         Command::Capabilities(opts) => cmd_capabilities(opts),
@@ -797,6 +649,33 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
 }
 
 fn cmd_create(opts: cli::CreateOptions) -> Result<()> {
+    // R037: Check for near-miss flags that don't belong in create
+    let mut errors = Vec::new();
+
+    if opts.status.is_some() {
+        errors.push("--status: new issues are always 'open'");
+    }
+    if opts.notes.is_some() {
+        errors.push("--notes: use 'bead update' to add notes after creation");
+    }
+
+    if !errors.is_empty() {
+        eprintln!("bead: create command does not accept these arguments:");
+        for err in &errors {
+            eprintln!("  - {}", err);
+        }
+        eprintln!();
+        eprintln!("Domain rule: create initializes an issue with basic fields.");
+        eprintln!();
+        eprintln!("Remedies:");
+        eprintln!("  • Assignment: use 'bead create --assignee <WHO>' at creation time");
+        eprintln!("  • Status: new issues start as 'open'; use 'bead update' to change status");
+        eprintln!("  • Notes: use 'bead update <ID> --notes \"<notes>\"' after creation");
+        eprintln!();
+        eprintln!("Run 'bead create --help' for complete usage.");
+        return Err(Error::cli_usage(""));
+    }
+
     // Discover workspace
     let config = store::WorkspaceConfig::discover()?
         .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
@@ -988,6 +867,43 @@ fn cmd_show(opts: cli::ShowOptions) -> Result<()> {
 }
 
 fn cmd_update(opts: cli::UpdateOptions) -> Result<()> {
+    // R037: Check for near-miss flags that should show remediation
+    let mut near_miss_errors = Vec::new();
+
+    if opts.title.is_some() {
+        near_miss_errors.push("title is immutable after create");
+    }
+    if opts.description.is_some() {
+        near_miss_errors.push("description is immutable after create");
+    }
+    if opts.priority.is_some() {
+        near_miss_errors.push("priority is immutable after create");
+    }
+    if opts.issue_type_hidden.is_some() {
+        near_miss_errors.push("issue_type is immutable after create");
+    }
+    if opts.label.is_some() {
+        near_miss_errors.push("labels are managed via 'bead label add|remove'");
+    }
+
+    if !near_miss_errors.is_empty() {
+        eprintln!("bead: update command cannot modify immutable fields:");
+        for err in &near_miss_errors {
+            eprintln!("  - {}", err);
+        }
+        eprintln!();
+        eprintln!("Domain rule: title, description, priority, issue_type, and labels are");
+        eprintln!("set at creation time and cannot be changed via update.");
+        eprintln!();
+        eprintln!("Remedies:");
+        eprintln!("  • Immutable fields: create a new issue with 'bead create'");
+        eprintln!("  • Labels: use 'bead label add <ID> --label <LABEL>'");
+        eprintln!("    or 'bead label remove <ID> --label <LABEL>'");
+        eprintln!();
+        eprintln!("Run 'bead update --help' for the list of mutable fields.");
+        return Err(Error::cli_usage(""));
+    }
+
     // Discover workspace
     let config = store::WorkspaceConfig::discover()?
         .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
@@ -1062,6 +978,30 @@ fn cmd_release(opts: cli::ReleaseOptions) -> Result<()> {
 }
 
 fn cmd_close(opts: cli::CloseOptions) -> Result<()> {
+    // R037: Check for near-miss flag --body (should be --reason)
+    if opts.body.is_some() {
+        eprintln!("bead: close command requires '--reason', not '--body'");
+        eprintln!();
+        eprintln!("Domain rule: close requires a non-empty reason argument.");
+        eprintln!();
+        eprintln!("Remedy: use 'bead close <ID> --reason \"<reason>\"'");
+        eprintln!();
+        eprintln!("Example:");
+        eprintln!("  bead close bead-123abc456789def --reason \"Completed successfully\"");
+        eprintln!();
+        eprintln!("Run 'bead close --help' for complete usage.");
+        return Err(Error::cli_usage(""));
+    }
+
+    // Validate that --reason was provided
+    let reason = opts.reason.ok_or_else(|| {
+        Error::cli_usage("close requires a non-empty --reason argument")
+    })?;
+
+    if reason.trim().is_empty() {
+        return Err(Error::cli_usage("close reason cannot be empty"));
+    }
+
     // Discover workspace
     let config = store::WorkspaceConfig::discover()?
         .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
@@ -1073,7 +1013,7 @@ fn cmd_close(opts: cli::CloseOptions) -> Result<()> {
 
     // Handle dry-run mode
     if opts.dry_run {
-        let result = service::close_issue_dryrun(&conn, &opts.id, &opts.reason)?;
+        let result = service::close_issue_dryrun(&conn, &opts.id, &reason)?;
 
         // Output JSON result
         let json = serde_json::to_string_pretty(&result)?;
@@ -1085,7 +1025,7 @@ fn cmd_close(opts: cli::CloseOptions) -> Result<()> {
     let id = service::close_issue(
         &conn,
         &opts.id,
-        &opts.reason,
+        &reason,
         opts.if_revision,
         opts.fencing_token,
     )?;
@@ -1517,6 +1457,110 @@ fn cmd_ref_find(opts: cli::RefFindOptions) -> Result<()> {
     Ok(())
 }
 
+/// `bead manifest dry-run|commit` (R033).
+///
+/// Both subcommands share the entire pipeline: load and document-validate
+/// the manifest, discover the workspace, and execute the operations inside
+/// one transaction. Only the transaction's ending differs -- a dry-run
+/// always rolls back, a commit commits once -- which is what makes the
+/// dry-run report exact rather than predictive.
+fn cmd_manifest(cmd: cli::ManifestCommand) -> Result<()> {
+    let (opts, commit) = match cmd {
+        cli::ManifestCommand::DryRun(opts) => (opts, false),
+        cli::ManifestCommand::Commit(opts) => (opts, true),
+    };
+
+    if !matches!(opts.format.as_str(), "text" | "json") {
+        return Err(Error::cli_usage(format!(
+            "unknown --format '{}' (expected 'text' or 'json')",
+            opts.format
+        )));
+    }
+
+    // Document validation is a pure function of the file: a malformed
+    // manifest reports identically from dry-run and commit, before the
+    // workspace is touched (exit 5, nothing executed).
+    let manifest = service::load_manifest(std::path::Path::new(&opts.input))?;
+
+    // Discover workspace
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    // Open database connection
+    let db_path = config.database_path();
+    let conn = store::open_configured_connection(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    let report = if commit {
+        service::manifest_commit(&conn, &config, &manifest)?
+    } else {
+        service::manifest_dry_run(&conn, &config, &manifest)?
+    };
+
+    print_manifest_report(&report, &opts.format)?;
+
+    if report.semantic_changes == 0 && report.operations > 0 {
+        // Every operation landed on the commands' own idempotent no-op
+        // path. Not an error -- the commands themselves succeed -- but worth
+        // one quiet line so a caller does not mistake silence for success.
+        eprintln!(
+            "note: 0 of {} operations changed anything semantic",
+            report.operations
+        );
+    }
+
+    Ok(())
+}
+
+/// Render a manifest report in the requested format.
+///
+/// JSON is the machine contract (spec: "Result map"); text is one line per
+/// operation with the same information.
+fn print_manifest_report(report: &service::ManifestReport, format: &str) -> Result<()> {
+    if format == "json" {
+        println!("{}", serde_json::to_string_pretty(report)?);
+        return Ok(());
+    }
+
+    let mode = if report.dry_run {
+        "dry-run (nothing mutated)"
+    } else {
+        "committed"
+    };
+    println!(
+        "manifest v{} {}: {} operations, {} semantic changes (workspace sequence {})",
+        report.manifest_version, mode, report.operations, report.semantic_changes,
+        report.workspace_sequence
+    );
+
+    for result in &report.results {
+        let index = result.get("index").and_then(|v| v.as_i64()).unwrap_or(0);
+        let op = result.get("op").and_then(|v| v.as_str()).unwrap_or("?");
+        let outcome = result.get("outcome").and_then(|v| v.as_str()).unwrap_or("?");
+        let target = match op {
+            "create" => {
+                let issue_id = result.get("issue_id").and_then(|v| v.as_str()).unwrap_or("?");
+                match result.get("local_id").and_then(|v| v.as_str()) {
+                    Some(local_id) => format!("local '{local_id}' -> {issue_id}"),
+                    None => issue_id.to_string(),
+                }
+            }
+            "update" | "close" | "label_add" | "label_remove" => {
+                result.get("id").and_then(|v| v.as_str()).unwrap_or("?").to_string()
+            }
+            "dep_add" | "dep_remove" => format!(
+                "{} -> {}",
+                result.get("blocked").and_then(|v| v.as_str()).unwrap_or("?"),
+                result.get("blocker").and_then(|v| v.as_str()).unwrap_or("?")
+            ),
+            _ => "?".to_string(),
+        };
+        println!("  [{index}] {op} {target} ({outcome})");
+    }
+
+    Ok(())
+}
+
 fn cmd_sync(cmd: cli::SyncCommand) -> Result<()> {
     match cmd {
         cli::SyncCommand::FlushOnly(opts) => cmd_sync_flush_only(opts),
@@ -1614,9 +1658,7 @@ fn cmd_sync_flush_only(opts: cli::SyncFlushOptions) -> Result<()> {
         // greater than the live sequence engages the integrity refusal, so
         // an unusable pointer keeps its pre-R027 flush behavior (the spec
         // narrows nothing outside covered-ahead).
-        if report.relationship
-            == service::reconcile::SyncRelationship::RemoteAdvanced.as_str()
-        {
+        if report.relationship == service::reconcile::SyncRelationship::RemoteAdvanced.as_str() {
             return Err(Error::conflict(format!(
                 "flush-only refused: the checkpoint is remote-advanced (covered {} > live {}) \
                  and publishing would discard the pulled advancement - {}",
@@ -1633,9 +1675,13 @@ fn cmd_sync_flush_only(opts: cli::SyncFlushOptions) -> Result<()> {
         {
             return Err(Error::integrity(format!(
                 "flush-only refused: covered-ahead integrity failure - {}",
-                report.not_ready_reasons.first().map(String::as_str).unwrap_or(
-                    "the checkpoint is ahead of the live store but failed its qualification"
-                )
+                report
+                    .not_ready_reasons
+                    .first()
+                    .map(String::as_str)
+                    .unwrap_or(
+                        "the checkpoint is ahead of the live store but failed its qualification"
+                    )
             )));
         }
 
@@ -1690,11 +1736,7 @@ fn cmd_sync_fork(opts: cli::SyncForkOptions) -> Result<()> {
     let mut store = store::SqliteStore::from_conn(conn);
 
     // Execute fork operation
-    let report = service::fork_workspace_identity(
-        &mut store,
-        &opts.actor,
-        opts.reason.as_deref(),
-    )?;
+    let report = service::fork_workspace_identity(&mut store, &opts.actor, opts.reason.as_deref())?;
 
     // Update .beads/config.json with new UUID
     let config_path = config.root.join(".beads/config.json");
@@ -1703,20 +1745,26 @@ fn cmd_sync_fork(opts: cli::SyncForkOptions) -> Result<()> {
             path: config_path.clone(),
             msg: e,
         })
-        .and_then(|s| serde_json::from_str(&s)
-            .map_err(|e| Error::workspace(format!("Invalid config.json: {}", e))))?;
+        .and_then(|s| {
+            serde_json::from_str(&s)
+                .map_err(|e| Error::workspace(format!("Invalid config.json: {}", e)))
+        })?;
 
     // Update UUID in config
     if let Some(obj) = config_data.as_object_mut() {
-        obj.insert("uuid".to_string(), serde_json::Value::String(report.new_store_uuid.clone()));
+        obj.insert(
+            "uuid".to_string(),
+            serde_json::Value::String(report.new_store_uuid.clone()),
+        );
     }
 
     // Write updated config
-    std::fs::write(&config_path, serde_json::to_string_pretty(&config_data)?)
-        .map_err(|e| Error::Io {
+    std::fs::write(&config_path, serde_json::to_string_pretty(&config_data)?).map_err(|e| {
+        Error::Io {
             path: config_path.clone(),
             msg: e,
-        })?;
+        }
+    })?;
 
     // Print results
     match opts.format.as_str() {
@@ -1748,7 +1796,10 @@ fn cmd_sync_fork(opts: cli::SyncForkOptions) -> Result<()> {
             eprintln!("  4. Can merge back into parent using 'bead sync import-only --merge'");
         }
         _ => {
-            return Err(Error::validation(format!("Invalid format: {}", opts.format)));
+            return Err(Error::validation(format!(
+                "Invalid format: {}",
+                opts.format
+            )));
         }
     }
 

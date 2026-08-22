@@ -3208,7 +3208,9 @@ pub fn fork_workspace_identity(
 
     // Get current workspace state
     let parent_uuid: String = tx
-        .query_row("SELECT uuid FROM workspace WHERE id = 1", [], |row| row.get(0))
+        .query_row("SELECT uuid FROM workspace WHERE id = 1", [], |row| {
+            row.get(0)
+        })
         .map_err(|e| anyhow!("Failed to read workspace UUID: {}", e))?;
 
     // Get current event sequence
@@ -3237,15 +3239,16 @@ pub fn fork_workspace_identity(
             );
         }
     } else {
-        bail!(
-            "Cannot fork workspace with no checkpoint. Run 'bead sync flush-only' first."
-        );
+        bail!("Cannot fork workspace with no checkpoint. Run 'bead sync flush-only' first.");
     }
 
     // Get current counts
     let issue_count: i64 = tx.query_row("SELECT COUNT(*) FROM issues", [], |row| row.get(0))?;
     let event_count: i64 = tx.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))?;
-    let receipt_count: i64 = tx.query_row("SELECT COUNT(*) FROM provenance_receipts", [], |row| row.get(0))?;
+    let receipt_count: i64 =
+        tx.query_row("SELECT COUNT(*) FROM provenance_receipts", [], |row| {
+            row.get(0)
+        })?;
 
     // Generate new UUID with provenance derivation
     let new_uuid = derive_fork_uuid(&parent_uuid, current_sequence)?;
@@ -3371,7 +3374,7 @@ pub fn fork_workspace_identity(
         event_count: event_count as usize,
         receipt_count: receipt_count as usize,
         summary_event_sequence: summary_sequence,
-        parent_generation_id: parent_generation_id,
+        parent_generation_id,
         reason: reason.map(|r| r.to_string()),
     })
 }
@@ -5758,9 +5761,10 @@ pub fn forensic_checkpoint_status(
                     // not absence (R027); `covered_sequence: None` keeps the
                     // covered-ahead refusals from engaging on it, preserving
                     // flush-only's pre-R027 behavior for this shape.
-                    relationship: crate::service::reconcile::SyncRelationship::CoveredAheadIntegrityFailure
-                        .as_str()
-                        .to_string(),
+                    relationship:
+                        crate::service::reconcile::SyncRelationship::CoveredAheadIntegrityFailure
+                            .as_str()
+                            .to_string(),
                 });
             }
         }
@@ -6881,10 +6885,7 @@ fn derive_wire_identity(
     next_local_origin_sequence: &mut i64,
     primary_key: i64,
 ) -> (String, i64) {
-    match (
-        stored_uuid.filter(|uuid| !uuid.is_empty()),
-        stored_sequence,
-    ) {
+    match (stored_uuid.filter(|uuid| !uuid.is_empty()), stored_sequence) {
         (Some(uuid), Some(origin_sequence)) => (uuid.to_string(), origin_sequence),
         (Some(uuid), None) if uuid != local_store_uuid => (uuid.to_string(), primary_key),
         _ => {

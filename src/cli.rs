@@ -188,6 +188,29 @@ locates every issue carrying a given value, which supports cross-tool dedup.
     )]
     Ref(RefCommand),
 
+    /// Materialize a bulk transaction manifest
+    #[command(
+        subcommand,
+        long_about = "Apply a versioned JSON manifest of existing command primitives
+as one all-or-none transaction (R033).
+
+A manifest composes creates, updates, label and dependency mutations, and
+closes into a single atomic unit: every operation is exactly one existing
+command's semantics, applied in array order inside one SQLite transaction,
+publishing at most one checkpoint generation for the whole manifest instead
+of one per command. Newly created beads are named with a `local_id` other
+operations reference as `$name`.
+
+  bead manifest dry-run --input plan.json     # report the semantic delta, mutate nothing
+  bead manifest commit  --input plan.json     # apply everything or nothing
+  bead manifest commit  --input plan.json --format json   # machine-readable result map
+
+Version 1 refuses any semantics a single existing command does not already
+have: no control flow, no query-scoped mutation, no new field semantics.
+Schema and rules: research/specs/bulk-manifests-v1.md."
+    )]
+    Manifest(ManifestCommand),
+
     /// Synchronize checkpoint operations
     #[command(
         subcommand,
@@ -397,6 +420,13 @@ pub struct CreateOptions {
     /// Idempotency binding in NAMESPACE:KEY form
     #[arg(long = "unique-ref")]
     pub unique_ref: Option<String>,
+
+    // Hidden flags for R037 near-miss detection
+    #[arg(long, hide = true)]
+    pub status: Option<String>,
+
+    #[arg(long, hide = true)]
+    pub notes: Option<String>,
 }
 
 /// Options for listing issues
@@ -701,6 +731,22 @@ pub struct UpdateOptions {
     /// Dry run: show what would happen without making changes
     #[arg(long)]
     pub dry_run: bool,
+
+    // Hidden flags for R037 near-miss detection
+    #[arg(long, hide = true)]
+    pub title: Option<String>,
+
+    #[arg(long, hide = true)]
+    pub description: Option<String>,
+
+    #[arg(long, hide = true)]
+    pub priority: Option<i64>,
+
+    #[arg(long = "issue-type", hide = true)]
+    pub issue_type_hidden: Option<String>,
+
+    #[arg(long, hide = true)]
+    pub label: Option<String>,
 }
 
 /// Options for releasing an issue
@@ -811,8 +857,8 @@ pub struct CloseOptions {
     pub id: String,
 
     /// Close reason (required)
-    #[arg(long)]
-    pub reason: String,
+    #[arg(long, required = false)]
+    pub reason: Option<String>,
 
     /// Expected revision for optimistic concurrency control
     #[arg(long)]
@@ -825,6 +871,10 @@ pub struct CloseOptions {
     /// Dry run: show what would happen without making changes
     #[arg(long)]
     pub dry_run: bool,
+
+    // Hidden flag for R037 near-miss detection (--body should be --reason)
+    #[arg(long, hide = true)]
+    pub body: Option<String>,
 }
 
 /// Options for reopening an issue
@@ -1185,7 +1235,7 @@ AFTER FORKING:
   - Can merge back into parent using 'bead sync import-only --merge'
 
 EXAMPLES:
-  bead sync fork --reason 'Forking for experimental branch'
+  bead sync fork --actor 'team-lead' --reason 'Forking for experimental branch'
   bead sync fork --actor 'team-lead'
 
 NOT FORKING:
@@ -2112,6 +2162,64 @@ pub struct RefFindOptions {
     /// Output in JSON format
     #[arg(long)]
     pub json: bool,
+}
+
+/// Manifest bulk-transaction commands (R033)
+#[derive(Subcommand, Debug)]
+pub enum ManifestCommand {
+    /// Report a manifest's full semantic delta without mutating anything
+    #[command(
+        name = "dry-run",
+        about = "Report a manifest's full semantic delta without mutating anything",
+        long_about = "Validate and execute a manifest inside one transaction that is
+always rolled back.
+
+The report is exact: document validation failures, not-found targets,
+transition refusals, revision and lease guards, and cycle detection all fire
+against the same pinned snapshot a commit would run on, so a dry-run that
+succeeds commits. Nothing is written: no event is appended durably, no
+sequence advances, no checkpoint generation is published. Created IDs in the
+report are provisional -- only a commit's result map carries real IDs;
+correlate through the create's local_id.
+
+  bead manifest dry-run --input plan.json
+  bead manifest dry-run --input plan.json --format json"
+    )]
+    DryRun(ManifestOpOptions),
+
+    /// Apply every manifest operation in one all-or-none transaction
+    #[command(
+        about = "Apply every manifest operation in one all-or-none transaction",
+        long_about = "Execute a manifest's operations in array order inside one SQLite
+transaction and commit exactly once.
+
+Any failure rolls back everything: no partial issue, label, edge, event,
+lock, or revision survives. Because the whole manifest is one command
+invocation committing one transaction, the automatic post-commit chokepoint
+publishes at most one checkpoint generation covering the entire manifest --
+N commands would publish N generations, one manifest publishes one. A
+manifest that changes nothing semantic publishes no generation at all.
+Publication failures after the commit are the standard split outcome: the
+manifest stays committed, exit 1, and 'bead sync flush-only' is the remedy.
+
+  bead manifest commit --input plan.json
+  bead manifest commit --input plan.json --format json   # result map with real IDs"
+    )]
+    Commit(ManifestOpOptions),
+}
+
+/// Options shared by `manifest dry-run` and `manifest commit`: the two
+/// subcommands differ only in what the transaction does at the end, so
+/// they take the same arguments.
+#[derive(Parser, Debug)]
+pub struct ManifestOpOptions {
+    /// Path to the manifest JSON file
+    #[arg(long)]
+    pub input: String,
+
+    /// Output format: text or json
+    #[arg(long, default_value = "text")]
+    pub format: String,
 }
 
 /// Structured data commands

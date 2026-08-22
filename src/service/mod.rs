@@ -18,10 +18,11 @@ pub mod external_refs;
 pub mod issues;
 pub mod leases;
 pub mod lifecycle;
+pub mod manifest;
 pub mod query;
 
-pub mod recurrence;
 pub mod reconcile;
+pub mod recurrence;
 pub mod rehearsal;
 pub mod resource_locks;
 pub mod scheduling;
@@ -41,12 +42,17 @@ pub use changes::{
     get_changes_since, get_gap_info, get_snapshot_identity, validate_cursor, Cursor,
 };
 pub use checkpoint::{
-    acquire_checkpoint_publication_lock, flush_checkpoint, fork_workspace_identity,
-    forensic_checkpoint_status, import_checkpoint_with_diagnostics, import_forensic_checkpoint,
+    acquire_checkpoint_publication_lock, flush_checkpoint, forensic_checkpoint_status,
+    fork_workspace_identity, import_checkpoint_with_diagnostics, import_forensic_checkpoint,
     load_checkpoint_config, publish_forensic_checkpoint, publish_forensic_checkpoint_holding,
     read_covered_event_sequence, read_live_event_sequence, restore_verified_generation,
-    verify_restore_source, CheckpointConfig, ForkReport,
+    verify_restore_source, CheckpointConfig,
 };
+// The fork report type is public library API (callers of
+// `fork_workspace_identity` name it) but the binary holds it only as a
+// value and never names the type.
+#[allow(unused_imports)]
+pub use checkpoint::ForkReport;
 // The publication-lock guard type is public library API (callers that
 // publish through `publish_forensic_checkpoint_holding` name it) but the
 // binary holds it only as a value and never names the type.
@@ -75,12 +81,13 @@ pub use external_refs::{
     add_external_reference, find_issues_by_reference, list_external_references,
     remove_external_reference,
 };
-#[allow(unused_imports)]
-pub use issues::{create_issue, create_issue_with_unique_ref, CreateOutcome};
 pub use issues::get_issue_by_id;
 pub use issues::list_issues;
+#[allow(unused_imports)]
+pub use issues::{create_issue, create_issue_with_unique_ref, CreateOutcome};
 pub use leases::{validate_lease_for_mutation, LeaseClaimResult};
 pub use lifecycle::{close_issue, release_issue, reopen_issue, update_issue};
+pub use manifest::{load_manifest, manifest_commit, manifest_dry_run, ManifestReport};
 pub use query::{
     delete_view, execute_query, get_view, list_views, parse_query, project_issue, save_view, Query,
 };

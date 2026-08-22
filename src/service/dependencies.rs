@@ -14,6 +14,17 @@ pub fn add_label(store: &mut SqliteStore, issue_id: &str, label: &str) -> Result
     let conn = store.conn();
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
 
+    add_label_in_tx(&tx, issue_id, label)?;
+
+    tx.commit()?;
+    Ok(())
+}
+
+/// Run one `bead label add` against a caller-owned transaction (R033).
+///
+/// Returns whether the label row was inserted, so a composing caller can
+/// distinguish a semantic change from the command's idempotent no-op.
+pub fn add_label_in_tx(tx: &Transaction, issue_id: &str, label: &str) -> Result<bool, Error> {
     // Verify issue exists
     let issue_exists = tx
         .query_row("SELECT 1 FROM issues WHERE id = ?", [&issue_id], |_| Ok(()))
@@ -35,7 +46,7 @@ pub fn add_label(store: &mut SqliteStore, issue_id: &str, label: &str) -> Result
     // label add would silently read as no change.
     if inserted > 0 {
         append_label_event(
-            &tx,
+            tx,
             issue_id,
             "label_added",
             &serde_json::json!({
@@ -45,8 +56,7 @@ pub fn add_label(store: &mut SqliteStore, issue_id: &str, label: &str) -> Result
         )?;
     }
 
-    tx.commit()?;
-    Ok(())
+    Ok(inserted > 0)
 }
 
 /// Removes a label from an issue.
@@ -58,6 +68,16 @@ pub fn remove_label(store: &mut SqliteStore, issue_id: &str, label: &str) -> Res
     let conn = store.conn();
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
 
+    remove_label_in_tx(&tx, issue_id, label)?;
+
+    tx.commit()?;
+    Ok(())
+}
+
+/// Run one `bead label remove` against a caller-owned transaction (R033).
+///
+/// Returns whether the label row was deleted; see `add_label_in_tx`.
+pub fn remove_label_in_tx(tx: &Transaction, issue_id: &str, label: &str) -> Result<bool, Error> {
     // Verify issue exists
     let issue_exists = tx
         .query_row("SELECT 1 FROM issues WHERE id = ?", [&issue_id], |_| Ok(()))
@@ -79,7 +99,7 @@ pub fn remove_label(store: &mut SqliteStore, issue_id: &str, label: &str) -> Res
     // label remove would silently read as no change.
     if removed > 0 {
         append_label_event(
-            &tx,
+            tx,
             issue_id,
             "label_removed",
             &serde_json::json!({
@@ -89,8 +109,7 @@ pub fn remove_label(store: &mut SqliteStore, issue_id: &str, label: &str) -> Res
         )?;
     }
 
-    tx.commit()?;
-    Ok(())
+    Ok(removed > 0)
 }
 
 /// Append the audit event for a label mutation.
@@ -138,15 +157,31 @@ pub fn add_dependency(
     kind: &str,
     condition: Option<&ConditionExpr>,
 ) -> Result<(), Error> {
+    let conn = store.conn();
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+
+    add_dependency_in_tx(&tx, blocked_id, blocker_id, kind, condition)?;
+
+    tx.commit()?;
+    Ok(())
+}
+
+/// Run one `bead dep add` against a caller-owned transaction (R033).
+///
+/// Returns whether the edge row was inserted; see `add_label_in_tx`.
+pub fn add_dependency_in_tx(
+    tx: &Transaction,
+    blocked_id: &str,
+    blocker_id: &str,
+    kind: &str,
+    condition: Option<&ConditionExpr>,
+) -> Result<bool, Error> {
     if !is_valid_kind(kind) {
         return Err(ValidationError::InvalidKind {
             kind: kind.to_string(),
         }
         .into());
     }
-
-    let conn = store.conn();
-    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
 
     // Verify both issues exist
     let blocked_exists = tx
@@ -185,7 +220,7 @@ pub fn add_dependency(
     // IMPORTANT: For conditional dependencies, we must treat them as potentially active
     // during cycle detection. This means if there's ANY condition (even conditional),
     // we must check for cycles.
-    if kind == "blocks" && creates_cycle(&tx, blocked_id, blocker_id)? {
+    if kind == "blocks" && creates_cycle(tx, blocked_id, blocker_id)? {
         return Err(Error::Conflict(
             "Adding this dependency would create a cycle".to_string(),
         ));
@@ -219,7 +254,7 @@ pub fn add_dependency(
         };
 
         append_dependency_event(
-            &tx,
+            tx,
             blocked_id,
             "dependency_added",
             &serde_json::json!({
@@ -232,8 +267,7 @@ pub fn add_dependency(
         )?;
     }
 
-    tx.commit()?;
-    Ok(())
+    Ok(inserted > 0)
 }
 
 /// Append the audit event for a dependency-graph mutation.
@@ -287,6 +321,21 @@ pub fn remove_dependency(
     let conn = store.conn();
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
 
+    remove_dependency_in_tx(&tx, blocked_id, blocker_id, kind)?;
+
+    tx.commit()?;
+    Ok(())
+}
+
+/// Run one `bead dep remove` against a caller-owned transaction (R033).
+///
+/// Returns whether any edge row was deleted; see `add_label_in_tx`.
+pub fn remove_dependency_in_tx(
+    tx: &Transaction,
+    blocked_id: &str,
+    blocker_id: &str,
+    kind: Option<&str>,
+) -> Result<bool, Error> {
     // Idempotent delete: removing a non-existent edge commits no semantic
     // mutation, so it must append no event.
     let removed = if let Some(k) = kind {
@@ -307,7 +356,7 @@ pub fn remove_dependency(
     // that the remove was not filtered by kind.
     if removed > 0 {
         append_dependency_event(
-            &tx,
+            tx,
             blocked_id,
             "dependency_removed",
             &serde_json::json!({
@@ -319,8 +368,7 @@ pub fn remove_dependency(
         )?;
     }
 
-    tx.commit()?;
-    Ok(())
+    Ok(removed > 0)
 }
 
 /// Detects if adding an edge from `blocked_id` to `blocker_id` would create a cycle.

@@ -99,6 +99,34 @@ and reports the exact generation and record counts restored. Bare
 `sync import-only` remains the lower-level interchange/merge primitive, not the
 doctor-recommended disaster-recovery path.
 
+Taking another machine's advancement, after `git pull` delivers a newer
+checkpoint over your live database:
+
+```bash
+bead sync status        # Relationship: remote-advanced
+bead sync reconcile --actor "$USER"
+bead sync status        # Relationship: aligned, ready to commit
+```
+
+`remote-advanced` is a store relationship, observed from the workspace
+artifacts alone: the pulled pointer verifies, stages, and carries this
+workspace's UUID, every live event appears in it with identical content, and
+the recorded state claims no more history than the database holds.
+`bead sync reconcile` merges that checkpoint through the same machinery as
+`sync import-only --merge` — one transaction, conflict detection, an
+actor-attributed merge receipt — and, under the automatic publication default,
+the post-commit chokepoint publishes the generation covering the merge. Nothing
+is reconciled blind: `sync flush-only` refuses to publish over a
+remote-advanced checkpoint (exit 4, naming reconcile) so the pulled advancement
+cannot be discarded, `--dry-run` previews the merge without mutating anything,
+and `bead doctor` reports the state with its remedy rather than as a failure.
+Every other checkpoint-ahead-of-live shape — a tampered root, a foreign store
+UUID, a live event the pulled checkpoint lacks or contradicts — stays a
+fail-closed `covered-ahead-integrity-failure` (exit 5) that names the failed
+qualifier; mutate only after reconciling, because a local change made while
+remote-advanced leaves exactly that divergence. The workflow is pull,
+reconcile, then work.
+
 For read-only historical inspection, use checkpoint archaeology rather than
 importing a generation:
 

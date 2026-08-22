@@ -148,6 +148,7 @@ pub fn generate_capabilities(profile: &str) -> Result<Capabilities> {
             "init".to_string(),
             "label".to_string(),
             "list".to_string(),
+            "manifest".to_string(),
             "policy".to_string(),
             "query".to_string(),
             "recurrence".to_string(),

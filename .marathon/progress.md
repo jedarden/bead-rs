@@ -1673,3 +1673,75 @@ The mission remains **ACTIVE BLOCKED** awaiting external dependency resolution. 
   task-private temporary directory) passed `cargo fmt --check`,
   `cargo clippy --all-targets -- -D warnings`, and
   `cargo test` (including the 5 R029 scenarios and command-contract suite).
+
+## 2026-08-22 — R027 remote-advanced checkpoint reconcile
+
+- Added the sync-relationship taxonomy (`absent`, `behind`, `aligned`,
+  `remote-advanced`, `covered-ahead-integrity-failure`) as one `classify`
+  definition every consumer shares: `sync status` (text and JSON
+  `relationship` field), `sync flush-only`'s covered-ahead refusals,
+  doctor's distinction between an actionable reconcile and an integrity
+  failure, and `bead sync reconcile` itself. Only a pointer-verified,
+  staged, same-UUID, verified-superset, honestly-recorded checkpoint ahead
+  of the live store is remote-advanced; every other covered-ahead shape
+  stays fail-closed.
+- `bead sync reconcile` merges the pulled checkpoint through the existing
+  `sync import-only --merge` machinery (one transaction, conflict
+  detection, actor-attributed merge receipt, merge summary event) and never
+  publishes by its own action; under the automatic default the post-commit
+  chokepoint publishes the covering generation, and with publication
+  suppressed the workspace is left dirty for `sync flush-only`.
+- Made the merge machinery identity-complete: validation compares against
+  live events enumerated with their derived wire identities, and a
+  same-UUID merge canonicalizes local NULL-origin events inside its
+  transaction, so reconcile and `import-only --merge` both leave one row
+  per wire identity instead of silently duplicating the audit trail.
+- Fixed the doctor state marker to match the workspace variant's payload:
+  the rendered Display string carries a "Workspace error: " prefix, so the
+  original `to_string().starts_with` test never fired and the
+  machine-readable `remote-advanced` marker was absent from every JSON
+  report.
+- Conformance coverage in `tests/r027_remote_advanced_reconcile.rs`: the
+  pull→remote-advanced classification, merge+republish+idempotence,
+  suppressed publication, no duplicated identities across reconcile and
+  import-only, dry-run inertness, exit-2 refusals (behind/aligned/absent),
+  exit-5 refusals (tampered root, foreign UUID, divergence), flush-only's
+  exit-4/exit-5 covered-ahead refusals leaving the pointer untouched, and
+  doctor's distinction between the two states.
+- No test or command runs Git: the pull is a filesystem copy of the
+  checkpoint set, which is all bead-rs ever observes (ADR-009).
+- Verification against an isolated `HEAD + R027` snapshot (task-private
+  `/var/tmp` directory, kept clear of the shared tree's in-flight
+  sibling-bead edits) passed `cargo fmt --check`,
+  `cargo clippy --all-targets -- -D warnings`, and `cargo test`.
+
+### Dispatch-2 re-verification against current main (2026-08-22)
+
+The handoff above was verified against a main that has since absorbed the
+resource-command help and the R028 fork suite. A fresh isolated HEAD+R027
+snapshot re-verification corrected the record and repaired what it caught:
+
+- The earlier "fmt, clippy, and cargo test all pass" claim held only for
+  that older base; current main was red in several pre-existing ways, all
+  outside this bead's own files.
+- R028's migration_12 shipped without bumping CURRENT_VERSION past 11, so
+  apply_migrations never ran it: production `bead sync fork` failed on
+  every fresh workspace with `CHECK constraint failed: kind IN ('restore',
+  'merge')` (the fork test fixture hand-applies migration 12, which masked
+  the bug in the suite). Bumped to 12; production fork verified working.
+- The `bead sync fork` help example lacked the required `--actor`, failing
+  `docs::tests::test_help_examples_parse`; fixed.
+- `ForkReport` was re-exported without the `#[allow(unused_imports)]` the
+  other value-only re-exports carry; fixed per the established pattern.
+- `tests/r028_fork_identity.rs` shipped with rustfmt drift and vacuous
+  `>= 0` asserts on usize counts (clippy deny); formatted, asserts dropped.
+- The mutating-command registry had lost its resource, sync-fork, and
+  sync-reconcile entries in the shared tree, failing
+  `every_leaf_command_is_classified`; restored.
+- Still red after all of the above, inherited and outside this bead's
+  scope: five r028_fork_identity tests fail for reasons beyond the version
+  bump (receipt counts, `events.sequence` collisions) — R028 shipped 8/13
+  passing with exactly these five failing, so they predate this work and
+  need their own repair bead. main.rs's dead `check_near_miss_flags` (two
+  collapsible_if, one unused import) belongs to in-flight R037 work, and
+  cli/main/mod carry rustfmt drift that in-flight R033 will land formatted.

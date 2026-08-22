@@ -57,6 +57,42 @@ pub fn update_issue(
     if_revision: Option<i64>,
     fencing_token: Option<i64>,
 ) -> Result<String> {
+    // Process in a write transaction taken before the read, so the revision
+    // precondition and lease are validated against the snapshot the UPDATE
+    // lands on (see begin_lifecycle_transaction)
+    let mut tx = begin_lifecycle_transaction(conn)?;
+
+    let result = update_issue_in_tx(
+        &mut tx,
+        id,
+        status,
+        assignee,
+        clear_assignee,
+        notes,
+        if_revision,
+        fencing_token,
+    )?;
+
+    tx.commit()?;
+    Ok(result)
+}
+
+/// Run one `bead update` against a caller-owned transaction (R033).
+///
+/// This is the entire command body between begin and commit, so the
+/// manifest composer and the command run the identical validation and
+/// apply path against whatever transaction holds the write lock.
+#[allow(clippy::too_many_arguments)]
+pub fn update_issue_in_tx(
+    tx: &mut Transaction,
+    id: &str,
+    status: Option<&str>,
+    assignee: Option<&str>,
+    clear_assignee: bool,
+    notes: Option<&str>,
+    if_revision: Option<i64>,
+    fencing_token: Option<i64>,
+) -> Result<String> {
     // Validate that assignee and clear_assignee are not both specified
     if assignee.is_some() && clear_assignee {
         return Err(Error::validation(
@@ -64,13 +100,8 @@ pub fn update_issue(
         ));
     }
 
-    // Process in a write transaction taken before the read, so the revision
-    // precondition and lease are validated against the snapshot the UPDATE
-    // lands on (see begin_lifecycle_transaction)
-    let mut tx = begin_lifecycle_transaction(conn)?;
-
     // Get current issue state
-    let issue = get_issue_for_update(&tx, id)?.ok_or_else(|| Error::not_found(id))?;
+    let issue = get_issue_for_update(tx, id)?.ok_or_else(|| Error::not_found(id))?;
 
     // Validate revision precondition if provided
     if let Some(expected_revision) = if_revision {
@@ -85,7 +116,7 @@ pub fn update_issue(
 
     // Validate lease if issue has an active lease
     if let Some(current_assignee) = &issue.assignee {
-        validate_lease_for_mutation(&tx, id, current_assignee, fencing_token)?;
+        validate_lease_for_mutation(tx, id, current_assignee, fencing_token)?;
     }
 
     // Validate assignee value if present
@@ -102,10 +133,7 @@ pub fn update_issue(
         }
     }
 
-    let result = update_issue_impl(&mut tx, &issue, status, assignee, clear_assignee, notes)?;
-
-    tx.commit()?;
-    Ok(result)
+    update_issue_impl(tx, &issue, status, assignee, clear_assignee, notes)
 }
 
 /// Release an issue
@@ -153,18 +181,35 @@ pub fn close_issue(
     if_revision: Option<i64>,
     fencing_token: Option<i64>,
 ) -> Result<String> {
-    // Validate reason
-    if reason.trim().is_empty() {
-        return Err(Error::validation("Close reason cannot be empty"));
-    }
-
     // Process in a write transaction taken before the read, so the revision
     // precondition and lease are validated against the snapshot the UPDATE
     // lands on (see begin_lifecycle_transaction)
     let mut tx = begin_lifecycle_transaction(conn)?;
 
+    let result = close_issue_in_tx(&mut tx, id, reason, if_revision, fencing_token)?;
+
+    tx.commit()?;
+    Ok(result)
+}
+
+/// Run one `bead close` against a caller-owned transaction (R033).
+///
+/// As with `update_issue_in_tx`, this is the command body between begin and
+/// commit, so the manifest composer cannot drift from the command.
+pub fn close_issue_in_tx(
+    tx: &mut Transaction,
+    id: &str,
+    reason: &str,
+    if_revision: Option<i64>,
+    fencing_token: Option<i64>,
+) -> Result<String> {
+    // Validate reason
+    if reason.trim().is_empty() {
+        return Err(Error::validation("Close reason cannot be empty"));
+    }
+
     // Get current issue state
-    let issue = get_issue_for_update(&tx, id)?.ok_or_else(|| Error::not_found(id))?;
+    let issue = get_issue_for_update(tx, id)?.ok_or_else(|| Error::not_found(id))?;
 
     // Validate revision precondition if provided
     if let Some(expected_revision) = if_revision {
@@ -179,13 +224,10 @@ pub fn close_issue(
 
     // Validate lease if issue has an active lease
     if let Some(current_assignee) = &issue.assignee {
-        validate_lease_for_mutation(&tx, id, current_assignee, fencing_token)?;
+        validate_lease_for_mutation(tx, id, current_assignee, fencing_token)?;
     }
 
-    let result = close_issue_impl(&mut tx, &issue, reason)?;
-
-    tx.commit()?;
-    Ok(result)
+    close_issue_impl(tx, &issue, reason)
 }
 
 /// Reopen an issue
