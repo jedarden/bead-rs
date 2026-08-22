@@ -4,13 +4,20 @@
 .SH NAME
 bead create \- Create a new issue
 .SH SYNOPSIS
-\fBbead create\fR <\fB\-\-title\fR> [\fB\-\-description\fR] [\fB\-\-priority\fR] [\fB\-\-issue\-type\fR] [\fB\-\-assignee\fR] [\fB\-\-label\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBbead create\fR [\fB\-\-description\fR] [\fB\-\-priority\fR] [\fB\-\-issue\-type\fR] [\fB\-\-assignee\fR] [\fB\-\-label\fR] [\fB\-\-unique\-ref\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-title\fR> 
 .SH DESCRIPTION
 Create a new issue in the workspace.
 .PP
 Creates a new issue with the specified title and optional metadata.
 The issue ID is automatically generated and printed on success.
-Prints only the issue ID followed by a newline on success.
+Fresh creates print only the issue ID followed by a newline; idempotent
+reference hits use the explicit result prefixes described below.
+.PP
+IDEMPOTENT CREATION:
+  \-\-unique\-ref NAMESPACE:KEY atomically binds a stable external identity.
+  A repeated create returns `EXISTING ID`; a repeated create whose binding
+  points to a closed issue returns `EXISTING_CLOSED ID` so callers can stop
+  retrying finished work.
 .PP
 PRIORITIES:
   0 = urgent (immediate incident, safety, or release\-blocking)
@@ -22,6 +29,7 @@ PRIORITIES:
 EXAMPLES:
   bead create \-\-title "Fix authentication bug" \-\-priority 0
   bead create \-\-title "Update documentation" \-\-priority 2 \-\-label docs
+  bead create \-\-title "Materialize tracker work" \-\-unique\-ref github:issue\-123
   bead create \-\-title "Add search feature" \-\-assignee alice \-\-label feature \-\-label backend
   bead create \-\-title "Code review PR\-123" \-\-description "Review changes for user auth"
 .PP
@@ -30,23 +38,26 @@ ISSUE TYPES:
   Custom types can be specified as needed (no validation is performed).
 .SH OPTIONS
 .TP
-\fB\-\-title\fR=\fITITLE\fR
+\fB\-\-title\fR \fI<TITLE>\fR
 Issue title (required)
 .TP
-\fB\-\-description\fR=\fIDESCRIPTION\fR
+\fB\-\-description\fR \fI<DESCRIPTION>\fR
 Issue description (optional, defaults to empty)
 .TP
-\fB\-\-priority\fR=\fIPRIORITY\fR [default: 2]
+\fB\-\-priority\fR \fI<PRIORITY>\fR [default: 2]
 Issue priority (0\-4, default: 2)
 .TP
-\fB\-\-issue\-type\fR=\fIISSUE_TYPE\fR
+\fB\-\-issue\-type\fR \fI<ISSUE_TYPE>\fR
 Issue type (default: task)
 .TP
-\fB\-\-assignee\fR=\fIASSIGNEE\fR
+\fB\-\-assignee\fR \fI<ASSIGNEE>\fR
 Assignee (optional)
 .TP
-\fB\-\-label\fR=\fILABEL\fR
+\fB\-\-label\fR \fI<LABEL>\fR
 Labels to add (can be specified multiple times)
+.TP
+\fB\-\-unique\-ref\fR \fI<UNIQUE_REF>\fR
+Idempotency binding in NAMESPACE:KEY form
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

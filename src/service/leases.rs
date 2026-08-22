@@ -178,6 +178,8 @@ pub fn renew_lease(
     )
     .map_err(|e| crate::Error::Internal(anyhow::anyhow!("Failed to renew lease: {}", e)))?;
 
+    crate::service::resource_locks::update_issue_lock_lease_token(tx, issue_id, fencing_token)?;
+
     Ok(LeaseClaimResult {
         issue_id: issue_id.to_string(),
         assignee: assignee.to_string(),

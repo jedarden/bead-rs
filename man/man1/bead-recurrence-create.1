@@ -4,7 +4,7 @@
 .SH NAME
 bead recurrence create \- Create a new recurrence template
 .SH SYNOPSIS
-\fBbead recurrence create\fR <\fB\-\-id\fR> <\fB\-\-title\fR> [\fB\-\-description\fR] <\fB\-\-base\-title\-template\fR> [\fB\-\-base\-description\fR] [\fB\-\-priority\fR] [\fB\-\-issue\-type\fR] [\fB\-\-labels\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBbead recurrence create\fR [\fB\-\-description\fR] [\fB\-\-base\-description\fR] [\fB\-\-priority\fR] [\fB\-\-issue\-type\fR] [\fB\-\-labels\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-id\fR> <\fB\-\-title\fR> <\fB\-\-base\-title\-template\fR> 
 .SH DESCRIPTION
 Create an immutable recurrence template that defines how recurring issues should be created.
 .PP
@@ -17,28 +17,28 @@ EXAMPLES:
   bead recurrence create \-\-id weekly\-planning \-\-title \*(AqWeekly Planning\*(Aq \-\-base\-title\-template \*(AqWeek {n} Planning\*(Aq \-\-labels \*(Aqweekly,planning\*(Aq
 .SH OPTIONS
 .TP
-\fB\-\-id\fR=\fIID\fR
+\fB\-\-id\fR \fI<ID>\fR
 Template ID
 .TP
-\fB\-\-title\fR=\fITITLE\fR
+\fB\-\-title\fR \fI<TITLE>\fR
 Template title
 .TP
-\fB\-\-description\fR=\fIDESCRIPTION\fR
+\fB\-\-description\fR \fI<DESCRIPTION>\fR
 Template description
 .TP
-\fB\-\-base\-title\-template\fR=\fIBASE_TITLE_TEMPLATE\fR
+\fB\-\-base\-title\-template\fR \fI<BASE_TITLE_TEMPLATE>\fR
 Title template for occurrences (use {n} for sequence number)
 .TP
-\fB\-\-base\-description\fR=\fIBASE_DESCRIPTION\fR
+\fB\-\-base\-description\fR \fI<BASE_DESCRIPTION>\fR
 Description template for occurrences
 .TP
-\fB\-\-priority\fR=\fIPRIORITY\fR
+\fB\-\-priority\fR \fI<PRIORITY>\fR
 Priority for created issues (0\-4, default 2)
 .TP
-\fB\-\-issue\-type\fR=\fIISSUE_TYPE\fR
+\fB\-\-issue\-type\fR \fI<ISSUE_TYPE>\fR
 Issue type for created issues (default \*(Aqtask\*(Aq)
 .TP
-\fB\-\-labels\fR=\fILABELS\fR
+\fB\-\-labels\fR \fI<LABELS>\fR
 Comma\-separated list of labels to apply to occurrences
 .TP
 \fB\-h\fR, \fB\-\-help\fR

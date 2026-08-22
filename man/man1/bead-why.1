@@ -4,7 +4,7 @@
 .SH NAME
 bead why \- Explain issue state, readiness, blockers, and legal operations
 .SH SYNOPSIS
-\fBbead why\fR <\fB\-\-id\fR> [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBbead why\fR [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-id\fR> 
 .SH DESCRIPTION
 Provide comprehensive explanation of why an issue is in its current state,
 what operations are legal, and what factors affect its claim ranking.
@@ -33,7 +33,7 @@ OUTPUT FORMAT:
 The command fails with exit code 3 if the issue is not found.
 .SH OPTIONS
 .TP
-\fB\-\-id\fR=\fIID\fR
+\fB\-\-id\fR \fI<ID>\fR
 Issue ID to explain
 .TP
 \fB\-\-json\fR

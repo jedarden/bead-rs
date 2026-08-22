@@ -4,7 +4,7 @@
 .SH NAME
 bead data get \- Get a structured data value from an issue
 .SH SYNOPSIS
-\fBbead data get\fR <\fB\-\-id\fR> <\fB\-\-namespace\fR> [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBbead data get\fR [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-id\fR> <\fB\-\-namespace\fR> 
 .SH DESCRIPTION
 Retrieve the JSON value and schema reference for a specific namespace.
 .PP
@@ -20,10 +20,10 @@ OUTPUT FORMAT:
   JSON format provides structured data with schema_ref and value fields.
 .SH OPTIONS
 .TP
-\fB\-\-id\fR=\fIID\fR
+\fB\-\-id\fR \fI<ID>\fR
 Issue ID
 .TP
-\fB\-\-namespace\fR=\fINAMESPACE\fR
+\fB\-\-namespace\fR \fI<NAMESPACE>\fR
 Data namespace
 .TP
 \fB\-\-json\fR

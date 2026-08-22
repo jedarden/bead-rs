@@ -9,6 +9,7 @@
 
 use crate::error::{Error, Result};
 use crate::service::claim::ReasonCode;
+use crate::service::resource_locks::resource_conflict_count;
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
@@ -212,11 +213,13 @@ struct IssueState {
     pub last_claim_sequence: Option<i64>,
     pub attempt_tier: i64,
     pub consecutive_failures: i64,
+    pub resource_conflict_count: i64,
 }
 
 /// Get current issue state from database
 fn get_issue_state(conn: &Connection, issue_id: &str) -> Result<IssueState> {
-    conn.query_row(
+    let issue = conn
+        .query_row(
         "SELECT id, title, base_status, assignee, manual_blocked, priority, issue_type, created_at, updated_at, closed_at
          FROM issues WHERE id = ?1",
         [issue_id],
@@ -237,10 +240,16 @@ fn get_issue_state(conn: &Connection, issue_id: &str) -> Result<IssueState> {
                 last_claim_sequence: None,
                 attempt_tier: 0,
                 consecutive_failures: 0,
+                resource_conflict_count: 0,
             })
         },
     )
-    .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to query issue state: {}", e)))
+    .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to query issue state: {}", e)))?;
+    let resource_conflicts = resource_conflict_count(conn, issue_id)?;
+    Ok(IssueState {
+        resource_conflict_count: resource_conflicts,
+        ..issue
+    })
 }
 
 /// Analyze blocking dependencies
@@ -302,7 +311,8 @@ fn calculate_effective_status(issue: &IssueState, blockers: &BlockerAnalysis) ->
     let is_ready = issue.base_status == "open"
         && issue.assignee.is_none()
         && issue.manual_blocked == 0
-        && blockers.active_blocker_count == 0;
+        && blockers.active_blocker_count == 0
+        && issue.resource_conflict_count == 0;
 
     (effective_status, is_ready)
 }
@@ -394,7 +404,8 @@ fn get_legal_operations(
             // Can claim if ready and unassigned
             let can_claim = issue.assignee.is_none()
                 && blockers.active_blocker_count == 0
-                && issue.manual_blocked == 0;
+                && issue.manual_blocked == 0
+                && issue.resource_conflict_count == 0;
 
             if can_claim {
                 operations.push(LegalOperation {
@@ -410,6 +421,8 @@ fn get_legal_operations(
                     Some("has active blockers".to_string())
                 } else if issue.manual_blocked != 0 {
                     Some("manually blocked".to_string())
+                } else if issue.resource_conflict_count > 0 {
+                    Some("resource conflict in this workspace".to_string())
                 } else {
                     Some("not eligible".to_string())
                 };
@@ -532,6 +545,9 @@ fn build_reason_codes(
         }
         if issue.base_status != "open" {
             reasons.push(ReasonCode::NotOpenStatus);
+        }
+        if issue.resource_conflict_count > 0 {
+            reasons.push(ReasonCode::ResourceConflict);
         }
     }
 

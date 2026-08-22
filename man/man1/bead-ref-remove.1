@@ -4,7 +4,7 @@
 .SH NAME
 bead ref remove \- Remove an external reference from an issue
 .SH SYNOPSIS
-\fBbead ref remove\fR <\fB\-\-id\fR> <\fB\-\-namespace\fR> <\fB\-\-key\fR> [\fB\-h\fR|\fB\-\-help\fR] 
+\fBbead ref remove\fR [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-id\fR> <\fB\-\-namespace\fR> <\fB\-\-key\fR> 
 .SH DESCRIPTION
 Remove a namespaced external reference from an issue (idempotent).
 .PP
@@ -24,13 +24,13 @@ NAMESPACE\-SCOPED:
   The same namespace can have different keys for the same issue.
 .SH OPTIONS
 .TP
-\fB\-\-id\fR=\fIID\fR
+\fB\-\-id\fR \fI<ID>\fR
 Issue ID
 .TP
-\fB\-\-namespace\fR=\fINAMESPACE\fR
+\fB\-\-namespace\fR \fI<NAMESPACE>\fR
 Reference namespace
 .TP
-\fB\-\-key\fR=\fIKEY\fR
+\fB\-\-key\fR \fI<KEY>\fR
 Reference key
 .TP
 \fB\-h\fR, \fB\-\-help\fR

@@ -4,7 +4,7 @@
 .SH NAME
 bead sync import\-only \- Import forensic checkpoint with restore or merge
 .SH SYNOPSIS
-\fBbead sync import\-only\fR <\fB\-\-input\fR> [\fB\-\-profile\fR] [\fB\-\-restore\-into\-empty\fR] [\fB\-\-merge\fR] [\fB\-\-actor\fR] [\fB\-\-dry\-run\fR] [\fB\-\-diagnostics\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBbead sync import\-only\fR [\fB\-\-profile\fR] [\fB\-\-restore\-into\-empty\fR] [\fB\-\-merge\fR] [\fB\-\-actor\fR] [\fB\-\-dry\-run\fR] [\fB\-\-diagnostics\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-input\fR> 
 .SH DESCRIPTION
 Import and validate forensic checkpoint with atomic activation.
 .PP
@@ -76,10 +76,10 @@ RECOVERY BOUNDARY:
 Use \-\-dry\-run to validate checkpoints before risking database mutation.
 .SH OPTIONS
 .TP
-\fB\-\-input\fR=\fIINPUT\fR
+\fB\-\-input\fR \fI<INPUT>\fR
 Input file or directory path
 .TP
-\fB\-\-profile\fR=\fIPROFILE\fR [default: native\-v1]
+\fB\-\-profile\fR \fI<PROFILE>\fR [default: native\-v1]
 Profile for import (default: native\-v1)
 .TP
 \fB\-\-restore\-into\-empty\fR
@@ -88,7 +88,7 @@ Restore checkpoint into empty workspace
 \fB\-\-merge\fR
 Merge checkpoint into existing workspace
 .TP
-\fB\-\-actor\fR=\fIACTOR\fR
+\fB\-\-actor\fR \fI<ACTOR>\fR
 Actor performing the import operation (required for restore/merge)
 .TP
 \fB\-\-dry\-run\fR

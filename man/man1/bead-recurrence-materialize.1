@@ -4,7 +4,7 @@
 .SH NAME
 bead recurrence materialize \- Materialize the next occurrence from a template
 .SH SYNOPSIS
-\fBbead recurrence materialize\fR <\fB\-\-id\fR> [\fB\-\-actor\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBbead recurrence materialize\fR [\fB\-\-actor\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-id\fR> 
 .SH DESCRIPTION
 Create the next occurrence in the recurrence series as a new issue.
 Each occurrence carries a stable series reference and the created issue ID.
@@ -17,10 +17,10 @@ EXAMPLES:
   bead recurrence materialize \-\-id daily\-review \-\-actor scheduler\-1
 .SH OPTIONS
 .TP
-\fB\-\-id\fR=\fIID\fR
+\fB\-\-id\fR \fI<ID>\fR
 Template ID
 .TP
-\fB\-\-actor\fR=\fIACTOR\fR
+\fB\-\-actor\fR \fI<ACTOR>\fR
 Actor performing the materialization
 .TP
 \fB\-h\fR, \fB\-\-help\fR

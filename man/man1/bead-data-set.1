@@ -4,7 +4,7 @@
 .SH NAME
 bead data set \- Set a structured data value for an issue
 .SH SYNOPSIS
-\fBbead data set\fR <\fB\-\-id\fR> <\fB\-\-namespace\fR> <\fB\-\-schema\-ref\fR> <\fB\-\-value\fR> [\fB\-h\fR|\fB\-\-help\fR] 
+\fBbead data set\fR [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-id\fR> <\fB\-\-namespace\fR> <\fB\-\-schema\-ref\fR> <\fB\-\-value\fR> 
 .SH DESCRIPTION
 Set or replace a JSON value for a specific namespace with schema governance.
 .PP
@@ -37,16 +37,16 @@ USE CASES:
   \- Extend issue data without API changes
 .SH OPTIONS
 .TP
-\fB\-\-id\fR=\fIID\fR
+\fB\-\-id\fR \fI<ID>\fR
 Issue ID
 .TP
-\fB\-\-namespace\fR=\fINAMESPACE\fR
+\fB\-\-namespace\fR \fI<NAMESPACE>\fR
 Data namespace (e.g., config, metrics, state)
 .TP
-\fB\-\-schema\-ref\fR=\fISCHEMA_REF\fR
+\fB\-\-schema\-ref\fR \fI<SCHEMA_REF>\fR
 Schema reference (immutable identifier for the data schema)
 .TP
-\fB\-\-value\fR=\fIVALUE\fR
+\fB\-\-value\fR \fI<VALUE>\fR
 JSON value to set
 .TP
 \fB\-h\fR, \fB\-\-help\fR

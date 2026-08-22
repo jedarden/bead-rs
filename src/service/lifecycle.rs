@@ -5,6 +5,7 @@
 
 use crate::error::{Error, Result};
 use crate::model::{BaseStatus, Issue};
+use crate::service::resource_locks::{release_issue_locks, sync_issue_locks};
 use crate::service::validate_lease_for_mutation;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::json;
@@ -378,6 +379,11 @@ fn update_issue_impl(
         ensure_revision_row_affected(changed, expected_revision)?;
     }
 
+    // Resource ownership follows the resulting lifecycle state. If an update
+    // enters or leaves in_progress, this reconciliation remains in the same
+    // transaction as the issue update and rolls back on a key conflict.
+    sync_issue_locks(tx, &issue.id)?;
+
     // Append general update event if we made semantic changes
     // (assignment_cleared already handled above)
     if clear_assignee && issue.assignee.is_some() {
@@ -408,6 +414,8 @@ fn release_issue_impl(tx: &mut Transaction, issue: &Issue) -> Result<String> {
                 let changed = stmt.execute((&now, &issue.id, expected_revision))?;
                 ensure_revision_row_affected(changed, expected_revision)?;
             }
+
+            release_issue_locks(tx, &issue.id)?;
 
             // Append release event
             append_event(
@@ -474,6 +482,8 @@ fn close_issue_impl(tx: &mut Transaction, issue: &Issue, reason: &str) -> Result
                     stmt.execute((&now, &normalized_reason, &now, &issue.id, expected_revision))?;
                 ensure_revision_row_affected(changed, expected_revision)?;
             }
+
+            release_issue_locks(tx, &issue.id)?;
 
             // Append closed event
             append_event(

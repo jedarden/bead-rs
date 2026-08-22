@@ -158,6 +158,12 @@ Exit codes are stable across every command:
   issue. Opt-in per call, like `--lease-ttl`; it bounds claim accumulation but
   does not detect stale claims — combine it with a lease TTL to bound how long
   an abandoned claim can persist.
+- **Workspace-local resource locks.** Declare keys with `bead create
+  --resource-key KEY` or `bead resource add ID --key KEY`. A claim acquires all
+  declared keys atomically; `release`, `close`, and lease expiry return them,
+  and `bead why --json` reports `resource_conflict` when another issue holds a
+  needed key. These are scheduling exclusions in one native workspace, never
+  distributed locks or coordination between separate stores.
 - **Revision guards.** `--if-revision N` on `update`, `release`, `close`, and
   `reopen` gives optimistic concurrency control; a stale revision fails with
   exit 4 rather than silently losing an update.

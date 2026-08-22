@@ -6,6 +6,7 @@
 
 use crate::error::{Error, Result};
 use crate::service::leases::{create_lease, renew_lease, DEFAULT_LEASE_TTL};
+use crate::service::resource_locks::{acquire_issue_locks, release_expired_resource_locks};
 use crate::service::scheduling::{self, SchedulingPolicy};
 use rusqlite::OptionalExtension;
 use rusqlite::Transaction;
@@ -69,6 +70,10 @@ pub enum ReasonCode {
     /// Open issue is intentionally held under its current assignee
     /// and should not be warned about (operator-declared state)
     IntentionallyHeldAssignment,
+
+    /// A ready issue needs a key currently held by another in-progress issue
+    /// in this workspace.
+    ResourceConflict,
 
     /// An ordinary (non-leased) in-progress issue has had no recent audit
     /// event. Doctor reports this advisory scheduling condition; it never
@@ -169,6 +174,11 @@ pub fn claim_issue(
     _harness_version: Option<&str>,
     single_claim: bool,
 ) -> Result<ClaimResult> {
+    // Lease expiry returns leased resource keys before the ready frontier is
+    // evaluated. The immediate claim transaction makes cleanup and selection
+    // one atomic workspace-local decision.
+    release_expired_resource_locks(tx)?;
+
     // Refuse before selecting when the single-claim guard is enabled and the
     // assignee already holds active work
     enforce_single_claim(tx, assignee, single_claim)?;
@@ -196,6 +206,8 @@ pub fn claim_issue(
         "UPDATE issues SET base_status = 'in_progress', assignee = ?1, updated_at = ?2, revision = revision + 1 WHERE id = ?3",
         [assignee, &now, &issue_id],
     )?;
+
+    acquire_issue_locks(tx, &issue_id, None)?;
 
     // Record the claim audit event
     let event_detail = json!({
@@ -273,6 +285,8 @@ pub fn claim_issue_with_lease(
         return claim_with_fencing_token(tx, assignee, token, lease_ttl_seconds);
     }
 
+    release_expired_resource_locks(tx)?;
+
     // Refuse before selecting when the single-claim guard is enabled and the
     // assignee already holds active work
     enforce_single_claim(tx, assignee, single_claim)?;
@@ -308,6 +322,12 @@ pub fn claim_issue_with_lease(
     } else {
         None
     };
+
+    acquire_issue_locks(
+        tx,
+        &issue_id,
+        lease_info.as_ref().map(|lease| lease.fencing_token),
+    )?;
 
     // Record the claim audit event
     let event_detail = if lease_info.is_some() {
@@ -514,7 +534,21 @@ pub fn collect_eligibility_factors(
                 WHERE d.blocked_issue_id = i.id
                   AND d.kind = 'blocks'
                   AND blocker.base_status != 'closed'
-            ) as unfinished_blockers
+            ) as unfinished_blockers,
+            (
+                SELECT COUNT(*)
+                FROM issue_resource_keys candidate_key
+                JOIN resource_locks held_lock
+                  ON held_lock.resource_key = candidate_key.resource_key
+                WHERE candidate_key.issue_id = i.id
+                  AND held_lock.issue_id != i.id
+                  AND (held_lock.lease_fencing_token IS NULL OR EXISTS (
+                      SELECT 1 FROM leases active_lease
+                      WHERE active_lease.issue_id = held_lock.issue_id
+                        AND active_lease.fencing_token = held_lock.lease_fencing_token
+                        AND active_lease.expires_at > :now
+                  ))
+            ) as resource_conflicts
         FROM issues i
         ORDER BY i.priority ASC, i.created_at ASC, i.id ASC
     "#;
@@ -528,17 +562,23 @@ pub fn collect_eligibility_factors(
     })?;
 
     let issue_rows = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>("id")?,
-                row.get::<_, String>("base_status")?,
-                row.get::<_, Option<String>>("assignee")?,
-                row.get::<_, i64>("manual_blocked")?,
-                row.get::<_, i64>("priority")?,
-                row.get::<_, String>("created_at")?,
-                row.get::<_, i64>("unfinished_blockers")?,
-            ))
-        })
+        .query_map(
+            rusqlite::named_params! {
+                ":now": crate::service::resource_locks::now_string()
+            },
+            |row| {
+                Ok((
+                    row.get::<_, String>("id")?,
+                    row.get::<_, String>("base_status")?,
+                    row.get::<_, Option<String>>("assignee")?,
+                    row.get::<_, i64>("manual_blocked")?,
+                    row.get::<_, i64>("priority")?,
+                    row.get::<_, String>("created_at")?,
+                    row.get::<_, i64>("unfinished_blockers")?,
+                    row.get::<_, i64>("resource_conflicts")?,
+                ))
+            },
+        )
         .map_err(|e| {
             crate::Error::Internal(anyhow::anyhow!(
                 "Failed to execute eligibility query: {}",
@@ -547,13 +587,22 @@ pub fn collect_eligibility_factors(
         })?;
 
     for issue in issue_rows {
-        let (id, base_status, assignee, manual_blocked, priority, created_at, unfinished_blockers) =
-            issue?;
+        let (
+            id,
+            base_status,
+            assignee,
+            manual_blocked,
+            priority,
+            created_at,
+            unfinished_blockers,
+            resource_conflicts,
+        ) = issue?;
 
         let is_assigned = assignee.is_some();
         let is_manually_blocked = manual_blocked != 0;
         let is_open = base_status == "open";
         let has_unfinished_blockers = unfinished_blockers > 0;
+        let has_resource_conflict = resource_conflicts > 0;
 
         let mut reasons = Vec::new();
         let mut is_eligible = true;
@@ -575,6 +624,11 @@ pub fn collect_eligibility_factors(
 
         if has_unfinished_blockers {
             reasons.push(ReasonCode::HasUnfinishedBlockers);
+            is_eligible = false;
+        }
+
+        if has_resource_conflict {
+            reasons.push(ReasonCode::ResourceConflict);
             is_eligible = false;
         }
 
@@ -606,8 +660,7 @@ fn build_eligibility_summary(factors: &[EligibilityFactors]) -> EligibilitySumma
         if !factor.is_eligible {
             for reason in &factor.reasons {
                 if reason != &ReasonCode::EligibleSelected {
-                    let reason_str =
-                        serde_json::to_string(reason).unwrap_or_else(|_| "unknown".to_string());
+                    let reason_str = reason.code_string();
                     *ineligibility_reasons.entry(reason_str).or_insert(0) += 1;
                 }
             }
@@ -781,12 +834,32 @@ fn find_eligible_issue(tx: &Transaction) -> Result<Option<String>> {
                 AND d.kind = 'blocks'
                 AND blocker.base_status != 'closed'
           )
+          AND NOT EXISTS (
+              SELECT 1
+              FROM issue_resource_keys candidate_key
+              JOIN resource_locks held_lock
+                ON held_lock.resource_key = candidate_key.resource_key
+              WHERE candidate_key.issue_id = i.id
+                AND held_lock.issue_id != i.id
+                AND (held_lock.lease_fencing_token IS NULL OR EXISTS (
+                    SELECT 1 FROM leases active_lease
+                    WHERE active_lease.issue_id = held_lock.issue_id
+                      AND active_lease.fencing_token = held_lock.lease_fencing_token
+                      AND active_lease.expires_at > :now
+                ))
+          )
         ORDER BY i.priority ASC, i.created_at ASC, i.id ASC
         LIMIT 1
     "#;
 
     let issue_id: Option<String> = tx
-        .query_row(query, [], |row| row.get(0))
+        .query_row(
+            query,
+            rusqlite::named_params! {
+                ":now": crate::service::resource_locks::now_string()
+            },
+            |row| row.get(0),
+        )
         .optional()
         .map_err(|e| {
             crate::Error::Internal(anyhow::anyhow!("Failed to query eligible issues: {}", e))
@@ -894,6 +967,8 @@ fn intelligent_claim(
     _harness_version: Option<&str>,
     single_claim: bool,
 ) -> Result<ClaimResult> {
+    release_expired_resource_locks(tx)?;
+
     // Refuse before selecting when the single-claim guard is enabled and the
     // assignee already holds active work
     enforce_single_claim(tx, assignee, single_claim)?;
@@ -943,6 +1018,8 @@ fn intelligent_claim(
     .map_err(|e| {
         Error::Internal(anyhow::anyhow!("Failed to update issue for claim: {}", e))
     })?;
+
+    acquire_issue_locks(tx, &issue_id, None)?;
 
     // Record the claim audit event with policy information
     let event_detail = json!({
@@ -995,6 +1072,20 @@ fn find_eligible_frontier(tx: &Transaction) -> Result<Vec<String>> {
                 AND d.kind = 'blocks'
                 AND blocker.base_status != 'closed'
           )
+          AND NOT EXISTS (
+              SELECT 1
+              FROM issue_resource_keys candidate_key
+              JOIN resource_locks held_lock
+                ON held_lock.resource_key = candidate_key.resource_key
+              WHERE candidate_key.issue_id = i.id
+                AND held_lock.issue_id != i.id
+                AND (held_lock.lease_fencing_token IS NULL OR EXISTS (
+                    SELECT 1 FROM leases active_lease
+                    WHERE active_lease.issue_id = held_lock.issue_id
+                      AND active_lease.fencing_token = held_lock.lease_fencing_token
+                      AND active_lease.expires_at > :now
+                ))
+          )
         ORDER BY i.priority ASC, i.created_at ASC, i.id ASC
     "#;
 
@@ -1007,7 +1098,12 @@ fn find_eligible_frontier(tx: &Transaction) -> Result<Vec<String>> {
     })?;
 
     let issue_rows = stmt
-        .query_map([], |row| row.get::<_, String>(0))
+        .query_map(
+            rusqlite::named_params! {
+                ":now": crate::service::resource_locks::now_string()
+            },
+            |row| row.get::<_, String>(0),
+        )
         .map_err(|e| {
             Error::Internal(anyhow::anyhow!(
                 "Failed to execute eligible frontier query: {}",

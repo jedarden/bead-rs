@@ -78,6 +78,7 @@ fn get_migration(version: i64) -> Migration {
         9 => migration_9(),
         10 => migration_10(),
         11 => migration_11(),
+        12 => migration_12(),
         v => panic!("Unknown migration version: {}", v),
     }
 }
@@ -551,8 +552,14 @@ INSERT OR IGNORE INTO workspace_claim_sequence (sequence) VALUES (0);
 }
 
 /// Migration 10: workspace-local atomic resource locks (R031)
+///
+/// Declarations are durable issue metadata. The lock table is derived live
+/// state: it contains only the keys held by current claims and is never a
+/// distributed or cross-workspace lock service.
 fn migration_10() -> Migration {
     let sql = r#"
+-- Resource keys declared by issues. A declaration is portable issue metadata
+-- active ownership below is deliberately native-store scheduling state.
 CREATE TABLE IF NOT EXISTS issue_resource_keys (
     issue_id TEXT NOT NULL,
     resource_key TEXT NOT NULL,
@@ -563,6 +570,8 @@ CREATE TABLE IF NOT EXISTS issue_resource_keys (
 CREATE INDEX IF NOT EXISTS issue_resource_keys_key
     ON issue_resource_keys (resource_key, issue_id);
 
+-- At most one in-progress issue in this workspace may hold a normalized key.
+-- A NULL lease_fencing_token denotes an ordinary non-leased claim.
 CREATE TABLE IF NOT EXISTS resource_locks (
     resource_key TEXT NOT NULL PRIMARY KEY,
     issue_id TEXT NOT NULL,
@@ -583,6 +592,9 @@ CREATE INDEX IF NOT EXISTS resource_locks_issue
 /// Migration 11: atomic create idempotency bindings (R032)
 fn migration_11() -> Migration {
     let sql = r#"
+-- A unique create reference is distinct from ordinary R011 references:
+-- ordinary references intentionally permit the same namespace/key on several
+-- issues, while this table reserves one namespace/key for one issue.
 CREATE TABLE IF NOT EXISTS unique_reference_bindings (
     namespace TEXT NOT NULL,
     key TEXT NOT NULL,
@@ -593,6 +605,50 @@ CREATE TABLE IF NOT EXISTS unique_reference_bindings (
 
 CREATE INDEX IF NOT EXISTS unique_reference_bindings_issue
     ON unique_reference_bindings (issue_id);
+"#;
+
+    Migration {
+        sql: sql.to_string(),
+    }
+}
+
+/// Migration 12: Add 'fork' to provenance_receipts kind constraint (R028)
+///
+/// Updates the CHECK constraint on provenance_receipts.kind to allow 'fork'
+/// receipts, which are created when a workspace identity is explicitly forked.
+fn migration_12() -> Migration {
+    let sql = r#"
+-- Recreate provenance_receipts table with updated CHECK constraint
+CREATE TABLE IF NOT EXISTS provenance_receipts_new (
+    receipt_id TEXT NOT NULL PRIMARY KEY,
+    schema_ref TEXT NOT NULL DEFAULT 'urn:bead-rs:schema:provenance-receipt:native-v1',
+    kind TEXT NOT NULL CHECK (kind IN ('restore', 'merge', 'fork')),
+    source_store_uuid TEXT NOT NULL,
+    target_store_uuid TEXT NOT NULL,
+    source_root_sha256 TEXT,
+    actor TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    counts_json TEXT NOT NULL,
+    result TEXT NOT NULL,
+    summary_event_identity TEXT,
+    receipt_sha256 TEXT NOT NULL
+);
+
+-- Copy existing data to new table
+INSERT INTO provenance_receipts_new
+SELECT * FROM provenance_receipts;
+
+-- Drop old table and rename new one
+DROP TABLE provenance_receipts;
+ALTER TABLE provenance_receipts_new RENAME TO provenance_receipts;
+
+-- Recreate indexes
+CREATE INDEX IF NOT EXISTS provenance_receipts_source_uuid
+    ON provenance_receipts (source_store_uuid);
+CREATE INDEX IF NOT EXISTS provenance_receipts_target_uuid
+    ON provenance_receipts (target_store_uuid);
+CREATE INDEX IF NOT EXISTS provenance_receipts_source_root
+    ON provenance_receipts (source_root_sha256);
 "#;
 
     Migration {

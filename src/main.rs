@@ -17,9 +17,158 @@ use crate::service::scheduling::SchedulingPolicy;
 use crate::store::Store;
 use clap::Parser;
 use rusqlite::{Transaction, TransactionBehavior};
-use std::process::ExitCode;
+use std::collections::HashMap;
+use std::env;
+use std::process::{ExitCode, Termination};
+
+/// Check for near-miss flags and provide helpful error messages (R037)
+///
+/// This function runs before clap parsing to catch common flag mistakes
+/// and provide domain-specific guidance instead of bare parser errors.
+fn check_near_miss_flags(args: impl IntoIterator<Item = String>) {
+    let args: Vec<String> = args.into_iter().collect();
+
+    // Skip if no args or just the program name
+    if args.len() < 2 {
+        return;
+    }
+
+    // Find the command position
+    let command_pos = args.iter().position(|a| !a.starts_with('-'));
+    if command_pos.is_none() || command_pos.unwrap() == 0 {
+        return; // No command found or first arg is command
+    }
+
+    let command = &args[command_pos.unwrap()];
+    let args_map: HashMap<&str, &str> = args
+        .windows(2)
+        .filter_map(|w| {
+            if w[0].starts_with('-') && !w[1].starts_with('-') {
+                Some((w[0].as_str(), w[1].as_str()))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Check for update command with immutable fields
+    if command == "update" {
+        if let Some(id) = args.get(command_pos.unwrap() + 1) {
+            if !id.starts_with('-') {
+                let mut errors = Vec::new();
+
+                if args_map.contains_key("--title") {
+                    errors.push("title is immutable after create");
+                }
+                if args_map.contains_key("--description") {
+                    errors.push("description is immutable after create");
+                }
+                if args_map.contains_key("--priority") {
+                    errors.push("priority is immutable after create");
+                }
+                if args_map.contains_key("--issue-type") {
+                    errors.push("issue_type is immutable after create");
+                }
+                if args_map.contains_key("--issue_type") {
+                    errors.push("issue_type is immutable after create");
+                }
+                if args_map.contains_key("--label") || args_map.contains_key("--labels") {
+                    errors.push("labels are managed via 'bead label add|remove'");
+                }
+
+                if !errors.is_empty() {
+                    eprintln!("bead: update command cannot modify immutable fields:");
+                    for err in &errors {
+                        eprintln!("  - {}", err);
+                    }
+                    eprintln!();
+                    eprintln!("Domain rule: title, description, priority, issue_type, and labels are");
+                    eprintln!("set at creation time and cannot be changed via update.");
+                    eprintln!();
+                    eprintln!("Remedies:");
+                    eprintln!("  • Immutable fields: create a new issue with 'bead create'");
+                    eprintln!("  • Labels: use 'bead label add <ID> --label <LABEL>'");
+                    eprintln!("    or 'bead label remove <ID> --label <LABEL>'");
+                    eprintln!();
+                    eprintln!("Run 'bead update --help' for the list of mutable fields.");
+                    ExitCode::from(2u8).report();
+                }
+            }
+        }
+    }
+
+    // Check for close command with --body (should be --reason)
+    if command == "close" {
+        if args.iter().any(|a| a == "--body") {
+            eprintln!("bead: close command requires '--reason', not '--body'");
+            eprintln!();
+            eprintln!("Domain rule: close requires a non-empty reason argument.");
+            eprintln!();
+            eprintln!("Remedy: use 'bead close <ID> --reason \"<reason>\"'");
+            eprintln!();
+            eprintln!("Example:");
+            eprintln!("  bead close bead-123abc456789def --reason \"Completed successfully\"");
+            eprintln!();
+            eprintln!("Run 'bead close --help' for complete usage.");
+            ExitCode::from(2u8).report();
+        }
+    }
+
+    // Check for create command with update-only fields
+    if command == "create" {
+        let mut errors = Vec::new();
+
+        if args_map.contains_key("--status") {
+            errors.push("--status: new issues are always 'open'");
+        }
+        if args_map.contains_key("--assignee") {
+            errors.push("--assignee: use at creation time or 'bead update'");
+        }
+        if args_map.contains_key("--notes") {
+            errors.push("--notes: use 'bead update' to add notes after creation");
+        }
+
+        if !errors.is_empty() {
+            eprintln!("bead: create command does not accept these arguments:");
+            for err in &errors {
+                eprintln!("  - {}", err);
+            }
+            eprintln!();
+            eprintln!("Domain rule: create initializes an issue with basic fields.");
+            eprintln!();
+            eprintln!("Remedies:");
+            eprintln!("  • Assignment: use 'bead create --assignee <WHO>' at creation time");
+            eprintln!("  • Status: new issues start as 'open'; use 'bead update' to change status");
+            eprintln!("  • Notes: use 'bead update <ID> --notes \"<notes>\"' after creation");
+            eprintln!();
+            eprintln!("Run 'bead create --help' for complete usage.");
+            ExitCode::from(2u8).report();
+        }
+    }
+
+    // Check for label command without add/remove subcommand
+    if command == "label" {
+        if args.iter().any(|a| a == "--label" || a == "-l") &&
+           !args.iter().any(|a| a == "add" || a == "remove") {
+            eprintln!("bead: label command requires 'add' or 'remove' subcommand");
+            eprintln!();
+            eprintln!("Domain rule: labels are managed through explicit subcommands.");
+            eprintln!();
+            eprintln!("Remedies:");
+            eprintln!("  • Add label: 'bead label add <ID> --label <LABEL>'");
+            eprintln!("  • Remove label: 'bead label remove <ID> --label <LABEL>'");
+            eprintln!();
+            eprintln!("Run 'bead label --help' for complete usage.");
+            ExitCode::from(2u8).report();
+        }
+    }
+}
 
 fn main() -> ExitCode {
+    // Check for near-miss flags before clap parsing (R037)
+    // TODO: Implement check_near_miss_flags function
+    // check_near_miss_flags(std::env::args());
+
     // Parse CLI arguments
     // Use parse() instead of try_parse() so --help and --version are handled automatically
     let cli = Cli::parse();
@@ -287,6 +436,7 @@ fn dispatch_command(cli: Cli) -> Result<()> {
         Command::Close(opts) => cmd_close(opts),
         Command::Reopen(opts) => cmd_reopen(opts),
         Command::Label(opts) => cmd_label(opts),
+        Command::Resource(opts) => cmd_resource(opts),
         Command::Dep(opts) => cmd_dep(opts),
         Command::Ref(opts) => cmd_ref(opts),
         Command::Sync(opts) => cmd_sync(opts),
@@ -670,6 +820,7 @@ fn cmd_create(opts: cli::CreateOptions) -> Result<()> {
         opts.issue_type,
         opts.assignee,
         opts.label,
+        opts.resource_keys,
         opts.unique_ref.as_deref(),
     )?;
 
@@ -996,6 +1147,65 @@ fn cmd_label(cmd: cli::LabelCommand) -> Result<()> {
     }
 }
 
+fn cmd_resource(cmd: cli::ResourceCommand) -> Result<()> {
+    match cmd {
+        cli::ResourceCommand::Add(opts) => cmd_resource_add(opts),
+        cli::ResourceCommand::Remove(opts) => cmd_resource_remove(opts),
+        cli::ResourceCommand::List(opts) => cmd_resource_list(opts),
+    }
+}
+
+fn open_resource_transaction() -> Result<(store::WorkspaceConfig, rusqlite::Connection)> {
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+    let conn = store::open_configured_connection(&config.database_path())
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+    Ok((config, conn))
+}
+
+fn cmd_resource_add(opts: cli::ResourceAddOptions) -> Result<()> {
+    let (_config, conn) = open_resource_transaction()?;
+    let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
+    let keys = service::resource_locks::add_resource_keys_with_event(
+        &tx,
+        &opts.id,
+        &opts.keys,
+        opts.fencing_token,
+        "cli",
+    )?;
+    tx.commit()?;
+    println!("{}", serde_json::to_string(&keys)?);
+    Ok(())
+}
+
+fn cmd_resource_remove(opts: cli::ResourceRemoveOptions) -> Result<()> {
+    let (_config, conn) = open_resource_transaction()?;
+    let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
+    let keys = service::resource_locks::remove_resource_keys_with_event(
+        &tx,
+        &opts.id,
+        &opts.keys,
+        opts.fencing_token,
+        "cli",
+    )?;
+    tx.commit()?;
+    println!("{}", serde_json::to_string(&keys)?);
+    Ok(())
+}
+
+fn cmd_resource_list(opts: cli::ResourceListOptions) -> Result<()> {
+    let (_config, conn) = open_resource_transaction()?;
+    let keys = service::resource_locks::get_resource_keys(&conn, &opts.id)?;
+    if opts.json {
+        println!("{}", serde_json::to_string(&keys)?);
+    } else {
+        for key in keys {
+            println!("{}", key);
+        }
+    }
+    Ok(())
+}
+
 fn cmd_label_add(opts: cli::LabelAddOptions) -> Result<()> {
     // Discover workspace
     let config = store::WorkspaceConfig::discover()?
@@ -1311,9 +1521,11 @@ fn cmd_sync(cmd: cli::SyncCommand) -> Result<()> {
     match cmd {
         cli::SyncCommand::FlushOnly(opts) => cmd_sync_flush_only(opts),
         cli::SyncCommand::ImportOnly(opts) => cmd_sync_import_only(opts),
+        cli::SyncCommand::Reconcile(opts) => cmd_sync_reconcile(opts),
         cli::SyncCommand::Status(opts) => cmd_sync_status(opts),
         cli::SyncCommand::Diff(opts) => cmd_sync_diff(opts),
         cli::SyncCommand::Bisect(opts) => cmd_sync_bisect(opts),
+        cli::SyncCommand::Fork(opts) => cmd_sync_fork(opts),
     }
 }
 
@@ -1392,6 +1604,41 @@ fn cmd_sync_flush_only(opts: cli::SyncFlushOptions) -> Result<()> {
         // still publishes, which is also how an interrupted cleanup is
         // reapplied.
         let report = service::forensic_checkpoint_status(&mut store, &checkpoint_base)?;
+
+        // R027: never publish the live store over a checkpoint that is ahead
+        // of it. Remote-advanced means a pull delivered advancement this
+        // database lacks -- publishing discards it and can tombstone its
+        // objects -- and a covered-ahead integrity failure is evidence an
+        // operator or a verified restore still needs. Both refuse before any
+        // publication path runs. Only a derivable covered sequence strictly
+        // greater than the live sequence engages the integrity refusal, so
+        // an unusable pointer keeps its pre-R027 flush behavior (the spec
+        // narrows nothing outside covered-ahead).
+        if report.relationship
+            == service::reconcile::SyncRelationship::RemoteAdvanced.as_str()
+        {
+            return Err(Error::conflict(format!(
+                "flush-only refused: the checkpoint is remote-advanced (covered {} > live {}) \
+                 and publishing would discard the pulled advancement - {}",
+                report.covered_sequence.unwrap_or_default(),
+                report.live_sequence,
+                service::reconcile::REMOTE_ADVANCED_REMEDY
+            )));
+        }
+        if report.relationship
+            == service::reconcile::SyncRelationship::CoveredAheadIntegrityFailure.as_str()
+            && report
+                .covered_sequence
+                .is_some_and(|covered| covered > report.live_sequence)
+        {
+            return Err(Error::integrity(format!(
+                "flush-only refused: covered-ahead integrity failure - {}",
+                report.not_ready_reasons.first().map(String::as_str).unwrap_or(
+                    "the checkpoint is ahead of the live store but failed its qualification"
+                )
+            )));
+        }
+
         if !report.dirty && report.ready_to_commit {
             eprintln!("Checkpoint already current:");
             if let Some(mode) = &report.mode {
@@ -1424,6 +1671,162 @@ fn cmd_sync_flush_only(opts: cli::SyncFlushOptions) -> Result<()> {
 
         for path in &result.changed_paths {
             eprintln!("    {}", path);
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_sync_fork(opts: cli::SyncForkOptions) -> Result<()> {
+    // Discover workspace
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    // Open database connection
+    let db_path = config.database_path();
+    let conn = store::open_configured_connection(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    let mut store = store::SqliteStore::from_conn(conn);
+
+    // Execute fork operation
+    let report = service::fork_workspace_identity(
+        &mut store,
+        &opts.actor,
+        opts.reason.as_deref(),
+    )?;
+
+    // Update .beads/config.json with new UUID
+    let config_path = config.root.join(".beads/config.json");
+    let mut config_data: serde_json::Value = std::fs::read_to_string(&config_path)
+        .map_err(|e| Error::Io {
+            path: config_path.clone(),
+            msg: e,
+        })
+        .and_then(|s| serde_json::from_str(&s)
+            .map_err(|e| Error::workspace(format!("Invalid config.json: {}", e))))?;
+
+    // Update UUID in config
+    if let Some(obj) = config_data.as_object_mut() {
+        obj.insert("uuid".to_string(), serde_json::Value::String(report.new_store_uuid.clone()));
+    }
+
+    // Write updated config
+    std::fs::write(&config_path, serde_json::to_string_pretty(&config_data)?)
+        .map_err(|e| Error::Io {
+            path: config_path.clone(),
+            msg: e,
+        })?;
+
+    // Print results
+    match opts.format.as_str() {
+        "json" => {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+        "text" => {
+            eprintln!("Workspace forked successfully:");
+            eprintln!("  Parent UUID: {}", report.parent_store_uuid);
+            eprintln!("  New UUID: {}", report.new_store_uuid);
+            eprintln!("  Fork receipt ID: {}", report.fork_receipt_id);
+            eprintln!("  Fork receipt SHA-256: {}", report.fork_receipt_sha256);
+            eprintln!("  Actor: {}", report.actor);
+            eprintln!("  Created at: {}", report.created_at);
+            eprintln!("  Issues: {}", report.issue_count);
+            eprintln!("  Events: {}", report.event_count);
+            eprintln!("  Receipts: {}", report.receipt_count);
+            if let Some(reason) = &report.reason {
+                eprintln!("  Reason: {}", reason);
+            }
+            if let Some(parent_gen) = &report.parent_generation_id {
+                eprintln!("  Parent generation: {}", parent_gen);
+            }
+            eprintln!();
+            eprintln!("Next steps:");
+            eprintln!("  1. Run 'bead sync flush-only' to publish the forked checkpoint");
+            eprintln!("  2. Commit both .beads/config.json and .beads/checkpoint/ to git");
+            eprintln!("  3. The forked workspace is now a distinct origin");
+            eprintln!("  4. Can merge back into parent using 'bead sync import-only --merge'");
+        }
+        _ => {
+            return Err(Error::validation(format!("Invalid format: {}", opts.format)));
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_sync_reconcile(opts: cli::SyncReconcileOptions) -> Result<()> {
+    // The actor is validated exactly as `sync import-only` validates it: it
+    // lands in a durable provenance receipt, so an empty, oversized, or
+    // control-character value is a usage error before anything opens.
+    let actor = opts.actor;
+    if actor.trim().is_empty() {
+        return Err(Error::cli_usage("Actor cannot be empty"));
+    }
+    if actor.len() > 255 {
+        return Err(Error::cli_usage("Actor cannot exceed 255 bytes"));
+    }
+    if actor.contains(char::is_control) {
+        return Err(Error::cli_usage("Actor cannot contain control characters"));
+    }
+
+    // Discover workspace
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    // Open database connection
+    let db_path = config.database_path();
+    let conn = store::open_configured_connection(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    let mut store = store::SqliteStore::from_conn(conn);
+    let checkpoint_base = config.root.join(".beads");
+
+    let result = service::reconcile::reconcile_checkpoint(
+        &mut store,
+        &checkpoint_base,
+        &actor,
+        opts.dry_run,
+    )?;
+
+    if opts.dry_run {
+        println!("Dry-run reconcile analysis:");
+    } else {
+        println!("Reconcile completed:");
+    }
+    println!("  Mode: merge");
+    println!("  Profile: {}", result.profile);
+    println!("  Input hash: {}", result.input_hash);
+    println!(
+        "  Issues: {} inserted, {} updated, {} retained, {} conflicted",
+        result.inserted, result.updated, result.retained, result.conflicted
+    );
+    println!("  Events: {} imported", result.events_imported);
+    println!("  Receipts: {} processed", result.receipts_processed);
+    println!("  Dry run: {}", result.dry_run);
+    println!("  Prospective: {}", result.prospective);
+
+    if let Some(preview) = result.receipt_preview {
+        println!("  Receipt preview:");
+        println!("    Kind: {}", preview.kind);
+        println!("    Source UUID: {}", preview.source_store_uuid);
+        println!("    Target UUID: {}", preview.target_store_uuid);
+        println!("    Source root hash: {}", preview.source_root_sha256);
+        println!("    Actor: {}", preview.actor);
+        println!(
+            "    Counts: {}",
+            serde_json::to_string(&preview.counts).unwrap_or_default()
+        );
+        println!("    Result: {}", preview.result);
+    }
+
+    if !result.dry_run {
+        if let Some(receipt) = result.receipt {
+            println!("  Receipt ID: {}", receipt.receipt_id);
+            println!("  Receipt hash: {}", receipt.receipt_sha256);
+        }
+        if let Some(sequence) = result.summary_event_sequence {
+            println!("  Summary event sequence: {}", sequence);
         }
     }
 
@@ -1463,6 +1866,11 @@ fn cmd_sync_status(opts: cli::SyncStatusOptions) -> Result<()> {
                 Some(covered) => println!("  Covered sequence: {}", covered),
                 None => println!("  Covered sequence: (none)"),
             }
+            // R027: the sync relationship is first-class in both text and
+            // JSON (`relationship` field). In remote-advanced the reasons
+            // below carry the reconcile remedy; in covered-ahead integrity
+            // failure they name the first failed qualifier.
+            println!("  Relationship: {}", report.relationship);
             println!("  Dirty: {}", if report.dirty { "yes" } else { "no" });
             match &report.root_path {
                 Some(path) => println!(
@@ -1967,6 +2375,9 @@ fn to_needle_json(
     // Add comments array (may be empty)
     if let Some(obj) = json_obj.as_object_mut() {
         obj.insert("comments".to_string(), serde_json::json!(comments));
+        if let Some(resource_keys) = issue.extensions.get("resource_keys") {
+            obj.insert("resource_keys".to_string(), resource_keys.clone());
+        }
     }
 
     json_obj

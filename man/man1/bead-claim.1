@@ -4,7 +4,7 @@
 .SH NAME
 bead claim \- Claim an issue from the ready frontier
 .SH SYNOPSIS
-\fBbead claim\fR <\fB\-\-assignee\fR> [\fB\-\-json\fR] [\fB\-\-why\fR] [\fB\-\-policy\fR] [\fB\-\-lease\-ttl\fR] [\fB\-\-renew\-lease\fR] [\fB\-\-fencing\-token\fR] [\fB\-\-single\-claim\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBbead claim\fR [\fB\-\-json\fR] [\fB\-\-why\fR] [\fB\-\-policy\fR] [\fB\-\-lease\-ttl\fR] [\fB\-\-renew\-lease\fR] [\fB\-\-fencing\-token\fR] [\fB\-\-single\-claim\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-assignee\fR> 
 .SH DESCRIPTION
 Atomically claim and assign one issue from the ready frontier.
 .PP
@@ -73,7 +73,7 @@ LEASE EXPIRY:
   from corrupting work that has been reassigned to other agents.
 .SH OPTIONS
 .TP
-\fB\-\-assignee\fR=\fIASSIGNEE\fR
+\fB\-\-assignee\fR \fI<ASSIGNEE>\fR
 Assignee name (required)
 .TP
 \fB\-\-json\fR
@@ -82,16 +82,16 @@ Output in JSON format
 \fB\-\-why\fR
 Explain the claim decision with a machine\-readable trace
 .TP
-\fB\-\-policy\fR=\fIPOLICY\fR [default: fifo\-v1]
+\fB\-\-policy\fR \fI<POLICY>\fR [default: fifo\-v1]
 Scheduling policy for claim selection (fifo\-v1, aging\-v1, impact\-v1, rotation\-v1, balanced\-v1)
 .TP
-\fB\-\-lease\-ttl\fR=\fILEASE_TTL\fR
+\fB\-\-lease\-ttl\fR \fI<LEASE_TTL>\fR
 Request a leased claim with time\-to\-live in seconds (optional)
 .TP
 \fB\-\-renew\-lease\fR
 Renew an existing lease instead of claiming new work
 .TP
-\fB\-\-fencing\-token\fR=\fIFENCING_TOKEN\fR
+\fB\-\-fencing\-token\fR \fI<FENCING_TOKEN>\fR
 Explicit fencing token for lease validation (advanced usage)
 .TP
 \fB\-\-single\-claim\fR
