@@ -29,7 +29,10 @@ fn create(workspace: &Path, title: &str, extra: &[&str]) -> String {
 
 fn workspace() -> TempDir {
     let temp = tempfile::tempdir().unwrap();
-    let output = run(temp.path(), &["init", "--prefix", "r031"]);
+    let output = run(
+        temp.path(),
+        &["--skip-foreign-workspace", "init", "--prefix", "r031"],
+    );
     assert!(output.status.success());
     temp
 }
@@ -75,7 +78,14 @@ fn conflicting_ready_work_is_skipped_and_why_reports_reason() {
     let third = run(temp.path(), &["claim", "--assignee", "worker-3", "--json"]);
     assert!(third.status.success());
     let third: serde_json::Value = serde_json::from_slice(&third.stdout).unwrap();
-    assert_eq!(third["bead_id"].as_str(), Some(conflict.as_str()));
+    assert_eq!(third["bead_id"].as_str(), Some(holder.as_str()));
+
+    let close = run(temp.path(), &["close", &holder, "--reason", "done"]);
+    assert!(close.status.success());
+    let fourth = run(temp.path(), &["claim", "--assignee", "worker-4", "--json"]);
+    assert!(fourth.status.success());
+    let fourth: serde_json::Value = serde_json::from_slice(&fourth.stdout).unwrap();
+    assert_eq!(fourth["bead_id"].as_str(), Some(conflict.as_str()));
 }
 
 #[test]

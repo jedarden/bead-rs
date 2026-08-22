@@ -85,6 +85,13 @@ The exact versions above are lockfile resolutions, not exact manifest pins.
 Any future update must rerun the help/man-page, conformance, concurrency,
 benchmark-budget, and `cargo +1.85 check --all-targets` gates together.
 
+The dependency-refresh recheck preserved the section-3.5.10 smoke budget: 40
+release-harness reports (100 and 1,000 beads × five dataset families × four
+workloads), each with the existing 5-second warmup and 1-second measured
+interval. All reports had zero busy failures and zero claim conflicts; 34 were
+`completed` and six were the contractually valid `resource_limited` result.
+SQLite 3.53.2 was reported consistently. No budget re-record was required.
+
 A future MSRV advance requires a plan revision citing a new ADR or an
 explicit revision of this one; the floor never moves silently.
 
