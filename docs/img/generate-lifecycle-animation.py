@@ -201,7 +201,8 @@ BEATS = [
     (T_CLOSE, "bead close design --reason &#8230;",
      "Closing design satisfies the edge — store joins the frontier."),
     (T_FLUSH, "bead sync flush-only",
-     "Nothing flushes implicitly. Flush before committing, or a clone sees stale state."),
+     ("Every successful mutation publishes the checkpoint automatically;",
+      "this command is the idempotent check.")),
 ]
 
 
@@ -573,8 +574,17 @@ def chrome_svg(t):
     _, cmd, cap = BEATS[idx]
     out.append(f'<text x="{W/2}" y="432" text-anchor="middle" font-family="{MONO}" '
                f'font-size="19" fill="{NAVY}">{cmd}</text>')
-    out.append(f'<text x="{W/2}" y="478" text-anchor="middle" font-family="{FONT}" '
-               f'font-size="20" fill="{CAPTION}">{cap}</text>')
+    if isinstance(cap, tuple):
+        # Two-line captions keep 20px text inside the frame; baselines leave
+        # room below the chip above and the frame edge below.
+        ys = (467, 489)
+        lines = "".join(f'<tspan x="{W/2}" y="{y}">{line}</tspan>'
+                        for y, line in zip(ys, cap))
+        out.append(f'<text text-anchor="middle" font-family="{FONT}" '
+                   f'font-size="20" fill="{CAPTION}">{lines}</text>')
+    else:
+        out.append(f'<text x="{W/2}" y="478" text-anchor="middle" font-family="{FONT}" '
+                   f'font-size="20" fill="{CAPTION}">{cap}</text>')
     return "".join(out)
 
 

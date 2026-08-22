@@ -9,7 +9,7 @@ The installed binary is named `bead`.
 
 <picture>
   <source media="(prefers-reduced-motion: reduce)" srcset="docs/img/bead-lifecycle-static.png">
-  <img alt="Six stages of the bead-rs lifecycle. Three beads are created; a blocks edge makes store wait on design; design and docs are ready while store is blocked; a worker claims design, which becomes in progress; closing design satisfies the edge and store becomes ready; a flush copies SQLite to the checkpoint." src="docs/img/bead-lifecycle.gif">
+  <img alt="Six stages of the bead-rs lifecycle. Three beads are created; a blocks edge makes store wait on design; design and docs are ready while store is blocked; a worker claims design, which becomes in progress; closing design satisfies the edge and store becomes ready; every successful mutation publishes the checkpoint automatically, and the closing command is the idempotent check." src="docs/img/bead-lifecycle.gif">
 </picture>
 
 *The animation plays twice and stops. If your system asks for reduced motion
