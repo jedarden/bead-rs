@@ -93,7 +93,6 @@ fn test_update_notes() {
         .stdout(predicate::str::contains(issue_id.clone()));
 
     // Verify notes were saved by querying the database directly
-    // (notes are not included in the basic JSON output)
     let db_path = workspace.path().join(".beads").join("beads.db");
     let conn = rusqlite::Connection::open(&db_path).unwrap();
 
@@ -106,6 +105,15 @@ fn test_update_notes() {
         .unwrap();
 
     assert_eq!(notes, Some("Some notes".to_string()));
+
+    // Verify notes appear in JSON output (regression test for beadrs-9c22234e)
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["show", &issue_id, "--json"])
+        .current_dir(workspace.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"notes\":\"Some notes\""));
 }
 
 #[test]

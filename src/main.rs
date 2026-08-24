@@ -854,6 +854,10 @@ fn cmd_show(opts: cli::ShowOptions) -> Result<()> {
             println!("Description: {}", description);
         }
 
+        if let Some(notes) = &issue.notes {
+            println!("Notes: {}", notes);
+        }
+
         if let Some(assignee) = &issue.assignee {
             println!("Assignee: {}", assignee);
         }
@@ -2419,6 +2423,7 @@ fn to_needle_json(
         "id": issue.id,
         "title": issue.title,
         "description": issue.description.as_ref().unwrap_or(&String::new()),
+        "notes": issue.notes.as_ref().unwrap_or(&String::new()),
         "priority": issue.priority,
         "status": status_str,
         "assignee": issue.assignee,

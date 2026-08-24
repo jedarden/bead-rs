@@ -175,8 +175,10 @@ The JSON report is:
 
 Each result names the operation's index, kind, resolved target IDs, an
 `outcome`, whether it was a `semantic_change`, and for state operations a
-`changes` object of before/after field deltas (base status, assignee,
-manual blocked, close reason, revision, label set, dependency edges). For
+`changes` object of before/after field deltas over the fields `update` and
+`close` can move (base status, assignee, manual blocked, close reason,
+revision, label set; notes report only a `notes_changed` boolean, never
+their content). For
 `create` it reports the projected issue. Created IDs in a dry-run are
 **provisional**: identifiers are generated per execution and a dry-run's
 IDs are never commitments. Only the commit's result map carries real IDs;
