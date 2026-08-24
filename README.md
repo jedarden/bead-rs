@@ -302,3 +302,9 @@ follow [AGENTS.md](AGENTS.md) and [PROVENANCE.md](PROVENANCE.md).
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+---
+
+Part of [jedarden.com](https://jedarden.com) · Read the write-up: [jedarden.com/guides/workflow/#s07-atomic-claims](https://jedarden.com/guides/workflow/#s07-atomic-claims)
+
+*This GitHub repo is a read-only mirror of git.ardenone.com/jedarden/bead-rs — issues and PRs are welcome here either way.*
