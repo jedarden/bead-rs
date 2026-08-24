@@ -558,13 +558,13 @@ fn reopen_issue_impl(tx: &mut Transaction, issue: &Issue) -> Result<String> {
             {
                 let mut stmt = tx.prepare_cached(
                     "UPDATE issues SET base_status = 'open', closed_at = NULL, close_reason = NULL,
-                     manual_blocked = 0, updated_at = ?, revision = revision + 1 WHERE id = ? AND revision = ?",
+                     manual_blocked = 0, assignee = NULL, updated_at = ?, revision = revision + 1 WHERE id = ? AND revision = ?",
                 )?;
                 let changed = stmt.execute((&now, &issue.id, expected_revision))?;
                 ensure_revision_row_affected(changed, expected_revision)?;
             }
 
-            // Retain assignee if present
+            release_issue_locks(tx, &issue.id)?;
 
             // Append reopened event
             append_event(
@@ -573,7 +573,8 @@ fn reopen_issue_impl(tx: &mut Transaction, issue: &Issue) -> Result<String> {
                 "reopened",
                 &json!({
                     "prior_base_status": "closed",
-                    "resulting_base_status": "open"
+                    "resulting_base_status": "open",
+                    "prior_assignee": issue.assignee
                 }),
                 &now,
             )?;

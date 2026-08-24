@@ -899,9 +899,9 @@ pub struct CloseOptions {
     about = "Reopen a closed issue",
     long_about = "Restore a closed issue to open lifecycle status.
 
-Reopen transitions a closed issue back to open status while preserving
-its assignment and other metadata. This is the only valid way to cross
-from closed to open status (generic update cannot do this).
+Reopen transitions a closed issue back to open status, clearing the
+assignee so the issue becomes claimable again. This is the only valid
+way to cross from closed to open status (generic update cannot do this).
 
 EXAMPLES:
   bead reopen bead-123abc456789def     # Reopen closed issue
@@ -917,7 +917,7 @@ EFFECTS:
   - Sets base_status to open
   - Clears closed_at and close_reason
   - Clears manual_blocked flag
-  - Preserves existing assignee
+  - Clears assignee (makes issue claimable)
   - Advances updated_at
   - Increments revision
   - Appends 'reopened' audit event
@@ -937,7 +937,7 @@ USE CASES:
   - New information suggests the issue should be revisited
   - Closed issue was determined to not be actually complete
 
-For unassigned closed issues, reopen makes them ready frontier candidates
+Reopen makes closed issues ready frontier candidates
 (if they have no unfinished blockers)."
 )]
 pub struct ReopenOptions {

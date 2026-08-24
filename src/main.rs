@@ -1058,26 +1058,11 @@ fn cmd_reopen(opts: cli::ReopenOptions) -> Result<()> {
         return Ok(());
     }
 
-    // Fetch the issue before reopening to check for assignee
-    let issue_before = service::get_issue_by_id(&conn, &opts.id)?
-        .ok_or_else(|| Error::not_found(format!("Issue not found: {}", opts.id)))?;
-
-    let had_assignee = issue_before.assignee.is_some();
-
     // Reopen the issue
     let id = service::reopen_issue(&conn, &opts.id, opts.if_revision, opts.fencing_token)?;
 
     // Print the ID on success
     println!("{}", id);
-
-    // Warn if assignee was preserved (issue will not appear on ready frontier)
-    if had_assignee {
-        eprintln!("WARNING: This issue has an assignee and will not appear on the ready frontier.");
-        eprintln!(
-            "  To make it claimable by workers: bead update {} --clear-assignee",
-            id
-        );
-    }
 
     Ok(())
 }

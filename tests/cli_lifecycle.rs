@@ -10,7 +10,7 @@ fn setup_workspace() -> TempDir {
 
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--prefix", "test", "--skip-foreign-workspace"])
         .current_dir(workspace_path)
         .assert()
         .success();
@@ -507,7 +507,7 @@ fn test_reopen_closed_issue() {
 }
 
 #[test]
-fn test_reopen_retains_assignee() {
+fn test_reopen_clears_assignee() {
     let workspace = setup_workspace();
     let issue_id = create_issue(workspace.path(), "Test Issue");
 
@@ -534,14 +534,14 @@ fn test_reopen_retains_assignee() {
         .assert()
         .success();
 
-    // Verify assignee is retained
+    // Verify assignee is cleared
     Command::cargo_bin("bead")
         .unwrap()
         .args(["show", &issue_id, "--json"])
         .current_dir(workspace.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("\"assignee\":\"worker-1\""));
+        .stdout(predicate::str::contains("\"assignee\":null"));
 }
 
 #[test]
@@ -588,51 +588,6 @@ fn test_reopen_in_progress_conflicts() {
         .stderr(predicate::str::contains(
             "only closed issues can be reopened",
         ));
-}
-
-#[test]
-fn test_reopen_warns_when_preserving_assignee() {
-    let workspace = setup_workspace();
-    let issue_id = create_issue(workspace.path(), "Test Issue");
-
-    // Assign and close the issue
-    Command::cargo_bin("bead")
-        .unwrap()
-        .args(["update", &issue_id, "--assignee", "worker-1"])
-        .current_dir(workspace.path())
-        .assert()
-        .success();
-
-    Command::cargo_bin("bead")
-        .unwrap()
-        .args(["close", &issue_id, "--reason", "Completed"])
-        .current_dir(workspace.path())
-        .assert()
-        .success();
-
-    // Reopen should warn about the preserved assignee
-    Command::cargo_bin("bead")
-        .unwrap()
-        .args(["reopen", &issue_id])
-        .current_dir(workspace.path())
-        .assert()
-        .success()
-        .stderr(predicate::str::contains(
-            "WARNING: This issue has an assignee and will not appear on the ready frontier",
-        ))
-        .stderr(predicate::str::contains(format!(
-            "bead update {} --clear-assignee",
-            issue_id
-        )));
-
-    // Verify assignee is still retained
-    Command::cargo_bin("bead")
-        .unwrap()
-        .args(["show", &issue_id, "--json"])
-        .current_dir(workspace.path())
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("\"assignee\":\"worker-1\""));
 }
 
 #[test]
@@ -798,7 +753,7 @@ fn test_complete_lifecycle_workflow() {
         .assert()
         .success();
 
-    // Verify final state is open with assignee retained
+    // Verify final state is open with assignee cleared
     Command::cargo_bin("bead")
         .unwrap()
         .args(["show", &issue_id, "--json"])
@@ -806,7 +761,7 @@ fn test_complete_lifecycle_workflow() {
         .assert()
         .success()
         .stdout(predicate::str::contains("\"status\":\"open\""))
-        .stdout(predicate::str::contains("\"assignee\":\"worker-2\""));
+        .stdout(predicate::str::contains("\"assignee\":null"));
 }
 
 #[test]
@@ -906,4 +861,62 @@ fn test_update_status_closed_requires_close_command_and_preserves_issue() {
         .assert()
         .success()
         .stdout(predicate::str::contains("\"status\":\"open\""));
+}
+
+#[test]
+fn test_reopen_makes_bead_visible_in_ready_frontier() {
+    let workspace = setup_workspace();
+    let issue_id = create_issue(workspace.path(), "Test Issue");
+
+    // Assign and close the issue
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["update", &issue_id, "--assignee", "worker-1"])
+        .current_dir(workspace.path())
+        .assert()
+        .success();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["close", &issue_id, "--reason", "Completed"])
+        .current_dir(workspace.path())
+        .assert()
+        .success();
+
+    // Verify closed issue is NOT in ready frontier
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["list", "--ready", "--json"])
+        .current_dir(workspace.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(issue_id.clone()).not());
+
+    // Reopen the issue
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["reopen", &issue_id])
+        .current_dir(workspace.path())
+        .assert()
+        .success();
+
+    // Verify status is open and assignee is cleared
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["show", &issue_id, "--json"])
+        .current_dir(workspace.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"status\":\"open\""))
+        .stdout(predicate::str::contains("\"assignee\":null"));
+
+    // Verify the reopened issue NOW appears in the ready frontier
+    // This is the key regression test - the bug caused the bead to be invisible
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["list", "--ready", "--json"])
+        .current_dir(workspace.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(issue_id.clone()));
 }
