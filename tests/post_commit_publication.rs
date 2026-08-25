@@ -632,11 +632,23 @@ fn publication_failure_reports_the_split_without_rolling_back() {
     create_issue(workspace, "before failure");
     let checkpoint_dir = workspace.join(".beads/checkpoint");
 
-    // Make publication fail by removing write permission from the
-    // checkpoint directory it must write into.
-    let mut perms = fs::metadata(&checkpoint_dir).unwrap().permissions();
-    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o555);
-    fs::set_permissions(&checkpoint_dir, perms).unwrap();
+    // Make publication fail by replacing the checkpoint directory it must
+    // write into with a regular file, so every attempt to create a file
+    // inside it fails with ENOTDIR.
+    //
+    // Removing write permission (0o555) does NOT work: CI runs as root in a
+    // container, root holds CAP_DAC_OVERRIDE, and the write simply succeeds,
+    // so `create` exits 0 and this test fails with "Unexpected success".
+    // ENOTDIR is a path-type error rather than a permission check, so no
+    // privilege level can bypass it and the injection behaves identically
+    // for root and non-root.
+    //
+    // The real directory is moved aside rather than deleted: the assertions
+    // below require the checkpoint written before the failure, so that the
+    // split is observable as covered_sequence < live_sequence.
+    let parked = workspace.join(".beads/checkpoint.parked");
+    fs::rename(&checkpoint_dir, &parked).unwrap();
+    fs::write(&checkpoint_dir, b"not a directory").unwrap();
 
     let output = bead(workspace)
         .args(["create", "--title", "survives publication failure"])
@@ -645,10 +657,10 @@ fn publication_failure_reports_the_split_without_rolling_back() {
         .get_output()
         .clone();
 
-    // Restore writability so the tempdir can clean itself up.
-    let mut perms = fs::metadata(&checkpoint_dir).unwrap().permissions();
-    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
-    fs::set_permissions(&checkpoint_dir, perms).unwrap();
+    // Restore the real checkpoint so the assertions below see the state
+    // written before the failure, and the tempdir can clean itself up.
+    fs::remove_file(&checkpoint_dir).unwrap();
+    fs::rename(&parked, &checkpoint_dir).unwrap();
 
     // The mutation happened: its success output is preserved on stdout --
     // exactly the new issue ID, nothing about the publication failure.
