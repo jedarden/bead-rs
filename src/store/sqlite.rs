@@ -82,11 +82,24 @@ impl SqliteStore {
     }
 
     /// Apply migrations to the database
-    #[allow(dead_code)]
     pub fn apply_migrations(&mut self) -> Result<()> {
         let conn = self.conn.as_ref().expect("Connection not initialized");
         migrations::apply_migrations(conn)?;
         Ok(())
+    }
+
+    /// Highest applied schema migration version, or 0 for a store that has
+    /// never had migrations applied. Used to report what an upgrade changed.
+    pub fn schema_version(&mut self) -> Result<i64> {
+        let conn = self.conn.as_ref().expect("Connection not initialized");
+        let version: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        Ok(version)
     }
 
     /// Ensure the workspace directory structure exists

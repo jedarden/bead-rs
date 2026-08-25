@@ -434,6 +434,29 @@ fn cmd_init(opts: cli::InitOptions) -> Result<()> {
             );
             eprintln!("Prefix: {}", existing_config.prefix);
             eprintln!("UUID: {}", existing_config.uuid);
+
+            // A store created by an older binary sits at an older schema
+            // version. Nothing else applies pending migrations to an existing
+            // workspace, so upgrading the binary would otherwise leave every
+            // store permanently short of tables the new code queries -- the
+            // failure is deferred to the first command that touches one, and
+            // presents as `no such table`, not as anything naming a version.
+            //
+            // Migrations are versioned and idempotent, which is what lets this
+            // run unconditionally and makes repeated init "safe and
+            // deterministic" as the help text already promises.
+            let db_path = existing_config.root.join(".beads/beads.db");
+            if db_path.exists() {
+                let mut store = store::SqliteStore::with_path(&db_path)?;
+                let before = store.schema_version()?;
+                store.apply_migrations()?;
+                let after = store.schema_version()?;
+                if after > before {
+                    eprintln!("Applied pending migrations: schema {before} -> {after}");
+                } else {
+                    eprintln!("Schema up to date (version {after})");
+                }
+            }
             return Ok(());
         }
         store::WorkspaceState::Uninitialized { root, .. } => {
