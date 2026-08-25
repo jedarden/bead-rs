@@ -205,7 +205,7 @@ fn classify_covered_ahead(
         .unwrap_or_default();
     if mode == "monolithic" {
         let view = std::fs::read(checkpoint_dir.join("forensic.jsonl")).ok();
-        if !view.is_some_and(|view| view == root_bytes) {
+        if view.is_none_or(|view| view != root_bytes) {
             return RelationshipVerdict::failing(
                 "verified pointer: forensic.jsonl compatibility view is not byte-identical \
                  to the pointer-selected root",
