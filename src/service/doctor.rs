@@ -1247,13 +1247,15 @@ fn check_dependency_graph(store: &impl Store) -> Result<String> {
         .query_row("SELECT COUNT(*) FROM dependencies", [], |row| row.get(0))
         .unwrap_or(0);
 
-    let blocked_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(DISTINCT blocked_id) FROM dependencies",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
+    // Counts issues that are the blocked side of at least one `blocks` edge.
+    // `relates_to` edges are informational and never block, so they are
+    // excluded. This is not wrapped in `unwrap_or(0)` on purpose: a diagnostic
+    // that reports zero when its own query failed is worse than no diagnostic.
+    let blocked_count: i64 = conn.query_row(
+        "SELECT COUNT(DISTINCT blocked_issue_id) FROM dependencies WHERE kind = 'blocks'",
+        [],
+        |row| row.get(0),
+    )?;
 
     Ok(format!(
         "Dependency graph OK: {} dependencies, {} blocked issues, no cycles",

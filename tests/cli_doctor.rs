@@ -519,3 +519,84 @@ fn test_ready_frontier_emits_r001_reason_codes() {
     }
     std::env::set_current_dir(original_dir).unwrap();
 }
+
+#[test]
+#[serial]
+fn test_doctor_counts_blocked_issues_from_blocks_edges() {
+    // Regression for beadrs-90abfec2: check_dependency_graph() queried a
+    // `blocked_id` column that does not exist (the real column is
+    // `blocked_issue_id`), and `.unwrap_or(0)` swallowed the prepare failure,
+    // so the diagnostic reported "0 blocked issues" in every workspace no
+    // matter how many blocking edges the store held.
+    let temp = tempfile::tempdir().unwrap();
+    let temp_dir = temp.path();
+    let original_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let original_home = std::env::var("HOME").ok();
+
+    unsafe {
+        std::env::set_var("HOME", temp_dir);
+    }
+    std::env::set_current_dir(temp_dir).unwrap();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["init"])
+        .assert()
+        .success();
+
+    let mut ids = Vec::new();
+    for title in ["Blocked work", "The blocker", "Merely related"] {
+        let output = Command::cargo_bin("bead")
+            .unwrap()
+            .args(["create", "--title", title])
+            .output()
+            .unwrap();
+        ids.push(String::from_utf8(output.stdout).unwrap().trim().to_string());
+    }
+
+    // With no edges at all, nothing is blocked.
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["doctor"])
+        .assert()
+        .stderr(predicates::str::contains("0 blocked issues"));
+
+    // One real `blocks` edge must be counted.
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["dep", "add", &ids[0], &ids[1]])
+        .assert()
+        .success();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["doctor"])
+        .assert()
+        .stderr(predicates::str::contains("1 blocked issues"));
+
+    // A `relates_to` edge is informational and must NOT raise the count,
+    // even though it adds a dependencies row.
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["dep", "add", &ids[2], &ids[1], "--kind", "relates_to"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["doctor"])
+        .assert()
+        .stderr(predicates::str::contains("2 dependencies"))
+        .stderr(predicates::str::contains("1 blocked issues"));
+
+    if let Some(home) = original_home {
+        unsafe {
+            std::env::set_var("HOME", home);
+        }
+    } else {
+        unsafe {
+            std::env::remove_var("HOME");
+        }
+    }
+    std::env::set_current_dir(original_dir).unwrap();
+}
