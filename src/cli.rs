@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 #[command(name = "bead")]
 #[command(
     author = "Jed Arden <github@jedarden.com>",
-    version = env!("CARGO_PKG_VERSION"),
+    version = env!("BEAD_VERSION_STRING"),
     about = "Clean-room task coordination for agent fleets",
     long_about = "bead-rs is an independent Rust task-coordination system.
 
