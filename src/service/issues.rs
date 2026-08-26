@@ -275,6 +275,145 @@ fn append_created_event(
     Ok(())
 }
 
+/// Detect and recover from starvation by clearing stale assignees
+///
+/// Returns Some(list of recovered bead IDs) if fallback was triggered, None otherwise.
+fn detect_and_recover_starvation(conn: &Connection) -> Result<Option<Vec<String>>> {
+    // Check if any open beads exist at all
+    let open_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM issues WHERE base_status = 'open'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    if open_count == 0 {
+        // No open beads exist - this is not starvation, just an empty workspace
+        return Ok(None);
+    }
+
+    // Find open beads with assignees (potential starvation candidates)
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, assignee FROM issues
+         WHERE base_status = 'open' AND assignee IS NOT NULL
+         AND (manual_blocked IS NULL OR manual_blocked = 0)
+         ORDER BY priority ASC, created_at ASC, id ASC"
+    )?;
+
+    let fallback_candidates: Vec<(String, Option<String>)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to fetch fallback candidates: {}", e)))?;
+
+    if fallback_candidates.is_empty() {
+        // No open beads with assignees - not a starvation situation
+        return Ok(None);
+    }
+
+    // Clear the assignees for all fallback candidates
+    let mut recovered_ids = Vec::new();
+    for (bead_id, old_assignee) in fallback_candidates {
+        let now = time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_else(|_| "unknown".to_string());
+
+        conn.execute(
+            "UPDATE issues SET assignee = NULL, updated_at = ?1, revision = revision + 1 WHERE id = ?2",
+            [&now, &bead_id],
+        )
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to clear assignee for {}: {}", bead_id, e)))?;
+
+        // Record the update as an audit event
+        let event_detail = serde_json::json!({
+            "actor": "system",
+            "field": "assignee",
+            "old_value": old_assignee,
+            "new_value": null,
+            "reason": "fallback_query_starvation_recovery"
+        });
+
+        conn.execute(
+            "INSERT INTO events (issue_id, kind, actor, time, detail) VALUES (?1, ?2, ?3, ?4, ?5)",
+            (&bead_id, "updated", "system", &now, &event_detail.to_string()),
+        )
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to record fallback event for {}: {}", bead_id, e)))?;
+
+        recovered_ids.push(bead_id);
+    }
+
+    Ok(Some(recovered_ids))
+}
+
+/// Log fallback activation to diagnostics file
+fn log_fallback_activation(bead_ids: &[String]) -> Result<()> {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    let diagnostics_dir = ".beads/diagnostics";
+    let log_path = format!("{}/pluck-fallback.log", diagnostics_dir);
+
+    // Create diagnostics directory if it doesn't exist
+    std::fs::create_dir_all(diagnostics_dir)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to create diagnostics directory: {}", e)))?;
+
+    // Append to log file
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open fallback log: {}", e)))?;
+
+    let timestamp = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    let log_entry = format!(
+        "{} | Fallback triggered | Recovered beads: {}\n",
+        timestamp,
+        bead_ids.join(", ")
+    );
+
+    file.write_all(log_entry.as_bytes())
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to write to fallback log: {}", e)))?;
+
+    Ok(())
+}
+
+/// Log fallback activation to a specific path
+fn log_fallback_activation_to_path(bead_ids: &[String], log_path: &std::path::Path) -> Result<()> {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    // Create parent directory if it doesn't exist
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to create diagnostics directory: {}", e)))?;
+    }
+
+    // Append to log file
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open fallback log: {}", e)))?;
+
+    let timestamp = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    let log_entry = format!(
+        "{} | Fallback triggered | Recovered beads: {}\n",
+        timestamp,
+        bead_ids.join(", ")
+    );
+
+    file.write_all(log_entry.as_bytes())
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to write to fallback log: {}", e)))?;
+
+    Ok(())
+}
+
 /// Internal function to create an issue with a specific ID (used by recurrence service)
 #[allow(clippy::too_many_arguments)]
 pub fn create_issue_internal(
@@ -414,6 +553,62 @@ pub fn list_issues(
     // Add limit
     query.push_str(" LIMIT ?");
     params.push(limit.to_string());
+
+    // For ready frontier queries, check for starvation before executing
+    if ready_only {
+        // Build a simple count query for the ready frontier
+        let count_query = String::from("SELECT COUNT(*) FROM issues WHERE base_status = 'open' AND (manual_blocked IS NULL OR manual_blocked = 0) AND assignee IS NULL AND NOT EXISTS (
+            SELECT 1 FROM dependencies WHERE blocked_issue_id = issues.id AND kind = 'blocks'
+            AND blocker_issue_id IN (SELECT id FROM issues WHERE base_status != 'closed')
+        ) AND NOT EXISTS (
+            SELECT 1 FROM issue_resource_keys candidate_key
+            JOIN resource_locks held_lock ON held_lock.resource_key = candidate_key.resource_key
+            WHERE candidate_key.issue_id = issues.id
+              AND held_lock.issue_id != issues.id
+              AND (held_lock.lease_fencing_token IS NULL OR EXISTS (
+                  SELECT 1 FROM leases active_lease
+                  WHERE active_lease.issue_id = held_lock.issue_id
+                    AND active_lease.fencing_token = held_lock.lease_fencing_token
+                    AND active_lease.expires_at > ?
+              ))
+        )");
+
+        let now_string = crate::service::resource_locks::now_string();
+        let mut count_stmt = conn.prepare_cached(&count_query)?;
+        let count_params_refs: Vec<&dyn rusqlite::ToSql> =
+            vec![&now_string as &dyn rusqlite::ToSql];
+
+        let primary_count: i64 = count_stmt
+            .query_row(count_params_refs.as_slice(), |row| row.get(0))
+            .unwrap_or(0);
+
+        // If primary query returns empty, check for starvation and run fallback
+        if primary_count == 0 {
+            if let Some(fallback_beads) = detect_and_recover_starvation(conn)? {
+                // Get database path for log file resolution
+                let db_path = conn
+                    .query_row("PRAGMA database_list", [], |row| {
+                        let name: String = row.get(1)?;
+                        let path: String = row.get(2)?;
+                        if name == "main" && !path.is_empty() {
+                            Ok(path)
+                        } else {
+                            Err(rusqlite::Error::InvalidQuery)
+                        }
+                    })
+                    .optional()
+                    .unwrap_or_default();
+
+                if let Some(db_path_str) = db_path {
+                    let db_path = std::path::Path::new(&db_path_str);
+                    if let Some(workspace_dir) = db_path.parent() {
+                        let log_path = workspace_dir.join("diagnostics/pluck-fallback.log");
+                        log_fallback_activation_to_path(&fallback_beads, &log_path)?;
+                    }
+                }
+            }
+        }
+    }
 
     // Execute query
     let mut stmt = conn.prepare_cached(&query)?;
