@@ -26,13 +26,22 @@ dependents, which advances the frontier.
 ## Install
 
 ```bash
-cargo install --path .          # installs the `bead` binary
+# One-line installer (recommended)
+curl -fsSL https://github.com/jedarden/bead-rs/releases/latest/download/install.sh | bash
 bead --version
+
+# From GitHub (requires Rust 1.85+)
+cargo install --git https://github.com/jedarden/bead-rs --bin bead
+
+# From a local clone
+cargo install --path .
 ```
 
-Requires Rust 1.85 or newer ([ADR-004](docs/adr/004-raise-msrv-to-1.85-and-edition-2024.md)).
 SQLite is bundled; there is no system dependency and no network access at
 runtime.
+
+> **⚠️ Warning:** `cargo install bead` installs a different, unrelated crate
+> (an OCI container runtime). Use `--bin bead` or the one-liner above.
 
 ## Quick start
 
