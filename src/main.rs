@@ -248,6 +248,41 @@ fn publish_newly_restored_state(no_auto_flush: bool) -> Result<()> {
     .map_err(|source| Error::PostCommitPublicationFailed { source })
 }
 
+/// Publish an initial checkpoint after init creates a new workspace.
+/// Such a workspace did not exist when the normal pre-dispatch probe ran, so
+/// it needs the same post-commit publication tail armed after initialization.
+/// The workspace is empty (no issues, no events), so this publishes a zero-issue
+/// generation as the initial checkpoint.
+fn publish_initial_state(no_auto_flush: bool) -> Result<()> {
+    if no_auto_flush {
+        return Ok(());
+    }
+    let config = match store::WorkspaceConfig::probe()? {
+        store::WorkspaceState::Ready(config) => config,
+        _ => return Ok(()),
+    };
+    let checkpoint_config =
+        service::load_checkpoint_config(&config.root.join(".beads")).map_err(Error::Internal)?;
+    if !checkpoint_config.auto_flush_enabled() {
+        return Ok(());
+    }
+    let conn = store::open_configured_connection(&config.database_path())?;
+    let live = service::read_live_event_sequence(&conn).unwrap_or(0);
+    if service::read_covered_event_sequence(&config.root.join(".beads"))
+        .is_some_and(|covered| covered >= live)
+    {
+        return Ok(());
+    }
+    let mut store = store::SqliteStore::from_conn(conn);
+    service::publish_forensic_checkpoint(
+        &mut store,
+        &checkpoint_config,
+        &config.root.join(".beads"),
+    )
+    .map(|_| ())
+    .map_err(|source| Error::PostCommitPublicationFailed { source })
+}
+
 fn execute_command(cli: Cli) -> Result<()> {
     // R030: publish the discovery override before anything resolves a
     // workspace, so `publication_probe` and every command's `discover` see
@@ -259,6 +294,7 @@ fn execute_command(cli: Cli) -> Result<()> {
     // before `cli` moves into dispatch.
     let no_auto_flush = cli.no_auto_flush;
     let restore_without_probe = matches!(&cli.command, Command::Restore(_));
+    let init_without_probe = matches!(&cli.command, Command::Init(_));
     let probe = publication_probe(no_auto_flush);
 
     let result = dispatch_command(cli);
@@ -268,40 +304,46 @@ fn execute_command(cli: Cli) -> Result<()> {
             publish_after_commit(probe)?;
         } else if restore_without_probe {
             publish_newly_restored_state(no_auto_flush)?;
+        } else if init_without_probe {
+            // Publish initial checkpoint after init if it created a new workspace
+            let created_new_workspace = result.as_ref().unwrap();
+            if *created_new_workspace {
+                publish_initial_state(no_auto_flush)?;
+            }
         }
     }
 
-    result
+    result.map(|_| ())
 }
 
-fn dispatch_command(cli: Cli) -> Result<()> {
+fn dispatch_command(cli: Cli) -> Result<bool> {
     match cli.command {
         Command::Init(opts) => cmd_init(opts),
-        Command::Restore(opts) => cmd_restore(opts),
-        Command::Create(opts) => cmd_create(opts),
-        Command::Claim(opts) => cmd_claim(opts),
-        Command::List(opts) => cmd_list(opts),
-        Command::Show(opts) => cmd_show(opts),
-        Command::Update(opts) => cmd_update(opts),
-        Command::Release(opts) => cmd_release(opts),
-        Command::Close(opts) => cmd_close(opts),
-        Command::Reopen(opts) => cmd_reopen(opts),
-        Command::Label(opts) => cmd_label(opts),
-        Command::Resource(opts) => cmd_resource(opts),
-        Command::Dep(opts) => cmd_dep(opts),
-        Command::Ref(opts) => cmd_ref(opts),
-        Command::Manifest(opts) => cmd_manifest(opts),
-        Command::Sync(opts) => cmd_sync(opts),
-        Command::Doctor(opts) => cmd_doctor(opts),
-        Command::Capabilities(opts) => cmd_capabilities(opts),
-        Command::Schema(opts) => cmd_schema(opts),
-        Command::Query(opts) => cmd_query(opts),
-        Command::Changes(opts) => cmd_changes(opts),
-        Command::Data(opts) => cmd_data(opts),
-        Command::Why(opts) => cmd_why(opts),
-        Command::Compare(opts) => cmd_compare(opts),
-        Command::Recurrence(opts) => cmd_recurrence(opts),
-        Command::Policy(opts) => cmd_policy(opts),
+        Command::Restore(opts) => cmd_restore(opts).map(|_| false),
+        Command::Create(opts) => cmd_create(opts).map(|_| false),
+        Command::Claim(opts) => cmd_claim(opts).map(|_| false),
+        Command::List(opts) => cmd_list(opts).map(|_| false),
+        Command::Show(opts) => cmd_show(opts).map(|_| false),
+        Command::Update(opts) => cmd_update(opts).map(|_| false),
+        Command::Release(opts) => cmd_release(opts).map(|_| false),
+        Command::Close(opts) => cmd_close(opts).map(|_| false),
+        Command::Reopen(opts) => cmd_reopen(opts).map(|_| false),
+        Command::Label(opts) => cmd_label(opts).map(|_| false),
+        Command::Resource(opts) => cmd_resource(opts).map(|_| false),
+        Command::Dep(opts) => cmd_dep(opts).map(|_| false),
+        Command::Ref(opts) => cmd_ref(opts).map(|_| false),
+        Command::Manifest(opts) => cmd_manifest(opts).map(|_| false),
+        Command::Sync(opts) => cmd_sync(opts).map(|_| false),
+        Command::Doctor(opts) => cmd_doctor(opts).map(|_| false),
+        Command::Capabilities(opts) => cmd_capabilities(opts).map(|_| false),
+        Command::Schema(opts) => cmd_schema(opts).map(|_| false),
+        Command::Query(opts) => cmd_query(opts).map(|_| false),
+        Command::Changes(opts) => cmd_changes(opts).map(|_| false),
+        Command::Data(opts) => cmd_data(opts).map(|_| false),
+        Command::Why(opts) => cmd_why(opts).map(|_| false),
+        Command::Compare(opts) => cmd_compare(opts).map(|_| false),
+        Command::Recurrence(opts) => cmd_recurrence(opts).map(|_| false),
+        Command::Policy(opts) => cmd_policy(opts).map(|_| false),
     }
 }
 
@@ -420,7 +462,7 @@ fn cmd_restore(opts: cli::RestoreOptions) -> Result<()> {
     Ok(())
 }
 
-fn cmd_init(opts: cli::InitOptions) -> Result<()> {
+fn cmd_init(opts: cli::InitOptions) -> Result<bool> {
     let store = store::SqliteStore::new();
 
     // Check if workspace already exists. An uninitialized workspace (committed
@@ -457,7 +499,7 @@ fn cmd_init(opts: cli::InitOptions) -> Result<()> {
                     eprintln!("Schema up to date (version {after})");
                 }
             }
-            return Ok(());
+            return Ok(false);
         }
         store::WorkspaceState::Uninitialized { root, .. } => {
             eprintln!(
@@ -487,7 +529,7 @@ fn cmd_init(opts: cli::InitOptions) -> Result<()> {
     eprintln!("  UUID: {}", config.uuid);
     eprintln!("  Prefix: {}", config.prefix);
 
-    Ok(())
+    Ok(true)
 }
 
 fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
