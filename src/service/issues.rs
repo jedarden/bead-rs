@@ -363,6 +363,7 @@ fn detect_and_recover_starvation(conn: &Connection) -> Result<Option<Vec<String>
 }
 
 /// Log fallback activation to diagnostics file
+#[allow(dead_code)]
 fn log_fallback_activation(bead_ids: &[String]) -> Result<()> {
     use std::fs::OpenOptions;
     use std::io::Write;
