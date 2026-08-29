@@ -298,13 +298,18 @@ fn detect_and_recover_starvation(conn: &Connection) -> Result<Option<Vec<String>
         "SELECT id, assignee FROM issues
          WHERE base_status = 'open' AND assignee IS NOT NULL
          AND (manual_blocked IS NULL OR manual_blocked = 0)
-         ORDER BY priority ASC, created_at ASC, id ASC"
+         ORDER BY priority ASC, created_at ASC, id ASC",
     )?;
 
     let fallback_candidates: Vec<(String, Option<String>)> = stmt
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to fetch fallback candidates: {}", e)))?;
+        .map_err(|e| {
+            Error::Internal(anyhow::anyhow!(
+                "Failed to fetch fallback candidates: {}",
+                e
+            ))
+        })?;
 
     if fallback_candidates.is_empty() {
         // No open beads with assignees - not a starvation situation
@@ -335,9 +340,21 @@ fn detect_and_recover_starvation(conn: &Connection) -> Result<Option<Vec<String>
 
         conn.execute(
             "INSERT INTO events (issue_id, kind, actor, time, detail) VALUES (?1, ?2, ?3, ?4, ?5)",
-            (&bead_id, "updated", "system", &now, &event_detail.to_string()),
+            (
+                &bead_id,
+                "updated",
+                "system",
+                &now,
+                &event_detail.to_string(),
+            ),
         )
-        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to record fallback event for {}: {}", bead_id, e)))?;
+        .map_err(|e| {
+            Error::Internal(anyhow::anyhow!(
+                "Failed to record fallback event for {}: {}",
+                bead_id,
+                e
+            ))
+        })?;
 
         recovered_ids.push(bead_id);
     }
@@ -354,8 +371,12 @@ fn log_fallback_activation(bead_ids: &[String]) -> Result<()> {
     let log_path = format!("{}/pluck-fallback.log", diagnostics_dir);
 
     // Create diagnostics directory if it doesn't exist
-    std::fs::create_dir_all(diagnostics_dir)
-        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to create diagnostics directory: {}", e)))?;
+    std::fs::create_dir_all(diagnostics_dir).map_err(|e| {
+        Error::Internal(anyhow::anyhow!(
+            "Failed to create diagnostics directory: {}",
+            e
+        ))
+    })?;
 
     // Append to log file
     let mut file = OpenOptions::new()
@@ -387,8 +408,12 @@ fn log_fallback_activation_to_path(bead_ids: &[String], log_path: &std::path::Pa
 
     // Create parent directory if it doesn't exist
     if let Some(parent) = log_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to create diagnostics directory: {}", e)))?;
+        std::fs::create_dir_all(parent).map_err(|e| {
+            Error::Internal(anyhow::anyhow!(
+                "Failed to create diagnostics directory: {}",
+                e
+            ))
+        })?;
     }
 
     // Append to log file

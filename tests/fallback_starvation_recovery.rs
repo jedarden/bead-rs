@@ -4,8 +4,8 @@
 //! from starvation situations where beads should be available but aren't showing
 //! up in the ready frontier due to stale assignees.
 
-use bead_rs::service::issues;
 use assert_cmd::Command;
+use bead_rs::service::issues;
 use tempfile::TempDir;
 
 fn create_workspace() -> TempDir {
@@ -77,47 +77,96 @@ fn test_fallback_activates_on_empty_ready_frontier_with_assigned_open_beads() {
 
     // Verify initial state - beads have assignees
     let bead1_assignee_before: Option<String> = conn
-        .query_row("SELECT assignee FROM issues WHERE id = 'test-bead-001'", [], |row| row.get(0))
+        .query_row(
+            "SELECT assignee FROM issues WHERE id = 'test-bead-001'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
-    assert!(bead1_assignee_before.is_some(), "Bead 1 should have an assignee before fallback");
+    assert!(
+        bead1_assignee_before.is_some(),
+        "Bead 1 should have an assignee before fallback"
+    );
 
     // Test: Query ready frontier - this should trigger fallback
     let ready_beads = issues::list_issues(&conn, None, None, true, 10).unwrap();
-    assert_eq!(ready_beads.len(), 2, "Ready frontier should have 2 beads after fallback");
+    assert_eq!(
+        ready_beads.len(),
+        2,
+        "Ready frontier should have 2 beads after fallback"
+    );
 
     // Verify fallback was triggered - check that assignees were cleared
     let bead1_assignee: Option<String> = conn
-        .query_row("SELECT assignee FROM issues WHERE id = 'test-bead-001'", [], |row| row.get(0))
+        .query_row(
+            "SELECT assignee FROM issues WHERE id = 'test-bead-001'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
-    assert!(bead1_assignee.is_none(), "Bead 1 should have assignee cleared after fallback");
+    assert!(
+        bead1_assignee.is_none(),
+        "Bead 1 should have assignee cleared after fallback"
+    );
 
     let bead2_assignee: Option<String> = conn
-        .query_row("SELECT assignee FROM issues WHERE id = 'test-bead-002'", [], |row| row.get(0))
+        .query_row(
+            "SELECT assignee FROM issues WHERE id = 'test-bead-002'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
-    assert!(bead2_assignee.is_none(), "Bead 2 should have assignee cleared after fallback");
+    assert!(
+        bead2_assignee.is_none(),
+        "Bead 2 should have assignee cleared after fallback"
+    );
 
     // Verify beads are now in ready frontier
     let ready_beads_after = issues::list_issues(&conn, None, None, true, 10).unwrap();
-    assert_eq!(ready_beads_after.len(), 2, "Ready frontier should have 2 beads after fallback");
+    assert_eq!(
+        ready_beads_after.len(),
+        2,
+        "Ready frontier should have 2 beads after fallback"
+    );
 
     // Verify beads are now in ready frontier and assignees are cleared
     let bead1_assignee_after: Option<String> = conn
-        .query_row("SELECT assignee FROM issues WHERE id = 'test-bead-001'", [], |row| row.get(0))
+        .query_row(
+            "SELECT assignee FROM issues WHERE id = 'test-bead-001'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
-    assert!(bead1_assignee_after.is_none(), "Bead 1 should have assignee cleared after fallback");
+    assert!(
+        bead1_assignee_after.is_none(),
+        "Bead 1 should have assignee cleared after fallback"
+    );
 
     let bead2_assignee_after: Option<String> = conn
-        .query_row("SELECT assignee FROM issues WHERE id = 'test-bead-002'", [], |row| row.get(0))
+        .query_row(
+            "SELECT assignee FROM issues WHERE id = 'test-bead-002'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
-    assert!(bead2_assignee_after.is_none(), "Bead 2 should have assignee cleared after fallback");
+    assert!(
+        bead2_assignee_after.is_none(),
+        "Bead 2 should have assignee cleared after fallback"
+    );
 
     // Verify fallback log was created
     let log_path = workspace_path.join(".beads/diagnostics/pluck-fallback.log");
     assert!(log_path.exists(), "Fallback log should be created");
 
     let log_content = std::fs::read_to_string(&log_path).unwrap();
-    assert!(log_content.contains("test-bead-001"), "Log should contain bead-001");
-    assert!(log_content.contains("test-bead-002"), "Log should contain bead-002");
+    assert!(
+        log_content.contains("test-bead-001"),
+        "Log should contain bead-001"
+    );
+    assert!(
+        log_content.contains("test-bead-002"),
+        "Log should contain bead-002"
+    );
 }
 
 #[test]
@@ -159,7 +208,10 @@ fn test_fallback_does_not_activate_when_ready_frontier_has_beads() {
 
     // Verify fallback log was NOT created
     let log_path = workspace_path.join(".beads/diagnostics/pluck-fallback.log");
-    assert!(!log_path.exists(), "Fallback log should not be created when ready frontier is not empty");
+    assert!(
+        !log_path.exists(),
+        "Fallback log should not be created when ready frontier is not empty"
+    );
 }
 
 #[test]
@@ -202,5 +254,8 @@ fn test_fallback_does_not_activate_when_no_open_beads_exist() {
 
     // Verify fallback log was NOT created (because no open beads exist)
     let log_path = workspace_path.join(".beads/diagnostics/pluck-fallback.log");
-    assert!(!log_path.exists(), "Fallback log should not be created when no open beads exist");
+    assert!(
+        !log_path.exists(),
+        "Fallback log should not be created when no open beads exist"
+    );
 }

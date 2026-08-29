@@ -361,7 +361,9 @@ malformed json line 3"#,
     assert!(stderr.contains("malformed_json"));
 
     // Should show the line numbers where errors occurred
-    assert!(stderr.contains("Line 151") || stderr.contains("Line 152") || stderr.contains("Line 153"));
+    assert!(
+        stderr.contains("Line 151") || stderr.contains("Line 152") || stderr.contains("Line 153")
+    );
 }
 
 #[test]
