@@ -151,6 +151,7 @@ pub fn generate_capabilities(profile: &str) -> Result<Capabilities> {
             "reopen".to_string(),
             "restore".to_string(),
             "show".to_string(),
+            "schema".to_string(),
             "sync".to_string(),
             "update".to_string(),
             "why".to_string(),
