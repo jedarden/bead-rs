@@ -67,13 +67,14 @@ fn test_capabilities_native_profile() {
     assert_eq!(caps["priorities"]["default"], 2);
     assert_eq!(caps["priorities"]["p4_claimable_by_fifo"], true);
 
-    // Verify statuses array
+    // Verify statuses array (only stored statuses, not derived presentation statuses)
     let statuses = caps["statuses"].as_array().unwrap();
     assert!(statuses.contains(&Value::String("open".to_string())));
     assert!(statuses.contains(&Value::String("closed".to_string())));
     assert!(statuses.contains(&Value::String("in_progress".to_string())));
     assert!(statuses.contains(&Value::String("deferred".to_string())));
-    assert!(statuses.contains(&Value::String("blocked".to_string())));
+    // Blocked is a derived presentation status, not a stored status
+    assert!(!statuses.contains(&Value::String("blocked".to_string())));
 
     // Verify checkpoint modes
     let modes = caps["checkpoint_modes"].as_array().unwrap();
