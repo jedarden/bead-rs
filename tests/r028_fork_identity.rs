@@ -12,6 +12,17 @@ use tempfile::TempDir;
 
 /// Helper to create a test workspace with a clean checkpoint
 fn create_forkable_workspace() -> (TempDir, WorkspaceConfig, Connection) {
+    create_workspace_with_init_args(&["init", "--prefix", "test-prefix"])
+}
+
+/// Like `create_forkable_workspace`, but `bead init --no-auto-flush` leaves
+/// the workspace with only the placeholder checkpoint_state row: no
+/// generation has been published.
+fn create_unpublished_workspace() -> (TempDir, WorkspaceConfig, Connection) {
+    create_workspace_with_init_args(&["init", "--prefix", "test-prefix", "--no-auto-flush"])
+}
+
+fn create_workspace_with_init_args(args: &[&str]) -> (TempDir, WorkspaceConfig, Connection) {
     let temp_dir = TempDir::new().unwrap();
     let root = temp_dir.path();
 
@@ -22,7 +33,7 @@ fn create_forkable_workspace() -> (TempDir, WorkspaceConfig, Connection) {
     Command::cargo_bin("bead")
         .unwrap()
         .current_dir(root)
-        .args(["init", "--prefix", "test-prefix"])
+        .args(args)
         .assert()
         .success();
 
@@ -301,9 +312,9 @@ fn test_fork_requires_clean_checkpoint() {
 
 #[test]
 fn test_fork_requires_checkpoint() {
-    // A fresh initialized workspace has only the placeholder checkpoint_state
-    // row; no generation has been published yet.
-    let (_temp_dir, _config, conn) = create_forkable_workspace();
+    // A workspace initialised with --no-auto-flush has only the placeholder
+    // checkpoint_state row; no generation has been published yet.
+    let (_temp_dir, _config, conn) = create_unpublished_workspace();
 
     // Fork should fail when no checkpoint exists
     let mut store = SqliteStore::from_conn(conn);

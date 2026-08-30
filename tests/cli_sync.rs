@@ -89,15 +89,15 @@ fn test_sync_flush_only_basic() {
 fn test_sync_flush_only_empty_workspace() {
     let temp_dir = create_workspace();
 
-    // Flush empty forensic checkpoint
+    // `bead init` already published the empty generation, so a flush-only on
+    // an untouched workspace has nothing new to publish and says so.
     Command::cargo_bin("bead")
         .unwrap()
         .args(["sync", "flush-only"])
         .current_dir(temp_dir.path())
         .assert()
         .success()
-        .stderr(predicate::str::contains("Flushed forensic checkpoint:"))
-        .stderr(predicate::str::contains("Issues: 0"));
+        .stderr(predicate::str::contains("Checkpoint already current"));
 
     // Verify forensic checkpoint structure exists
     let checkpoint_base = temp_dir.path().join(".beads/checkpoint");

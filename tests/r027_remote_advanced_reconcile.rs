@@ -471,10 +471,14 @@ fn reconcile_refuses_behind_aligned_and_absent_with_exit_2() {
         .failure()
         .code(2);
 
-    // absent: `bead init` publishes no checkpoint until a mutation does.
+    // absent: `bead init --no-auto-flush` publishes nothing, so the workspace
+    // has no checkpoint at all.
     let absent = tempfile::tempdir().unwrap();
     let absent_path = absent.path().to_path_buf();
-    run(&absent_path, &["init", "--prefix", "r027"]);
+    run(
+        &absent_path,
+        &["init", "--prefix", "r027", "--no-auto-flush"],
+    );
     assert_eq!(relationship(&absent_path), "absent");
     bead(&absent_path)
         .args(["sync", "reconcile", "--actor", "jed"])

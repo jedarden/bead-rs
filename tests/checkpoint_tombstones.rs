@@ -152,9 +152,11 @@ fn tombstones_applied_and_object_set_bounded() {
 
         // The retained object set never exceeds the generations current.json
         // and previous.json reference
+        // previous.json already exists at flush 1: it references the empty
+        // generation `bead init` published.
         let retained: Vec<String> = {
             let mut set = vec![root.clone()];
-            if i >= 2 {
+            if checkpoint_dir.join("previous.json").exists() {
                 set.push(active_root(&read_pointer(&checkpoint_dir, "previous.json")));
             }
             set.sort();
@@ -262,20 +264,20 @@ fn status_reports_unresolved_tombstones_until_reapplied() {
 
     let checkpoint_dir = workspace.join(".beads/checkpoint");
 
-    // Before any flush there is no checkpoint to commit
+    // `bead init` publishes an initial (empty) generation, so a fresh
+    // workspace already has a healthy, committable checkpoint.
     let status = run_status_json(workspace);
     assert_eq!(
         status.get("checkpoint_present").unwrap(),
-        &Value::Bool(false)
+        &Value::Bool(true)
     );
-    assert_eq!(status.get("ready_to_commit").unwrap(), &Value::Bool(false));
+    assert_eq!(status.get("ready_to_commit").unwrap(), &Value::Bool(true));
     assert!(status
-        .get("not_ready_reasons")
+        .get("unresolved_tombstones")
         .unwrap()
         .as_array()
         .unwrap()
-        .iter()
-        .any(|r| r.as_str().unwrap().contains("no checkpoint published")));
+        .is_empty());
 
     run(workspace, &["create", "--title", "First"]);
     assert!(run_flush(workspace).status.success());

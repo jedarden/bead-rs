@@ -139,16 +139,17 @@ fn rehearse_reports_correct_issue_and_event_counts() {
 #[test]
 #[serial]
 fn rehearse_fails_with_a_clear_message_when_no_checkpoint_exists() {
-    // A freshly-init'd workspace with no flush yet has no .beads/checkpoint/
-    // content at all -- rehearse must fail with a message naming the real
-    // problem, not a generic "Internal error" (the exact bug this file's
-    // predecessor should have, but never did, catch).
+    // `bead init` normally publishes an initial generation; `--no-auto-flush`
+    // leaves the workspace with no .beads/checkpoint/ content at all --
+    // rehearse must then fail with a message naming the real problem, not a
+    // generic "Internal error" (the exact bug this file's predecessor should
+    // have, but never did, catch).
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path();
 
     Command::cargo_bin("bead")
         .unwrap()
-        .arg("init")
+        .args(["init", "--no-auto-flush"])
         .current_dir(path)
         .env("HOME", path.to_str().unwrap())
         .assert()
