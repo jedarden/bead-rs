@@ -89,7 +89,7 @@ fn test_fallback_activates_on_empty_ready_frontier_with_assigned_open_beads() {
     );
 
     // Test: Query ready frontier - this should trigger fallback
-    let ready_beads = issues::list_issues(&conn, None, None, true, 10).unwrap();
+    let ready_beads = issues::list_issues(&conn, None, None, true, false, 10).unwrap();
     assert_eq!(
         ready_beads.len(),
         2,
@@ -122,7 +122,7 @@ fn test_fallback_activates_on_empty_ready_frontier_with_assigned_open_beads() {
     );
 
     // Verify beads are now in ready frontier
-    let ready_beads_after = issues::list_issues(&conn, None, None, true, 10).unwrap();
+    let ready_beads_after = issues::list_issues(&conn, None, None, true, false, 10).unwrap();
     assert_eq!(
         ready_beads_after.len(),
         2,
@@ -203,7 +203,7 @@ fn test_fallback_does_not_activate_when_ready_frontier_has_beads() {
     ).unwrap();
 
     // Test: Query ready frontier (should have 1 bead)
-    let ready_beads = issues::list_issues(&conn, None, None, true, 10).unwrap();
+    let ready_beads = issues::list_issues(&conn, None, None, true, false, 10).unwrap();
     assert_eq!(ready_beads.len(), 1, "Ready frontier should have 1 bead");
 
     // Verify fallback log was NOT created
@@ -249,7 +249,7 @@ fn test_fallback_does_not_activate_when_no_open_beads_exist() {
     ).unwrap();
 
     // Test: Query ready frontier (should be empty)
-    let ready_beads = issues::list_issues(&conn, None, None, true, 10).unwrap();
+    let ready_beads = issues::list_issues(&conn, None, None, true, false, 10).unwrap();
     assert_eq!(ready_beads.len(), 0, "Ready frontier should be empty");
 
     // Verify fallback log was NOT created (because no open beads exist)
