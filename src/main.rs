@@ -299,17 +299,14 @@ fn execute_command(cli: Cli) -> Result<()> {
 
     let result = dispatch_command(cli);
 
-    if result.is_ok() {
+    if let Ok(created_new_workspace) = &result {
         if let Some(probe) = probe.as_ref() {
             publish_after_commit(probe)?;
         } else if restore_without_probe {
             publish_newly_restored_state(no_auto_flush)?;
-        } else if init_without_probe {
+        } else if init_without_probe && *created_new_workspace {
             // Publish initial checkpoint after init if it created a new workspace
-            let created_new_workspace = result.as_ref().unwrap();
-            if *created_new_workspace {
-                publish_initial_state(no_auto_flush)?;
-            }
+            publish_initial_state(no_auto_flush)?;
         }
     }
 

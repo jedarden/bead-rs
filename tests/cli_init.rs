@@ -111,7 +111,10 @@ fn test_init_creates_initial_checkpoint() {
 
     // Check that initial checkpoint was created
     let checkpoint_current = root.join(".beads/checkpoint/current.json");
-    assert!(checkpoint_current.exists(), "Initial checkpoint current.json should exist after init");
+    assert!(
+        checkpoint_current.exists(),
+        "Initial checkpoint current.json should exist after init"
+    );
 
     // Verify the checkpoint points to a zero-issue generation
     let checkpoint_content = std::fs::read_to_string(&checkpoint_current).unwrap();
@@ -125,11 +128,17 @@ fn test_init_creates_initial_checkpoint() {
 
     // Verify forensic.jsonl exists (monolithic mode)
     let forensic_path = root.join(".beads/checkpoint/forensic.jsonl");
-    assert!(forensic_path.exists(), "Forensic checkpoint should exist in monolithic mode");
+    assert!(
+        forensic_path.exists(),
+        "Forensic checkpoint should exist in monolithic mode"
+    );
 
     // Verify it's empty (no records)
     let forensic_content = std::fs::read_to_string(&forensic_path).unwrap();
-    assert!(forensic_content.lines().count() == 0, "Initial checkpoint should contain zero records");
+    assert!(
+        forensic_content.lines().count() == 0,
+        "Initial checkpoint should contain zero records"
+    );
 }
 
 #[test]
@@ -146,7 +155,10 @@ fn test_init_with_no_auto_flush_skips_checkpoint() {
 
     // Check that initial checkpoint was NOT created
     let checkpoint_current = root.join(".beads/checkpoint/current.json");
-    assert!(!checkpoint_current.exists(), "Initial checkpoint should not exist with --no-auto-flush");
+    assert!(
+        !checkpoint_current.exists(),
+        "Initial checkpoint should not exist with --no-auto-flush"
+    );
 }
 
 #[test]
@@ -168,7 +180,10 @@ fn test_init_idempotent_does_not_overwrite_checkpoint() {
 
     // Verify checkpoint was not overwritten
     let second_checkpoint = std::fs::read_to_string(&checkpoint_current).unwrap();
-    assert_eq!(first_checkpoint, second_checkpoint, "Second init should not overwrite existing checkpoint");
+    assert_eq!(
+        first_checkpoint, second_checkpoint,
+        "Second init should not overwrite existing checkpoint"
+    );
 }
 
 #[test]
