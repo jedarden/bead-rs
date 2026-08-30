@@ -515,6 +515,128 @@ pub fn create_issue_internal(
     Ok(id.to_string())
 }
 
+/// Show exclusion reasons for beads not in the ready frontier
+fn show_exclusion_reasons(conn: &Connection, limit: &i64) -> Result<()> {
+    let now_string = crate::service::resource_locks::now_string();
+
+    // Get all open beads with their details
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, title, priority, assignee, manual_blocked, created_at
+         FROM issues
+         WHERE base_status = 'open'
+         ORDER BY priority ASC, created_at ASC, id ASC
+         LIMIT ?1")?;
+
+    let beads: Vec<(String, String, i64, Option<String>, Option<bool>, String)> = stmt
+        .query_map([limit], |row| {
+            Ok((
+                row.get(0)?, // id
+                row.get(1)?, // title
+                row.get(2)?, // priority
+                row.get(3)?, // assignee
+                row.get(4)?, // manual_blocked
+                row.get(5)?, // created_at
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to fetch beads: {}", e)))?;
+
+    if beads.is_empty() {
+        eprintln!("No open beads found in workspace");
+        return Ok(());
+    }
+
+    eprintln!("Analyzing {} open bead(s):", beads.len());
+
+    for (id, title, _priority, assignee, manual_blocked, _created_at) in beads {
+        let mut reasons = Vec::new();
+
+        // Check assignee
+        if assignee.is_some() {
+            reasons.push(format!("has assignee: {}", assignee.as_ref().unwrap()));
+        }
+
+        // Check manual block
+        if manual_blocked.unwrap_or(false) {
+            reasons.push("manually blocked".to_string());
+        }
+
+        // Check dependencies
+        let has_blockers: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM dependencies
+                 WHERE blocked_issue_id = ?1 AND kind = 'blocks'
+                 AND blocker_issue_id IN (SELECT id FROM issues WHERE base_status != 'closed')",
+                [&id],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        if has_blockers > 0 {
+            // Get blocker IDs
+            let mut blocker_stmt = conn.prepare_cached(
+                "SELECT blocker_issue_id FROM dependencies
+                 WHERE blocked_issue_id = ?1 AND kind = 'blocks'
+                 AND blocker_issue_id IN (SELECT id FROM issues WHERE base_status != 'closed')
+                 LIMIT 5")?;
+
+            let blocker_ids: Vec<String> = blocker_stmt
+                .query_map([&id], |row| row.get(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap_or_default();
+
+            if blocker_ids.len() < has_blockers as usize {
+                reasons.push(format!(
+                    "blocked by {}+ unclosed issues (including: {})",
+                    has_blockers,
+                    blocker_ids.join(", ")
+                ));
+            } else {
+                reasons.push(format!(
+                    "blocked by {} unclosed issue(s): {}",
+                    has_blockers,
+                    blocker_ids.join(", ")
+                ));
+            }
+        }
+
+        // Check resource conflicts
+        let has_conflicts: i64 = conn
+            .query_row(
+                "SELECT COUNT(DISTINCT held_lock.issue_id)
+                 FROM issue_resource_keys candidate_key
+                 JOIN resource_locks held_lock ON held_lock.resource_key = candidate_key.resource_key
+                 WHERE candidate_key.issue_id = ?1
+                   AND held_lock.issue_id != ?1
+                   AND (held_lock.lease_fencing_token IS NULL OR EXISTS (
+                       SELECT 1 FROM leases active_lease
+                       WHERE active_lease.issue_id = held_lock.issue_id
+                         AND active_lease.fencing_token = held_lock.lease_fencing_token
+                         AND active_lease.expires_at > ?2
+                   ))",
+                [&id, &now_string],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        if has_conflicts > 0 {
+            reasons.push(format!("resource conflicts with {} other issue(s)", has_conflicts));
+        }
+
+        // Print result
+        if reasons.is_empty() {
+            eprintln!("  ✓ {} [{}] - READY", id, title);
+        } else {
+            eprintln!("  ✗ {} [{}] - EXCLUDED:", id, title);
+            for reason in reasons {
+                eprintln!("      - {}", reason);
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// List issues with optional filtering
 pub fn list_issues(
     conn: &Connection,
@@ -523,7 +645,48 @@ pub fn list_issues(
     ready_only: bool,
     blocked_only: bool,
     limit: i64,
+    verbose: bool,
 ) -> Result<Vec<Issue>> {
+    // Log total open beads if verbose
+    if verbose {
+        let total_open: i64 = conn
+            .query_row("SELECT COUNT(*) FROM issues WHERE base_status = 'open'", [], |row| {
+                row.get(0)
+            })
+            .unwrap_or(0);
+
+        let total_with_assignee: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM issues WHERE base_status = 'open' AND assignee IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        let total_blocked: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM issues WHERE base_status = 'open' AND (manual_blocked = 1)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        let total_with_dependencies: i64 = conn
+            .query_row(
+                "SELECT COUNT(DISTINCT blocked_issue_id) FROM dependencies WHERE kind = 'blocks'
+                 AND blocked_issue_id IN (SELECT id FROM issues WHERE base_status = 'open')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        eprintln!("=== VERBOSE: Ready Frontier Diagnostics ===");
+        eprintln!("Total open beads: {}", total_open);
+        eprintln!("Open beads with assignee: {}", total_with_assignee);
+        eprintln!("Open beads manually blocked: {}", total_blocked);
+        eprintln!("Open beads with dependencies: {}", total_with_dependencies);
+    }
+
     // Build query based on filters
     let mut query = String::from(
         "SELECT id, title, description, priority, base_status, assignee, issue_type,
@@ -591,6 +754,32 @@ pub fn list_issues(
     // Add limit
     query.push_str(" LIMIT ?");
     params.push(limit.to_string());
+
+    // Log filter criteria and SQL query if verbose
+    if verbose {
+        eprintln!("=== Filter Criteria ===");
+        if let Some(status) = status_filter {
+            eprintln!("Status filter: {}", status);
+        } else {
+            eprintln!("Status filter: None");
+        }
+        if let Some(assignee) = assignee_filter {
+            if assignee.is_empty() {
+                eprintln!("Assignee filter: NULL (unassigned)");
+            } else {
+                eprintln!("Assignee filter: {}", assignee);
+            }
+        } else {
+            eprintln!("Assignee filter: None");
+        }
+        eprintln!("Ready only: {}", ready_only);
+        eprintln!("Blocked only: {}", blocked_only);
+        eprintln!("Limit: {}", limit);
+
+        eprintln!("=== SQL Query ===");
+        eprintln!("{}", query);
+        eprintln!("Parameters: {:?}", params);
+    }
 
     // For ready frontier queries, check for starvation before executing
     if ready_only {
@@ -693,6 +882,22 @@ pub fn list_issues(
             );
         }
         issues.push(issue);
+    }
+
+    // Log result set size if verbose
+    if verbose {
+        eprintln!("=== Query Results ===");
+        eprintln!("Result set size: {}", issues.len());
+        if ready_only && issues.is_empty() {
+            eprintln!("WARNING: No ready beads found!");
+            eprintln!("This may indicate starvation - check diagnostics/pluck-fallback.log");
+        }
+    }
+
+    // When verbose and ready-only, show exclusion reasons for each bead
+    if verbose && ready_only {
+        eprintln!("=== Bead Exclusion Analysis ===");
+        show_exclusion_reasons(conn, &limit)?;
     }
 
     Ok(issues)

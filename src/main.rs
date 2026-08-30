@@ -823,6 +823,7 @@ fn cmd_list(opts: cli::ListOptions) -> Result<()> {
         opts.ready,
         blocked_only,
         opts.limit,
+        opts.verbose,
     )?;
 
     // Output results
@@ -2389,6 +2390,68 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
     } else {
         vec![service::doctor::DiagnosticScope::All] // Default to all scopes
     };
+
+    if opts.starvation_check {
+        // Run starvation check
+        eprintln!("Running starvation check...");
+        let report = service::doctor::run_starvation_check(&store::SqliteStore::new())?;
+
+        if opts.json {
+            // Output JSON report
+            let json_output = serde_json::to_string_pretty(&report).map_err(|e| {
+                Error::Internal(anyhow::anyhow!("Failed to serialize starvation report: {}", e))
+            })?;
+            println!("{}", json_output);
+        } else {
+            // Human-readable output
+            eprintln!();
+            eprintln!("Starvation Check Report");
+            eprintln!("=====================");
+            eprintln!("Timestamp: {}", report.timestamp);
+            eprintln!("Total open beads: {}", report.open_bead_count);
+            eprintln!("Ready beads: {}", report.ready_bead_count);
+            eprintln!("Excluded beads: {}", report.excluded_beads.len());
+            eprintln!();
+
+            if report.has_starvation {
+                eprintln!("⚠️  STARVATION DETECTED: Open beads exist but none are ready!");
+                eprintln!();
+            }
+
+            if report.excluded_beads.is_empty() {
+                eprintln!("✅ All open beads are in the ready frontier.");
+            } else {
+                eprintln!("Excluded beads (open but not ready):");
+                eprintln!();
+
+                for bead in &report.excluded_beads {
+                    eprintln!("  ID: {}", bead.id);
+                    eprintln!("  Title: {}", bead.title);
+                    eprintln!("  Priority: {}", bead.priority);
+                    eprintln!("  Reasons:");
+                    for reason in &bead.reasons {
+                        eprintln!("    - {}", reason);
+                    }
+                    if !bead.blocking_dependencies.is_empty() {
+                        eprintln!("  Blocking dependencies: {}", bead.blocking_dependencies.join(", "));
+                    }
+                    if !bead.resource_conflicts.is_empty() {
+                        eprintln!("  Resource conflicts: {}", bead.resource_conflicts.join(", "));
+                    }
+                    eprintln!();
+                }
+            }
+        }
+
+        // Exit with error if starvation is detected
+        if report.has_starvation {
+            return Err(Error::integrity(
+                "Starvation detected: open beads exist but none are in the ready frontier",
+            ));
+        }
+
+        return Ok(());
+    }
 
     if opts.repair {
         // Run repairs - maintain narrow allowlist (temp files, structure dirs)

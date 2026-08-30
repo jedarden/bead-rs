@@ -498,6 +498,10 @@ pub struct ListOptions {
     /// Maximum number of issues to return (0-999999)
     #[arg(long, default_value = "100")]
     pub limit: i64,
+
+    /// Show diagnostic information about filtering (SQL query, counts, exclusion reasons)
+    #[arg(long)]
+    pub verbose: bool,
 }
 
 /// Options for showing a single issue
@@ -1691,6 +1695,10 @@ pub struct DoctorOptions {
     /// Run disposable recovery rehearsal: create temp workspace, run diagnostics, re-export, compare semantic equivalence
     #[arg(long)]
     pub rehearse: bool,
+
+    /// Run starvation check: diagnose beads that are open but not appearing in the ready frontier
+    #[arg(long)]
+    pub starvation_check: bool,
 
     /// Diagnostic scopes: store, backup, schema, dependencies, comments, all (default: all)
     #[arg(long, value_delimiter = ',')]
