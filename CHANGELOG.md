@@ -2,7 +2,20 @@
 
 All notable changes to bead-rs are documented in this file.
 
-## [0.2.2] - 2026-08-29
+## [0.2.3] - 2026-08-30
+
+Same content as the 0.2.2 entry below plus the test-suite update for the
+initial checkpoint published by `bead init`. 0.2.2 was tagged on Forgejo before
+its CI ever ran green and was never released; 0.2.3 is the first release that
+carries the install contract.
+
+### Fixed
+- Tests follow the initial-checkpoint-on-init contract (checkpoint_tombstones,
+  cli_sync, r015/r027/r028); clippy `unnecessary_unwrap` in main.rs
+- `bead init` publishes an initial (empty) generation so a fresh workspace is
+  never a dangling checkpoint pointer (`--no-auto-flush` suppresses it)
+
+## [0.2.2] - 2026-08-29 (tagged, never released)
 
 ### Added
 - Install contract: `install.sh` and architecture-suffixed release binaries (`bead-x86_64-unknown-linux-gnu`, `bead-aarch64-unknown-linux-gnu`) with `checksums.txt` for verification
