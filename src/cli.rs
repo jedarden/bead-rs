@@ -439,7 +439,7 @@ pub struct CreateOptions {
     about = "List issues",
     long_about = "List issues with optional filtering and comment projection.
 
-Supports filtering by status, assignee, and ready frontier. Uses claim
+Supports filtering by status, assignee, ready frontier, and manual block. Uses claim
 ordering (priority ASC, created_at ASC, id ASC) for deterministic results.
 Ready frontier uses the same ordering as 'bead claim' but is read-only and
 does not reserve work.
@@ -448,12 +448,15 @@ EXAMPLES:
   bead list --json --limit 10                      # First 10 issues as JSON
   bead list --status open --assignee alice        # Open issues assigned to alice
   bead list --ready --limit 5                      # Next 5 ready candidates
+  bead list --blocked                               # Manually blocked open issues
   bead list --comments unresolved --json --limit 20  # Issues with unresolved comments
 
 FILTERS:
   --status VALUE    Filter by base status: open, in_progress, deferred, closed
+                    (Special case: 'blocked' is an alias for --blocked)
   --assignee NAME   Filter by assignee (exact match)
   --ready           Show only ready frontier issues (open, unassigned, not blocked)
+  --blocked         Show only manually blocked open issues
   --limit N         Maximum results (0-999999, default: 100)
 
 COMMENT PROJECTION:
@@ -464,8 +467,8 @@ COMMENT PROJECTION:
 OUTPUT:
   Without --json: human-readable table format
   With --json: one compact JSON object per line (compact JSONL format)
-  JSON output includes: id, title, priority, status, assignee, dependencies,
-  created_at, updated_at, and labels based on comment projection."
+  JSON output includes: id, title, priority, status, manual_blocked, effective_status,
+  assignee, dependencies, created_at, updated_at, and labels based on comment projection."
 )]
 pub struct ListOptions {
     /// Output in JSON format
@@ -483,6 +486,10 @@ pub struct ListOptions {
     /// Show only ready frontier issues
     #[arg(long)]
     pub ready: bool,
+
+    /// Show only manually blocked open issues
+    #[arg(long)]
+    pub blocked: bool,
 
     /// Comment projection: none, unresolved, or all (default: none)
     #[arg(long, default_value = "none")]
@@ -524,11 +531,13 @@ NEEDLE COMPATIBILITY:
 ISSUE DETAILS INCLUDE:
   - Basic fields: id, title, description, priority, status
   - Assignment: assignee (if any)
+  - Manual block: manual_blocked flag (true when explicitly blocked)
+  - Effective status: effective_status (shows 'blocked' when manual_blocked is true)
   - Timestamps: created_at, updated_at, closed_at (if closed)
   - Dependencies: blocked_by (blocking issues), blocking (issues this blocks)
   - Labels: all assigned labels
   - Comments: based on --comments projection
-  - Metadata: issue_type, manual_blocked flag, close_reason (if closed)"
+  - Metadata: issue_type, close_reason (if closed)"
 )]
 pub struct ShowOptions {
     /// Issue ID
@@ -560,7 +569,7 @@ Twenty competing claimants must never receive the same successful issue ID.
 
 EXAMPLES:
   bead claim --assignee alice --json          # Claim with JSON output
-  bead claim --assignee \"Team Backend\"       # Claim with team assignee
+  bead claim --assignee 'Team Backend'        # Claim with team assignee
   bead claim --assignee worker-1              # Claim for automated worker
 
 READY FRONTIER:

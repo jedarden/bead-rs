@@ -240,6 +240,8 @@ other task tracker. These conventions catch people out:
 | Ready work is a filter | `bead list --ready`, not a `ready` command |
 | `flush-only` is a subcommand | `bead sync flush-only`, not `bead sync --flush-only` |
 | `--json` emits NDJSON | one object per line, not an array (except `show`, which emits a one-element array) |
+| Manual blocking | `bead list --blocked` shows manually blocked open issues; `--status blocked` is an alias |
+| Effective status | JSON output includes `manual_blocked` (bool) and `effective_status` (shows "blocked" when manually blocked) |
 
 ## Documentation
 

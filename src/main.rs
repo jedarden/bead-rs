@@ -807,12 +807,21 @@ fn cmd_list(opts: cli::ListOptions) -> Result<()> {
         ));
     }
 
+    // Handle --status blocked as an alias for --blocked
+    let blocked_only = opts.blocked || opts.status.as_deref() == Some("blocked");
+    let status_filter = if blocked_only && opts.status.as_deref() == Some("blocked") {
+        None
+    } else {
+        opts.status.as_deref()
+    };
+
     // Get issues
     let issues = service::list_issues(
         &conn,
-        opts.status.as_deref(),
+        status_filter,
         opts.assignee.as_deref(),
         opts.ready,
+        blocked_only,
         opts.limit,
     )?;
 
@@ -2480,6 +2489,15 @@ fn to_needle_json(
         model::BaseStatus::Closed => "closed",
     };
 
+    let manual_blocked = issue.manual_blocked.unwrap_or(false);
+
+    // Effective status is "blocked" when manual_blocked is true and base_status is not closed
+    let effective_status = if manual_blocked && issue.base_status != model::BaseStatus::Closed {
+        "blocked"
+    } else {
+        status_str
+    };
+
     // Include all issue fields for complete representation
     let mut json_obj = serde_json::json!({
         "id": issue.id,
@@ -2488,6 +2506,8 @@ fn to_needle_json(
         "notes": issue.notes.as_ref().unwrap_or(&String::new()),
         "priority": issue.priority,
         "status": status_str,
+        "manual_blocked": manual_blocked,
+        "effective_status": effective_status,
         "assignee": issue.assignee,
         "dependencies": dependencies,
         "created_at": issue.created_at,

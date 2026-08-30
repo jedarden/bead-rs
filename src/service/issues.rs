@@ -521,6 +521,7 @@ pub fn list_issues(
     status_filter: Option<&str>,
     assignee_filter: Option<&str>,
     ready_only: bool,
+    blocked_only: bool,
     limit: i64,
 ) -> Result<Vec<Issue>> {
     // Build query based on filters
@@ -535,10 +536,21 @@ pub fn list_issues(
 
     // Add status filter if specified
     if let Some(status) = status_filter {
-        // Validate status value
-        BaseStatus::parse(status)?;
-        query.push_str(" AND base_status = ?");
-        params.push(status.to_string());
+        // Special case: "blocked" is an alias for manually blocked open issues
+        if status == "blocked" {
+            // This will be handled by the blocked_only filter below
+            // Don't add it to the base_status filter
+        } else {
+            // Validate status value
+            BaseStatus::parse(status)?;
+            query.push_str(" AND base_status = ?");
+            params.push(status.to_string());
+        }
+    }
+
+    // Add blocked filter
+    if blocked_only {
+        query.push_str(" AND base_status = 'open' AND (manual_blocked = 1)");
     }
 
     // Add assignee filter if specified

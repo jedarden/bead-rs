@@ -492,6 +492,25 @@ pub fn run_diagnostics_with_scopes(
                         })),
                     });
                 }
+
+                // Add manual blocked check if any exist
+                if report.manual_blocked_count > 0 {
+                    checks.push(DiagnosticCheck {
+                        name: "ready_frontier".to_string(),
+                        status: DiagnosticStatus::Warning,
+                        message: format!(
+                            "{} open issue(s) are manually blocked and excluded from the ready frontier. Use 'bead list --blocked' to view them.",
+                            report.manual_blocked_count
+                        ),
+                        scope: Some("dependencies".to_string()),
+                        details: Some(serde_json::json!({
+                            "manual_blocked_count": report.manual_blocked_count,
+                            "manual_blocked_ids": report.manual_blocked_ids,
+                            "explanation": "Open issues with manual_blocked=true are excluded from the ready frontier even if unassigned."
+                        })),
+                    });
+                    has_warnings = true;
+                }
             }
             Err(e) => {
                 has_errors = true;
@@ -1674,7 +1693,26 @@ fn check_ready_frontier(store: &impl Store) -> Result<ReadyFrontierReport> {
         .filter_map(|r| r.ok())
         .collect();
 
-    if held_result.is_empty() {
+    // Query for manually blocked open issues
+    let mut blocked_stmt = conn
+        .prepare(
+            "SELECT id FROM issues WHERE base_status = 'open' AND manual_blocked = 1 ORDER BY id",
+        )
+        .map_err(|e| Error::Integrity(format!("Failed to prepare statement: {}", e)))?;
+
+    let manual_blocked_result: Vec<String> = blocked_stmt
+        .query_map([], |row| {
+            let id: String = row.get(0)?;
+            Ok(id)
+        })
+        .map_err(|e| Error::Integrity(format!("Failed to query manual blocked issues: {}", e)))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let manual_blocked_ids = manual_blocked_result.clone();
+    let manual_blocked_count = manual_blocked_ids.len();
+
+    if held_result.is_empty() && manual_blocked_ids.is_empty() {
         return Ok(ReadyFrontierReport {
             has_held_issues: false,
             held_count: 0,
@@ -1682,6 +1720,8 @@ fn check_ready_frontier(store: &impl Store) -> Result<ReadyFrontierReport> {
             intentionally_held_ids: vec![],
             reason_codes: vec![],
             remedy: None,
+            manual_blocked_count: 0,
+            manual_blocked_ids: vec![],
         });
     }
 
@@ -1718,6 +1758,8 @@ fn check_ready_frontier(store: &impl Store) -> Result<ReadyFrontierReport> {
         held_ids,
         intentionally_held_ids,
         reason_codes,
+        manual_blocked_ids,
+        manual_blocked_count,
     ))
 }
 
@@ -1745,6 +1787,12 @@ pub struct ReadyFrontierReport {
 
     /// Exact remedy command for clearing held assignments
     pub remedy: Option<String>,
+
+    /// Count of manually blocked open issues
+    pub manual_blocked_count: usize,
+
+    /// Manually blocked open issue IDs
+    pub manual_blocked_ids: Vec<String>,
 }
 
 impl ReadyFrontierReport {
@@ -1753,6 +1801,8 @@ impl ReadyFrontierReport {
         held_ids: Vec<String>,
         intentionally_held_ids: Vec<String>,
         reason_codes: Vec<crate::service::claim::ReasonCode>,
+        manual_blocked_ids: Vec<String>,
+        manual_blocked_count: usize,
     ) -> Self {
         let reason_code_strings: Vec<String> =
             reason_codes.iter().map(|rc| rc.code_string()).collect();
@@ -1764,6 +1814,8 @@ impl ReadyFrontierReport {
             intentionally_held_ids,
             reason_codes: reason_code_strings,
             remedy: Some("bead update <id> --clear-assignee".to_string()),
+            manual_blocked_count,
+            manual_blocked_ids,
         }
     }
 }
