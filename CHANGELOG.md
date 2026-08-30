@@ -2,12 +2,14 @@
 
 All notable changes to bead-rs are documented in this file.
 
-## [0.2.3] - 2026-08-30
+## [0.2.4] - 2026-08-30
 
 Same content as the 0.2.2 entry below plus the test-suite update for the
-initial checkpoint published by `bead init`. 0.2.2 was tagged on Forgejo before
-its CI ever ran green and was never released; 0.2.3 is the first release that
-carries the install contract.
+initial checkpoint published by `bead init`. 0.2.2 and 0.2.3 were tagged on
+Forgejo before a release could be published (0.2.2: CI never green; 0.2.3: the
+release step failed to link aarch64, and main moved past the tag before the
+fixed pipeline ran). 0.2.4 is the first release that carries the install
+contract.
 
 ### Fixed
 - Tests follow the initial-checkpoint-on-init contract (checkpoint_tombstones,
