@@ -275,10 +275,24 @@ fn append_created_event(
     Ok(())
 }
 
+/// Diagnostic details about a bead that is starving
+#[derive(Debug, Clone)]
+struct StarvationDiagnostic {
+    bead_id: String,
+    title: String,
+    priority: i64,
+    assignee: Option<String>,
+    manual_blocked: Option<bool>,
+    has_blockers: bool,
+    blocker_count: i64,
+    has_resource_conflicts: bool,
+    conflict_count: i64,
+}
+
 /// Detect and recover from starvation by clearing stale assignees
 ///
-/// Returns Some(list of recovered bead IDs) if fallback was triggered, None otherwise.
-fn detect_and_recover_starvation(conn: &Connection) -> Result<Option<Vec<String>>> {
+/// Returns Some((list of recovered bead IDs, diagnostic details)) if fallback was triggered, None otherwise.
+fn detect_and_recover_starvation(conn: &Connection) -> Result<Option<(Vec<String>, Vec<StarvationDiagnostic>)>> {
     // Check if any open beads exist at all
     let open_count: i64 = conn
         .query_row(
@@ -295,14 +309,14 @@ fn detect_and_recover_starvation(conn: &Connection) -> Result<Option<Vec<String>
 
     // Find open beads with assignees (potential starvation candidates)
     let mut stmt = conn.prepare_cached(
-        "SELECT id, assignee FROM issues
+        "SELECT id, title, priority, assignee, manual_blocked FROM issues
          WHERE base_status = 'open' AND assignee IS NOT NULL
          AND (manual_blocked IS NULL OR manual_blocked = 0)
          ORDER BY priority ASC, created_at ASC, id ASC",
     )?;
 
-    let fallback_candidates: Vec<(String, Option<String>)> = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+    let fallback_candidates: Vec<(String, String, i64, Option<String>, Option<bool>)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))?
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(|e| {
             Error::Internal(anyhow::anyhow!(
@@ -316,9 +330,57 @@ fn detect_and_recover_starvation(conn: &Connection) -> Result<Option<Vec<String>
         return Ok(None);
     }
 
+    // Collect diagnostic details for each candidate
+    let now_string = crate::service::resource_locks::now_string();
+    let mut diagnostics = Vec::new();
+
+    for (bead_id, title, priority, assignee, manual_blocked) in &fallback_candidates {
+        // Check for blockers
+        let blocker_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM dependencies
+                 WHERE blocked_issue_id = ?1 AND kind = 'blocks'
+                 AND blocker_issue_id IN (SELECT id FROM issues WHERE base_status != 'closed')",
+                [&bead_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        // Check for resource conflicts
+        let conflict_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(DISTINCT held_lock.issue_id)
+                 FROM issue_resource_keys candidate_key
+                 JOIN resource_locks held_lock ON held_lock.resource_key = candidate_key.resource_key
+                 WHERE candidate_key.issue_id = ?1
+                   AND held_lock.issue_id != ?1
+                   AND (held_lock.lease_fencing_token IS NULL OR EXISTS (
+                       SELECT 1 FROM leases active_lease
+                       WHERE active_lease.issue_id = held_lock.issue_id
+                         AND active_lease.fencing_token = held_lock.lease_fencing_token
+                         AND active_lease.expires_at > ?2
+                   ))",
+                [&bead_id, &now_string],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        diagnostics.push(StarvationDiagnostic {
+            bead_id: bead_id.clone(),
+            title: title.clone(),
+            priority: *priority,
+            assignee: assignee.clone(),
+            manual_blocked: *manual_blocked,
+            has_blockers: blocker_count > 0,
+            blocker_count,
+            has_resource_conflicts: conflict_count > 0,
+            conflict_count,
+        });
+    }
+
     // Clear the assignees for all fallback candidates
     let mut recovered_ids = Vec::new();
-    for (bead_id, old_assignee) in fallback_candidates {
+    for (bead_id, _title, _priority, old_assignee, _manual_blocked) in fallback_candidates {
         let now = time::OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_else(|_| "unknown".to_string());
@@ -359,12 +421,11 @@ fn detect_and_recover_starvation(conn: &Connection) -> Result<Option<Vec<String>
         recovered_ids.push(bead_id);
     }
 
-    Ok(Some(recovered_ids))
+    Ok(Some((recovered_ids, diagnostics)))
 }
 
 /// Log fallback activation to diagnostics file
-#[allow(dead_code)]
-fn log_fallback_activation(bead_ids: &[String]) -> Result<()> {
+fn log_fallback_activation(bead_ids: &[String], diagnostics: &[StarvationDiagnostic]) -> Result<()> {
     use std::fs::OpenOptions;
     use std::io::Write;
 
@@ -390,6 +451,7 @@ fn log_fallback_activation(bead_ids: &[String]) -> Result<()> {
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "unknown".to_string());
 
+    // Log summary
     let log_entry = format!(
         "{} | Fallback triggered | Recovered beads: {}\n",
         timestamp,
@@ -399,11 +461,29 @@ fn log_fallback_activation(bead_ids: &[String]) -> Result<()> {
     file.write_all(log_entry.as_bytes())
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to write to fallback log: {}", e)))?;
 
+    // Log detailed diagnostics for each bead
+    for diag in diagnostics {
+        let reasons = vec![
+            if diag.assignee.is_some() { Some(format!("assignee: {}", diag.assignee.as_ref().unwrap())) } else { None },
+            if diag.has_blockers { Some(format!("{} unclosed blockers", diag.blocker_count)) } else { None },
+            if diag.has_resource_conflicts { Some(format!("{} resource conflicts", diag.conflict_count)) } else { None },
+        ].into_iter().filter_map(|x| x).collect::<Vec<_>>().join(", ");
+
+        let detail_entry = format!(
+            "  - {} [{}] priority={} | {}\n",
+            diag.bead_id, diag.title, diag.priority,
+            if reasons.is_empty() { "no apparent blockers".to_string() } else { format!("excluded: {}", reasons) }
+        );
+
+        file.write_all(detail_entry.as_bytes())
+            .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to write diagnostic details: {}", e)))?;
+    }
+
     Ok(())
 }
 
 /// Log fallback activation to a specific path
-fn log_fallback_activation_to_path(bead_ids: &[String], log_path: &std::path::Path) -> Result<()> {
+fn log_fallback_activation_to_path(bead_ids: &[String], diagnostics: &[StarvationDiagnostic], log_path: &std::path::Path) -> Result<()> {
     use std::fs::OpenOptions;
     use std::io::Write;
 
@@ -428,6 +508,7 @@ fn log_fallback_activation_to_path(bead_ids: &[String], log_path: &std::path::Pa
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "unknown".to_string());
 
+    // Log summary
     let log_entry = format!(
         "{} | Fallback triggered | Recovered beads: {}\n",
         timestamp,
@@ -436,6 +517,24 @@ fn log_fallback_activation_to_path(bead_ids: &[String], log_path: &std::path::Pa
 
     file.write_all(log_entry.as_bytes())
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to write to fallback log: {}", e)))?;
+
+    // Log detailed diagnostics for each bead
+    for diag in diagnostics {
+        let reasons = vec![
+            if diag.assignee.is_some() { Some(format!("assignee: {}", diag.assignee.as_ref().unwrap())) } else { None },
+            if diag.has_blockers { Some(format!("{} unclosed blockers", diag.blocker_count)) } else { None },
+            if diag.has_resource_conflicts { Some(format!("{} resource conflicts", diag.conflict_count)) } else { None },
+        ].into_iter().filter_map(|x| x).collect::<Vec<_>>().join(", ");
+
+        let detail_entry = format!(
+            "  - {} [{}] priority={} | {}\n",
+            diag.bead_id, diag.title, diag.priority,
+            if reasons.is_empty() { "no apparent blockers".to_string() } else { format!("excluded: {}", reasons) }
+        );
+
+        file.write_all(detail_entry.as_bytes())
+            .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to write diagnostic details: {}", e)))?;
+    }
 
     Ok(())
 }
@@ -811,7 +910,7 @@ pub fn list_issues(
 
         // If primary query returns empty, check for starvation and run fallback
         if primary_count == 0 {
-            if let Some(fallback_beads) = detect_and_recover_starvation(conn)? {
+            if let Some((fallback_beads, diagnostics)) = detect_and_recover_starvation(conn)? {
                 // Get database path for log file resolution
                 let db_path = conn
                     .query_row("PRAGMA database_list", [], |row| {
@@ -830,9 +929,15 @@ pub fn list_issues(
                     let db_path = std::path::Path::new(&db_path_str);
                     if let Some(workspace_dir) = db_path.parent() {
                         let log_path = workspace_dir.join("diagnostics/pluck-fallback.log");
-                        log_fallback_activation_to_path(&fallback_beads, &log_path)?;
+                        log_fallback_activation_to_path(&fallback_beads, &diagnostics, &log_path)?;
                     }
                 }
+
+                // Print enhanced error to stderr
+                eprintln!("=== Ready Frontier Starvation Detected ===");
+                eprintln!("Found {} open bead(s) with stale assignees", fallback_beads.len());
+                eprintln!("Automatically recovered: {}", fallback_beads.join(", "));
+                eprintln!("Details logged to: .beads/diagnostics/pluck-fallback.log");
             }
         }
     }
