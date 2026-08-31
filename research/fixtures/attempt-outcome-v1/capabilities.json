@@ -1,0 +1,27 @@
+{
+  "attempt_outcome": {
+    "schema_version": "v1",
+    "schema_ref": "urn:bead-rs:schema:attempt-outcome:native-v1",
+    "supported": true,
+    "outcomes": [
+      "verified_success",
+      "work_failure",
+      "infrastructure_failure",
+      "cancelled",
+      "indeterminate"
+    ],
+    "actions": [
+      "close",
+      "release",
+      "quarantine",
+      "block",
+      "none"
+    ],
+    "atomic_resolve": true,
+    "idempotent_replay": true,
+    "revision_guard": true,
+    "fencing_guard": true,
+    "evidence_refs": true,
+    "checkpoint_representation": "attempt-outcome-record"
+  }
+}

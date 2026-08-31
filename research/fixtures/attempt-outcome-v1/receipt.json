@@ -1,0 +1,81 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:bead-rs:schema:resolve-receipt:native-v1",
+  "title": "Resolve Receipt",
+  "description": "Receipt for a successful attempt resolution",
+  "type": "object",
+  "required": [
+    "receipt_id",
+    "attempt_id",
+    "issue_id",
+    "outcome",
+    "action",
+    "canonical_request_hash",
+    "resulting_issue_revision",
+    "resulting_state",
+    "resulting_attempt_tier",
+    "created_at",
+    "is_replay"
+  ],
+  "properties": {
+    "receipt_id": {
+      "type": "string",
+      "pattern": "^ao-[a-f0-9]{16}$",
+      "description": "Unique identifier for this resolution receipt"
+    },
+    "attempt_id": {
+      "type": "string",
+      "description": "Attempt ID from the request"
+    },
+    "issue_id": {
+      "type": "string",
+      "description": "Issue ID that was resolved"
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "verified_success",
+        "work_failure",
+        "infrastructure_failure",
+        "cancelled",
+        "indeterminate"
+      ],
+      "description": "Outcome that was committed"
+    },
+    "action": {
+      "type": "string",
+      "enum": ["close", "release", "quarantine", "block", "none"],
+      "description": "Action that was applied"
+    },
+    "canonical_request_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "SHA-256 hash of the canonical request"
+    },
+    "resulting_issue_revision": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Issue revision after the resolution"
+    },
+    "resulting_state": {
+      "type": "string",
+      "enum": ["open", "in_progress", "deferred", "closed"],
+      "description": "Issue base state after the resolution"
+    },
+    "resulting_attempt_tier": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 3,
+      "description": "Attempt tier after the resolution"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp when the resolution was committed"
+    },
+    "is_replay": {
+      "type": "boolean",
+      "description": "True if this was an idempotent replay of a prior resolution"
+    }
+  }
+}

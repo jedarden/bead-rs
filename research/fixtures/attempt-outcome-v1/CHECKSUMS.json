@@ -1,0 +1,65 @@
+{
+  "specification": {
+    "path": "research/specs/attempt-outcome-v1.md",
+    "sha256": "6dfcd716009c8a24688d89e973a2b2bb5a15ec1da006ae5bd46c97e7d334c2dc",
+    "status": "pending_review"
+  },
+  "fixtures": {
+    "path": "research/fixtures/attempt-outcome-v1/",
+    "files": [
+      {
+        "name": "request.json",
+        "sha256": "012e30a9c9064495caf8dff0d1823e5ac5f330acdcc6393800ef5647bf3bf3d4",
+        "description": "JSON Schema for resolve requests"
+      },
+      {
+        "name": "receipt.json",
+        "sha256": "a1d78eb1dfaef612d1c1c9a2cde4f95036bebaeab247e422615f78c236a1e033",
+        "description": "JSON Schema for resolve receipts"
+      },
+      {
+        "name": "checkpoint-record.jsonl",
+        "sha256": "958680484bd44cea5e1684a99a61ca3ee7d8f13daf71bd86a8d0cf9710123813",
+        "description": "Example attempt-outcome checkpoint record"
+      },
+      {
+        "name": "audit-event.json",
+        "sha256": "3213ea83068bb9d7bcad9c2301486f4a00e0bf9257fb13257412636374aebbcd",
+        "description": "Example audit event for attempt resolution"
+      },
+      {
+        "name": "capabilities.json",
+        "sha256": "49f2471d36b08128f3204ef24082b9af927440597c52b1cb5aa04be5f92bdf74",
+        "description": "Example capabilities document fragment"
+      },
+      {
+        "name": "README.md",
+        "sha256": "7155ac878dc5cfe0cd64018e5d539c72b5b3af200e23b662b454ff715ab1a09b",
+        "description": "Fixtures documentation"
+      }
+    ]
+  },
+  "review_requirements": [
+    "ADR-010 compliance: Store only attempt facts, not policy",
+    "ADR-011 compliance: Atomic idempotent resolution",
+    "ADR-012 compliance: Versioned capability rollout",
+    "Plan section 4.1: Orthogonal outcomes and actions",
+    "Plan section 4.2: Exactly-once receipt semantics",
+    "Plan section 4.3: Atomic transaction requirements",
+    "Plan section 5: Capability and compatibility contract",
+    "Clean-room boundary: No upstream terminology or concepts",
+    "Technical completeness: All algorithms specified",
+    "Safety properties: Idempotency, conflict detection, atomicity"
+  ],
+  "verification_required": [
+    "Schema validation passes for all fixtures",
+    "Hash computation examples are correct",
+    "Outcome-action compatibility matrix is complete",
+    "Tier progression algorithm is sound",
+    "Revision/fencing conflicts are specified",
+    "Idempotent replay behavior is defined",
+    "Checkpoint representation is consistent",
+    "Capability negotiation is specified",
+    "Unknown field preservation is addressed"
+  ]
+}

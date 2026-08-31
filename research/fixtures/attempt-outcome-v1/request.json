@@ -1,0 +1,86 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:bead-rs:schema:resolve-request:native-v1",
+  "title": "Resolve Request",
+  "description": "Request to resolve an attempt outcome atomically with a lifecycle transition",
+  "type": "object",
+  "required": ["attempt_id", "issue_id", "outcome", "actor"],
+  "properties": {
+    "attempt_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "description": "Unique identifier for this attempt within the workspace"
+    },
+    "issue_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "ID of the issue being resolved"
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "verified_success",
+        "work_failure",
+        "infrastructure_failure",
+        "cancelled",
+        "indeterminate"
+      ],
+      "description": "Classification of the attempt result"
+    },
+    "action": {
+      "type": "string",
+      "enum": ["close", "release", "quarantine", "block", "none"],
+      "default": "none",
+      "description": "Lifecycle transition to apply atomically"
+    },
+    "reason": {
+      "type": "string",
+      "maxLength": 4096,
+      "default": "",
+      "description": "Human-readable reason for the action"
+    },
+    "if_revision": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Expected revision for optimistic concurrency"
+    },
+    "fencing_token": {
+      "type": "string",
+      "description": "Lease fencing token for concurrency guard"
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9-]*:[^\\x00-\\x1F\\x7F]{1,255}$",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "uniqueItems": true,
+      "default": [],
+      "description": "Opaque evidence reference identifiers"
+    },
+    "actor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "description": "Identity of the caller performing the resolution"
+    },
+    "model": {
+      "type": "string",
+      "maxLength": 64,
+      "description": "Model identifier (telemetry only)"
+    },
+    "harness": {
+      "type": "string",
+      "maxLength": 64,
+      "description": "Execution harness name (telemetry only)"
+    },
+    "harness_version": {
+      "type": "string",
+      "maxLength": 32,
+      "description": "Harness version (telemetry only)"
+    }
+  }
+}
