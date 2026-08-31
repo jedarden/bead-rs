@@ -341,6 +341,7 @@ fn dispatch_command(cli: Cli) -> Result<bool> {
         Command::Compare(opts) => cmd_compare(opts).map(|_| false),
         Command::Recurrence(opts) => cmd_recurrence(opts).map(|_| false),
         Command::Policy(opts) => cmd_policy(opts).map(|_| false),
+        Command::Watchdog(opts) => cmd_watchdog(opts).map(|_| false),
     }
 }
 
@@ -3894,6 +3895,89 @@ fn cmd_recurrence_history(opts: cli::RecurrenceHistoryOptions) -> Result<()> {
                     eprintln!("    Actor: {}", actor);
                 }
             }
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_watchdog(opts: cli::WatchdogOptions) -> Result<()> {
+    // Discover workspace
+    let config = match store::WorkspaceConfig::probe()? {
+        store::WorkspaceState::Ready(config) => config,
+        store::WorkspaceState::NotFound => {
+            return Err(Error::workspace(
+                "No workspace found. Run `bead init` first.",
+            ));
+        }
+        store::WorkspaceState::Uninitialized { root, db_path } => {
+            return Err(Error::workspace(format!(
+                "Workspace database at {} is uninitialized. Run `bead init` first.",
+                db_path.display()
+            )));
+        }
+        store::WorkspaceState::NotBeadRs { beads_path } => {
+            return Err(Error::workspace(store::foreign_workspace_message(
+                &beads_path,
+            )));
+        }
+    };
+
+    // Create watchdog configuration
+    let watchdog_config = service::config_from_options(&opts.threshold, opts.force, &config.root)?;
+
+    // Open database connection
+    let db_path = config.database_path();
+    let conn = store::open_configured_connection(&db_path)?;
+
+    // Run watchdog scan
+    let result = service::run_watchdog(&conn, watchdog_config)?;
+
+    // Report results
+    if opts.json {
+        println!("{}", serde_json::to_string_pretty(&result).unwrap());
+    } else {
+        println!("Bead Watchdog Report");
+        println!("=====================");
+        println!();
+
+        println!("Total in_progress beads scanned: {}", result.total_scanned);
+        println!("Stale beads found: {}", result.stale_beads.len());
+        println!("Beads auto-released: {}", result.released_beads.len());
+        println!("Alive but stale: {}", result.alive_but_stale.len());
+        println!();
+
+        if !result.stale_beads.is_empty() {
+            println!("Stale Beads (exceeding threshold):");
+            for bead in &result.stale_beads {
+                println!("  - {}: {} ({:.1} hours since update, assignee: {})",
+                    bead.id, bead.updated_at, bead.hours_since_update, bead.assignee);
+            }
+            println!();
+        }
+
+        if !result.released_beads.is_empty() {
+            println!("Auto-Released Beads:");
+            for bead in &result.released_beads {
+                println!("  - {}: assignee='{}', reason='{}' ({:.1} hours stale)",
+                    bead.id, bead.assignee, bead.reason, bead.hours_since_update);
+            }
+            println!();
+        }
+
+        if !result.alive_but_stale.is_empty() {
+            println!("Alive But Stale (worker still running):");
+            for bead in &result.alive_but_stale {
+                println!("  - {}: {} ({:.1} hours since update, assignee: {})",
+                    bead.id, bead.updated_at, bead.hours_since_update, bead.assignee);
+            }
+            println!();
+            println!("These beads are stale but their workers are still running.");
+            println!("Use --force to release them anyway, or investigate the worker process.");
+        }
+
+        if result.stale_beads.is_empty() {
+            println!("No stale beads found. All in_progress beads are healthy.");
         }
     }
 

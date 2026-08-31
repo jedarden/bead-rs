@@ -281,6 +281,32 @@ occurrence records its series reference and sequence number.
     )]
     Recurrence(RecurrenceCommand),
 
+    /// Watch for and automatically release stale bead claims
+    #[command(
+        about = "Monitor bead claim duration and auto-release stuck claims",
+        long_about = "Watchdog monitors in_progress beads and automatically releases those that appear stuck.
+
+A bead is considered stuck if:
+  - It has been in_progress for longer than the threshold (default: 4 hours)
+  - The assigned worker process is no longer running
+
+The watchdog checks process liveness by searching for the assignee name in the
+process table. If the worker is dead, the bead is automatically released back to
+the ready frontier. All auto-releases are logged to .beads/watchdog-releases.jsonl.
+
+This prevents starvation where a crashed or hung worker holds beads indefinitely.
+
+EXAMPLES:
+  bead watchdog --dry-run                                 # Report what would happen
+  bead watchdog --threshold 8h                            # Use 8-hour threshold
+  bead watchdog --threshold 2h --force                     # Release beads stale >2h
+  bead watchdog --json                                     # Machine-readable output
+
+The watchdog is designed to run as a periodic systemd service (bead-watchdog.timer)
+but can also be run manually for ad-hoc cleanup."
+    )]
+    Watchdog(WatchdogOptions),
+
     /// Validate workspace policy and scheduling configuration
     #[command(
         subcommand,
@@ -2611,6 +2637,44 @@ pub struct RecurrenceHistoryOptions {
     /// Template ID
     #[arg(long)]
     pub id: String,
+
+    /// Output in JSON format
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Options for the watchdog command
+#[derive(Parser, Debug)]
+#[command(
+    about = "Monitor bead claim duration and auto-release stuck claims",
+    long_about = "Watchdog monitors in_progress beads and automatically releases those that appear stuck.
+
+A bead is considered stuck if:
+  - It has been in_progress for longer than the threshold (default: 4 hours)
+  - The assigned worker process is no longer running
+
+The watchdog checks process liveness by searching for the assignee name in the
+process table. If the worker is dead, the bead is automatically released back to
+the ready frontier. All auto-releases are logged to .beads/watchdog-releases.jsonl.
+
+EXAMPLES:
+  bead watchdog --dry-run                                 # Report what would happen
+  bead watchdog --threshold 8h                            # Use 8-hour threshold
+  bead watchdog --threshold 2h --force                     # Release beads stale >2h
+  bead watchdog --json                                     # Machine-readable output"
+)]
+pub struct WatchdogOptions {
+    /// Maximum age of an in_progress bead before it's considered stale (default: 4h)
+    #[arg(long, default_value = "4h")]
+    pub threshold: String,
+
+    /// Don't actually release beads, just report what would happen
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Force release of stale beads even if assignee process appears alive
+    #[arg(long)]
+    pub force: bool,
 
     /// Output in JSON format
     #[arg(long)]

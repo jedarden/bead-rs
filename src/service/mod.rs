@@ -20,6 +20,7 @@ pub mod leases;
 pub mod lifecycle;
 pub mod manifest;
 pub mod query;
+pub mod watchdog;
 
 pub mod reconcile;
 pub mod recurrence;
@@ -107,6 +108,7 @@ pub use comparison::{
 #[allow(unused_imports)]
 pub use scheduling::{AttemptTier, GraphMetrics, SchedulingPolicy, SchedulingState};
 pub use why::{explain_why, WhyExplanation};
+pub use watchdog::{config_from_options, run_watchdog, ReleasedBead, StaleBead, WatchdogConfig, WatchdogResult};
 
 pub mod policy;
 #[allow(unused_imports)]
