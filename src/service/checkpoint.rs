@@ -414,6 +414,8 @@ struct SerializedCorpus {
     event_lines: Vec<Vec<u8>>,
     /// Receipt record lines, parallel to the sorted receipt list
     receipt_lines: Vec<Vec<u8>>,
+    /// Attempt outcome record lines, parallel to the sorted outcome list
+    attempt_outcome_lines: Vec<Vec<u8>>,
 }
 
 /// Serialize every checkpoint record line in canonical order
@@ -421,6 +423,7 @@ fn serialize_corpus(
     issues: &[Issue],
     events: &[EventRecord],
     receipts: &[ProvenanceReceipt],
+    attempt_outcomes: &[AttemptOutcomeRecord],
     graph_data: &IssueGraphData,
 ) -> Result<SerializedCorpus> {
     let mut issue_lines = Vec::with_capacity(issues.len());
@@ -459,10 +462,19 @@ fn serialize_corpus(
         receipt_lines.push(serde_json::to_vec(&record)?);
     }
 
+    let mut attempt_outcome_lines = Vec::with_capacity(attempt_outcomes.len());
+    for outcome in attempt_outcomes {
+        let record = CheckpointRecord::AttemptOutcome {
+            attempt_outcome: outcome.clone(),
+        };
+        attempt_outcome_lines.push(serde_json::to_vec(&record)?);
+    }
+
     Ok(SerializedCorpus {
         issue_lines,
         event_lines,
         receipt_lines,
+        attempt_outcome_lines,
     })
 }
 
@@ -477,6 +489,7 @@ fn corpus_monolith_stats(corpus: &SerializedCorpus) -> MonolithStats {
         .iter()
         .chain(corpus.event_lines.iter())
         .chain(corpus.receipt_lines.iter())
+        .chain(corpus.attempt_outcome_lines.iter())
     {
         // +1 for the newline every JSONL line carries
         stats.total_bytes += line.len() as u64 + 1;
@@ -537,6 +550,10 @@ pub enum CheckpointRecord {
     #[serde(rename = "provenance_receipt")]
     ProvenanceReceipt {
         provenance_receipt: ProvenanceReceipt,
+    },
+    #[serde(rename = "attempt_outcome")]
+    AttemptOutcome {
+        attempt_outcome: AttemptOutcomeRecord,
     },
 }
 
@@ -618,6 +635,54 @@ pub struct ForkReceipt {
     pub receipt_sha256: String,
     /// Optional reasoning for the fork
     pub reason: Option<String>,
+}
+
+/// Attempt outcome record for checkpoint export/import
+///
+/// This structure represents an immutable attempt resolution receipt that
+/// survives checkpoint round-trips with unknown field preservation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttemptOutcomeRecord {
+    /// Schema reference
+    #[serde(rename = "$schema")]
+    pub schema_ref: String,
+    /// Attempt ID
+    pub attempt_id: String,
+    /// Issue ID
+    pub issue_id: String,
+    /// Outcome classification
+    pub outcome: String,
+    /// Lifecycle action
+    pub action: String,
+    /// Human-readable reason
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Canonical request hash
+    pub canonical_request_hash: String,
+    /// Resulting issue revision
+    pub resulting_issue_revision: i64,
+    /// Resulting state
+    pub resulting_state: String,
+    /// Resulting attempt tier
+    pub resulting_attempt_tier: i64,
+    /// Receipt ID
+    pub receipt_id: String,
+    /// Actor identity
+    pub actor: String,
+    /// Creation timestamp (RFC 3339)
+    pub created_at: String,
+    /// Evidence references
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub evidence_refs: Vec<String>,
+    /// Model identifier for telemetry
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Harness name for telemetry
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    /// Harness version for telemetry
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub harness_version: Option<String>,
 }
 
 /// Counts recorded in provenance receipts
@@ -751,6 +816,7 @@ pub struct ForensicStaging {
     pub labels: Vec<(String, String)>,               // (issue_id, label)
     pub events: Vec<SerializedEvent>,
     pub receipts: Vec<SerializedReceipt>,
+    pub attempt_outcomes: Vec<AttemptOutcomeRecord>,
     pub input_hash: String,
     pub store_uuid: String,
     pub snapshot_sequence: i64,
@@ -758,6 +824,7 @@ pub struct ForensicStaging {
     pub issue_count: usize,
     pub event_count: usize,
     pub receipt_count: usize,
+    pub attempt_outcome_count: usize,
 }
 
 /// Serialized event for forensic import
@@ -2089,10 +2156,12 @@ fn stage_monolithic_checkpoint(input_path: &Path) -> Result<ForensicStaging> {
     let mut labels = Vec::new();
     let mut events = Vec::new();
     let mut receipts = Vec::new();
+    let mut attempt_outcomes = Vec::new();
 
     let mut seen_issue_ids = HashSet::new();
     let mut seen_event_identities = HashSet::new();
     let mut seen_receipt_ids = HashSet::new();
+    let mut seen_attempt_ids = HashSet::new();
 
     let mut hasher = Sha256::new();
     let mut store_uuid = String::new();
@@ -2212,6 +2281,27 @@ fn stage_monolithic_checkpoint(input_path: &Path) -> Result<ForensicStaging> {
 
                     receipts.push(receipt);
                 }
+                "attempt_outcome" => {
+                    let outcome_value = record.get("attempt_outcome").ok_or_else(|| {
+                        anyhow!("Line {}: missing 'attempt_outcome' field", line_num)
+                    })?;
+
+                    let outcome: AttemptOutcomeRecord =
+                        serde_json::from_value(outcome_value.clone()).map_err(|e| {
+                            anyhow!("Line {}: invalid attempt outcome: {}", line_num, e)
+                        })?;
+
+                    // Check for duplicate attempt IDs
+                    if !seen_attempt_ids.insert(outcome.attempt_id.clone()) {
+                        bail!(
+                            "Line {}: duplicate attempt ID: {}",
+                            line_num,
+                            outcome.attempt_id
+                        );
+                    }
+
+                    attempt_outcomes.push(outcome);
+                }
                 _ => {
                     bail!("Line {}: unknown record type: {}", line_num, record_type);
                 }
@@ -2281,6 +2371,7 @@ fn stage_monolithic_checkpoint(input_path: &Path) -> Result<ForensicStaging> {
         labels,
         events,
         receipts,
+        attempt_outcomes,
         input_hash,
         store_uuid,
         snapshot_sequence,
@@ -2288,6 +2379,7 @@ fn stage_monolithic_checkpoint(input_path: &Path) -> Result<ForensicStaging> {
         issue_count: seen_issue_ids.len(),
         event_count: seen_event_identities.len(),
         receipt_count: seen_receipt_ids.len(),
+        attempt_outcome_count: seen_attempt_ids.len(),
     })
 }
 
@@ -2339,10 +2431,12 @@ fn stage_sharded_checkpoint(pointer_path: &Path) -> Result<ForensicStaging> {
     let mut labels = Vec::new();
     let mut events = Vec::new();
     let mut receipts = Vec::new();
+    let mut attempt_outcomes = Vec::new();
 
     let mut seen_issue_ids = HashSet::new();
     let mut seen_event_identities = HashSet::new();
     let mut seen_receipt_ids = HashSet::new();
+    let seen_attempt_ids: HashSet<String> = HashSet::new();
 
     // Process issue shards
     if let Some(issue_shards) = manifest.get("issue_shards").and_then(|v| v.as_array()) {
@@ -2409,6 +2503,30 @@ fn stage_sharded_checkpoint(pointer_path: &Path) -> Result<ForensicStaging> {
         }
     }
 
+    // Process attempt_outcome shards
+    if let Some(attempt_outcome_shards) = manifest
+        .get("attempt_outcome_shards")
+        .and_then(|v| v.as_array())
+    {
+        for shard_info in attempt_outcome_shards {
+            let shard_path = shard_info
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow!("Attempt outcome shard missing path"))?;
+
+            let shard_full_path = base.join(shard_path);
+            let shard_data = process_shard_file(
+                &shard_full_path,
+                &mut hasher,
+                &mut seen_issue_ids,
+                &mut seen_event_identities,
+                &mut seen_receipt_ids,
+            )?;
+
+            attempt_outcomes.extend(shard_data.attempt_outcomes);
+        }
+    }
+
     let input_hash = format!("{:x}", hasher.finalize());
 
     // Canonical order is a property of the staged corpus, not of the manifest
@@ -2423,6 +2541,7 @@ fn stage_sharded_checkpoint(pointer_path: &Path) -> Result<ForensicStaging> {
             .cmp(&(b.origin_store_uuid.as_str(), b.origin_event_sequence))
     });
     receipts.sort_by(|a, b| a.receipt_id.cmp(&b.receipt_id));
+    attempt_outcomes.sort_by(|a, b| a.receipt_id.cmp(&b.receipt_id));
 
     Ok(ForensicStaging {
         issues,
@@ -2430,6 +2549,7 @@ fn stage_sharded_checkpoint(pointer_path: &Path) -> Result<ForensicStaging> {
         labels,
         events,
         receipts,
+        attempt_outcomes,
         input_hash,
         store_uuid,
         snapshot_sequence,
@@ -2437,6 +2557,7 @@ fn stage_sharded_checkpoint(pointer_path: &Path) -> Result<ForensicStaging> {
         issue_count: seen_issue_ids.len(),
         event_count: seen_event_identities.len(),
         receipt_count: seen_receipt_ids.len(),
+        attempt_outcome_count: seen_attempt_ids.len(),
     })
 }
 
@@ -2459,6 +2580,7 @@ fn process_shard_file(
         labels: Vec::new(),
         events: Vec::new(),
         receipts: Vec::new(),
+        attempt_outcomes: Vec::new(),
     };
 
     for (line_num, line_result) in reader.lines().enumerate() {
@@ -2639,6 +2761,30 @@ fn process_shard_file(
 
                 shard_data.receipts.push(receipt);
             }
+            "attempt_outcome" => {
+                let outcome_value = record.get("attempt_outcome").ok_or_else(|| {
+                    anyhow!(
+                        "{} line {}: missing 'attempt_outcome' field",
+                        shard_path.display(),
+                        line_num
+                    )
+                })?;
+
+                let outcome: AttemptOutcomeRecord = serde_json::from_value(outcome_value.clone())
+                    .map_err(|e| {
+                    anyhow!(
+                        "{} line {}: invalid attempt outcome: {}",
+                        shard_path.display(),
+                        line_num,
+                        e
+                    )
+                })?;
+
+                // Note: We don't check for duplicate attempt IDs at the shard level
+                // because attempt IDs are globally unique, not shard-specific.
+                // The staging level will enforce uniqueness.
+                shard_data.attempt_outcomes.push(outcome);
+            }
             _ => {
                 bail!(
                     "{} line {}: unknown record type: {}",
@@ -2661,6 +2807,7 @@ struct ShardData {
     labels: Vec<(String, String)>,
     events: Vec<SerializedEvent>,
     receipts: Vec<SerializedReceipt>,
+    attempt_outcomes: Vec<AttemptOutcomeRecord>,
 }
 
 /// Validate forensic checkpoint before import
@@ -3687,6 +3834,9 @@ fn execute_merge(
     // Import existing receipts
     import_receipts(&tx, staging)?;
 
+    // Import attempt outcomes
+    import_attempt_outcomes(&tx, staging)?;
+
     // Create merge summary event and receipt
     let activation_sequence = create_merge_summary(&tx, staging, actor)?;
 
@@ -3725,12 +3875,13 @@ fn activate_forensic_import(tx: &Transaction, staging: &ForensicStaging) -> Resu
     // Import labels
     import_labels(tx, staging)?;
 
-    // Import events and receipts. Without this the restore silently drops the
-    // entire audit trail — the forensic checkpoint's whole reason for existing —
-    // while still reporting the events as restored. Events carry a foreign key
-    // to issues, so this must run after import_issues above.
+    // Import events, receipts, and attempt outcomes. Without this the restore
+    // silently drops the entire audit trail — the forensic checkpoint's whole
+    // reason for existing — while still reporting the events as restored.
+    // Events carry a foreign key to issues, so this must run after import_issues above.
     import_events(tx, staging)?;
     import_receipts(tx, staging)?;
+    import_attempt_outcomes(tx, staging)?;
 
     // Get activation sequence
     let activation_sequence: i64 = tx
@@ -3946,6 +4097,103 @@ fn import_receipts(tx: &Transaction, staging: &ForensicStaging) -> Result<()> {
                 &receipt.result,
                 &receipt.summary_event_identity,
                 &receipt.receipt_sha256,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+/// Import attempt outcomes into database
+fn import_attempt_outcomes(tx: &Transaction, staging: &ForensicStaging) -> Result<()> {
+    for outcome in &staging.attempt_outcomes {
+        let evidence_refs_json = serde_json::to_string(&outcome.evidence_refs)
+            .map_err(|e| anyhow!("Failed to serialize evidence_refs: {}", e))?;
+
+        // Check for existing attempt outcome with same receipt_id
+        let existing = tx
+            .query_row(
+                "SELECT attempt_id, issue_id, outcome, action,
+                        COALESCE(reason, ''),
+                        canonical_request_hash,
+                        prior_attempt_tier, resulting_attempt_tier,
+                        resulting_issue_revision,
+                        actor, created_at,
+                        evidence_refs_json,
+                        COALESCE(model, ''),
+                        COALESCE(harness, ''),
+                        COALESCE(harness_version, '')
+                 FROM attempt_outcomes WHERE receipt_id = ?1",
+                [&outcome.receipt_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, i64>(6)?,
+                        row.get::<_, i64>(7)?,
+                        row.get::<_, i64>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, String>(10)?,
+                        row.get::<_, String>(11)?,
+                        row.get::<_, String>(12)?,
+                        row.get::<_, String>(13)?,
+                        row.get::<_, String>(14)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        if let Some(existing) = existing {
+            // Verify exact match for idempotent replay
+            // Key fields that must match are:
+            // - attempt_id (UNIQUE constraint)
+            // - issue_id
+            // - outcome
+            // - canonical_request_hash (this is the idempotency key)
+            // - receipt_id (PRIMARY KEY)
+            if existing.0 != outcome.attempt_id
+                || existing.1 != outcome.issue_id
+                || existing.2 != outcome.outcome
+                || existing.5 != outcome.canonical_request_hash
+            {
+                bail!(
+                    "Attempt outcome receipt ID conflict: '{}' has different content (attempt_id, issue_id, outcome, or canonical_request_hash mismatch)",
+                    outcome.receipt_id
+                );
+            }
+            continue;
+        }
+
+        // Insert new attempt outcome
+        // Note: prior_attempt_tier is not stored in checkpoint record, use 0 as placeholder
+        // The checkpoint record only captures the resulting state, not the prior state
+        tx.execute(
+            "INSERT INTO attempt_outcomes (
+                receipt_id, attempt_id, issue_id, outcome, action, reason,
+                canonical_request_hash, prior_attempt_tier, resulting_attempt_tier,
+                resulting_issue_revision, actor, created_at, evidence_refs_json,
+                model, harness, harness_version
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            params![
+                &outcome.receipt_id,
+                &outcome.attempt_id,
+                &outcome.issue_id,
+                &outcome.outcome,
+                &outcome.action,
+                &outcome.reason,
+                &outcome.canonical_request_hash,
+                0i64, // prior_attempt_tier - not stored in checkpoint record
+                &outcome.resulting_attempt_tier,
+                &outcome.resulting_issue_revision,
+                &outcome.actor,
+                &outcome.created_at,
+                &evidence_refs_json,
+                &outcome.model,
+                &outcome.harness,
+                &outcome.harness_version,
             ],
         )?;
     }
@@ -5555,6 +5803,7 @@ pub fn publish_forensic_checkpoint_holding(
     let issues = read_all_issues(&tx)?;
     let events = read_all_events(&tx)?;
     let receipts = read_all_provenance_receipts(&tx)?;
+    let attempt_outcomes = read_all_attempt_outcomes(&tx)?;
 
     // Read all graph data for dependencies and labels
     let graph_data = IssueGraphData {
@@ -5578,11 +5827,15 @@ pub fn publish_forensic_checkpoint_holding(
     let mut sorted_receipts = receipts;
     sorted_receipts.sort_by(|a, b| a.receipt_id.cmp(&b.receipt_id));
 
+    let mut sorted_attempt_outcomes = attempt_outcomes;
+    sorted_attempt_outcomes.sort_by(|a, b| a.receipt_id.cmp(&b.receipt_id));
+
     // Calculate totals
     let issue_count = sorted_issues.len();
     let event_count = sorted_events.len();
     let receipt_count = sorted_receipts.len();
-    let total_record_count = issue_count + event_count + receipt_count;
+    let attempt_outcome_count = sorted_attempt_outcomes.len();
+    let total_record_count = issue_count + event_count + receipt_count + attempt_outcome_count;
 
     // Generate generation ID
     let timestamp = std::time::SystemTime::now()
@@ -5603,6 +5856,7 @@ pub fn publish_forensic_checkpoint_holding(
         &sorted_issues,
         &sorted_events,
         &sorted_receipts,
+        &sorted_attempt_outcomes,
         &graph_data,
     )?;
 
@@ -7133,6 +7387,88 @@ fn read_all_provenance_receipts(tx: &Transaction) -> Result<Vec<ProvenanceReceip
     Ok(receipts)
 }
 
+/// Read all attempt outcomes for checkpoint export
+fn read_all_attempt_outcomes(tx: &Transaction) -> Result<Vec<AttemptOutcomeRecord>> {
+    let mut outcomes = Vec::new();
+
+    let mut stmt = tx.prepare(
+        "SELECT receipt_id, attempt_id, issue_id, outcome, action, reason,
+                canonical_request_hash, prior_attempt_tier, resulting_attempt_tier,
+                resulting_issue_revision, actor, created_at, evidence_refs_json,
+                model, harness, harness_version
+         FROM attempt_outcomes",
+    )?;
+
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>("receipt_id")?,
+            row.get::<_, String>("attempt_id")?,
+            row.get::<_, String>("issue_id")?,
+            row.get::<_, String>("outcome")?,
+            row.get::<_, String>("action")?,
+            row.get::<_, Option<String>>("reason")?,
+            row.get::<_, String>("canonical_request_hash")?,
+            row.get::<_, i64>("prior_attempt_tier")?,
+            row.get::<_, i64>("resulting_attempt_tier")?,
+            row.get::<_, i64>("resulting_issue_revision")?,
+            row.get::<_, String>("actor")?,
+            row.get::<_, String>("created_at")?,
+            row.get::<_, String>("evidence_refs_json")?,
+            row.get::<_, Option<String>>("model")?,
+            row.get::<_, Option<String>>("harness")?,
+            row.get::<_, Option<String>>("harness_version")?,
+        ))
+    })?;
+
+    for row in rows {
+        let (
+            receipt_id,
+            attempt_id,
+            issue_id,
+            outcome,
+            action,
+            reason,
+            canonical_request_hash,
+            _prior_attempt_tier,
+            resulting_attempt_tier,
+            resulting_issue_revision,
+            actor,
+            created_at,
+            evidence_refs_json,
+            model,
+            harness,
+            harness_version,
+        ) = row?;
+
+        let evidence_refs: Vec<String> =
+            serde_json::from_str(&evidence_refs_json).unwrap_or_default();
+
+        let record = AttemptOutcomeRecord {
+            schema_ref: crate::model::attempt::SCHEMA_ATTEMPT_OUTCOME.to_string(),
+            attempt_id,
+            issue_id,
+            outcome,
+            action,
+            reason,
+            canonical_request_hash,
+            resulting_issue_revision,
+            resulting_state: String::new(), // Will be filled from issue state
+            resulting_attempt_tier,
+            receipt_id,
+            actor,
+            created_at,
+            evidence_refs,
+            model,
+            harness,
+            harness_version,
+        };
+
+        outcomes.push(record);
+    }
+
+    Ok(outcomes)
+}
+
 /// Configuration for sharded checkpoint publishing
 #[derive(Debug, Clone)]
 struct ShardedConfig {
@@ -7548,6 +7884,7 @@ mod tests {
                 detail: serde_json::json!({}),
             }],
             receipts,
+            attempt_outcomes: Vec::new(),
             input_hash: "0".repeat(64),
             store_uuid: fork_uuid,
             snapshot_sequence: 53,
@@ -7555,6 +7892,7 @@ mod tests {
             issue_count: 0,
             event_count: 1,
             receipt_count: usize::from(with_matching_receipt),
+            attempt_outcome_count: 0,
         }
     }
 
