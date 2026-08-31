@@ -2457,12 +2457,18 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
 
     if opts.starvation_recovery {
         // Run starvation recovery
-        eprintln!("Running starvation recovery...");
-        eprintln!("This will automatically diagnose and repair common starvation causes.");
+        if opts.force {
+            eprintln!("Running starvation recovery with --force (mutations enabled)...");
+            eprintln!("This will automatically diagnose and repair common starvation causes.");
+        } else {
+            eprintln!("Running starvation recovery in recommendation-only mode...");
+            eprintln!("This will diagnose issues but NOT perform automatic mutations.");
+            eprintln!("Use --force to enable actual repairs.");
+        }
         eprintln!();
 
         let mut store_wrapper = store::SqliteStore::new();
-        let result = service::doctor::run_starvation_recovery(&mut store_wrapper)?;
+        let result = service::doctor::run_starvation_recovery(&mut store_wrapper, opts.force)?;
 
         if opts.json {
             // Output JSON result
@@ -4078,7 +4084,7 @@ fn cmd_watchdog(opts: cli::WatchdogOptions) -> Result<()> {
         println!("Total in_progress beads scanned: {}", result.total_scanned);
         println!("Stale beads found: {}", result.stale_beads.len());
         println!("Beads auto-released: {}", result.released_beads.len());
-        println!("Alive but stale: {}", result.alive_but_stale.len());
+        println!("Lease valid but stale: {}", result.lease_valid_but_stale.len());
         println!();
 
         if !result.stale_beads.is_empty() {
@@ -4099,9 +4105,9 @@ fn cmd_watchdog(opts: cli::WatchdogOptions) -> Result<()> {
             println!();
         }
 
-        if !result.alive_but_stale.is_empty() {
-            println!("Alive But Stale (worker still running):");
-            for bead in &result.alive_but_stale {
+        if !result.lease_valid_but_stale.is_empty() {
+            println!("Lease Valid But Stale (recommendation-only):");
+            for bead in &result.lease_valid_but_stale {
                 println!("  - {}: {} ({:.1} hours since update, assignee: {})",
                     bead.id, bead.updated_at, bead.hours_since_update, bead.assignee);
             }

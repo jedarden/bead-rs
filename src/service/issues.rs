@@ -289,10 +289,12 @@ struct StarvationDiagnostic {
     conflict_count: i64,
 }
 
-/// Detect and recover from starvation by clearing stale assignees
+/// Detect starvation candidates (read-only diagnostic)
 ///
-/// Returns Some((list of recovered bead IDs, diagnostic details)) if fallback was triggered, None otherwise.
-fn detect_and_recover_starvation(conn: &Connection) -> Result<Option<(Vec<String>, Vec<StarvationDiagnostic>)>> {
+/// Returns Some(list of diagnostic details) if starvation is detected, None otherwise.
+/// This is a recommendation-only diagnostic that does NOT perform any mutations.
+/// Recovery should use explicit commands: `bead watchdog` or `bead doctor --starvation-recovery`.
+fn detect_starvation_candidates(conn: &Connection) -> Result<Option<Vec<StarvationDiagnostic>>> {
     // Check if any open beads exist at all
     let open_count: i64 = conn
         .query_row(
@@ -330,7 +332,7 @@ fn detect_and_recover_starvation(conn: &Connection) -> Result<Option<(Vec<String
         return Ok(None);
     }
 
-    // Collect diagnostic details for each candidate
+    // Collect diagnostic details for each candidate (read-only)
     let now_string = crate::service::resource_locks::now_string();
     let mut diagnostics = Vec::new();
 
@@ -378,50 +380,7 @@ fn detect_and_recover_starvation(conn: &Connection) -> Result<Option<(Vec<String
         });
     }
 
-    // Clear the assignees for all fallback candidates
-    let mut recovered_ids = Vec::new();
-    for (bead_id, _title, _priority, old_assignee, _manual_blocked) in fallback_candidates {
-        let now = time::OffsetDateTime::now_utc()
-            .format(&time::format_description::well_known::Rfc3339)
-            .unwrap_or_else(|_| "unknown".to_string());
-
-        conn.execute(
-            "UPDATE issues SET assignee = NULL, updated_at = ?1, revision = revision + 1 WHERE id = ?2",
-            [&now, &bead_id],
-        )
-        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to clear assignee for {}: {}", bead_id, e)))?;
-
-        // Record the update as an audit event
-        let event_detail = serde_json::json!({
-            "actor": "system",
-            "field": "assignee",
-            "old_value": old_assignee,
-            "new_value": null,
-            "reason": "fallback_query_starvation_recovery"
-        });
-
-        conn.execute(
-            "INSERT INTO events (issue_id, kind, actor, time, detail) VALUES (?1, ?2, ?3, ?4, ?5)",
-            (
-                &bead_id,
-                "updated",
-                "system",
-                &now,
-                &event_detail.to_string(),
-            ),
-        )
-        .map_err(|e| {
-            Error::Internal(anyhow::anyhow!(
-                "Failed to record fallback event for {}: {}",
-                bead_id,
-                e
-            ))
-        })?;
-
-        recovered_ids.push(bead_id);
-    }
-
-    Ok(Some((recovered_ids, diagnostics)))
+    Ok(Some(diagnostics))
 }
 
 /// Log fallback activation to diagnostics file
@@ -482,8 +441,8 @@ fn log_fallback_activation(bead_ids: &[String], diagnostics: &[StarvationDiagnos
     Ok(())
 }
 
-/// Log fallback activation to a specific path
-fn log_fallback_activation_to_path(bead_ids: &[String], diagnostics: &[StarvationDiagnostic], log_path: &std::path::Path) -> Result<()> {
+/// Log starvation diagnostic to a specific path (recommendation-only)
+fn log_starvation_diagnostic_to_path(diagnostics: &[StarvationDiagnostic], log_path: &std::path::Path) -> Result<()> {
     use std::fs::OpenOptions;
     use std::io::Write;
 
@@ -502,21 +461,21 @@ fn log_fallback_activation_to_path(bead_ids: &[String], diagnostics: &[Starvatio
         .create(true)
         .append(true)
         .open(log_path)
-        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open fallback log: {}", e)))?;
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open starvation diagnostic log: {}", e)))?;
 
     let timestamp = time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "unknown".to_string());
 
-    // Log summary
+    // Log summary (diagnostic, not recovery)
     let log_entry = format!(
-        "{} | Fallback triggered | Recovered beads: {}\n",
+        "{} | Starvation diagnostic detected | {} candidate(s) identified\n",
         timestamp,
-        bead_ids.join(", ")
+        diagnostics.len()
     );
 
     file.write_all(log_entry.as_bytes())
-        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to write to fallback log: {}", e)))?;
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to write to starvation diagnostic log: {}", e)))?;
 
     // Log detailed diagnostics for each bead
     for diag in diagnostics {
@@ -527,9 +486,10 @@ fn log_fallback_activation_to_path(bead_ids: &[String], diagnostics: &[Starvatio
         ].into_iter().filter_map(|x| x).collect::<Vec<_>>().join(", ");
 
         let detail_entry = format!(
-            "  - {} [{}] priority={} | {}\n",
+            "  - {} [{}] priority={} | {} | remedy: bead update {} --clear-assignee\n",
             diag.bead_id, diag.title, diag.priority,
-            if reasons.is_empty() { "no apparent blockers".to_string() } else { format!("excluded: {}", reasons) }
+            if reasons.is_empty() { "no apparent blockers".to_string() } else { format!("excluded: {}", reasons) },
+            diag.bead_id
         );
 
         file.write_all(detail_entry.as_bytes())
@@ -1153,9 +1113,9 @@ pub fn list_issues(
             .query_row(count_params_refs.as_slice(), |row| row.get(0))
             .unwrap_or(0);
 
-        // If primary query returns empty, check for starvation and run fallback
+        // If primary query returns empty, check for starvation and emit recommendations
         if primary_count == 0 {
-            if let Some((fallback_beads, diagnostics)) = detect_and_recover_starvation(conn)? {
+            if let Some(diagnostics) = detect_starvation_candidates(conn)? {
                 // Get database path for log file resolution
                 let db_path = conn
                     .query_row("PRAGMA database_list", [], |row| {
@@ -1173,16 +1133,18 @@ pub fn list_issues(
                 if let Some(db_path_str) = db_path {
                     let db_path = std::path::Path::new(&db_path_str);
                     if let Some(workspace_dir) = db_path.parent() {
-                        let log_path = workspace_dir.join("diagnostics/pluck-fallback.log");
-                        log_fallback_activation_to_path(&fallback_beads, &diagnostics, &log_path)?;
+                        let log_path = workspace_dir.join("diagnostics/pluck-starvation-diagnostic.log");
+                        log_starvation_diagnostic_to_path(&diagnostics, &log_path)?;
                     }
                 }
 
-                // Print enhanced error to stderr
+                // Print enhanced diagnostic to stderr
                 eprintln!("=== Ready Frontier Starvation Detected ===");
-                eprintln!("Found {} open bead(s) with stale assignees", fallback_beads.len());
-                eprintln!("Automatically recovered: {}", fallback_beads.join(", "));
-                eprintln!("Details logged to: .beads/diagnostics/pluck-fallback.log");
+                eprintln!("Found {} open bead(s) with stale assignees", diagnostics.len());
+                eprintln!("Recommendation: Use explicit recovery commands:");
+                eprintln!("  - 'bead watchdog --threshold 4h' to auto-release stale leased claims");
+                eprintln!("  - 'bead doctor --starvation-recovery' to diagnose and repair");
+                eprintln!("Details logged to: .beads/diagnostics/pluck-starvation-diagnostic.log");
             }
         }
     }
