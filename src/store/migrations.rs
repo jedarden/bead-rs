@@ -7,7 +7,7 @@ use rusqlite::{Connection, Result as SqliteResult};
 use sha2::{Digest, Sha256};
 
 /// Current migration version
-pub const CURRENT_VERSION: i64 = 13;
+pub const CURRENT_VERSION: i64 = 14;
 
 /// Apply all pending migrations to the database
 pub fn apply_migrations(conn: &Connection) -> SqliteResult<()> {
@@ -80,6 +80,7 @@ fn get_migration(version: i64) -> Migration {
         11 => migration_11(),
         12 => migration_12(),
         13 => migration_13(),
+        14 => migration_14(),
         v => panic!("Unknown migration version: {}", v),
     }
 }
@@ -688,6 +689,50 @@ ALTER TABLE leases_history_new RENAME TO leases;
 CREATE INDEX leases_expiry ON leases (expires_at);
 CREATE INDEX leases_fencing ON leases (issue_id, assignee, fencing_token);
 CREATE INDEX leases_assignee ON leases (assignee, expires_at);
+"#;
+
+    Migration {
+        sql: sql.to_string(),
+    }
+}
+
+/// Migration 14: Attempt outcomes (attempt-outcome-v1 contract)
+///
+/// Adds the attempt_outcomes table for recording execution attempt outcomes
+/// atomically with lifecycle transitions per ADR-011 and the attempt-outcome-v1
+/// specification. This enables idempotent replay, conflict detection, and
+/// checkpoint round-trip of attempt receipts.
+fn migration_14() -> Migration {
+    let sql = r#"
+-- Attempt outcomes table for recording execution attempt results
+CREATE TABLE IF NOT EXISTS attempt_outcomes (
+    receipt_id TEXT NOT NULL PRIMARY KEY,
+    attempt_id TEXT NOT NULL UNIQUE,
+    issue_id TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('verified_success', 'work_failure', 'infrastructure_failure', 'cancelled', 'indeterminate')),
+    action TEXT CHECK (action IN ('close', 'release', 'quarantine', 'block', 'none')),
+    reason TEXT,
+    canonical_request_hash TEXT NOT NULL,
+    prior_attempt_tier INTEGER NOT NULL CHECK (prior_attempt_tier >= 0 AND prior_attempt_tier <= 3),
+    resulting_attempt_tier INTEGER NOT NULL CHECK (resulting_attempt_tier >= 0 AND resulting_attempt_tier <= 3),
+    resulting_issue_revision INTEGER NOT NULL,
+    actor TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    evidence_refs_json TEXT,
+    model TEXT,
+    harness TEXT,
+    harness_version TEXT,
+    FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE
+);
+
+-- Index for looking up outcomes by issue
+CREATE INDEX IF NOT EXISTS attempt_outcomes_issue ON attempt_outcomes (issue_id);
+
+-- Index for looking up outcomes by attempt_id
+CREATE INDEX IF NOT EXISTS attempt_outcomes_attempt ON attempt_outcomes (attempt_id);
+
+-- Index for chronological queries
+CREATE INDEX IF NOT EXISTS attempt_outcomes_created ON attempt_outcomes (created_at);
 "#;
 
     Migration {

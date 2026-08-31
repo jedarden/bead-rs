@@ -4,6 +4,7 @@
 //! dependencies, checkpoint management, diagnostics, and capabilities.
 
 pub mod archaeology;
+pub mod attempt;
 pub mod capabilities;
 pub mod changes;
 pub mod checkpoint;
@@ -38,6 +39,7 @@ pub use archaeology::{
     ArchaeologyBisectReport, ArchaeologyDiffReport, ArchaeologyQueryReport,
     ARCHAEOLOGY_ARTIFACT_KIND,
 };
+pub use attempt::resolve_attempt;
 pub use capabilities::generate_capabilities;
 pub use changes::{
     get_changes_since, get_gap_info, get_snapshot_identity, validate_cursor, Cursor,
@@ -84,9 +86,9 @@ pub use external_refs::{
 };
 pub use issues::get_issue_by_id;
 pub use issues::list_issues;
+pub use issues::{add_comment, analyze_exclusion, ExclusionAnalysis};
 #[allow(unused_imports)]
 pub use issues::{create_issue, create_issue_with_unique_ref, CreateOutcome};
-pub use issues::{add_comment, analyze_exclusion, BeadExclusionResult, ExclusionAnalysis};
 pub use leases::{validate_lease_for_mutation, LeaseClaimResult};
 pub use lifecycle::{close_issue, release_issue, reopen_issue, update_issue};
 pub use manifest::{load_manifest, manifest_commit, manifest_dry_run, ManifestReport};
@@ -108,8 +110,8 @@ pub use comparison::{
 };
 #[allow(unused_imports)]
 pub use scheduling::{AttemptTier, GraphMetrics, SchedulingPolicy, SchedulingState};
+pub use watchdog::{config_from_options, run_watchdog};
 pub use why::{explain_why, WhyExplanation};
-pub use watchdog::{config_from_options, run_watchdog, ReleasedBead, StaleBead, WatchdogConfig, WatchdogResult};
 
 pub mod policy;
 #[allow(unused_imports)]

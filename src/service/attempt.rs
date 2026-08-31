@@ -261,36 +261,36 @@ fn compute_canonical_hash(request: &ResolveRequest, _issue_state: &IssueState) -
 
     // Hash components in deterministic order
     hasher.update(request.attempt_id.as_bytes());
-    hasher.update(&[0x00]); // null byte separator
+    hasher.update([0x00]); // null byte separator
 
     hasher.update(request.issue_id.as_bytes());
-    hasher.update(&[0x00]);
+    hasher.update([0x00]);
 
     hasher.update(request.outcome.as_bytes());
-    hasher.update(&[0x00]);
+    hasher.update([0x00]);
 
     let action = request.action.as_deref().unwrap_or("none");
     hasher.update(action.as_bytes());
-    hasher.update(&[0x00]);
+    hasher.update([0x00]);
 
     let reason = request.reason.as_deref().unwrap_or("");
     hasher.update(reason.as_bytes());
-    hasher.update(&[0x00]);
+    hasher.update([0x00]);
 
     let revision_str = request.if_revision.unwrap_or(0).to_string();
     hasher.update(revision_str.as_bytes());
-    hasher.update(&[0x00]);
+    hasher.update([0x00]);
 
     let fencing = request.fencing_token.as_deref().unwrap_or("");
     hasher.update(fencing.as_bytes());
-    hasher.update(&[0x00]);
+    hasher.update([0x00]);
 
     // Sort evidence refs for deterministic ordering
     let mut sorted_refs = request.evidence_refs.clone();
     sorted_refs.sort();
     for ref_str in &sorted_refs {
         hasher.update(ref_str.as_bytes());
-        hasher.update(&[0x00]);
+        hasher.update([0x00]);
     }
 
     // Add bounded metadata in canonical JSON order

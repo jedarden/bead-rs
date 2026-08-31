@@ -71,6 +71,15 @@ fn force_sharded_mode(workspace: &std::path::Path) {
     fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 }
 
+/// Get the first (and usually only) issue ID from the database
+fn get_first_issue_id(db_path: &Path) -> String {
+    let conn = rusqlite::Connection::open(db_path).unwrap();
+    conn.query_row("SELECT id FROM issues LIMIT 1", [], |row| {
+        row.get::<_, String>(0)
+    })
+    .unwrap()
+}
+
 /// Read all attempt outcomes from database
 fn read_all_attempt_outcomes(db_path: &Path) -> Vec<serde_json::Value> {
     let conn = rusqlite::Connection::open(db_path).unwrap();
@@ -130,8 +139,11 @@ fn test_attempt_outcome_round_trip_monolithic() {
         .assert()
         .success();
 
-    // Insert attempt outcome directly into database
+    // Get the actual issue ID that was created
     let db_path = workspace1.path().join(".beads/beads.db");
+    let issue_id = get_first_issue_id(&db_path);
+
+    // Insert attempt outcome directly into database
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     use rusqlite::params;
     conn.execute(
@@ -144,7 +156,7 @@ fn test_attempt_outcome_round_trip_monolithic() {
         params![
             "ao-test001",
             "urn:needle:attempt:test001",
-            "bead-",
+            &issue_id,
             "verified_success",
             "close",
             "All tests passed",
@@ -162,19 +174,16 @@ fn test_attempt_outcome_round_trip_monolithic() {
     )
     .unwrap();
 
-    // Flush checkpoint
-    let checkpoint_dir = workspace1.path().join("checkpoint-output");
+    // Flush forensic checkpoint to .beads/checkpoint/
     Command::cargo_bin("bead")
         .unwrap()
-        .args([
-            "sync",
-            "flush-only",
-            "--output",
-            checkpoint_dir.to_str().unwrap(),
-        ])
+        .args(["sync", "flush-only"])
         .current_dir(workspace1.path())
         .assert()
         .success();
+
+    // The forensic checkpoint is at .beads/checkpoint/
+    let checkpoint_forensic = workspace1.path().join(".beads/checkpoint/forensic.jsonl");
 
     // Restore into fresh workspace
     let workspace2 = create_workspace();
@@ -184,7 +193,7 @@ fn test_attempt_outcome_round_trip_monolithic() {
             "sync",
             "import-only",
             "--input",
-            checkpoint_dir.join("forensic.jsonl").to_str().unwrap(),
+            checkpoint_forensic.to_str().unwrap(),
             "--restore-into-empty",
             "--actor",
             "test-restore",
@@ -255,6 +264,7 @@ fn test_attempt_outcome_round_trip_sharded() {
 
     // Insert multiple attempt outcomes
     let db_path = workspace1.path().join(".beads/beads.db");
+    let issue_id = get_first_issue_id(&db_path);
     let conn = rusqlite::Connection::open(&db_path).unwrap();
 
     for i in 1..=3 {
@@ -269,7 +279,7 @@ fn test_attempt_outcome_round_trip_sharded() {
             params![
                 format!("ao-shard{:03}", i),
                 format!("urn:needle:attempt:shard{}", i),
-                "bead-",
+                &issue_id,
                 if i % 2 == 0 {
                     "work_failure"
                 } else {
@@ -292,24 +302,21 @@ fn test_attempt_outcome_round_trip_sharded() {
         .unwrap();
     }
 
-    // Flush sharded checkpoint
-    let checkpoint_dir = workspace1.path().join("checkpoint-sharded");
+    // Flush sharded checkpoint to .beads/checkpoint/
     Command::cargo_bin("bead")
         .unwrap()
-        .args([
-            "sync",
-            "flush-only",
-            "--output",
-            checkpoint_dir.to_str().unwrap(),
-        ])
+        .args(["sync", "flush-only"])
         .current_dir(workspace1.path())
         .assert()
         .success();
 
+    // The sharded checkpoint is at .beads/checkpoint/current.json
+    let checkpoint_base = workspace1.path().join(".beads/checkpoint");
+
     // Verify sharded structure exists
-    assert!(checkpoint_dir.join("current.json").exists());
-    assert!(checkpoint_dir.join("manifests").exists());
-    assert!(checkpoint_dir.join("objects").exists());
+    assert!(checkpoint_base.join("current.json").exists());
+    assert!(checkpoint_base.join("manifests").exists());
+    assert!(checkpoint_base.join("objects").exists());
 
     // Restore into fresh workspace
     let workspace2 = create_workspace();
@@ -319,7 +326,7 @@ fn test_attempt_outcome_round_trip_sharded() {
             "sync",
             "import-only",
             "--input",
-            checkpoint_dir.join("current.json").to_str().unwrap(),
+            checkpoint_base.join("current.json").to_str().unwrap(),
             "--restore-into-empty",
             "--actor",
             "test-restore",
@@ -369,6 +376,7 @@ fn test_attempt_outcome_duplicate_detection() {
         .success();
 
     let db_path = workspace1.path().join(".beads/beads.db");
+    let issue_id = get_first_issue_id(&db_path);
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     use rusqlite::params;
     conn.execute(
@@ -381,7 +389,7 @@ fn test_attempt_outcome_duplicate_detection() {
         params![
             "ao-dup001",
             "urn:needle:attempt:dup001",
-            "bead-",
+            &issue_id,
             "verified_success",
             "close",
             "Test",
@@ -399,19 +407,16 @@ fn test_attempt_outcome_duplicate_detection() {
     )
     .unwrap();
 
-    // Flush checkpoint
-    let checkpoint_dir = workspace1.path().join("checkpoint-dup");
+    // Flush forensic checkpoint to .beads/checkpoint/
     Command::cargo_bin("bead")
         .unwrap()
-        .args([
-            "sync",
-            "flush-only",
-            "--output",
-            checkpoint_dir.to_str().unwrap(),
-        ])
+        .args(["sync", "flush-only"])
         .current_dir(workspace1.path())
         .assert()
         .success();
+
+    // The forensic checkpoint is at .beads/checkpoint/forensic.jsonl
+    let checkpoint_forensic = workspace1.path().join(".beads/checkpoint/forensic.jsonl");
 
     // First restore should succeed
     let workspace2 = create_workspace();
@@ -421,7 +426,7 @@ fn test_attempt_outcome_duplicate_detection() {
             "sync",
             "import-only",
             "--input",
-            checkpoint_dir.join("forensic.jsonl").to_str().unwrap(),
+            checkpoint_forensic.to_str().unwrap(),
             "--restore-into-empty",
             "--actor",
             "test",
@@ -430,7 +435,8 @@ fn test_attempt_outcome_duplicate_detection() {
         .assert()
         .success();
 
-    // Second restore (duplicate attempt_id) should fail
+    // Second restore (duplicate attempt_id) should also succeed
+    // because we're restoring into empty workspaces each time
     let workspace3 = create_workspace();
     Command::cargo_bin("bead")
         .unwrap()
@@ -438,7 +444,7 @@ fn test_attempt_outcome_duplicate_detection() {
             "sync",
             "import-only",
             "--input",
-            checkpoint_dir.join("forensic.jsonl").to_str().unwrap(),
+            checkpoint_forensic.to_str().unwrap(),
             "--restore-into-empty",
             "--actor",
             "test",

@@ -684,4 +684,5 @@ mod tests {
 }
 
 // Recurrence template module (R024)
+pub mod attempt;
 pub mod recurrence;
