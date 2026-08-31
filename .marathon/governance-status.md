@@ -1,6 +1,7 @@
 # Marathon Governance Status and External Dependencies
 
-**Status**: Phase 0 Gate G0 Infrastructure Complete - Awaiting Independent Review
+**Status**: HISTORICAL SNAPSHOT - This document is frozen as of 2026-08-09 and does not reflect the completion state recorded in `.marathon/COMPLETE` (2026-08-10) or the current v0.2.4+ codebase.
+
 **Date**: 2026-08-09
 **Phase**: Gate G0 governance infrastructure operational
 **Baseline**: 228 tests passing (46 unit + 133 integration + 31 lifecycle + 3 docs + 15 other)

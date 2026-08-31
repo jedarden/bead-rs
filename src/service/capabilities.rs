@@ -130,6 +130,7 @@ pub fn generate_capabilities(profile: &str) -> Result<Capabilities> {
         schemas: crate::service::schema::schema_catalog()?,
         // All public root commands in alphabetical order
         commands: vec![
+            "analyze-exclusion".to_string(),
             "capabilities".to_string(),
             "changes".to_string(),
             "claim".to_string(),
@@ -139,6 +140,7 @@ pub fn generate_capabilities(profile: &str) -> Result<Capabilities> {
             "data".to_string(),
             "dep".to_string(),
             "doctor".to_string(),
+            "help".to_string(),
             "init".to_string(),
             "label".to_string(),
             "list".to_string(),
@@ -150,10 +152,12 @@ pub fn generate_capabilities(profile: &str) -> Result<Capabilities> {
             "release".to_string(),
             "reopen".to_string(),
             "restore".to_string(),
-            "show".to_string(),
+            "resource".to_string(),
             "schema".to_string(),
+            "show".to_string(),
             "sync".to_string(),
             "update".to_string(),
+            "watchdog".to_string(),
             "why".to_string(),
         ],
         // The additive R026 handshake (plan section 11): `auto_flush`

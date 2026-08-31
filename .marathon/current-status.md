@@ -1,5 +1,7 @@
 # Marathon Current Status Assessment
 
+**Status**: HISTORICAL SNAPSHOT - This document is frozen as of 2026-08-09 and does not reflect the completion state recorded in `.marathon/COMPLETE` (2026-08-10) or the current v0.2.4+ codebase.
+
 **Date**: 2026-08-09
 **Commit**: 08f094d (docs(specs): create draft specifications to advance blocked features)
 

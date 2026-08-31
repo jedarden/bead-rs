@@ -17,9 +17,9 @@ state: complete
 
 **Initial completion commit**: 773b9d4f461ee915259b5abb9f7d60faa62ac107
 
-**Artifact hash** (release binary SHA-256): pending recalculation at current commit
+**Artifact hash** (release binary SHA-256): UNAVAILABLE - No published release binary exists for this Marathon completion. The bead-rs project continued development after this milestone. The first published release was v0.1.0 (commit 33d5f70), followed by v0.2.4. See docs/plan/plan.md for current release status.
 
-**Evidence-report hash** (final-release-evidence-report.md SHA-256): pending recalculation at current commit
+**Evidence-report hash** (final-release-evidence-report.md SHA-256): UNAVAILABLE - The evidence report at .marathon/final-release-evidence-report.md was not hashed at completion time. This document records the 37/41 "maximum implementable completion" state with F012, F013, F014, and R020 blocked by external dependencies. The COMPLETE sentinel declares 41/41 complete, but historical context shows some blocked features were later considered complete under different criteria.
 
 ## Mission Scope
 
