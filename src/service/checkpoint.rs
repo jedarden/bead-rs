@@ -672,7 +672,7 @@ pub struct AttemptOutcomeRecord {
     /// Creation timestamp (RFC 3339)
     pub created_at: String,
     /// Evidence references
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub evidence_refs: Vec<String>,
     /// Model identifier for telemetry
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1427,6 +1427,8 @@ struct RestorePointer {
     issue_count: usize,
     event_count: usize,
     receipt_count: usize,
+    #[serde(default)]
+    attempt_outcome_count: usize,
     total_record_count: usize,
 }
 
@@ -1932,7 +1934,7 @@ fn verify_sharded_restore_closure(
     }
 
     let mut seen_paths = HashSet::new();
-    let mut verified_counts = [0usize; 3];
+    let mut verified_counts = [0usize; 4];
     for (index, (field, expected_role, expected_record_type)) in [
         ("issue_shards", "issues", "issue"),
         ("event_shards", "events", "event"),
@@ -1940,6 +1942,11 @@ fn verify_sharded_restore_closure(
             "receipt_shards",
             "provenance_receipts",
             "provenance_receipt",
+        ),
+        (
+            "attempt_outcome_shards",
+            "attempt_outcomes",
+            "attempt_outcome",
         ),
     ]
     .into_iter()
@@ -2036,14 +2043,16 @@ fn verify_sharded_restore_closure(
             pointer.issue_count,
             pointer.event_count,
             pointer.receipt_count,
+            pointer.attempt_outcome_count,
         ]
     {
         bail!(
-            "Unverified restore source: sharded object counts {:?} disagree with pointer ({}, {}, {})",
+            "Unverified restore source: sharded object counts {:?} disagree with pointer ({}, {}, {}, {})",
             verified_counts,
             pointer.issue_count,
             pointer.event_count,
-            pointer.receipt_count
+            pointer.receipt_count,
+            pointer.attempt_outcome_count
         );
     }
     Ok(())
@@ -2059,7 +2068,7 @@ pub(crate) fn stage_checkpoint_set(checkpoint_dir: &Path) -> Result<ForensicStag
 }
 
 fn stage_forensic_checkpoint(input_path: &Path) -> Result<ForensicStaging> {
-    // Check if input is a directory (sharded/pointer) or file (monolithic)
+    // Check if input is a directory (sharded/pointer) or file (monolithic or pointer)
     if input_path.is_dir() {
         // Try to find current.json pointer
         let pointer_path = input_path.join("current.json");
@@ -2072,9 +2081,20 @@ fn stage_forensic_checkpoint(input_path: &Path) -> Result<ForensicStaging> {
             );
         }
     } else {
-        // Single file - treat as monolithic
-        reject_archaeology_source_file(input_path)?;
-        stage_monolithic_checkpoint(input_path)
+        // Single file - check if it's a pointer file (current.json or previous.json)
+        let file_name = input_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+
+        if file_name == "current.json" || file_name == "previous.json" {
+            // Pointer file - stage using pointer dispatch
+            stage_pointer_checkpoint(input_path)
+        } else {
+            // Regular monolithic JSONL file
+            reject_archaeology_source_file(input_path)?;
+            stage_monolithic_checkpoint(input_path)
+        }
     }
 }
 
@@ -6344,6 +6364,7 @@ fn publish_monolithic_checkpoint(
         .iter()
         .chain(corpus.event_lines.iter())
         .chain(corpus.receipt_lines.iter())
+        .chain(corpus.attempt_outcome_lines.iter())
     {
         writer.write_all(line)?;
         writer.write_all(b"\n")?;
@@ -6805,6 +6826,41 @@ fn publish_sharded_checkpoint(
         }));
     }
 
+    // ---- Attempt outcome objects: packed in receipt-ID order ----
+    let attempt_outcome_line_lens: Vec<usize> = corpus
+        .attempt_outcome_lines
+        .iter()
+        .map(|l| l.len())
+        .collect();
+    let attempt_outcome_groups = pack_sealed_groups(
+        &attempt_outcome_line_lens,
+        thresholds.max_event_object_events,
+        thresholds.max_event_object_bytes,
+    );
+
+    let mut attempt_outcome_shard_metadata = Vec::new();
+    for (group_index, members) in attempt_outcome_groups.iter().enumerate() {
+        let mut body = Vec::new();
+        for &i in members {
+            body.extend_from_slice(&corpus.attempt_outcome_lines[i]);
+            body.push(b'\n');
+        }
+        let (rel, hash) = write_content_object(
+            &objects_dir,
+            &format!("attempt-outcome-{}-{}", config.generation_id, group_index),
+            &body,
+            changed_paths,
+        )?;
+        referenced_paths.push(rel.clone());
+        attempt_outcome_shard_metadata.push(serde_json::json!({
+            "path": rel,
+            "sha256": hash,
+            "byte_length": body.len(),
+            "record_count": members.len(),
+            "role": "attempt_outcomes"
+        }));
+    }
+
     // ---- Manifest: the immutable, content-addressed sharded root ----
     let origins: Vec<serde_json::Value> = origin_stats
         .iter()
@@ -6833,10 +6889,12 @@ fn publish_sharded_checkpoint(
         "issue_count": issues.len(),
         "event_count": events.len(),
         "receipt_count": receipts.len(),
-        "total_record_count": issues.len() + events.len() + receipts.len(),
+        "attempt_outcome_count": corpus.attempt_outcome_lines.len(),
+        "total_record_count": issues.len() + events.len() + receipts.len() + corpus.attempt_outcome_lines.len(),
         "issue_shards": issue_shard_metadata,
         "event_shards": event_shard_metadata,
         "receipt_shards": receipt_shard_metadata,
+        "attempt_outcome_shards": attempt_outcome_shard_metadata,
         "origins": origins
     });
 
@@ -7441,7 +7499,21 @@ fn read_all_attempt_outcomes(tx: &Transaction) -> Result<Vec<AttemptOutcomeRecor
         ) = row?;
 
         let evidence_refs: Vec<String> =
-            serde_json::from_str(&evidence_refs_json).unwrap_or_default();
+            serde_json::from_str(&evidence_refs_json).map_err(|e| {
+                anyhow!(
+                    "Invalid evidence_refs_json for receipt {}: {}",
+                    receipt_id,
+                    e
+                )
+            })?;
+
+        // Derive resulting_state from action
+        // close -> "closed", everything else -> "open"
+        let resulting_state = if action == "close" {
+            "closed".to_string()
+        } else {
+            "open".to_string()
+        };
 
         let record = AttemptOutcomeRecord {
             schema_ref: crate::model::attempt::SCHEMA_ATTEMPT_OUTCOME.to_string(),
@@ -7452,7 +7524,7 @@ fn read_all_attempt_outcomes(tx: &Transaction) -> Result<Vec<AttemptOutcomeRecor
             reason,
             canonical_request_hash,
             resulting_issue_revision,
-            resulting_state: String::new(), // Will be filled from issue state
+            resulting_state,
             resulting_attempt_tier,
             receipt_id,
             actor,

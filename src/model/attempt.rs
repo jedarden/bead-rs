@@ -312,7 +312,7 @@ pub struct AttemptOutcomeRecord {
     pub created_at: String,
 
     /// Evidence references
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub evidence_refs: Vec<String>,
 
     /// Model identifier for telemetry
