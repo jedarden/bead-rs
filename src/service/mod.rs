@@ -86,6 +86,7 @@ pub use issues::get_issue_by_id;
 pub use issues::list_issues;
 #[allow(unused_imports)]
 pub use issues::{create_issue, create_issue_with_unique_ref, CreateOutcome};
+pub use issues::{add_comment, analyze_exclusion, BeadExclusionResult, ExclusionAnalysis};
 pub use leases::{validate_lease_for_mutation, LeaseClaimResult};
 pub use lifecycle::{close_issue, release_issue, reopen_issue, update_issue};
 pub use manifest::{load_manifest, manifest_commit, manifest_dry_run, ManifestReport};

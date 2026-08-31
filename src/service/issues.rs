@@ -614,6 +614,251 @@ pub fn create_issue_internal(
     Ok(id.to_string())
 }
 
+/// Structured diagnostic output for pluck operations
+#[derive(Debug, Clone, serde::Serialize)]
+struct PluckDiagnostics {
+    timestamp: String,
+    total_open_beads: i64,
+    exclusion_criteria: ExclusionCriteria,
+    final_candidate_count: i64,
+    excluded_beads: Vec<ExcludedBead>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ExclusionCriteria {
+    has_assignee: i64,
+    manually_blocked: i64,
+    has_dependencies: i64,
+    resource_conflicts: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ExcludedBead {
+    bead_id: String,
+    title: String,
+    priority: i64,
+    assignee: Option<String>,
+    manual_blocked: bool,
+    has_blockers: bool,
+    blocker_count: i64,
+    has_resource_conflicts: bool,
+    conflict_count: i64,
+}
+
+/// Write structured JSON diagnostics to .beads/pluck-diagnostics.json
+fn write_pluck_diagnostics(
+    conn: &Connection,
+    limit: &i64,
+    final_candidates: &[Issue],
+) -> Result<()> {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    let now = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    let now_string = crate::service::resource_locks::now_string();
+
+    // Get total open beads
+    let total_open: i64 = conn
+        .query_row("SELECT COUNT(*) FROM issues WHERE base_status = 'open'", [], |row| {
+            row.get(0)
+        })
+        .unwrap_or(0);
+
+    // Count beads excluded by each criterion
+    let has_assignee: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM issues WHERE base_status = 'open' AND assignee IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    let manually_blocked: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM issues WHERE base_status = 'open' AND (manual_blocked = 1)",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    // Count open beads with dependencies
+    let has_dependencies: i64 = conn
+        .query_row(
+            "SELECT COUNT(DISTINCT blocked_issue_id) FROM dependencies WHERE kind = 'blocks'
+             AND blocked_issue_id IN (SELECT id FROM issues WHERE base_status = 'open')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    // Count beads with resource conflicts
+    let resource_conflicts: i64 = conn
+        .query_row(
+            "SELECT COUNT(DISTINCT candidate_key.issue_id)
+             FROM issue_resource_keys candidate_key
+             JOIN resource_locks held_lock ON held_lock.resource_key = candidate_key.resource_key
+             WHERE candidate_key.issue_id IN (SELECT id FROM issues WHERE base_status = 'open')
+               AND held_lock.issue_id != candidate_key.issue_id
+               AND (held_lock.lease_fencing_token IS NULL OR EXISTS (
+                   SELECT 1 FROM leases active_lease
+                   WHERE active_lease.issue_id = held_lock.issue_id
+                     AND active_lease.fencing_token = held_lock.lease_fencing_token
+                     AND active_lease.expires_at > ?
+               ))",
+            [&now_string],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    // Get details of excluded beads
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, title, priority, assignee, manual_blocked
+         FROM issues
+         WHERE base_status = 'open'
+         ORDER BY priority ASC, created_at ASC, id ASC
+         LIMIT ?1",
+    )?;
+
+    let beads: Vec<(String, String, i64, Option<String>, Option<bool>)> = stmt
+        .query_map([limit], |row| {
+            Ok((
+                row.get(0)?, // id
+                row.get(1)?, // title
+                row.get(2)?, // priority
+                row.get(3)?, // assignee
+                row.get(4)?, // manual_blocked
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to fetch beads: {}", e)))?;
+
+    let mut excluded_beads = Vec::new();
+    let final_candidate_ids: std::collections::HashSet<String> =
+        final_candidates.iter().map(|i| i.id.clone()).collect();
+
+    for (id, title, priority, assignee, manual_blocked) in beads {
+        // Skip if this is a final candidate
+        if final_candidate_ids.contains(&id) {
+            continue;
+        }
+
+        // Check for blockers
+        let blocker_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM dependencies
+                 WHERE blocked_issue_id = ?1 AND kind = 'blocks'
+                 AND blocker_issue_id IN (SELECT id FROM issues WHERE base_status != 'closed')",
+                [&id],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        // Check for resource conflicts
+        let conflict_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(DISTINCT held_lock.issue_id)
+                 FROM issue_resource_keys candidate_key
+                 JOIN resource_locks held_lock ON held_lock.resource_key = candidate_key.resource_key
+                 WHERE candidate_key.issue_id = ?1
+                   AND held_lock.issue_id != ?1
+                   AND (held_lock.lease_fencing_token IS NULL OR EXISTS (
+                       SELECT 1 FROM leases active_lease
+                       WHERE active_lease.issue_id = held_lock.issue_id
+                         AND active_lease.fencing_token = held_lock.lease_fencing_token
+                         AND active_lease.expires_at > ?
+                   ))",
+                [&id, &now_string],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        excluded_beads.push(ExcludedBead {
+            bead_id: id,
+            title,
+            priority,
+            assignee,
+            manual_blocked: manual_blocked.unwrap_or(false),
+            has_blockers: blocker_count > 0,
+            blocker_count,
+            has_resource_conflicts: conflict_count > 0,
+            conflict_count,
+        });
+    }
+
+    let diagnostics = PluckDiagnostics {
+        timestamp: now,
+        total_open_beads: total_open,
+        exclusion_criteria: ExclusionCriteria {
+            has_assignee,
+            manually_blocked,
+            has_dependencies,
+            resource_conflicts,
+        },
+        final_candidate_count: final_candidates.len() as i64,
+        excluded_beads,
+    };
+
+    // Get database path to resolve diagnostics file location
+    let db_path: Option<String> = conn
+        .query_row("PRAGMA database_list", [], |row| {
+            let name: String = row.get(1)?;
+            let path: String = row.get(2)?;
+            if name == "main" && !path.is_empty() {
+                Ok(path)
+            } else {
+                Err(rusqlite::Error::InvalidQuery)
+            }
+        })
+        .optional()
+        .unwrap_or_default();
+
+    if let Some(db_path_str) = db_path {
+        let db_path = std::path::Path::new(&db_path_str);
+        if let Some(workspace_dir) = db_path.parent() {
+            let diagnostics_dir = workspace_dir.join("diagnostics");
+            std::fs::create_dir_all(&diagnostics_dir).map_err(|e| {
+                Error::Internal(anyhow::anyhow!(
+                    "Failed to create diagnostics directory: {}",
+                    e
+                ))
+            })?;
+
+            let log_path = diagnostics_dir.join("pluck-diagnostics.json");
+            let json_output =
+                serde_json::to_string_pretty(&diagnostics).map_err(|e| {
+                    Error::Internal(anyhow::anyhow!("Failed to serialize diagnostics: {}", e))
+                })?;
+
+            let mut file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&log_path)
+                .map_err(|e| {
+                    Error::Internal(anyhow::anyhow!(
+                        "Failed to open diagnostics file: {}",
+                        e
+                    ))
+                })?;
+
+            file.write_all(json_output.as_bytes())
+                .map_err(|e| {
+                    Error::Internal(anyhow::anyhow!(
+                        "Failed to write diagnostics: {}",
+                        e
+                    ))
+                })?;
+
+            eprintln!("Structured diagnostics written to: {}", log_path.display());
+        }
+    }
+
+    Ok(())
+}
+
 /// Show exclusion reasons for beads not in the ready frontier
 fn show_exclusion_reasons(conn: &Connection, limit: &i64) -> Result<()> {
     let now_string = crate::service::resource_locks::now_string();
@@ -1005,6 +1250,11 @@ pub fn list_issues(
         show_exclusion_reasons(conn, &limit)?;
     }
 
+    // Write structured JSON diagnostics for pluck operations
+    if ready_only {
+        write_pluck_diagnostics(conn, &limit, &issues)?;
+    }
+
     Ok(issues)
 }
 
@@ -1100,6 +1350,261 @@ fn parse_base_status(s: String) -> BaseStatus {
         "closed" => BaseStatus::Closed,
         _ => BaseStatus::Open, // Default to open for now
     }
+}
+
+/// Result of bead exclusion analysis
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ExclusionAnalysis {
+    pub total_open: i64,
+    pub ready_count: i64,
+    pub excluded_count: i64,
+    pub exclusion_summary: HashMap<String, i64>,
+    pub ready_beads: Vec<BeadExclusionResult>,
+    pub excluded_beads: Vec<BeadExclusionResult>,
+    pub open_but_invisible: Vec<BeadExclusionResult>,
+    pub sql_query: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BeadExclusionResult {
+    pub id: String,
+    pub title: String,
+    pub priority: i64,
+    pub assignee: Option<String>,
+    pub manual_blocked: bool,
+    pub is_ready: bool,
+    pub exclusion_reasons: Vec<String>,
+    pub created_at: String,
+}
+
+/// Analyze bead exclusion from the ready frontier
+pub fn analyze_exclusion(
+    conn: &Connection,
+    limit: &i64,
+    show_sql: bool,
+) -> Result<ExclusionAnalysis> {
+    let now_string = crate::service::resource_locks::now_string();
+
+    // Get all open beads
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, title, priority, assignee, manual_blocked, created_at
+         FROM issues
+         WHERE base_status = 'open'
+         ORDER BY priority ASC, created_at ASC, id ASC
+         LIMIT ?1",
+    )?;
+
+    let beads: Vec<(String, String, i64, Option<String>, Option<bool>, String)> = stmt
+        .query_map([limit], |row| {
+            Ok((
+                row.get(0)?, // id
+                row.get(1)?, // title
+                row.get(2)?, // priority
+                row.get(3)?, // assignee
+                row.get(4)?, // manual_blocked
+                row.get(5)?, // created_at
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to fetch beads: {}", e)))?;
+
+    let mut ready_beads = Vec::new();
+    let mut excluded_beads = Vec::new();
+    let mut exclusion_summary = HashMap::new();
+
+    for (id, title, priority, assignee, manual_blocked, created_at) in beads {
+        let mut reasons = Vec::new();
+        let mut is_ready = true;
+
+        // Check assignee
+        if assignee.is_some() {
+            reasons.push(format!("has assignee: {}", assignee.as_ref().unwrap()));
+            *exclusion_summary.entry("has assignee".to_string()).or_insert(0) += 1;
+            is_ready = false;
+        }
+
+        // Check manual block
+        if manual_blocked.unwrap_or(false) {
+            reasons.push("manually blocked".to_string());
+            *exclusion_summary.entry("manually blocked".to_string()).or_insert(0) += 1;
+            is_ready = false;
+        }
+
+        // Check dependencies
+        let has_blockers: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM dependencies
+                 WHERE blocked_issue_id = ?1 AND kind = 'blocks'
+                 AND blocker_issue_id IN (SELECT id FROM issues WHERE base_status != 'closed')",
+                [&id],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        if has_blockers > 0 {
+            // Get blocker IDs
+            let mut blocker_stmt = conn.prepare_cached(
+                "SELECT blocker_issue_id FROM dependencies
+                 WHERE blocked_issue_id = ?1 AND kind = 'blocks'
+                 AND blocker_issue_id IN (SELECT id FROM issues WHERE base_status != 'closed')
+                 LIMIT 5",
+            )?;
+
+            let blocker_ids: Vec<String> = blocker_stmt
+                .query_map([&id], |row| row.get(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap_or_default();
+
+            if blocker_ids.len() < has_blockers as usize {
+                reasons.push(format!(
+                    "blocked by {}+ unclosed issues (including: {})",
+                    has_blockers,
+                    blocker_ids.join(", ")
+                ));
+            } else {
+                reasons.push(format!(
+                    "blocked by {} unclosed issue(s): {}",
+                    has_blockers,
+                    blocker_ids.join(", ")
+                ));
+            }
+            *exclusion_summary.entry("has blocking dependencies".to_string()).or_insert(0) += 1;
+            is_ready = false;
+        }
+
+        // Check resource conflicts
+        let has_conflicts: i64 = conn
+            .query_row(
+                "SELECT COUNT(DISTINCT held_lock.issue_id)
+                 FROM issue_resource_keys candidate_key
+                 JOIN resource_locks held_lock ON held_lock.resource_key = candidate_key.resource_key
+                 WHERE candidate_key.issue_id = ?1
+                   AND held_lock.issue_id != ?1
+                   AND (held_lock.lease_fencing_token IS NULL OR EXISTS (
+                       SELECT 1 FROM leases active_lease
+                       WHERE active_lease.issue_id = held_lock.issue_id
+                         AND active_lease.fencing_token = held_lock.lease_fencing_token
+                         AND active_lease.expires_at > ?2
+                   ))",
+                [&id, &now_string],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        if has_conflicts > 0 {
+            reasons.push(format!(
+                "resource conflicts with {} other issue(s)",
+                has_conflicts
+            ));
+            *exclusion_summary
+                .entry("resource conflicts".to_string())
+                .or_insert(0) += 1;
+            is_ready = false;
+        }
+
+        let result = BeadExclusionResult {
+            id: id.clone(),
+            title: title.clone(),
+            priority,
+            assignee: assignee.clone(),
+            manual_blocked: manual_blocked.unwrap_or(false),
+            is_ready,
+            exclusion_reasons: reasons.clone(),
+            created_at: created_at.clone(),
+        };
+
+        if is_ready {
+            ready_beads.push(result);
+        } else {
+            excluded_beads.push(result);
+        }
+    }
+
+    // Calculate counts
+    let total_open = ready_beads.len() + excluded_beads.len();
+    let ready_count = ready_beads.len() as i64;
+    let excluded_count = excluded_beads.len() as i64;
+
+    // Identify "open but invisible" beads (all excluded beads are open but not ready)
+    let open_but_invisible = excluded_beads.clone();
+
+    // Build SQL query for reference
+    let sql_query = if show_sql {
+        Some(format!(
+            "SELECT id, title, priority, assignee, manual_blocked, created_at
+             FROM issues
+             WHERE base_status = 'open'
+               AND (manual_blocked IS NULL OR manual_blocked = 0)
+               AND assignee IS NULL
+               AND NOT EXISTS (
+                   SELECT 1 FROM dependencies
+                   WHERE blocked_issue_id = issues.id
+                     AND kind = 'blocks'
+                     AND blocker_issue_id IN (SELECT id FROM issues WHERE base_status != 'closed')
+               )
+               AND NOT EXISTS (
+                   SELECT 1 FROM issue_resource_keys candidate_key
+                   JOIN resource_locks held_lock ON held_lock.resource_key = candidate_key.resource_key
+                   WHERE candidate_key.issue_id = issues.id
+                     AND held_lock.issue_id != issues.id
+                     AND (held_lock.lease_fencing_token IS NULL OR EXISTS (
+                         SELECT 1 FROM leases active_lease
+                         WHERE active_lease.issue_id = held_lock.issue_id
+                           AND active_lease.fencing_token = held_lock.lease_fencing_token
+                           AND active_lease.expires_at > '{}'
+                       ))
+               )
+             ORDER BY priority ASC, created_at ASC, id ASC
+             LIMIT {}",
+            now_string, limit
+        ))
+    } else {
+        None
+    };
+
+    Ok(ExclusionAnalysis {
+        total_open: total_open as i64,
+        ready_count,
+        excluded_count,
+        exclusion_summary,
+        ready_beads,
+        excluded_beads,
+        open_but_invisible,
+        sql_query,
+    })
+}
+
+/// Add a comment to an issue
+pub fn add_comment(conn: &Connection, issue_id: &str, body: &str, actor: &str) -> Result<()> {
+    // Validate issue exists
+    let exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM issues WHERE id = ?",
+            [issue_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+
+    if !exists {
+        return Err(Error::not_found(&format!(
+            "Issue {} not found",
+            issue_id
+        )));
+    }
+
+    // Generate a unique comment ID
+    let random_bytes: [u8; 4] = rand::random();
+    let comment_id = format!("comment-{}", hex::encode(random_bytes));
+
+    // Insert the comment
+    conn.execute(
+        "INSERT INTO comments (id, issue_id, author, body, created_at)
+         VALUES (?1, ?2, ?3, ?4, datetime('now'))",
+        [&comment_id, issue_id, actor, body],
+    )
+    .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to add comment: {}", e)))?;
+
+    Ok(())
 }
 
 #[cfg(test)]

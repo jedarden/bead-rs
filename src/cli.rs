@@ -248,6 +248,39 @@ interchange and reconciliation primitive."
 
     Why(WhyOptions),
 
+    /// Analyze bead exclusion from ready frontier
+    #[command(
+        about = "Analyze why beads are excluded from the ready frontier",
+        long_about = "Analyze beads and determine why they are excluded from the ready frontier.
+Runs the exact same filtering logic as 'bead list --ready' and provides detailed
+per-bead breakdown of which exclusion rules matched and why.
+
+This helps diagnose 'starvation' situations where open beads exist but the ready
+frontier is empty, indicating that all open beads are excluded by one or more rules.
+
+EXCLUSION RULES (evaluated in order):
+  1. Status filter: must be 'open' (excludes: in_progress, deferred, closed)
+  2. Assignee filter: must be unassigned (excludes: beads with assignee)
+  3. Manual block: must not be manually blocked (excludes: manual_blocked = 1)
+  4. Dependencies: must have no unclosed blocking dependencies
+  5. Resource locks: must have no conflicts with held locks by other active issues
+
+EXAMPLES:
+  bead analyze-exclusion                         # Analyze all open beads
+  bead analyze-exclusion --json                 # Machine-readable JSON output
+  bead analyze-exclusion --attach tunnel-abc123  # Attach analysis as bead comment
+  bead analyze-exclusion --limit 50              # Analyze first 50 open beads
+
+The command also reports:
+  - Total open beads vs. ready frontier size
+  - Per-rule exclusion counts
+  - 'Open but invisible' beads (excluded open beads)
+
+This is useful for automated monitoring: run this when 'bead list --ready' returns
+empty but open beads exist, and attach the output to a diagnostic bead."
+    )]
+    AnalyzeExclusion(AnalyzeExclusionOptions),
+
     Compare(CompareOptions),
 
     /// Manage structured bead data
@@ -2033,6 +2066,34 @@ pub struct WhyOptions {
     /// Output in JSON format
     #[arg(long)]
     pub json: bool,
+}
+
+/// Options for analyze-exclusion command
+#[derive(Parser, Debug)]
+#[command(
+    about = "Analyze bead exclusion from ready frontier",
+    long_about = "Analyze beads and determine why they are excluded from the ready frontier."
+)]
+pub struct AnalyzeExclusionOptions {
+    /// Output in JSON format
+    #[arg(long)]
+    pub json: bool,
+
+    /// Maximum number of open beads to analyze (0-999999)
+    #[arg(long, default_value = "100")]
+    pub limit: i64,
+
+    /// Attach analysis as a comment to the specified bead ID
+    #[arg(long)]
+    pub attach: Option<String>,
+
+    /// Include SQL query in output
+    #[arg(long)]
+    pub show_sql: bool,
+
+    /// Suppress auto-checkpoint publication for this invocation
+    #[arg(long)]
+    pub no_auto_flush: bool,
 }
 
 /// Cross-profile semantic comparison (R020)

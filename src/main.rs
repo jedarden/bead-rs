@@ -338,6 +338,7 @@ fn dispatch_command(cli: Cli) -> Result<bool> {
         Command::Changes(opts) => cmd_changes(opts).map(|_| false),
         Command::Data(opts) => cmd_data(opts).map(|_| false),
         Command::Why(opts) => cmd_why(opts).map(|_| false),
+        Command::AnalyzeExclusion(opts) => cmd_analyze_exclusion(opts).map(|_| true),
         Command::Compare(opts) => cmd_compare(opts).map(|_| false),
         Command::Recurrence(opts) => cmd_recurrence(opts).map(|_| false),
         Command::Policy(opts) => cmd_policy(opts).map(|_| false),
@@ -3617,6 +3618,139 @@ fn print_human_readable_why(why: &service::WhyExplanation) {
         for reason in &why.reasons {
             println!("  - {:?}", reason);
         }
+    }
+}
+
+fn cmd_analyze_exclusion(opts: cli::AnalyzeExclusionOptions) -> Result<()> {
+    // Discover workspace
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    let db_path = config.database_path();
+    let conn = store::open_configured_connection(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    // Run exclusion analysis
+    let analysis = service::analyze_exclusion(&conn, &opts.limit, opts.show_sql)?;
+
+    if opts.json {
+        // Output machine-readable JSON
+        let output = serde_json::to_string_pretty(&analysis).map_err(|e| {
+            Error::Internal(anyhow::anyhow!(
+                "Failed to serialize exclusion analysis: {}",
+                e
+            ))
+        })?;
+        println!("{}", output);
+    } else {
+        // Human-readable analysis
+        print_human_readable_exclusion_analysis(&analysis);
+    }
+
+    // Attach as comment if requested
+    if let Some(target_id) = &opts.attach {
+        let comment_body = if opts.json {
+            serde_json::to_string_pretty(&analysis).map_err(|e| {
+                Error::Internal(anyhow::anyhow!(
+                    "Failed to serialize exclusion analysis: {}",
+                    e
+                ))
+            })?
+        } else {
+            // For text output, create a summary
+            let mut summary = String::new();
+            summary.push_str(&format!("# Exclusion Analysis\n\n"));
+            summary.push_str(&format!("**Total open beads:** {}\n", analysis.total_open));
+            summary.push_str(&format!("**Ready frontier:** {}\n", analysis.ready_count));
+            summary.push_str(&format!("**Excluded:** {}\n\n", analysis.excluded_count));
+
+            if !analysis.exclusion_summary.is_empty() {
+                summary.push_str("**Exclusion breakdown:**\n");
+                for (rule, count) in &analysis.exclusion_summary {
+                    summary.push_str(&format!("- {}: {}\n", rule, count));
+                }
+            }
+
+            if !analysis.open_but_invisible.is_empty() {
+                summary.push_str("\n**Open but invisible beads:**\n");
+                for bead in &analysis.open_but_invisible {
+                    summary.push_str(&format!("- {}: ", bead.id));
+                    for (i, reason) in bead.exclusion_reasons.iter().enumerate() {
+                        if i > 0 {
+                            summary.push_str(", ");
+                        }
+                        summary.push_str(reason);
+                    }
+                    summary.push('\n');
+                }
+            }
+
+            summary
+        };
+
+        // Use "system" as the default actor for automated comments
+        service::add_comment(&conn, target_id, &comment_body, "system")?;
+        eprintln!("Analysis attached as comment to bead {}", target_id);
+    }
+
+    Ok(())
+}
+
+fn print_human_readable_exclusion_analysis(analysis: &service::ExclusionAnalysis) {
+    println!("=== Bead Exclusion Analysis ===");
+    println!();
+    println!("**Summary:**");
+    println!("  Total open beads: {}", analysis.total_open);
+    println!("  Ready frontier: {}", analysis.ready_count);
+    println!("  Excluded: {}", analysis.excluded_count);
+
+    if !analysis.exclusion_summary.is_empty() {
+        println!();
+        println!("**Exclusion Rule Summary:**");
+        for (rule, count) in &analysis.exclusion_summary {
+            println!("  - {}: {} bead(s)", rule, count);
+        }
+    }
+
+    if !analysis.ready_beads.is_empty() {
+        println!();
+        println!("**Ready Frontier ({} bead(s))**:", analysis.ready_beads.len());
+        for bead in &analysis.ready_beads {
+            println!("  ✓ {} [{}]", bead.id, bead.title);
+            println!("    Priority: P{}", bead.priority);
+        }
+    }
+
+    if !analysis.excluded_beads.is_empty() {
+        println!();
+        println!("**Excluded Beads ({} bead(s))**:", analysis.excluded_beads.len());
+        for bead in &analysis.excluded_beads {
+            println!("  ✗ {} [{}]", bead.id, bead.title);
+            println!("    Reasons:");
+            for reason in &bead.exclusion_reasons {
+                println!("      - {}", reason);
+            }
+        }
+    }
+
+    if !analysis.open_but_invisible.is_empty() {
+        println!();
+        println!("**Open But Invisible ({} bead(s))**:", analysis.open_but_invisible.len());
+        println!("  (These beads are 'open' but excluded from the ready frontier)");
+        for bead in &analysis.open_but_invisible {
+            println!("  • {} [{}]", bead.id, bead.title);
+            println!("    Excluded by:");
+            for reason in &bead.exclusion_reasons {
+                println!("      - {}", reason);
+            }
+        }
+    }
+
+    if analysis.ready_count == 0 && analysis.total_open > 0 {
+        println!();
+        println!("**⚠ STARVATION DETECTED:**");
+        println!("  All {} open bead(s) are excluded from the ready frontier.", analysis.total_open);
+        println!("  No work is claimable. Use 'bead analyze-exclusion' to diagnose why.");
     }
 }
 
