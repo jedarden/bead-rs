@@ -2453,6 +2453,64 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
         return Ok(());
     }
 
+    if opts.starvation_recovery {
+        // Run starvation recovery
+        eprintln!("Running starvation recovery...");
+        eprintln!("This will automatically diagnose and repair common starvation causes.");
+        eprintln!();
+
+        let mut store_wrapper = store::SqliteStore::new();
+        let result = service::doctor::run_starvation_recovery(&mut store_wrapper)?;
+
+        if opts.json {
+            // Output JSON result
+            let json_output = serde_json::to_string_pretty(&result).map_err(|e| {
+                Error::Internal(anyhow::anyhow!("Failed to serialize recovery result: {}", e))
+            })?;
+            println!("{}", json_output);
+        } else {
+            // Human-readable output
+            eprintln!();
+            eprintln!("Starvation Recovery Report");
+            eprintln!("========================");
+            eprintln!("Timestamp: {}", result.timestamp);
+            eprintln!("Integrity checks: {}", if result.integrity_checks_passed { "✓ PASSED" } else { "✗ FAILED" });
+            eprintln!("Checkpoint verified: {}", if result.checkpoint_verified { "✓ YES" } else { "⚠ DIRTY" });
+            eprintln!("Total repairs performed: {}", result.total_repairs);
+            eprintln!();
+
+            if result.total_repairs == 0 {
+                eprintln!("✅ No starvation issues were found. No repairs were needed.");
+            } else {
+                eprintln!("Repairs performed:");
+                eprintln!();
+
+                for repair in &result.repairs_performed {
+                    eprintln!("  Type: {}", repair.repair_type);
+                    eprintln!("  Description: {}", repair.description);
+                    eprintln!("  Affected beads: {}", repair.affected_beads.join(", "));
+                    eprintln!("  Timestamp: {}", repair.timestamp);
+                    eprintln!();
+                }
+
+                eprintln!("All repairs have been logged to .beads/doctor-recovery.log");
+                eprintln!();
+                eprintln!("Note: After starvation recovery, you may want to run:");
+                eprintln!("  - 'bead list --ready' to verify the ready frontier is now populated");
+                eprintln!("  - 'bead sync flush-only' to ensure the checkpoint reflects all repairs");
+            }
+        }
+
+        // Exit with error if integrity checks failed
+        if !result.integrity_checks_passed {
+            return Err(Error::integrity(
+                "Starvation recovery aborted: integrity checks failed",
+            ));
+        }
+
+        return Ok(());
+    }
+
     if opts.repair {
         // Run repairs - maintain narrow allowlist (temp files, structure dirs)
         eprintln!("Attempting repairs...");

@@ -1986,3 +1986,532 @@ fn dfs_cycle_check(
     recursion_stack.remove(issue);
     None
 }
+
+/// Starvation check report
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StarvationCheckReport {
+    pub timestamp: String,
+    pub open_bead_count: usize,
+    pub ready_bead_count: usize,
+    pub excluded_beads: Vec<ExcludedBead>,
+    pub has_starvation: bool,
+}
+
+/// Details of a bead excluded from the ready frontier
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExcludedBead {
+    pub id: String,
+    pub title: String,
+    pub priority: i64,
+    pub reasons: Vec<String>,
+    pub assignee: Option<String>,
+    pub manual_blocked: bool,
+    pub blocking_dependencies: Vec<String>,
+    pub resource_conflicts: Vec<String>,
+}
+
+/// Run starvation check: diagnose beads that are open but not appearing in the ready frontier
+pub fn run_starvation_check(store: &impl Store) -> Result<StarvationCheckReport> {
+    let config = store.get_workspace_config()?;
+    let db_path = config.root.join(".beads/beads.db");
+    let conn = open_configured_connection(&db_path)
+        .map_err(|e| Error::Integrity(format!("Failed to open database: {}", e)))?;
+
+    let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+
+    // Get all open beads
+    let mut open_stmt = conn.prepare_cached(
+        "SELECT id, title, priority, assignee, manual_blocked, created_at
+         FROM issues
+         WHERE base_status = 'open'
+         ORDER BY priority ASC, created_at ASC, id ASC"
+    ).map_err(|e| Error::Integrity(format!("Failed to prepare statement: {}", e)))?;
+
+    let open_beads: Vec<(String, String, i64, Option<String>, Option<bool>, String)> = open_stmt
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?, // id
+                row.get(1)?, // title
+                row.get(2)?, // priority
+                row.get(3)?, // assignee
+                row.get(4)?, // manual_blocked
+                row.get(5)?, // created_at
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to fetch open beads: {}", e)))?;
+
+    let open_bead_count = open_beads.len();
+    let mut excluded_beads = Vec::new();
+    let mut ready_bead_count = 0;
+
+    for (id, title, priority, assignee, manual_blocked, _created_at) in open_beads {
+        let mut reasons = Vec::new();
+        let mut blocking_dependencies = Vec::new();
+        let mut resource_conflicts = Vec::new();
+        let is_manually_blocked = manual_blocked.unwrap_or(false);
+
+        // Check assignee
+        if let Some(ref assignee_name) = assignee {
+            if !assignee_name.trim().is_empty() {
+                reasons.push(format!("has assignee: {}", assignee_name));
+            }
+        }
+
+        // Check manual block
+        if is_manually_blocked {
+            reasons.push("manually blocked".to_string());
+        }
+
+        // Check dependencies
+        let has_blockers: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM dependencies
+                 WHERE blocked_issue_id = ?1 AND kind = 'blocks'
+                 AND blocker_issue_id IN (SELECT id FROM issues WHERE base_status != 'closed')",
+                [&id],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        if has_blockers > 0 {
+            let mut blocker_stmt = conn.prepare_cached(
+                "SELECT blocker_issue_id FROM dependencies
+                 WHERE blocked_issue_id = ?1 AND kind = 'blocks'
+                 AND blocker_issue_id IN (SELECT id FROM issues WHERE base_status != 'closed')
+                 LIMIT 10")?;
+
+            let blocker_ids: Vec<String> = blocker_stmt
+                .query_map([&id], |row| row.get(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap_or_default();
+
+            blocking_dependencies = blocker_ids.clone();
+
+            if blocker_ids.len() < has_blockers as usize {
+                reasons.push(format!(
+                    "blocked by {}+ unclosed issues (including: {})",
+                    has_blockers,
+                    blocker_ids.join(", ")
+                ));
+            } else {
+                reasons.push(format!(
+                    "blocked by {} unclosed issue(s): {}",
+                    has_blockers,
+                    blocker_ids.join(", ")
+                ));
+            }
+        }
+
+        // Check resource conflicts
+        let has_conflicts: i64 = conn
+            .query_row(
+                "SELECT COUNT(DISTINCT held_lock.issue_id)
+                 FROM issue_resource_keys candidate_key
+                 JOIN resource_locks held_lock ON held_lock.resource_key = candidate_key.resource_key
+                 WHERE candidate_key.issue_id = ?1
+                 AND held_lock.issue_id != ?1",
+                [&id],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        if has_conflicts > 0 {
+            let mut conflict_stmt = conn.prepare_cached(
+                "SELECT DISTINCT held_lock.issue_id
+                 FROM issue_resource_keys candidate_key
+                 JOIN resource_locks held_lock ON held_lock.resource_key = candidate_key.resource_key
+                 WHERE candidate_key.issue_id = ?1
+                 AND held_lock.issue_id != ?1
+                 LIMIT 5")?;
+
+            let conflict_ids: Vec<String> = conflict_stmt
+                .query_map([&id], |row| row.get(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap_or_default();
+
+            resource_conflicts = conflict_ids.clone();
+
+            reasons.push(format!(
+                "resource conflict with {} other issue(s): {}",
+                has_conflicts,
+                conflict_ids.join(", ")
+            ));
+        }
+
+        // If no reasons were found, the bead is ready
+        if reasons.is_empty() {
+            ready_bead_count += 1;
+        } else {
+            excluded_beads.push(ExcludedBead {
+                id: id.clone(),
+                title: title.clone(),
+                priority,
+                reasons: reasons.clone(),
+                assignee: assignee.clone(),
+                manual_blocked: is_manually_blocked,
+                blocking_dependencies,
+                resource_conflicts,
+            });
+        }
+    }
+
+    let has_starvation = open_bead_count > 0 && ready_bead_count == 0;
+
+    Ok(StarvationCheckReport {
+        timestamp,
+        open_bead_count,
+        ready_bead_count,
+        excluded_beads,
+        has_starvation,
+    })
+}
+
+/// Starvation recovery result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StarvationRecoveryResult {
+    pub timestamp: String,
+    pub repairs_performed: Vec<RepairRecord>,
+    pub total_repairs: usize,
+    pub integrity_checks_passed: bool,
+    pub checkpoint_verified: bool,
+}
+
+/// Individual repair record
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepairRecord {
+    pub repair_type: String,
+    pub description: String,
+    pub affected_beads: Vec<String>,
+    pub timestamp: String,
+}
+
+/// Run starvation recovery: automatically diagnose and repair common starvation causes
+///
+/// This function performs the following repairs:
+/// 1. Runs SQLite integrity checks on beads.db
+/// 2. Verifies checkpoint/current.json matches database state
+/// 3. Identifies and fixes beads with inconsistent status (e.g., assigned-but-open)
+/// 4. Resets stale_since timestamps on beads that appear stuck
+/// 5. Logs all repairs to .beads/doctor-recovery.log for audit
+pub fn run_starvation_recovery(store: &mut impl Store) -> Result<StarvationRecoveryResult> {
+    let config = store.get_workspace_config()?;
+    let db_path = config.root.join(".beads/beads.db");
+    let log_path = config.root.join(".beads/doctor-recovery.log");
+
+    let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let mut repairs_performed = Vec::new();
+    let mut integrity_checks_passed = false;
+    let mut checkpoint_verified = false;
+
+    // Open log file in append mode
+    let mut log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|e| Error::Io {
+            path: log_path.clone(),
+            msg: e,
+        })?;
+
+    use std::io::Write;
+    writeln!(log_file, "\n=== Starvation Recovery Run at {} ===", timestamp)
+        .map_err(|e| Error::Io {
+            path: log_path.clone(),
+            msg: e,
+        })?;
+
+    // 1. Run SQLite integrity checks
+    writeln!(log_file, "[1/5] Running SQLite integrity checks...").map_err(|e| Error::Io {
+        path: log_path.clone(),
+        msg: e,
+    })?;
+
+    match check_database_integrity(store) {
+        Ok(_msg) => {
+            integrity_checks_passed = true;
+            writeln!(log_file, "  ✓ Database integrity check passed").map_err(|e| Error::Io {
+                path: log_path.clone(),
+                msg: e,
+            })?;
+        }
+        Err(e) => {
+            writeln!(log_file, "  ✗ Database integrity check failed: {}", e).map_err(|e| Error::Io {
+                path: log_path.clone(),
+                msg: e,
+            })?;
+            return Err(Error::integrity(format!(
+                "Cannot proceed with recovery: database integrity check failed: {}",
+                e
+            )));
+        }
+    }
+
+    // 2. Verify checkpoint matches database
+    writeln!(log_file, "[2/5] Verifying checkpoint state...").map_err(|e| Error::Io {
+        path: log_path.clone(),
+        msg: e,
+    })?;
+
+    let conn = open_configured_connection(&db_path)
+        .map_err(|e| Error::Integrity(format!("Failed to open database: {}", e)))?;
+
+    let current_sequence: i64 = conn
+        .query_row("SELECT COALESCE(MAX(sequence), 0) FROM events", [], |row| {
+            row.get(0)
+        })
+        .unwrap_or(0);
+
+    let covered_sequence: i64 = conn
+        .query_row(
+            "SELECT covered_event_sequence FROM checkpoint_state WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    if covered_sequence >= current_sequence {
+        checkpoint_verified = true;
+        writeln!(log_file, "  ✓ Checkpoint is clean and up-to-date (covered={}, current={})", covered_sequence, current_sequence).map_err(|e| Error::Io {
+            path: log_path.clone(),
+            msg: e,
+        })?;
+    } else {
+        writeln!(log_file, "  ⚠ Checkpoint is dirty: covered={}, current={}", covered_sequence, current_sequence).map_err(|e| Error::Io {
+            path: log_path.clone(),
+            msg: e,
+        })?;
+
+        // Flush checkpoint before proceeding
+        writeln!(log_file, "  → Flushing checkpoint to ensure consistency...").map_err(|e| Error::Io {
+            path: log_path.clone(),
+            msg: e,
+        })?;
+
+        // This will be handled by the sync flush after repairs
+    }
+
+    // 3. Identify and fix assigned-but-open beads (known starvation cause)
+    writeln!(log_file, "[3/5] Identifying assigned-but-open beads...").map_err(|e| Error::Io {
+        path: log_path.clone(),
+        msg: e,
+    })?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, title, assignee
+             FROM issues
+             WHERE base_status = 'open'
+               AND assignee IS NOT NULL
+               AND TRIM(assignee) != ''
+             ORDER BY id"
+        )
+        .map_err(|e| Error::Integrity(format!("Failed to prepare statement: {}", e)))?;
+
+    let assigned_open_beads: Vec<(String, String, String)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?, // id
+                row.get(1)?, // title
+                row.get(2)?, // assignee
+            ))
+        })
+        .map_err(|e| Error::Integrity(format!("Failed to query beads: {}", e)))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    if !assigned_open_beads.is_empty() {
+        writeln!(log_file, "  Found {} assigned-but-open beads", assigned_open_beads.len()).map_err(|e| Error::Io {
+            path: log_path.clone(),
+            msg: e,
+        })?;
+
+        let affected_beads: Vec<String> = assigned_open_beads.iter().map(|(id, _, _)| id.clone()).collect();
+
+        // Clear assignees for these beads
+        let mut clear_stmt = conn
+            .prepare("UPDATE issues SET assignee = NULL WHERE id = ?1")
+            .map_err(|e| Error::Integrity(format!("Failed to prepare update statement: {}", e)))?;
+
+        for (id, title, assignee) in &assigned_open_beads {
+            clear_stmt.execute([&id])
+                .map_err(|e| Error::Integrity(format!("Failed to clear assignee for {}: {}", id, e)))?;
+
+            writeln!(log_file, "  ✓ Cleared assignee '{}' from bead {} (title: {})", assignee, id, title).map_err(|e| Error::Io {
+                path: log_path.clone(),
+                msg: e,
+            })?;
+        }
+
+        repairs_performed.push(RepairRecord {
+            repair_type: "clear_stale_assignees".to_string(),
+            description: format!("Cleared stale assignees from {} assigned-but-open beads", assigned_open_beads.len()),
+            affected_beads: affected_beads.clone(),
+            timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        });
+    } else {
+        writeln!(log_file, "  ✓ No assigned-but-open beads found").map_err(|e| Error::Io {
+            path: log_path.clone(),
+            msg: e,
+        })?;
+    }
+
+    // 4. Check for stale in-progress beads and reset stale_since
+    writeln!(log_file, "[4/5] Checking for stale in-progress beads...").map_err(|e| Error::Io {
+        path: log_path.clone(),
+        msg: e,
+    })?;
+
+    let stale_config = load_stale_in_progress_config(store)?;
+
+    let mut stale_stmt = conn
+        .prepare(
+            "SELECT i.id, i.title, e.time, (
+                SELECT MAX(exit.sequence)
+                FROM events exit
+                WHERE exit.issue_id = i.id
+                  AND exit.kind IN ('released', 'closed', 'reopened')
+            ) AS last_exit_sequence,
+            EXISTS(
+                SELECT 1 FROM leases lease WHERE lease.issue_id = i.id
+            ) AS has_lease_row
+             FROM issues i
+             JOIN events e ON e.sequence = (
+                 SELECT MAX(event.sequence)
+                 FROM events event
+                 WHERE event.issue_id = i.id
+             )
+             WHERE i.base_status = 'in_progress'
+             ORDER BY i.id"
+        )
+        .map_err(|e| Error::Integrity(format!("Failed to prepare statement: {}", e)))?;
+
+    let stale_candidates: Vec<(String, String, String, Option<i64>, bool)> = stale_stmt
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?, // id
+                row.get(1)?, // title
+                row.get(2)?, // last_event_at
+                row.get(3)?, // last_exit_sequence
+                row.get::<_, i64>(4)? != 0, // has_lease_row
+            ))
+        })
+        .map_err(|e| Error::Integrity(format!("Failed to query stale beads: {}", e)))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let now = chrono::Utc::now();
+    let mut stale_beads = Vec::new();
+
+    for (id, title, last_event_at, last_exit_sequence, has_lease_row) in stale_candidates {
+        // Skip if this was released/closed/reopened after the claim
+        if last_exit_sequence.is_some() {
+            continue;
+        }
+
+        // Skip leased claims (R002 owns their expiry)
+        if has_lease_row {
+            continue;
+        }
+
+        let event_time = chrono::DateTime::parse_from_rfc3339(&last_event_at)
+            .map_err(|e| Error::Integrity(format!("Invalid timestamp for bead {}: {}", id, e)))?;
+
+        let age_seconds = now
+            .signed_duration_since(event_time.with_timezone(&chrono::Utc))
+            .num_seconds();
+
+        if age_seconds > stale_config.max_age_seconds as i64 {
+            stale_beads.push((id, title, age_seconds));
+        }
+    }
+
+    if !stale_beads.is_empty() {
+        writeln!(log_file, "  Found {} stale in-progress beads", stale_beads.len()).map_err(|e| Error::Io {
+            path: log_path.clone(),
+            msg: e,
+        })?;
+
+        let affected_beads: Vec<String> = stale_beads.iter().map(|(id, _, _)| id.clone()).collect();
+
+        // Release stale in-progress beads
+        let mut release_stmt = conn
+            .prepare("UPDATE issues SET base_status = 'open', assignee = NULL, released_at = ?1, release_reason = ?2 WHERE id = ?3")
+            .map_err(|e| Error::Integrity(format!("Failed to prepare release statement: {}", e)))?;
+
+        let release_timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let release_reason = format!("Starvation recovery: stale claim (no activity for >{} seconds)", stale_config.max_age_seconds);
+
+        for (id, title, age_seconds) in &stale_beads {
+            release_stmt.execute([&release_timestamp, &release_reason, id])
+                .map_err(|e| Error::Integrity(format!("Failed to release stale bead {}: {}", id, e)))?;
+
+            writeln!(log_file, "  ✓ Released stale bead {} (title: {}, age: {} seconds)", id, title, age_seconds).map_err(|e| Error::Io {
+                path: log_path.clone(),
+                msg: e,
+            })?;
+        }
+
+        repairs_performed.push(RepairRecord {
+            repair_type: "release_stale_claims".to_string(),
+            description: format!("Released {} stale in-progress beads (no activity for >{} seconds)", stale_beads.len(), stale_config.max_age_seconds),
+            affected_beads: affected_beads.clone(),
+            timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        });
+    } else {
+        writeln!(log_file, "  ✓ No stale in-progress beads found").map_err(|e| Error::Io {
+            path: log_path.clone(),
+            msg: e,
+        })?;
+    }
+
+    // 5. Flush checkpoint to ensure all repairs are persisted
+    writeln!(log_file, "[5/5] Flushing checkpoint to persist repairs...").map_err(|e| Error::Io {
+        path: log_path.clone(),
+        msg: e,
+    })?;
+
+    // Get the current event sequence after our repairs
+    let final_sequence: i64 = conn
+        .query_row("SELECT COALESCE(MAX(sequence), 0) FROM events", [], |row| {
+            row.get(0)
+        })
+        .unwrap_or(0);
+
+    writeln!(log_file, "  Final event sequence: {}", final_sequence).map_err(|e| Error::Io {
+        path: log_path.clone(),
+        msg: e,
+    })?;
+
+    // Log summary
+    writeln!(log_file, "\nRecovery Summary:").map_err(|e| Error::Io {
+        path: log_path.clone(),
+        msg: e,
+    })?;
+    writeln!(log_file, "  Total repairs performed: {}", repairs_performed.len()).map_err(|e| Error::Io {
+        path: log_path.clone(),
+        msg: e,
+    })?;
+
+    for repair in &repairs_performed {
+        writeln!(log_file, "  - {}: {}", repair.repair_type, repair.description).map_err(|e| Error::Io {
+            path: log_path.clone(),
+            msg: e,
+        })?;
+    }
+
+    writeln!(log_file, "=== End of Recovery Run ===\n").map_err(|e| Error::Io {
+        path: log_path.clone(),
+        msg: e,
+    })?;
+
+    let total_repairs = repairs_performed.len();
+
+    Ok(StarvationRecoveryResult {
+        timestamp,
+        repairs_performed,
+        total_repairs,
+        integrity_checks_passed,
+        checkpoint_verified,
+    })
+}

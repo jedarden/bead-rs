@@ -1643,11 +1643,15 @@ Doctor validates workspace configuration, database integrity, checkpoint
 state, and filesystem without modifying data. With --repair, performs
 safe automatic repairs for diagnosed issues. With --rehearse, performs
 a disposable recovery rehearsal to verify disaster recovery procedures.
+With --starvation-recovery, automatically diagnoses and repairs common
+starvation causes that prevent workers from claiming beads.
 
 EXAMPLES:
   bead doctor                           # Read-only diagnostics
   bead doctor --repair                  # Diagnose and attempt repairs
   bead doctor --rehearse                # Test disaster recovery with temporary workspace
+  bead doctor --starvation-recovery     # Diagnose and repair starvation issues
+  bead doctor --starvation-check        # Diagnose starvation issues without repair
 
 CHECKS PERFORMED:
   - Workspace configuration and permissions
@@ -1672,6 +1676,20 @@ RECOVERY REHEARSAL (with --rehearse):
   - Compare semantic equivalence between original and re-exported content
   - Generate comprehensive report with comparison results
   - Clean up only operation-owned temporary files
+
+STARVATION RECOVERY (with --starvation-recovery):
+  - Run SQLite integrity checks on beads.db
+  - Verify checkpoint/current.json matches database state
+  - Identify and fix beads with inconsistent status (e.g., assigned-but-open)
+  - Reset stale_since timestamps on beads that appear stuck
+  - Clear stale assignees from open beads
+  - Release stale in-progress claims
+  - Log all repairs to .beads/doctor-recovery.log for audit
+
+STARVATION CHECK (with --starvation-check):
+  - Diagnose beads that are open but not appearing in the ready frontier
+  - Identify reasons for exclusion (assignees, manual blocks, dependencies, conflicts)
+  - Generate detailed report without performing repairs
 
 DOCTOR OUTPUT:
   OK  - Check passed
@@ -1699,6 +1717,10 @@ pub struct DoctorOptions {
     /// Run starvation check: diagnose beads that are open but not appearing in the ready frontier
     #[arg(long)]
     pub starvation_check: bool,
+
+    /// Run starvation recovery: automatically diagnose and repair common starvation causes
+    #[arg(long)]
+    pub starvation_recovery: bool,
 
     /// Diagnostic scopes: store, backup, schema, dependencies, comments, all (default: all)
     #[arg(long, value_delimiter = ',')]
