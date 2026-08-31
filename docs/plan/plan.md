@@ -1,4 +1,287 @@
-# bead-rs 0.1 implementation plan
+# bead-rs Current Product and Software Factory Plan
+
+Plan revision: 9
+
+As of: 2026-08-31
+
+Status owner: bead-rs maintainers
+
+Status: 0.2.4 is the latest tagged release; current-state governance
+reconciliation and software-factory transition are accepted, implementation
+pending where marked
+
+## 0. How to read this plan
+
+Sections 0–8 are the current normative product and transition plan. The former
+0.1/Marathon plan follows as a historical appendix. Its bootstrap sequence,
+release status, completion gates, roadmap statuses, and deferred-feature list
+are retained for provenance but do not describe the current release unless
+sections 0–8 explicitly adopt them.
+
+Behavioral authority remains:
+
+1. independently reviewed normative specifications under `research/specs/`;
+2. released source, migrations, and public conformance fixtures;
+3. accepted ADRs for architectural decisions;
+4. this plan for delivery state and future work;
+5. native beads for mutable work state.
+
+Marathon artifacts are a frozen historical evidence set. They must not be
+silently rewritten to claim evidence for requirements added after their
+recorded scope.
+
+This revision accepts:
+
+- [ADR-010: Store attempt facts, not learning or orchestration policy](../adr/010-store-attempt-facts-not-learning-policy.md)
+- [ADR-011: Resolve an attempt and its lifecycle transition atomically](../adr/011-atomic-idempotent-attempt-resolution.md)
+- [ADR-012: Roll out attempt resolution through versioned capabilities](../adr/012-capability-gated-attempt-contract-rollout.md)
+
+## 1. Product boundary and current reality
+
+bead-rs is an independent, clean-room Rust task-coordination system. SQLite is
+the authoritative local live store. Mutations are transactional and audited;
+successful semantic mutations publish the Git-trackable checkpoint by default.
+The installed binary is `bead`, and `native-v1` plus `needle-v1` expose public
+process contracts.
+
+The latest tagged package is 0.2.4, edition 2024, MSRV 1.85. The repository has
+continued to receive diagnostic and starvation-recovery work after that tag;
+those checkout artifacts are not release evidence until their specifications,
+capabilities, tests, tag, and release report agree.
+
+### 1.1 Shipped capability baseline
+
+| Capability | Current artifact |
+| --- | --- |
+| Workspace and lifecycle | Native workspace discovery, SQLite migrations, issue CRUD, assignment, manual blocking, close reason/`closed_at`, reopen, labels, dependencies, conditional readiness |
+| Atomic coordination | Server-selected claim, optional single-claim policy, leases, monotonically fenced recovery, revision guards, and atomic resource locks |
+| Scheduling | FIFO plus aging, impact, rotation, balanced, attempt tiers, retry/quarantine state, and readiness explanations |
+| Structured extension | Public schema catalog, schema-bound bead data, namespaced references, unique-reference creation, safe queries, change feed, recurrence, and atomic bulk manifests |
+| Recovery | Read-only-by-default doctor, explicit verified restore, monolithic/sharded checkpoints, generation pointers, archaeology/reconcile support, and checkpoint auto-flush |
+| Consumer contract | Machine-readable capabilities and the `needle-v1` profile |
+| Explanation | `why`, policy validation, compare, scoped diagnostics, and readiness/exclusion reporting |
+
+The current implementation already contains the primitives NEEDLE needs for
+safe task state: atomic claim, revision, lease/fencing, close/release/reopen,
+failure-aware scheduling, audit events, and durable checkpoint publication.
+It does not expose a first-class portable attempt receipt or one atomic
+operation that records an attempt outcome, updates failure state, and performs
+the lifecycle transition.
+
+### 1.2 Governance and artifact mismatches
+
+- The former plan still says version 0.1 is incomplete while versions 0.1.x
+  and 0.2.x have been tagged and 0.2.4 is current.
+- `.marathon/COMPLETE` declares 41/41 features through R024 but retains pending
+  artifact/evidence hashes. Other Marathon status files predate completion and
+  still say the sentinel does not exist.
+- The historical plan adopts R025–R037 after the frozen 41-feature ledger, so
+  the sentinel is not evidence for those later requirements.
+- Several specifications that the historical status calls missing now exist,
+  including checkpoint-set, native field-guide, resource-lock, bulk-manifest,
+  and verified-restore contracts.
+- The current checkout and root help include post-release diagnostic and
+  watchdog/recovery commands that the capabilities command inventory does not
+  fully enumerate.
+- Some post-release starvation recovery uses OS-process or fallback heuristics
+  and separate log artifacts. Those paths require normative review against
+  leases, fencing, atomic mutation, audit, and the boundary in ADR-010; their
+  presence in a checkout is not approval of their semantics.
+- Claim service layers accept some harness/model metadata internally, but the
+  public CLI does not yet supply a durable attempt identity across claim and
+  outcome.
+
+## 2. Current design principles
+
+1. **Task truth is small and deterministic.** bead-rs owns task fields,
+   relationships, lifecycle, concurrency guards, factual attempt receipts,
+   audit, and recovery—not orchestration or learning policy.
+2. **Every mutation is atomic, auditable, and concurrency-tested.** A feature
+   that cannot state its transaction, idempotency, conflict, event, and
+   checkpoint behavior is not ready to implement.
+3. **Capabilities govern consumers.** A consumer uses semantic capability and
+   schema negotiation, never version-string folklore or command probing.
+4. **Recovery follows stored facts.** Revision, lease, fencing, timestamps,
+   events, and declared relationships are authoritative. Title similarity,
+   process-name searches, and undeclared intent do not silently mutate work.
+5. **No policy smuggling.** Labels, notes, or generic data cannot become an
+   unversioned substitute for a required typed store contract.
+6. **Checkpoint publication follows committed state.** SQLite commits first;
+   automatic publication then advances a verified generation. Publication
+   failure never invents or repeats the semantic mutation.
+7. **Clean-room provenance is a release property.** New behavior begins with
+   an independently reviewable normative contract and fixtures.
+8. **Historical evidence is immutable.** New requirements receive new release
+   evidence rather than expanding an old completion sentinel retroactively.
+
+## 3. Software-factory extension boundary
+
+The combined factory requires exactly one new bead-rs concept: a portable,
+immutable attempt outcome that can be committed atomically with the issue's
+failure tier and lifecycle transition.
+
+### 3.1 What bead-rs stores
+
+- caller-provided `attempt_id`, actor, issue ID, and contract version;
+- expected revision and lease/fencing token when applicable;
+- bounded harness/tool identity metadata;
+- caller-selected outcome class and requested lifecycle action;
+- reason plus bounded opaque evidence/side-effect receipt references;
+- canonical request hash, resulting issue revision/state/attempt tier, event
+  identity, and checkpoint publication state.
+
+### 3.2 What bead-rs does not decide or store
+
+- prompts, full transcripts, hidden model reasoning, or memory embeddings;
+- whether tests or other evidence actually prove the requested work;
+- lesson extraction, confidence, reinforcement, experiments, or promotion;
+- AGENTS.md/CLAUDE.md precedence or policy content;
+- provider budgets, fleet routing, controller scheduling, or human-escalation
+  meaning;
+- external side-effect execution.
+
+NEEDLE supplies the semantic classification after applying its verifier and
+policy. bead-rs validates the request's schema and concurrency conditions and
+commits the factual result. Evidence references are opaque identifiers;
+bead-rs does not fetch or judge them.
+
+## 4. Portable attempt-outcome contract
+
+The exact wire contract must be authored as
+`research/specs/attempt-outcome-v1.md`, independently reviewed, and accompanied
+by fixtures before implementation. The following requirements constrain that
+specification.
+
+### 4.1 Outcomes and actions are orthogonal
+
+At minimum, the versioned outcome vocabulary distinguishes:
+
+- verified success asserted by the caller;
+- work/bead-scoped failure;
+- infrastructure failure;
+- cancellation/interruption;
+- indeterminate result.
+
+Lifecycle actions include close, release, block/manual-block, quarantine,
+none, and only those additional transitions adopted by the normative model.
+The outcome determines attempt-tier accounting; the action determines issue
+state. Invalid combinations fail validation before mutation.
+
+### 4.2 Exactly-once receipt semantics
+
+One `attempt_id` binds one canonical request hash per workspace:
+
+- first valid resolution commits the receipt and transition;
+- identical replay returns the original receipt and resulting state without a
+  new event or revision;
+- different replay conflicts;
+- expected-revision or fencing mismatch conflicts without recording a false
+  outcome;
+- store transaction failure changes nothing;
+- checkpoint publication failure reports a committed-but-unpublished state and
+  is repaired by existing publication machinery, not by repeating resolution.
+
+### 4.3 Atomic transaction
+
+One transaction validates ownership/concurrency, inserts the immutable
+attempt-outcome receipt, updates failure epoch/tier if required, performs the
+legal lifecycle transition, releases resource locks where existing lifecycle
+rules require it, appends audit/change-feed events, and returns the
+authoritative resulting state.
+
+Claim gains additive attempt correlation only if the normative specification
+proves the behavior and compatibility. Caller-provided attempt IDs allow
+NEEDLE to create correlation before dispatch; bead-rs remains free to expose a
+server receipt ID as well.
+
+## 5. Capability and compatibility contract
+
+`bead capabilities` will advertise the attempt-outcome schema, atomic resolve,
+idempotent replay, claim correlation, revision/fencing support, allowed outcome
+and action enums, checkpoint representation, and schema references.
+
+Capability absence means unsupported. NEEDLE may use a tested sequence of
+existing close/release/data/event operations, followed by authoritative
+reconciliation, but must label that resolution non-atomic. It may not infer
+support from `bead --version` or from help text.
+
+The transition must preserve:
+
+- old clients reading checkpoints produced by new clients according to the
+  declared forward-compatibility rules;
+- new clients operating against older bead-rs releases through an explicit
+  fallback;
+- existing lifecycle commands and idempotence;
+- automatic-flush and explicit suppression behavior;
+- the clean-room `needle-v1` consumer conformance boundary.
+
+If additive changes cannot satisfy those guarantees, publish a new contract
+profile rather than silently changing `native-v1` or `needle-v1`.
+
+## 6. Artifact-by-artifact transition ledger
+
+| ID | Artifact(s) | Change | Acceptance evidence | Status |
+| --- | --- | --- | --- | --- |
+| BR-T01 | `docs/plan/plan.md`, ADR README, Marathon status docs | Re-baseline 0.2.4 reality; distinguish frozen Marathon evidence from later releases | Internal link/status audit; no retroactive ledger edits | current for plan/ADRs; status-doc reconciliation pending |
+| BR-T02 | post-0.2.4 exclusion/starvation/watchdog code and help | Inventory behavior; retain read-only explanation; remove, disable, or normatively redesign heuristic mutation outside lease/fencing rules | Spec trace, atomic/audit tests, capability inventory parity | transition |
+| BR-T03 | `research/specs/attempt-outcome-v1.md` plus independent fixtures/review | Define portable receipt, canonical hashing, outcomes/actions, conflicts, events, and checkpoint form | Recorded independent approval and fixture hashes | transition |
+| BR-T04 | model and public schema catalog | Add versioned attempt outcome request/receipt types and bounded metadata | schema validation and compatibility fixtures | blocked by BR-T03 |
+| BR-T05 | SQLite migration and checkpoint import/export | Add immutable attempt identity/receipt storage and lossless checkpoint representation | migration, round-trip, unknown-field, restore, and corruption tests | blocked by BR-T03–BR-T04 |
+| BR-T06 | service transaction | Atomically dedupe receipt, update attempt tier, apply lifecycle, audit, and return state | concurrent replay, hash conflict, stale revision/fencing, crash-boundary tests | blocked by BR-T04–BR-T05 |
+| BR-T07 | `bead resolve` CLI and optional claim correlation | Expose machine-readable request/receipt without leaking orchestrator policy | recursive help, JSON contract, exit-code, and installed-binary tests | blocked by BR-T06 |
+| BR-T08 | capabilities and `needle-v1` contract | Advertise exact atomic-attempt semantics and schema references; reconcile complete command inventory | capability snapshots and old/new profile fixtures | blocked by BR-T03, BR-T07 |
+| BR-T09 | audit/change feed/why/doctor | Surface receipt and resulting state; diagnose inconsistent legacy sequences without inventing facts | explanation and non-destructive diagnostic tests | blocked by BR-T05–BR-T07 |
+| BR-T10 | release evidence and governance status | Produce current feature/capability matrix tied to tag, commit, spec and test hashes | noninteractive verifier passes; status documents agree | transition |
+| BR-T11 | NEEDLE consumer conformance | Test atomic path, unknown-result replay, and older-backend fallback | pinned NEEDLE + old/new bead-rs integration matrix | blocked by BR-T07–BR-T10 |
+
+General mutation idempotency remains a separate potential feature. BR-T03–T08
+adopt idempotency only for the attempt-resolution boundary required by the
+combined factory.
+
+## 7. Release gates for the extension
+
+The attempt-outcome capability is releasable only when:
+
+1. the normative specification and fixtures have independent approval;
+2. migration and checkpoint round trips preserve every receipt and reject
+   duplicate IDs with conflicting hashes;
+3. concurrent identical resolve calls produce one mutation and one receipt;
+4. work failure updates attempt scheduling exactly once, while infrastructure
+   failure does not penalize the issue;
+5. close/release/quarantine results obey existing revision, fencing, resource
+   lock, and audit contracts;
+6. a client retry after an unknown response returns the original result;
+7. capability documents and the actual CLI command inventory agree;
+8. old and new checkpoint/consumer compatibility fixtures pass;
+9. complete fmt, Clippy, tests, packaging, installed-binary, restore, and
+   NEEDLE conformance gates pass against the exact release commit;
+10. the release evidence report contains exact commit, binary, specification,
+    fixture, and report hashes.
+
+## 8. Combined-factory success measures
+
+bead-rs reports facts useful to, but does not optimize, the learning system:
+
+- unique attempt receipts and idempotent replays;
+- outcome classes and committed lifecycle actions;
+- revision/fencing conflicts and stale ownership;
+- failure-tier transitions by readiness epoch;
+- time from claim to durable resolution;
+- checkpoint publication state and recovery;
+- atomic versus caller-reconciled resolution capability.
+
+NEEDLE owns verified-closure yield, lesson effectiveness, recurrence,
+experiments, cost, and policy rollback. bead-rs must not change scheduling or
+lifecycle because a lesson appears beneficial; it applies only explicit,
+versioned requests that pass its invariant checks.
+
+---
+
+# Historical bead-rs 0.1 Implementation Plan (Superseded)
+
+> The remainder of this file is retained as architecture and delivery history.
+> Its version status, Marathon gates, roadmap completion, and deferred-feature
+> statements are not the current plan.
 
 Plan revision: 8
 
@@ -2785,10 +3068,12 @@ The following candidates remain intentionally deferred in
 
 - predeclared file-intent manifests, file-derived dependency serialization,
   edit fencing, and post-diff path enforcement;
-- mutation idempotency keys;
+- general mutation idempotency keys outside the attempt-resolution boundary
+  adopted by current sections 3–7;
 - worker capability declarations;
 - sensitive-content linting for backup-bound fields;
-- portable execution-outcome envelopes;
+- portable execution-outcome envelopes moved into the current plan as the
+  independently specified, atomic attempt-resolution contract;
 - a caller-owned stdio session protocol (and MCP hosting atop it).
 
 Atomic resource locks and atomic bulk transaction manifests left this list on

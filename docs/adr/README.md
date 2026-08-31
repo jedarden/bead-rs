@@ -44,3 +44,6 @@ Use the template in `000-template.md` for new ADRs. Each ADR should include:
 | [007](007-cli-errors-name-the-remedy.md) | CLI errors for immutable fields and near-miss flags must name the remedy | Proposed | 2026-08-16 |
 | [008](008-no-title-similarity-duplicate-detection.md) | Do not detect duplicate beads by title similarity | Rejected | 2026-08-16 |
 | [009](009-no-git-awareness-for-checkpoint-ordering.md) | Do not make bead-rs Git-aware to enforce checkpoint/pull ordering | Rejected | 2026-08-16 |
+| [010](010-store-attempt-facts-not-learning-policy.md) | Store portable attempt facts, not learning or orchestration policy | Accepted | 2026-08-31 |
+| [011](011-atomic-idempotent-attempt-resolution.md) | Resolve an attempt and its lifecycle transition atomically | Accepted | 2026-08-31 |
+| [012](012-capability-gated-attempt-contract-rollout.md) | Roll out attempt resolution through versioned capabilities | Accepted | 2026-08-31 |
