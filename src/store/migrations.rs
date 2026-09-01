@@ -3,7 +3,7 @@
 //! This module defines the independent SQLite schema and migration system.
 //! Migration 1 implements the core workspace schema as defined in the plan.
 
-use rusqlite::{Connection, Result as SqliteResult};
+use rusqlite::{Connection, Result as SqliteResult, Transaction, TransactionBehavior};
 use sha2::{Digest, Sha256};
 
 /// Current migration version
@@ -69,8 +69,23 @@ pub fn apply_migrations(conn: &Connection) -> SqliteResult<()> {
         let migration = get_migration(version);
         let checksum = migration_checksum(&migration.sql);
 
-        // Begin transaction for this migration
-        let tx = conn.unchecked_transaction()?;
+        // IMMEDIATE takes the write lock before the re-check below, so two
+        // processes cannot both decide this migration is pending. Every
+        // connection migrates on open and many workers share a workspace, so
+        // that race is ordinary here, not exotic: without the re-check the
+        // loser's INSERT violates the primary key and fails whatever command
+        // happened to open the store.
+        let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+
+        let already_applied: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version = ?1",
+            [&version.to_string()],
+            |row| row.get(0),
+        )?;
+        if already_applied > 0 {
+            tx.rollback()?;
+            continue;
+        }
 
         // Apply the migration by executing each statement separately
         for statement in migration.sql.split(';') {
@@ -793,6 +808,27 @@ mod tests {
     /// A store left behind by an older binary must advance when opened, not
     /// stay behind until someone happens to run `init`. 61 of 63 workspaces on
     /// ex44 were found stuck this way on 2026-09-01.
+    /// Losing the race to another process must be a no-op, not a primary-key
+    /// violation surfacing inside an unrelated command.
+    #[test]
+    fn apply_migrations_tolerates_a_concurrent_winner() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_migrations(&conn).unwrap();
+
+        // Rewind the bookkeeping only: the table migration 14 adds is still
+        // present, exactly as it would be for the process that lost the race.
+        conn.execute("DELETE FROM schema_migrations WHERE version >= 14", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations (version, applied_at, checksum) VALUES (14, 'now', 'x')",
+            [],
+        )
+        .unwrap();
+
+        apply_migrations(&conn).unwrap();
+        assert!(schema_is_current(&conn));
+    }
+
     #[test]
     fn migrate_if_pending_advances_a_legacy_store() {
         let conn = Connection::open_in_memory().unwrap();
