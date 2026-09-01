@@ -1351,3 +1351,7 @@
 {"bead":"beadrs-2c4e9030","duration_ms":71911,"event":"fail","exit_code":0,"outcome":"failure","strand":"explore","ts":"2026-09-01T12:30:10.144333330+00:00","worker":"glm-cgraph"}
 {"bead":"beadrs-2c4e9030","event":"claim","strand":"explore","ts":"2026-09-01T12:30:19.843925025+00:00","worker":"glm-spaxel2"}
 {"adapter":"claude-code-glm-4.7","bead":"beadrs-2c4e9030","event":"dispatch","model":"glm-4.7","strand":"explore","ts":"2026-09-01T12:30:19.973335795+00:00","worker":"glm-spaxel2"}
+{"bead":"beadrs-2c4e9030","duration_ms":199805,"event":"complete","exit_code":0,"outcome":"success","strand":"explore","ts":"2026-09-01T12:33:39.789259828+00:00","worker":"glm-spaxel2"}
+{"bead":"beadrs-8759e29d","event":"claim","strand":"explore","ts":"2026-09-01T12:34:06.642925878+00:00","worker":"glm-spaxel"}
+{"adapter":"claude-code-glm-4.7","bead":"beadrs-8759e29d","event":"dispatch","model":"glm-4.7","strand":"explore","ts":"2026-09-01T12:34:06.768932574+00:00","worker":"glm-spaxel"}
+{"bead":"beadrs-f3cc664f","duration_ms":974305,"event":"complete","exit_code":0,"outcome":"success","strand":"explore","ts":"2026-09-01T12:41:37.553205375+00:00","worker":"glm-trail"}
