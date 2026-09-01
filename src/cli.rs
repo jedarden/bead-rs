@@ -128,6 +128,16 @@ read-only and never invokes restore automatically."
 
     Reopen(ReopenOptions),
 
+    /// Resolve an execution attempt
+    #[command(
+        name = "resolve",
+        about = "Record an execution attempt outcome atomically",
+        long_about = "Resolve an execution attempt by recording its outcome and applying
+a lifecycle transition in one atomic operation. This implements the
+attempt-outcome-v1 specification with exactly-once semantics."
+    )]
+    Resolve(ResolveOptions),
+
     Claim(ClaimOptions),
 
     /// Manage labels
@@ -1029,6 +1039,105 @@ pub struct ReopenOptions {
     pub dry_run: bool,
 }
 
+/// Options for resolving an attempt
+#[derive(Parser, Debug)]
+#[command(
+    about = "Record an execution attempt outcome atomically with lifecycle transition",
+    long_about = "Resolve an execution attempt by recording its outcome and applying
+a lifecycle transition in one atomic operation.
+
+This command implements the attempt-outcome-v1 specification, providing
+exactly-once semantics for attempt resolution under concurrent access and
+crash recovery.
+
+EXAMPLES:
+  bead resolve bead-123abc456789def --attempt-id urn:needle:attempt:abc123 --outcome verified_success --action close
+  bead resolve bead-123abc456789def --attempt-id urn:needle:attempt:abc123 --outcome work_failure --action quarantine --reason \"Tests failing\"
+  bead resolve bead-123abc456789def --attempt-id urn:needle:attempt:abc123 --outcome infrastructure_failure --action release
+
+OUTCOMES:
+  verified_success       - Work completed successfully (no tier penalty)
+  work_failure          - Bead-scoped failure (advances tier)
+  infrastructure_failure - Worker crash, outage, rate limit (no tier penalty)
+  cancelled             - Explicit cancellation by operator
+  indeterminate          - Unable to determine outcome
+
+ACTIONS:
+  close       - Set closed_at, store close_reason
+  release     - Clear assignee, retain state
+  quarantine  - Set attempt_tier=3, set retry_after
+  block       - Set manual_blocked=true
+  none        - No lifecycle transition
+
+SEMANTICS:
+  - Atomic: outcome and lifecycle transition commit together
+  - Idempotent: identical replay returns original receipt
+  - Conflict: divergent replay with same attempt_id fails
+
+EXIT CODES:
+  0 - Success (including idempotent replay)
+  2 - Usage or validation error
+  3 - Issue not found
+  4 - Conflict (revision, fencing, outcome divergence)
+  5 - Integrity failure
+  6 - Database busy or transient I/O error
+
+This operation requires the attempt-outcome capability. Check with:
+  bead capabilities --format json | jq -e '.attempt_outcome.supported'"
+)]
+pub struct ResolveOptions {
+    /// Issue ID
+    pub id: String,
+
+    /// Attempt ID (required)
+    #[arg(long)]
+    pub attempt_id: String,
+
+    /// Outcome classification (required)
+    #[arg(long)]
+    pub outcome: String,
+
+    /// Lifecycle action to apply
+    #[arg(long)]
+    pub action: Option<String>,
+
+    /// Human-readable reason for the action
+    #[arg(long)]
+    pub reason: Option<String>,
+
+    /// Expected revision for optimistic concurrency control
+    #[arg(long)]
+    pub if_revision: Option<i64>,
+
+    /// Fencing token for lease validation
+    #[arg(long)]
+    pub fencing_token: Option<String>,
+
+    /// Evidence references (NAMESPACE:VALUE format)
+    #[arg(long)]
+    pub evidence_ref: Vec<String>,
+
+    /// Actor identity
+    #[arg(long, default_value = "unknown")]
+    pub actor: String,
+
+    /// Model identifier for telemetry
+    #[arg(long)]
+    pub model: Option<String>,
+
+    /// Harness name for telemetry
+    #[arg(long)]
+    pub harness: Option<String>,
+
+    /// Harness version for telemetry
+    #[arg(long)]
+    pub harness_version: Option<String>,
+
+    /// Output format
+    #[arg(long, default_value = "text")]
+    pub format: String,
+}
+
 /// Sync commands
 #[derive(Subcommand, Debug)]
 pub enum SyncCommand {
@@ -1780,6 +1889,14 @@ pub struct DoctorOptions {
     /// Run starvation recovery: automatically diagnose and repair common starvation causes
     #[arg(long)]
     pub starvation_recovery: bool,
+
+    /// Run visibility check: compare open bead count against ready frontier query and log discrepancies
+    #[arg(long)]
+    pub visibility_check: bool,
+
+    /// Force mutations during starvation recovery (default: recommendation-only)
+    #[arg(long, requires = "starvation_recovery")]
+    pub force: bool,
 
     /// Diagnostic scopes: store, backup, schema, dependencies, comments, all (default: all)
     #[arg(long, value_delimiter = ',')]

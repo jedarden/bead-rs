@@ -50,6 +50,7 @@ pub enum DiagnosticScope {
     Schema,
     Dependencies,
     Comments,
+    Attempts,
     All,
 }
 
@@ -62,6 +63,7 @@ impl DiagnosticScope {
             "schema" => Some(DiagnosticScope::Schema),
             "dependencies" => Some(DiagnosticScope::Dependencies),
             "comments" => Some(DiagnosticScope::Comments),
+            "attempts" => Some(DiagnosticScope::Attempts),
             "all" => Some(DiagnosticScope::All),
             _ => None,
         }
@@ -74,6 +76,7 @@ impl DiagnosticScope {
             "schema",
             "dependencies",
             "comments",
+            "attempts",
             "all",
         ]
     }
@@ -551,6 +554,65 @@ pub fn run_diagnostics_with_scopes(
                     status: DiagnosticStatus::Warning,
                     message: format!("Comments integrity warning: {}", e),
                     scope: Some("comments".to_string()),
+                    details: Some(serde_json::json!({
+                        "warning": e.to_string()
+                    })),
+                });
+            }
+        }
+    }
+
+    // Attempts scope checks
+    if run_all || scopes.contains(&DiagnosticScope::Attempts) {
+        scopes_checked.push("attempts".to_string());
+
+        // 8. Attempt outcomes integrity
+        match check_attempt_outcomes_integrity(store) {
+            Ok(msg) => {
+                checks.push(DiagnosticCheck {
+                    name: "attempt_outcomes_integrity".to_string(),
+                    status: DiagnosticStatus::Ok,
+                    message: msg.clone(),
+                    scope: Some("attempts".to_string()),
+                    details: Some(serde_json::json!({
+                        "message": msg
+                    })),
+                });
+            }
+            Err(e) => {
+                has_errors = true;
+                checks.push(DiagnosticCheck {
+                    name: "attempt_outcomes_integrity".to_string(),
+                    status: DiagnosticStatus::Error,
+                    message: format!("Attempt outcomes integrity error: {}", e),
+                    scope: Some("attempts".to_string()),
+                    details: Some(serde_json::json!({
+                        "error": e.to_string()
+                    })),
+                });
+            }
+        }
+
+        // 9. Attempt tier consistency
+        match check_attempt_tier_consistency(store) {
+            Ok(msg) => {
+                checks.push(DiagnosticCheck {
+                    name: "attempt_tier_consistency".to_string(),
+                    status: DiagnosticStatus::Ok,
+                    message: msg.clone(),
+                    scope: Some("attempts".to_string()),
+                    details: Some(serde_json::json!({
+                        "message": msg
+                    })),
+                });
+            }
+            Err(e) => {
+                has_warnings = true;
+                checks.push(DiagnosticCheck {
+                    name: "attempt_tier_consistency".to_string(),
+                    status: DiagnosticStatus::Warning,
+                    message: format!("Attempt tier consistency warning: {}", e),
+                    scope: Some("attempts".to_string()),
                     details: Some(serde_json::json!({
                         "warning": e.to_string()
                     })),
@@ -2020,12 +2082,14 @@ pub fn run_starvation_check(store: &impl Store) -> Result<StarvationCheckReport>
     let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
 
     // Get all open beads
-    let mut open_stmt = conn.prepare_cached(
-        "SELECT id, title, priority, assignee, manual_blocked, created_at
+    let mut open_stmt = conn
+        .prepare_cached(
+            "SELECT id, title, priority, assignee, manual_blocked, created_at
          FROM issues
          WHERE base_status = 'open'
-         ORDER BY priority ASC, created_at ASC, id ASC"
-    ).map_err(|e| Error::Integrity(format!("Failed to prepare statement: {}", e)))?;
+         ORDER BY priority ASC, created_at ASC, id ASC",
+        )
+        .map_err(|e| Error::Integrity(format!("Failed to prepare statement: {}", e)))?;
 
     let open_beads: Vec<(String, String, i64, Option<String>, Option<bool>, String)> = open_stmt
         .query_map([], |row| {
@@ -2079,7 +2143,8 @@ pub fn run_starvation_check(store: &impl Store) -> Result<StarvationCheckReport>
                 "SELECT blocker_issue_id FROM dependencies
                  WHERE blocked_issue_id = ?1 AND kind = 'blocks'
                  AND blocker_issue_id IN (SELECT id FROM issues WHERE base_status != 'closed')
-                 LIMIT 10")?;
+                 LIMIT 10",
+            )?;
 
             let blocker_ids: Vec<String> = blocker_stmt
                 .query_map([&id], |row| row.get(0))?
@@ -2188,19 +2253,26 @@ pub struct RepairRecord {
 
 /// Run starvation recovery: automatically diagnose and repair common starvation causes
 ///
-/// This function performs the following repairs:
+/// This function performs the following repairs when `force` is true:
 /// 1. Runs SQLite integrity checks on beads.db
 /// 2. Verifies checkpoint/current.json matches database state
 /// 3. Identifies and fixes beads with inconsistent status (e.g., assigned-but-open)
 /// 4. Resets stale_since timestamps on beads that appear stuck
 /// 5. Logs all repairs to .beads/doctor-recovery.log for audit
-pub fn run_starvation_recovery(store: &mut impl Store) -> Result<StarvationRecoveryResult> {
+///
+/// When `force` is false (recommendation-only mode), this function only diagnoses
+/// issues and emits recommendations without performing any mutations.
+pub fn run_starvation_recovery(
+    store: &mut impl Store,
+    force: bool,
+) -> Result<StarvationRecoveryResult> {
     let config = store.get_workspace_config()?;
     let db_path = config.root.join(".beads/beads.db");
     let log_path = config.root.join(".beads/doctor-recovery.log");
 
     let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let mut repairs_performed = Vec::new();
+    #[allow(unused_assignments)]
     let mut integrity_checks_passed = false;
     let mut checkpoint_verified = false;
 
@@ -2215,11 +2287,15 @@ pub fn run_starvation_recovery(store: &mut impl Store) -> Result<StarvationRecov
         })?;
 
     use std::io::Write;
-    writeln!(log_file, "\n=== Starvation Recovery Run at {} ===", timestamp)
-        .map_err(|e| Error::Io {
-            path: log_path.clone(),
-            msg: e,
-        })?;
+    writeln!(
+        log_file,
+        "\n=== Starvation Recovery Run at {} ===",
+        timestamp
+    )
+    .map_err(|e| Error::Io {
+        path: log_path.clone(),
+        msg: e,
+    })?;
 
     // 1. Run SQLite integrity checks
     writeln!(log_file, "[1/5] Running SQLite integrity checks...").map_err(|e| Error::Io {
@@ -2236,9 +2312,11 @@ pub fn run_starvation_recovery(store: &mut impl Store) -> Result<StarvationRecov
             })?;
         }
         Err(e) => {
-            writeln!(log_file, "  ✗ Database integrity check failed: {}", e).map_err(|e| Error::Io {
-                path: log_path.clone(),
-                msg: e,
+            writeln!(log_file, "  ✗ Database integrity check failed: {}", e).map_err(|e| {
+                Error::Io {
+                    path: log_path.clone(),
+                    msg: e,
+                }
             })?;
             return Err(Error::integrity(format!(
                 "Cannot proceed with recovery: database integrity check failed: {}",
@@ -2272,20 +2350,32 @@ pub fn run_starvation_recovery(store: &mut impl Store) -> Result<StarvationRecov
 
     if covered_sequence >= current_sequence {
         checkpoint_verified = true;
-        writeln!(log_file, "  ✓ Checkpoint is clean and up-to-date (covered={}, current={})", covered_sequence, current_sequence).map_err(|e| Error::Io {
+        writeln!(
+            log_file,
+            "  ✓ Checkpoint is clean and up-to-date (covered={}, current={})",
+            covered_sequence, current_sequence
+        )
+        .map_err(|e| Error::Io {
             path: log_path.clone(),
             msg: e,
         })?;
     } else {
-        writeln!(log_file, "  ⚠ Checkpoint is dirty: covered={}, current={}", covered_sequence, current_sequence).map_err(|e| Error::Io {
+        writeln!(
+            log_file,
+            "  ⚠ Checkpoint is dirty: covered={}, current={}",
+            covered_sequence, current_sequence
+        )
+        .map_err(|e| Error::Io {
             path: log_path.clone(),
             msg: e,
         })?;
 
         // Flush checkpoint before proceeding
-        writeln!(log_file, "  → Flushing checkpoint to ensure consistency...").map_err(|e| Error::Io {
-            path: log_path.clone(),
-            msg: e,
+        writeln!(log_file, "  → Flushing checkpoint to ensure consistency...").map_err(|e| {
+            Error::Io {
+                path: log_path.clone(),
+                msg: e,
+            }
         })?;
 
         // This will be handled by the sync flush after repairs
@@ -2304,7 +2394,7 @@ pub fn run_starvation_recovery(store: &mut impl Store) -> Result<StarvationRecov
              WHERE base_status = 'open'
                AND assignee IS NOT NULL
                AND TRIM(assignee) != ''
-             ORDER BY id"
+             ORDER BY id",
         )
         .map_err(|e| Error::Integrity(format!("Failed to prepare statement: {}", e)))?;
 
@@ -2321,34 +2411,97 @@ pub fn run_starvation_recovery(store: &mut impl Store) -> Result<StarvationRecov
         .collect();
 
     if !assigned_open_beads.is_empty() {
-        writeln!(log_file, "  Found {} assigned-but-open beads", assigned_open_beads.len()).map_err(|e| Error::Io {
+        writeln!(
+            log_file,
+            "  Found {} assigned-but-open beads",
+            assigned_open_beads.len()
+        )
+        .map_err(|e| Error::Io {
             path: log_path.clone(),
             msg: e,
         })?;
 
-        let affected_beads: Vec<String> = assigned_open_beads.iter().map(|(id, _, _)| id.clone()).collect();
+        let affected_beads: Vec<String> = assigned_open_beads
+            .iter()
+            .map(|(id, _, _)| id.clone())
+            .collect();
 
-        // Clear assignees for these beads
-        let mut clear_stmt = conn
-            .prepare("UPDATE issues SET assignee = NULL WHERE id = ?1")
-            .map_err(|e| Error::Integrity(format!("Failed to prepare update statement: {}", e)))?;
+        if force {
+            // Clear assignees for these beads using proper lifecycle service
+            for (id, title, assignee) in &assigned_open_beads {
+                match crate::service::lifecycle::update_issue(
+                    &conn, id, None, None, true, None, None, None,
+                ) {
+                    Ok(_) => {
+                        writeln!(
+                            log_file,
+                            "  ✓ Cleared assignee '{}' from bead {} (title: {})",
+                            assignee, id, title
+                        )
+                        .map_err(|e| Error::Io {
+                            path: log_path.clone(),
+                            msg: e,
+                        })?;
+                    }
+                    Err(e) => {
+                        writeln!(
+                            log_file,
+                            "  ✗ Failed to clear assignee for {} (title: {}): {}",
+                            id, title, e
+                        )
+                        .map_err(|e| Error::Io {
+                            path: log_path.clone(),
+                            msg: e,
+                        })?;
+                    }
+                }
+            }
 
-        for (id, title, assignee) in &assigned_open_beads {
-            clear_stmt.execute([&id])
-                .map_err(|e| Error::Integrity(format!("Failed to clear assignee for {}: {}", id, e)))?;
-
-            writeln!(log_file, "  ✓ Cleared assignee '{}' from bead {} (title: {})", assignee, id, title).map_err(|e| Error::Io {
+            repairs_performed.push(RepairRecord {
+                repair_type: "clear_stale_assignees".to_string(),
+                description: format!("Cleared stale assignees from {} assigned-but-open beads using lifecycle service", assigned_open_beads.len()),
+                affected_beads: affected_beads.clone(),
+                timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            });
+        } else {
+            // Recommendation-only mode
+            writeln!(
+                log_file,
+                "  [RECOMMENDATION] Would clear assignees from {} assigned-but-open beads:",
+                assigned_open_beads.len()
+            )
+            .map_err(|e| Error::Io {
                 path: log_path.clone(),
                 msg: e,
             })?;
-        }
+            for (id, title, assignee) in &assigned_open_beads {
+                writeln!(
+                    log_file,
+                    "    - bead {} (title: {}, assignee: {})",
+                    id, title, assignee
+                )
+                .map_err(|e| Error::Io {
+                    path: log_path.clone(),
+                    msg: e,
+                })?;
+            }
+            writeln!(log_file, "    Remedy: bead update <id> --clear-assignee").map_err(|e| {
+                Error::Io {
+                    path: log_path.clone(),
+                    msg: e,
+                }
+            })?;
 
-        repairs_performed.push(RepairRecord {
-            repair_type: "clear_stale_assignees".to_string(),
-            description: format!("Cleared stale assignees from {} assigned-but-open beads", assigned_open_beads.len()),
-            affected_beads: affected_beads.clone(),
-            timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        });
+            repairs_performed.push(RepairRecord {
+                repair_type: "recommend_clear_stale_assignees".to_string(),
+                description: format!(
+                    "Recommendation: clear stale assignees from {} assigned-but-open beads",
+                    assigned_open_beads.len()
+                ),
+                affected_beads: affected_beads.clone(),
+                timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            });
+        }
     } else {
         writeln!(log_file, "  ✓ No assigned-but-open beads found").map_err(|e| Error::Io {
             path: log_path.clone(),
@@ -2382,17 +2535,17 @@ pub fn run_starvation_recovery(store: &mut impl Store) -> Result<StarvationRecov
                  WHERE event.issue_id = i.id
              )
              WHERE i.base_status = 'in_progress'
-             ORDER BY i.id"
+             ORDER BY i.id",
         )
         .map_err(|e| Error::Integrity(format!("Failed to prepare statement: {}", e)))?;
 
     let stale_candidates: Vec<(String, String, String, Option<i64>, bool)> = stale_stmt
         .query_map([], |row| {
             Ok((
-                row.get(0)?, // id
-                row.get(1)?, // title
-                row.get(2)?, // last_event_at
-                row.get(3)?, // last_exit_sequence
+                row.get(0)?,                // id
+                row.get(1)?,                // title
+                row.get(2)?,                // last_event_at
+                row.get(3)?,                // last_exit_sequence
                 row.get::<_, i64>(4)? != 0, // has_lease_row
             ))
         })
@@ -2427,37 +2580,91 @@ pub fn run_starvation_recovery(store: &mut impl Store) -> Result<StarvationRecov
     }
 
     if !stale_beads.is_empty() {
-        writeln!(log_file, "  Found {} stale in-progress beads", stale_beads.len()).map_err(|e| Error::Io {
+        writeln!(
+            log_file,
+            "  Found {} stale in-progress beads",
+            stale_beads.len()
+        )
+        .map_err(|e| Error::Io {
             path: log_path.clone(),
             msg: e,
         })?;
 
         let affected_beads: Vec<String> = stale_beads.iter().map(|(id, _, _)| id.clone()).collect();
+        let _release_reason = format!(
+            "Starvation recovery: stale claim (no activity for >{} seconds)",
+            stale_config.max_age_seconds
+        );
 
-        // Release stale in-progress beads
-        let mut release_stmt = conn
-            .prepare("UPDATE issues SET base_status = 'open', assignee = NULL, released_at = ?1, release_reason = ?2 WHERE id = ?3")
-            .map_err(|e| Error::Integrity(format!("Failed to prepare release statement: {}", e)))?;
+        if force {
+            // Release stale in-progress beads using proper lifecycle service
+            for (id, title, age_seconds) in &stale_beads {
+                match crate::service::lifecycle::release_issue(&conn, id, None, None) {
+                    Ok(_) => {
+                        writeln!(
+                            log_file,
+                            "  ✓ Released stale bead {} (title: {}, age: {} seconds)",
+                            id, title, age_seconds
+                        )
+                        .map_err(|e| Error::Io {
+                            path: log_path.clone(),
+                            msg: e,
+                        })?;
+                    }
+                    Err(e) => {
+                        writeln!(
+                            log_file,
+                            "  ✗ Failed to release stale bead {} (title: {}, age: {} seconds): {}",
+                            id, title, age_seconds, e
+                        )
+                        .map_err(|e| Error::Io {
+                            path: log_path.clone(),
+                            msg: e,
+                        })?;
+                    }
+                }
+            }
 
-        let release_timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-        let release_reason = format!("Starvation recovery: stale claim (no activity for >{} seconds)", stale_config.max_age_seconds);
-
-        for (id, title, age_seconds) in &stale_beads {
-            release_stmt.execute([&release_timestamp, &release_reason, id])
-                .map_err(|e| Error::Integrity(format!("Failed to release stale bead {}: {}", id, e)))?;
-
-            writeln!(log_file, "  ✓ Released stale bead {} (title: {}, age: {} seconds)", id, title, age_seconds).map_err(|e| Error::Io {
+            repairs_performed.push(RepairRecord {
+                repair_type: "release_stale_claims".to_string(),
+                description: format!("Released {} stale in-progress beads (no activity for >{} seconds) using lifecycle service", stale_beads.len(), stale_config.max_age_seconds),
+                affected_beads: affected_beads.clone(),
+                timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            });
+        } else {
+            // Recommendation-only mode
+            writeln!(
+                log_file,
+                "  [RECOMMENDATION] Would release {} stale in-progress beads:",
+                stale_beads.len()
+            )
+            .map_err(|e| Error::Io {
                 path: log_path.clone(),
                 msg: e,
             })?;
-        }
+            for (id, title, age_seconds) in &stale_beads {
+                writeln!(
+                    log_file,
+                    "    - bead {} (title: {}, age: {} seconds)",
+                    id, title, age_seconds
+                )
+                .map_err(|e| Error::Io {
+                    path: log_path.clone(),
+                    msg: e,
+                })?;
+            }
+            writeln!(log_file, "    Remedy: bead release <id>").map_err(|e| Error::Io {
+                path: log_path.clone(),
+                msg: e,
+            })?;
 
-        repairs_performed.push(RepairRecord {
-            repair_type: "release_stale_claims".to_string(),
-            description: format!("Released {} stale in-progress beads (no activity for >{} seconds)", stale_beads.len(), stale_config.max_age_seconds),
-            affected_beads: affected_beads.clone(),
-            timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        });
+            repairs_performed.push(RepairRecord {
+                repair_type: "recommend_release_stale_claims".to_string(),
+                description: format!("Recommendation: release {} stale in-progress beads (no activity for >{} seconds)", stale_beads.len(), stale_config.max_age_seconds),
+                affected_beads: affected_beads.clone(),
+                timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            });
+        }
     } else {
         writeln!(log_file, "  ✓ No stale in-progress beads found").map_err(|e| Error::Io {
             path: log_path.clone(),
@@ -2466,9 +2673,11 @@ pub fn run_starvation_recovery(store: &mut impl Store) -> Result<StarvationRecov
     }
 
     // 5. Flush checkpoint to ensure all repairs are persisted
-    writeln!(log_file, "[5/5] Flushing checkpoint to persist repairs...").map_err(|e| Error::Io {
-        path: log_path.clone(),
-        msg: e,
+    writeln!(log_file, "[5/5] Flushing checkpoint to persist repairs...").map_err(|e| {
+        Error::Io {
+            path: log_path.clone(),
+            msg: e,
+        }
     })?;
 
     // Get the current event sequence after our repairs
@@ -2488,13 +2697,23 @@ pub fn run_starvation_recovery(store: &mut impl Store) -> Result<StarvationRecov
         path: log_path.clone(),
         msg: e,
     })?;
-    writeln!(log_file, "  Total repairs performed: {}", repairs_performed.len()).map_err(|e| Error::Io {
+    writeln!(
+        log_file,
+        "  Total repairs performed: {}",
+        repairs_performed.len()
+    )
+    .map_err(|e| Error::Io {
         path: log_path.clone(),
         msg: e,
     })?;
 
     for repair in &repairs_performed {
-        writeln!(log_file, "  - {}: {}", repair.repair_type, repair.description).map_err(|e| Error::Io {
+        writeln!(
+            log_file,
+            "  - {}: {}",
+            repair.repair_type, repair.description
+        )
+        .map_err(|e| Error::Io {
             path: log_path.clone(),
             msg: e,
         })?;
@@ -2513,5 +2732,484 @@ pub fn run_starvation_recovery(store: &mut impl Store) -> Result<StarvationRecov
         total_repairs,
         integrity_checks_passed,
         checkpoint_verified,
+    })
+}
+
+/// Check attempt outcomes integrity (R036)
+///
+/// Read-only diagnostic that verifies attempt outcomes table consistency:
+/// - No orphaned outcomes (referencing non-existent issues)
+/// - All outcomes have corresponding audit events
+/// - Receipt IDs and attempt IDs are properly formatted
+/// - Canonical hashes are valid SHA-256 hex strings
+/// - Evidence refs are properly formatted
+/// Never synthesizes missing outcomes - only reports what exists.
+fn check_attempt_outcomes_integrity(store: &impl Store) -> Result<String> {
+    let config = store.get_workspace_config()?;
+    let db_path = config.root.join(".beads/beads.db");
+
+    let conn = open_configured_connection(&db_path)
+        .map_err(|e| Error::Integrity(format!("Failed to open database: {}", e)))?;
+
+    // Check if attempt_outcomes table exists (may not in legacy workspaces)
+    let table_exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='attempt_outcomes'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    if table_exists == 0 {
+        // Legacy workspace - no attempt outcomes table is OK
+        return Ok("Attempt outcomes table not present (legacy workspace)".to_string());
+    }
+
+    let mut issues = Vec::new();
+
+    // 1. Check for orphaned attempt outcomes (referencing non-existent issues)
+    let mut stmt = conn
+        .prepare(
+            "SELECT COUNT(*) FROM attempt_outcomes ao
+             LEFT JOIN issues i ON ao.issue_id = i.id
+             WHERE i.id IS NULL",
+        )
+        .map_err(|e| Error::Integrity(format!("Failed to prepare orphan check: {}", e)))?;
+
+    let orphaned_count: i64 = stmt.query_row([], |row| row.get(0)).unwrap_or(0);
+
+    if orphaned_count > 0 {
+        issues.push(format!(
+            "Found {} attempt outcomes referencing non-existent issues",
+            orphaned_count
+        ));
+    }
+
+    // 2. Check for attempt outcomes without corresponding audit events
+    let mut stmt = conn
+        .prepare(
+            "SELECT COUNT(*) FROM attempt_outcomes ao
+             LEFT JOIN events e ON e.issue_id = ao.issue_id AND e.kind = 'attempt_resolved'
+             WHERE e.sequence IS NULL",
+        )
+        .map_err(|e| Error::Integrity(format!("Failed to prepare event check: {}", e)))?;
+
+    let missing_events_count: i64 = stmt.query_row([], |row| row.get(0)).unwrap_or(0);
+
+    if missing_events_count > 0 {
+        issues.push(format!(
+            "Found {} attempt outcomes without corresponding attempt_resolved events",
+            missing_events_count
+        ));
+    }
+
+    // 3. Validate receipt ID format (should start with "ao-" prefix)
+    let mut stmt = conn
+        .prepare(
+            "SELECT COUNT(*) FROM attempt_outcomes
+             WHERE receipt_id NOT LIKE 'ao-%'",
+        )
+        .map_err(|e| Error::Integrity(format!("Failed to prepare receipt_id check: {}", e)))?;
+
+    let invalid_receipt_ids: i64 = stmt.query_row([], |row| row.get(0)).unwrap_or(0);
+
+    if invalid_receipt_ids > 0 {
+        issues.push(format!(
+            "Found {} attempt outcomes with invalid receipt_id format (should start with 'ao-')",
+            invalid_receipt_ids
+        ));
+    }
+
+    // 4. Validate canonical request hash format (should be 64-char hex string)
+    let mut stmt = conn
+        .prepare(
+            "SELECT COUNT(*) FROM attempt_outcomes
+             WHERE length(canonical_request_hash) != 64
+                OR canonical_request_hash NOT GLOB '*[0-9a-f][0-9a-f][0-9a-f][0-9a-f]*'",
+        )
+        .map_err(|e| Error::Integrity(format!("Failed to prepare hash check: {}", e)))?;
+
+    let invalid_hashes: i64 = stmt.query_row([], |row| row.get(0)).unwrap_or(0);
+
+    if invalid_hashes > 0 {
+        issues.push(format!(
+            "Found {} attempt outcomes with invalid canonical_request_hash (expected 64-char hex)",
+            invalid_hashes
+        ));
+    }
+
+    // 5. Validate evidence_refs JSON format
+    let mut stmt = conn
+        .prepare("SELECT COUNT(*) FROM attempt_outcomes WHERE evidence_refs_json IS NOT NULL")
+        .map_err(|e| Error::Integrity(format!("Failed to prepare evidence check: {}", e)))?;
+
+    let with_evidence: i64 = stmt.query_row([], |row| row.get(0)).unwrap_or(0);
+
+    let mut invalid_evidence = 0;
+    if with_evidence > 0 {
+        let mut stmt = conn
+            .prepare("SELECT evidence_refs_json FROM attempt_outcomes WHERE evidence_refs_json IS NOT NULL")
+            .map_err(|e| Error::Integrity(format!("Failed to query evidence refs: {}", e)))?;
+
+        let evidence_rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| Error::Integrity(format!("Failed to read evidence refs: {}", e)))?;
+
+        for evidence_json in evidence_rows.flatten() {
+            if let Ok(refs) = serde_json::from_str::<Vec<String>>(&evidence_json) {
+                for ref_str in refs {
+                    // Basic format check: NAMESPACE:VALUE
+                    if !ref_str.contains(':') || ref_str.split(':').count() != 2 {
+                        invalid_evidence += 1;
+                        break;
+                    }
+                }
+            } else {
+                invalid_evidence += 1;
+            }
+        }
+    }
+
+    if invalid_evidence > 0 {
+        issues.push(format!(
+            "Found {} attempt outcomes with malformed evidence_refs_json",
+            invalid_evidence
+        ));
+    }
+
+    if issues.is_empty() {
+        let outcome_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM attempt_outcomes", [], |row| row.get(0))
+            .unwrap_or(0);
+        Ok(format!(
+            "Attempt outcomes integrity OK: {} outcomes validated",
+            outcome_count
+        ))
+    } else {
+        Err(Error::Integrity(format!(
+            "Attempt outcomes integrity issues: {}",
+            issues.join("; ")
+        )))
+    }
+}
+
+/// Check attempt tier consistency with consecutive failures (R036)
+///
+/// Read-only diagnostic that verifies attempt tier values match consecutive
+/// failure counts according to the failure-aware scheduling policy:
+/// - 0 consecutive failures: tier 0 (Normal)
+/// - 1 consecutive failure: tier 1 (Retryable)
+/// - 2 consecutive failures: tier 2 (Struggling)
+/// - 3+ consecutive failures: tier 3 (Quarantined)
+///
+/// Inconsistencies may indicate:
+/// - Manual tier adjustments (valid but notable)
+/// - Legacy workspace before attempt tier enforcement
+/// - Data corruption requiring investigation
+fn check_attempt_tier_consistency(store: &impl Store) -> Result<String> {
+    let config = store.get_workspace_config()?;
+    let db_path = config.root.join(".beads/beads.db");
+
+    let conn = open_configured_connection(&db_path)
+        .map_err(|e| Error::Integrity(format!("Failed to open database: {}", e)))?;
+
+    // Check if attempt_outcomes table exists (may not in legacy workspaces)
+    let table_exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='attempt_outcomes'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    if table_exists == 0 {
+        // Legacy workspace - no attempt outcomes table is OK
+        return Ok("Attempt tier consistency not applicable (legacy workspace)".to_string());
+    }
+
+    // Query for issues where attempt_tier doesn't match consecutive_failures
+    let mut stmt = conn
+        .prepare(
+            "SELECT i.id, i.consecutive_failures, i.attempt_tier
+             FROM issues i
+             WHERE (
+                 (consecutive_failures = 0 AND attempt_tier != 0)
+                 OR (consecutive_failures = 1 AND attempt_tier != 1)
+                 OR (consecutive_failures = 2 AND attempt_tier != 2)
+                 OR (consecutive_failures >= 3 AND attempt_tier != 3)
+             )
+             LIMIT 20",
+        )
+        .map_err(|e| Error::Integrity(format!("Failed to prepare tier check: {}", e)))?;
+
+    let inconsistent_issues: Vec<(String, i64, i64)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })
+        .map_err(|e| Error::Integrity(format!("Failed to query tier issues: {}", e)))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    if inconsistent_issues.is_empty() {
+        let issue_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM issues", [], |row| row.get(0))
+            .unwrap_or(0);
+        Ok(format!(
+            "Attempt tier consistency OK: {} issues validated",
+            issue_count
+        ))
+    } else {
+        // Report with remedy - manual reset is available but diagnostic is read-only
+        let examples = inconsistent_issues
+            .iter()
+            .take(5)
+            .map(|(id, failures, tier)| {
+                format!(
+                    "{} (failures={}, tier={})",
+                    id, failures, tier
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let total_count = inconsistent_issues.len();
+        let more_indicator = if total_count > 5 {
+            format!(" (and {} more)", total_count - 5)
+        } else {
+            String::new()
+        };
+
+        Err(Error::workspace(format!(
+            "Found {} issues with inconsistent attempt_tier vs consecutive_failures: {}{}. \
+             This may indicate manual tier adjustments or legacy data. \
+             To reset: bead update <id> --reset-attempt-tier",
+            total_count, examples, more_indicator
+        )))
+    }
+}
+
+/// Visibility check report
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VisibilityCheckReport {
+    pub timestamp: String,
+    pub open_bead_count: usize,
+    pub ready_bead_count: usize,
+    pub has_discrepancy: bool,
+    pub discrepancy_details: Option<DiscrepancyDetails>,
+}
+
+/// Detailed information about beads causing visibility discrepancy
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscrepancyDetails {
+    pub open_not_ready: Vec<InvisibleBead>,
+    pub ready_not_open: Vec<String>, // Should not happen in practice
+}
+
+/// Bead that is open but not appearing in the ready frontier
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InvisibleBead {
+    pub id: String,
+    pub title: String,
+    pub priority: i64,
+    pub assignee: Option<String>,
+    pub manual_blocked: bool,
+    pub has_blockers: bool,
+    pub has_resource_conflicts: bool,
+}
+
+/// Run visibility check: compare open bead count against ready frontier query
+///
+/// This function performs a consistency check that queries the database for beads
+/// WHERE status='open' and compares that count against Pluck's ready-set query.
+/// If counts differ, it automatically dumps the differing bead IDs and their
+/// metadata to a structured log.
+pub fn run_visibility_check(store: &impl Store) -> Result<VisibilityCheckReport> {
+    let config = store.get_workspace_config()?;
+    let db_path = config.root.join(".beads/beads.db");
+    let conn = open_configured_connection(&db_path)
+        .map_err(|e| Error::Integrity(format!("Failed to open database: {}", e)))?;
+
+    let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+
+    // 1. Get all open beads (WHERE base_status = 'open')
+    let open_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM issues WHERE base_status = 'open'", [], |row| {
+            row.get(0)
+        })
+        .unwrap_or(0);
+
+    // 2. Get ready frontier count using the same query as Pluck (find_eligible_frontier)
+    let now_string = crate::service::resource_locks::now_string();
+    let ready_query = r#"
+        SELECT COUNT(*)
+        FROM issues i
+        WHERE i.base_status = 'open'
+          AND i.assignee IS NULL
+          AND i.manual_blocked = 0
+          AND NOT EXISTS (
+              SELECT 1
+              FROM dependencies d
+              JOIN issues blocker ON blocker.id = d.blocker_issue_id
+              WHERE d.blocked_issue_id = i.id
+                AND d.kind = 'blocks'
+                AND blocker.base_status != 'closed'
+          )
+          AND NOT EXISTS (
+              SELECT 1
+              FROM issue_resource_keys candidate_key
+              JOIN resource_locks held_lock
+                ON held_lock.resource_key = candidate_key.resource_key
+              WHERE candidate_key.issue_id = i.id
+                AND held_lock.issue_id != i.id
+                AND (held_lock.lease_fencing_token IS NULL OR EXISTS (
+                    SELECT 1 FROM leases active_lease
+                    WHERE active_lease.issue_id = held_lock.issue_id
+                      AND active_lease.fencing_token = held_lock.lease_fencing_token
+                      AND active_lease.expires_at > ?
+                ))
+          )
+    "#;
+
+    let ready_count: i64 = conn
+        .query_row(ready_query, [&now_string], |row| row.get(0))
+        .unwrap_or(0);
+
+    let open_bead_count = open_count as usize;
+    let ready_bead_count = ready_count as usize;
+    let has_discrepancy = open_bead_count != ready_bead_count;
+
+    let mut discrepancy_details = None;
+
+    if has_discrepancy {
+        // Get detailed information about beads that are open but not ready
+        let open_not_ready_query = r#"
+            SELECT i.id, i.title, i.priority, i.assignee, i.manual_blocked,
+                   EXISTS (
+                       SELECT 1
+                       FROM dependencies d
+                       JOIN issues blocker ON blocker.id = d.blocker_issue_id
+                       WHERE d.blocked_issue_id = i.id
+                         AND d.kind = 'blocks'
+                         AND blocker.base_status != 'closed'
+                   ) as has_blockers,
+                   EXISTS (
+                       SELECT 1
+                       FROM issue_resource_keys candidate_key
+                       JOIN resource_locks held_lock
+                         ON held_lock.resource_key = candidate_key.resource_key
+                       WHERE candidate_key.issue_id = i.id
+                         AND held_lock.issue_id != i.id
+                         AND (held_lock.lease_fencing_token IS NULL OR EXISTS (
+                             SELECT 1 FROM leases active_lease
+                             WHERE active_lease.issue_id = held_lock.issue_id
+                               AND active_lease.fencing_token = held_lock.lease_fencing_token
+                               AND active_lease.expires_at > ?
+                         ))
+                   ) as has_conflicts
+            FROM issues i
+            WHERE i.base_status = 'open'
+              AND (
+                  i.assignee IS NOT NULL
+                  OR i.manual_blocked != 0
+                  OR EXISTS (
+                      SELECT 1
+                      FROM dependencies d
+                      JOIN issues blocker ON blocker.id = d.blocker_issue_id
+                      WHERE d.blocked_issue_id = i.id
+                        AND d.kind = 'blocks'
+                        AND blocker.base_status != 'closed'
+                  )
+                  OR EXISTS (
+                      SELECT 1
+                      FROM issue_resource_keys candidate_key
+                      JOIN resource_locks held_lock
+                        ON held_lock.resource_key = candidate_key.resource_key
+                      WHERE candidate_key.issue_id = i.id
+                        AND held_lock.issue_id != i.id
+                        AND (held_lock.lease_fencing_token IS NULL OR EXISTS (
+                            SELECT 1 FROM leases active_lease
+                            WHERE active_lease.issue_id = held_lock.issue_id
+                              AND active_lease.fencing_token = held_lock.lease_fencing_token
+                              AND active_lease.expires_at > ?
+                          ))
+                  )
+              )
+            ORDER BY i.priority ASC, i.created_at ASC, i.id ASC
+            LIMIT 100
+        "#;
+
+        let mut stmt = conn
+            .prepare(open_not_ready_query)
+            .map_err(|e| Error::Integrity(format!("Failed to prepare visibility query: {}", e)))?;
+
+        let invisible_beads: Vec<InvisibleBead> = stmt
+            .query_map([&now_string, &now_string], |row| {
+                Ok(InvisibleBead {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    priority: row.get(2)?,
+                    assignee: row.get(3)?,
+                    manual_blocked: row.get::<_, i64>(4)? != 0,
+                    has_blockers: row.get::<_, i64>(5)? != 0,
+                    has_resource_conflicts: row.get::<_, i64>(6)? != 0,
+                })
+            })
+            .map_err(|e| Error::Integrity(format!("Failed to query invisible beads: {}", e)))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Log to structured file
+        let log_path = config.root.join(".beads/visibility-check.log");
+        if let Ok(mut log_file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+        {
+            use std::io::Write;
+            writeln!(
+                log_file,
+                "\n=== Visibility Check Run at {} ===",
+                timestamp
+            )
+            .ok();
+            writeln!(log_file, "Open beads: {}", open_bead_count).ok();
+            writeln!(log_file, "Ready beads: {}", ready_bead_count).ok();
+            writeln!(log_file, "Discrepancy: {} beads excluded from ready frontier", open_bead_count - ready_bead_count).ok();
+            writeln!(log_file, "Invisible beads ({} shown, max 100):", invisible_beads.len()).ok();
+
+            for bead in &invisible_beads {
+                writeln!(log_file, "  - {}: {}", bead.id, bead.title).ok();
+                writeln!(log_file, "    Priority: {}", bead.priority).ok();
+                if let Some(ref assignee) = bead.assignee {
+                    writeln!(log_file, "    Assignee: {}", assignee).ok();
+                }
+                if bead.manual_blocked {
+                    writeln!(log_file, "    Manually blocked: true").ok();
+                }
+                if bead.has_blockers {
+                    writeln!(log_file, "    Has blockers: true").ok();
+                }
+                if bead.has_resource_conflicts {
+                    writeln!(log_file, "    Has resource conflicts: true").ok();
+                }
+            }
+        }
+
+        discrepancy_details = Some(DiscrepancyDetails {
+            open_not_ready: invisible_beads,
+            ready_not_open: vec![], // Should not happen in practice
+        });
+    }
+
+    Ok(VisibilityCheckReport {
+        timestamp,
+        open_bead_count,
+        ready_bead_count,
+        has_discrepancy,
+        discrepancy_details,
     })
 }

@@ -325,6 +325,7 @@ fn dispatch_command(cli: Cli) -> Result<bool> {
         Command::Release(opts) => cmd_release(opts).map(|_| false),
         Command::Close(opts) => cmd_close(opts).map(|_| false),
         Command::Reopen(opts) => cmd_reopen(opts).map(|_| false),
+        Command::Resolve(opts) => cmd_resolve(opts).map(|_| false),
         Command::Label(opts) => cmd_label(opts).map(|_| false),
         Command::Resource(opts) => cmd_resource(opts).map(|_| false),
         Command::Dep(opts) => cmd_dep(opts).map(|_| false),
@@ -1143,6 +1144,92 @@ fn cmd_reopen(opts: cli::ReopenOptions) -> Result<()> {
     println!("{}", id);
 
     Ok(())
+}
+
+fn cmd_resolve(opts: cli::ResolveOptions) -> Result<()> {
+    use crate::model::attempt::ResolveRequest;
+
+    // Validate required fields
+    if opts.attempt_id.trim().is_empty() {
+        return Err(Error::cli_usage("--attempt-id cannot be empty"));
+    }
+    if opts.outcome.trim().is_empty() {
+        return Err(Error::cli_usage("--outcome cannot be empty"));
+    }
+    if opts.attempt_id.len() > 255 {
+        return Err(Error::cli_usage("--attempt-id cannot exceed 255 bytes"));
+    }
+
+    // Discover workspace
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    // Open database connection
+    let db_path = config.database_path();
+    let conn = store::open_configured_connection(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    // Get workspace UUID (already available from discovered config)
+    let workspace_uuid = config.uuid.clone();
+
+    // Build resolve request
+    let request = ResolveRequest {
+        attempt_id: opts.attempt_id.clone(),
+        issue_id: opts.id.clone(),
+        outcome: opts.outcome.clone(),
+        action: opts.action.clone(),
+        reason: opts.reason.clone(),
+        if_revision: opts.if_revision,
+        fencing_token: opts.fencing_token.clone(),
+        evidence_refs: opts.evidence_ref.clone(),
+        actor: opts.actor.clone(),
+        model: opts.model.clone(),
+        harness: opts.harness.clone(),
+        harness_version: opts.harness_version.clone(),
+    };
+
+    // Execute resolution in transaction
+    let tx = conn.unchecked_transaction()?;
+    let result = service::resolve_attempt(&tx, &workspace_uuid, request);
+
+    // Handle errors with proper exit codes
+    match result {
+        Ok(receipt) => {
+            tx.commit()?;
+
+            // Output based on format
+            if opts.format == "json" {
+                let output = serde_json::to_string_pretty(&receipt)?;
+                println!("{}", output);
+            } else {
+                // Text output
+                println!("Receipt ID: {}", receipt.receipt_id);
+                println!("Issue ID: {}", receipt.issue_id);
+                println!("Attempt ID: {}", receipt.attempt_id);
+                println!("Outcome: {}", receipt.canonical_request_hash);
+                println!("Resulting State: {}", receipt.resulting_state);
+                println!("Resulting Tier: {}", receipt.resulting_attempt_tier);
+                println!("Created At: {}", receipt.created_at);
+                if receipt.is_replay {
+                    println!("(idempotent replay)");
+                }
+            }
+
+            Ok(())
+        }
+        Err(e) => {
+            // Rollback the transaction
+            drop(tx);
+
+            // Map attempt errors to proper exit codes
+            let exit_code = e.exit_code();
+            let message = format!("{}", e);
+            eprintln!("Error: {}", message);
+
+            // Exit with proper code
+            std::process::exit(exit_code);
+        }
+    }
 }
 
 fn cmd_label(cmd: cli::LabelCommand) -> Result<()> {
@@ -2393,6 +2480,81 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
         vec![service::doctor::DiagnosticScope::All] // Default to all scopes
     };
 
+    if opts.visibility_check {
+        // Run visibility check
+        eprintln!("Running visibility check...");
+        let report = service::doctor::run_visibility_check(&store::SqliteStore::new())?;
+
+        if opts.json {
+            // Output JSON report
+            let json_output = serde_json::to_string_pretty(&report).map_err(|e| {
+                Error::Internal(anyhow::anyhow!(
+                    "Failed to serialize visibility report: {}",
+                    e
+                ))
+            })?;
+            println!("{}", json_output);
+        } else {
+            // Human-readable output
+            eprintln!();
+            eprintln!("Visibility Check Report");
+            eprintln!("=======================");
+            eprintln!("Timestamp: {}", report.timestamp);
+            eprintln!("Open beads: {}", report.open_bead_count);
+            eprintln!("Ready beads: {}", report.ready_bead_count);
+            eprintln!();
+
+            if report.has_discrepancy {
+                eprintln!("⚠️  DISCREPANCY DETECTED: {} open bead(s) are not appearing in the ready frontier!",
+                         report.open_bead_count - report.ready_bead_count);
+                eprintln!();
+
+                if let Some(ref details) = report.discrepancy_details {
+                    if !details.open_not_ready.is_empty() {
+                        eprintln!("Open beads excluded from ready frontier:");
+                        eprintln!();
+
+                        for bead in &details.open_not_ready {
+                            eprintln!("  ID: {}", bead.id);
+                            eprintln!("  Title: {}", bead.title);
+                            eprintln!("  Priority: {}", bead.priority);
+
+                            let mut reasons = Vec::new();
+                            if bead.assignee.is_some() {
+                                reasons.push(format!("assignee: {}", bead.assignee.as_ref().unwrap()));
+                            }
+                            if bead.manual_blocked {
+                                reasons.push("manually blocked".to_string());
+                            }
+                            if bead.has_blockers {
+                                reasons.push("has blockers".to_string());
+                            }
+                            if bead.has_resource_conflicts {
+                                reasons.push("has resource conflicts".to_string());
+                            }
+
+                            eprintln!("  Reasons: {}", reasons.join(", "));
+                            eprintln!();
+                        }
+                    }
+                }
+
+                eprintln!("Structured log written to: .beads/visibility-check.log");
+            } else {
+                eprintln!("✅ All open beads are appearing in the ready frontier.");
+            }
+        }
+
+        // Exit with error if discrepancy is detected
+        if report.has_discrepancy {
+            return Err(Error::integrity(
+                "Visibility discrepancy detected: open bead count does not match ready frontier count"
+            ));
+        }
+
+        return Ok(());
+    }
+
     if opts.starvation_check {
         // Run starvation check
         eprintln!("Running starvation check...");
@@ -2401,7 +2563,10 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
         if opts.json {
             // Output JSON report
             let json_output = serde_json::to_string_pretty(&report).map_err(|e| {
-                Error::Internal(anyhow::anyhow!("Failed to serialize starvation report: {}", e))
+                Error::Internal(anyhow::anyhow!(
+                    "Failed to serialize starvation report: {}",
+                    e
+                ))
             })?;
             println!("{}", json_output);
         } else {
@@ -2435,10 +2600,16 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
                         eprintln!("    - {}", reason);
                     }
                     if !bead.blocking_dependencies.is_empty() {
-                        eprintln!("  Blocking dependencies: {}", bead.blocking_dependencies.join(", "));
+                        eprintln!(
+                            "  Blocking dependencies: {}",
+                            bead.blocking_dependencies.join(", ")
+                        );
                     }
                     if !bead.resource_conflicts.is_empty() {
-                        eprintln!("  Resource conflicts: {}", bead.resource_conflicts.join(", "));
+                        eprintln!(
+                            "  Resource conflicts: {}",
+                            bead.resource_conflicts.join(", ")
+                        );
                     }
                     eprintln!();
                 }
@@ -2473,7 +2644,10 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
         if opts.json {
             // Output JSON result
             let json_output = serde_json::to_string_pretty(&result).map_err(|e| {
-                Error::Internal(anyhow::anyhow!("Failed to serialize recovery result: {}", e))
+                Error::Internal(anyhow::anyhow!(
+                    "Failed to serialize recovery result: {}",
+                    e
+                ))
             })?;
             println!("{}", json_output);
         } else {
@@ -2482,8 +2656,22 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
             eprintln!("Starvation Recovery Report");
             eprintln!("========================");
             eprintln!("Timestamp: {}", result.timestamp);
-            eprintln!("Integrity checks: {}", if result.integrity_checks_passed { "✓ PASSED" } else { "✗ FAILED" });
-            eprintln!("Checkpoint verified: {}", if result.checkpoint_verified { "✓ YES" } else { "⚠ DIRTY" });
+            eprintln!(
+                "Integrity checks: {}",
+                if result.integrity_checks_passed {
+                    "✓ PASSED"
+                } else {
+                    "✗ FAILED"
+                }
+            );
+            eprintln!(
+                "Checkpoint verified: {}",
+                if result.checkpoint_verified {
+                    "✓ YES"
+                } else {
+                    "⚠ DIRTY"
+                }
+            );
             eprintln!("Total repairs performed: {}", result.total_repairs);
             eprintln!();
 
@@ -2505,7 +2693,9 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
                 eprintln!();
                 eprintln!("Note: After starvation recovery, you may want to run:");
                 eprintln!("  - 'bead list --ready' to verify the ready frontier is now populated");
-                eprintln!("  - 'bead sync flush-only' to ensure the checkpoint reflects all repairs");
+                eprintln!(
+                    "  - 'bead sync flush-only' to ensure the checkpoint reflects all repairs"
+                );
             }
         }
 
@@ -3665,7 +3855,7 @@ fn cmd_analyze_exclusion(opts: cli::AnalyzeExclusionOptions) -> Result<()> {
         } else {
             // For text output, create a summary
             let mut summary = String::new();
-            summary.push_str(&format!("# Exclusion Analysis\n\n"));
+            summary.push_str("# Exclusion Analysis\n\n");
             summary.push_str(&format!("**Total open beads:** {}\n", analysis.total_open));
             summary.push_str(&format!("**Ready frontier:** {}\n", analysis.ready_count));
             summary.push_str(&format!("**Excluded:** {}\n\n", analysis.excluded_count));
@@ -3720,7 +3910,10 @@ fn print_human_readable_exclusion_analysis(analysis: &service::ExclusionAnalysis
 
     if !analysis.ready_beads.is_empty() {
         println!();
-        println!("**Ready Frontier ({} bead(s))**:", analysis.ready_beads.len());
+        println!(
+            "**Ready Frontier ({} bead(s))**:",
+            analysis.ready_beads.len()
+        );
         for bead in &analysis.ready_beads {
             println!("  ✓ {} [{}]", bead.id, bead.title);
             println!("    Priority: P{}", bead.priority);
@@ -3729,7 +3922,10 @@ fn print_human_readable_exclusion_analysis(analysis: &service::ExclusionAnalysis
 
     if !analysis.excluded_beads.is_empty() {
         println!();
-        println!("**Excluded Beads ({} bead(s))**:", analysis.excluded_beads.len());
+        println!(
+            "**Excluded Beads ({} bead(s))**:",
+            analysis.excluded_beads.len()
+        );
         for bead in &analysis.excluded_beads {
             println!("  ✗ {} [{}]", bead.id, bead.title);
             println!("    Reasons:");
@@ -3741,7 +3937,10 @@ fn print_human_readable_exclusion_analysis(analysis: &service::ExclusionAnalysis
 
     if !analysis.open_but_invisible.is_empty() {
         println!();
-        println!("**Open But Invisible ({} bead(s))**:", analysis.open_but_invisible.len());
+        println!(
+            "**Open But Invisible ({} bead(s))**:",
+            analysis.open_but_invisible.len()
+        );
         println!("  (These beads are 'open' but excluded from the ready frontier)");
         for bead in &analysis.open_but_invisible {
             println!("  • {} [{}]", bead.id, bead.title);
@@ -3755,7 +3954,10 @@ fn print_human_readable_exclusion_analysis(analysis: &service::ExclusionAnalysis
     if analysis.ready_count == 0 && analysis.total_open > 0 {
         println!();
         println!("**⚠ STARVATION DETECTED:**");
-        println!("  All {} open bead(s) are excluded from the ready frontier.", analysis.total_open);
+        println!(
+            "  All {} open bead(s) are excluded from the ready frontier.",
+            analysis.total_open
+        );
         println!("  No work is claimable. Use 'bead analyze-exclusion' to diagnose why.");
     }
 }
@@ -4050,7 +4252,7 @@ fn cmd_watchdog(opts: cli::WatchdogOptions) -> Result<()> {
                 "No workspace found. Run `bead init` first.",
             ));
         }
-        store::WorkspaceState::Uninitialized { root, db_path } => {
+        store::WorkspaceState::Uninitialized { root: _, db_path } => {
             return Err(Error::workspace(format!(
                 "Workspace database at {} is uninitialized. Run `bead init` first.",
                 db_path.display()
@@ -4084,14 +4286,19 @@ fn cmd_watchdog(opts: cli::WatchdogOptions) -> Result<()> {
         println!("Total in_progress beads scanned: {}", result.total_scanned);
         println!("Stale beads found: {}", result.stale_beads.len());
         println!("Beads auto-released: {}", result.released_beads.len());
-        println!("Lease valid but stale: {}", result.lease_valid_but_stale.len());
+        println!(
+            "Lease valid but stale: {}",
+            result.lease_valid_but_stale.len()
+        );
         println!();
 
         if !result.stale_beads.is_empty() {
             println!("Stale Beads (exceeding threshold):");
             for bead in &result.stale_beads {
-                println!("  - {}: {} ({:.1} hours since update, assignee: {})",
-                    bead.id, bead.updated_at, bead.hours_since_update, bead.assignee);
+                println!(
+                    "  - {}: {} ({:.1} hours since update, assignee: {})",
+                    bead.id, bead.updated_at, bead.hours_since_update, bead.assignee
+                );
             }
             println!();
         }
@@ -4099,8 +4306,10 @@ fn cmd_watchdog(opts: cli::WatchdogOptions) -> Result<()> {
         if !result.released_beads.is_empty() {
             println!("Auto-Released Beads:");
             for bead in &result.released_beads {
-                println!("  - {}: assignee='{}', reason='{}' ({:.1} hours stale)",
-                    bead.id, bead.assignee, bead.reason, bead.hours_since_update);
+                println!(
+                    "  - {}: assignee='{}', reason='{}' ({:.1} hours stale)",
+                    bead.id, bead.assignee, bead.reason, bead.hours_since_update
+                );
             }
             println!();
         }
@@ -4108,8 +4317,10 @@ fn cmd_watchdog(opts: cli::WatchdogOptions) -> Result<()> {
         if !result.lease_valid_but_stale.is_empty() {
             println!("Lease Valid But Stale (recommendation-only):");
             for bead in &result.lease_valid_but_stale {
-                println!("  - {}: {} ({:.1} hours since update, assignee: {})",
-                    bead.id, bead.updated_at, bead.hours_since_update, bead.assignee);
+                println!(
+                    "  - {}: {} ({:.1} hours since update, assignee: {})",
+                    bead.id, bead.updated_at, bead.hours_since_update, bead.assignee
+                );
             }
             println!();
             println!("These beads are stale but their workers are still running.");
