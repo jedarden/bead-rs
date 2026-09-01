@@ -511,6 +511,24 @@ fn close_issue_impl(tx: &mut Transaction, issue: &Issue, reason: &str) -> Result
             ))
         }
         BaseStatus::Open | BaseStatus::InProgress | BaseStatus::Deferred => {
+            // VERIFY HOOK INJECTION POINT
+            //
+            // This is the integration point for the verify wrapper that will be called
+            // before any state transition or persistence. At this point we have:
+            //   - The issue object with its current state
+            //   - The close reason
+            //   - An active transaction
+            //
+            // The verify call will be injected here, allowing it to:
+            //   - Block the close if verification fails (by returning an error)
+            //   - Access all context needed for verification
+            //   - Run within the same transaction for consistency
+            //
+            // To integrate: replace the comment below with the actual verify call
+            // e.g., verify::before_close(tx, issue, reason)?
+            //
+            // TODO: Integrate verify wrapper call here (see bead pdftract-7ecf1d3a)
+
             // Semantic close. Conditional on the validated revision -- see
             // ensure_revision_row_affected.
             let normalized_reason = reason.trim();
