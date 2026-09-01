@@ -47,6 +47,9 @@ pub struct Capabilities {
     /// R026 activation flipped the compiled default on (plan section 11).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_flush: Option<bool>,
+    /// Attempt outcome resolution capabilities (ADR-012)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attempt_outcome: Option<AttemptOutcome>,
 }
 
 /// Priority capabilities
@@ -61,6 +64,31 @@ pub struct Priorities {
     /// Whether P4 is claimable under fifo-v1
     #[serde(rename = "p4_claimable_by_fifo")]
     pub p4_claimable_by_fifo: bool,
+}
+
+/// Attempt outcome resolution capabilities (ADR-012)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttemptOutcome {
+    /// Whether attempt outcome resolution is supported
+    pub supported: bool,
+    /// Supported outcome classifications
+    pub outcomes: Vec<String>,
+    /// Supported lifecycle actions
+    pub actions: Vec<String>,
+    /// Whether idempotent replay detection is supported
+    pub replay_detection: bool,
+    /// Whether revision guards are supported
+    pub revision_guard: bool,
+    /// Whether fencing tokens are supported
+    pub fencing_token: bool,
+    /// Whether evidence references are supported
+    pub evidence_refs: bool,
+    /// Schema reference for resolve receipt
+    #[serde(rename = "resolve_receipt_schema")]
+    pub resolve_receipt_schema: String,
+    /// Schema reference for resolve request
+    #[serde(rename = "resolve_request_schema")]
+    pub resolve_request_schema: String,
 }
 
 /// Schema catalog entry
@@ -151,6 +179,7 @@ pub fn generate_capabilities(profile: &str) -> Result<Capabilities> {
             "ref".to_string(),
             "release".to_string(),
             "reopen".to_string(),
+            "resolve".to_string(),
             "restore".to_string(),
             "resource".to_string(),
             "schema".to_string(),
@@ -165,5 +194,29 @@ pub fn generate_capabilities(profile: &str) -> Result<Capabilities> {
         // flipped it on. The workspace key and the per-invocation
         // flag change behavior, never the advertisement.
         auto_flush: AUTO_FLUSH_COMPILED_DEFAULT.then_some(AUTO_FLUSH_COMPILED_DEFAULT),
+        // ADR-012: advertise attempt outcome resolution capabilities
+        attempt_outcome: Some(AttemptOutcome {
+            supported: true,
+            outcomes: vec![
+                "verified_success".to_string(),
+                "work_failure".to_string(),
+                "infrastructure_failure".to_string(),
+                "cancelled".to_string(),
+                "indeterminate".to_string(),
+            ],
+            actions: vec![
+                "close".to_string(),
+                "release".to_string(),
+                "quarantine".to_string(),
+                "block".to_string(),
+                "none".to_string(),
+            ],
+            replay_detection: true,
+            revision_guard: true,
+            fencing_token: true,
+            evidence_refs: true,
+            resolve_receipt_schema: "urn:bead-rs:schema:resolve-receipt:native-v1".to_string(),
+            resolve_request_schema: "urn:bead-rs:schema:resolve-request:native-v1".to_string(),
+        }),
     })
 }

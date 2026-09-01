@@ -4,11 +4,11 @@
 .SH NAME
 bead list \- List issues
 .SH SYNOPSIS
-\fBbead list\fR [\fB\-\-json\fR] [\fB\-\-status\fR] [\fB\-\-assignee\fR] [\fB\-\-ready\fR] [\fB\-\-comments\fR] [\fB\-\-limit\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBbead list\fR [\fB\-\-json\fR] [\fB\-\-status\fR] [\fB\-\-assignee\fR] [\fB\-\-ready\fR] [\fB\-\-blocked\fR] [\fB\-\-comments\fR] [\fB\-\-limit\fR] [\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] 
 .SH DESCRIPTION
 List issues with optional filtering and comment projection.
 .PP
-Supports filtering by status, assignee, and ready frontier. Uses claim
+Supports filtering by status, assignee, ready frontier, and manual block. Uses claim
 ordering (priority ASC, created_at ASC, id ASC) for deterministic results.
 Ready frontier uses the same ordering as \*(Aqbead claim\*(Aq but is read\-only and
 does not reserve work.
@@ -17,12 +17,15 @@ EXAMPLES:
   bead list \-\-json \-\-limit 10                      # First 10 issues as JSON
   bead list \-\-status open \-\-assignee alice        # Open issues assigned to alice
   bead list \-\-ready \-\-limit 5                      # Next 5 ready candidates
+  bead list \-\-blocked                               # Manually blocked open issues
   bead list \-\-comments unresolved \-\-json \-\-limit 20  # Issues with unresolved comments
 .PP
 FILTERS:
   \-\-status VALUE    Filter by base status: open, in_progress, deferred, closed
+                    (Special case: \*(Aqblocked\*(Aq is an alias for \-\-blocked)
   \-\-assignee NAME   Filter by assignee (exact match)
   \-\-ready           Show only ready frontier issues (open, unassigned, not blocked)
+  \-\-blocked         Show only manually blocked open issues
   \-\-limit N         Maximum results (0\-999999, default: 100)
 .PP
 COMMENT PROJECTION:
@@ -33,8 +36,8 @@ COMMENT PROJECTION:
 OUTPUT:
   Without \-\-json: human\-readable table format
   With \-\-json: one compact JSON object per line (compact JSONL format)
-  JSON output includes: id, title, priority, status, assignee, dependencies,
-  created_at, updated_at, and labels based on comment projection.
+  JSON output includes: id, title, priority, status, manual_blocked, effective_status,
+  assignee, dependencies, created_at, updated_at, and labels based on comment projection.
 .SH OPTIONS
 .TP
 \fB\-\-json\fR
@@ -49,11 +52,17 @@ Filter by assignee
 \fB\-\-ready\fR
 Show only ready frontier issues
 .TP
+\fB\-\-blocked\fR
+Show only manually blocked open issues
+.TP
 \fB\-\-comments\fR \fI<COMMENTS>\fR [default: none]
 Comment projection: none, unresolved, or all (default: none)
 .TP
 \fB\-\-limit\fR \fI<LIMIT>\fR [default: 100]
 Maximum number of issues to return (0\-999999)
+.TP
+\fB\-\-verbose\fR
+Show diagnostic information about filtering (SQL query, counts, exclusion reasons)
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

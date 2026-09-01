@@ -20,6 +20,15 @@ struct Descriptor {
 
 const DESCRIPTORS: &[Descriptor] = &[
     Descriptor {
+        schema_ref: "urn:bead-rs:schema:attempt-outcome:native-v1",
+        document_kind: "attempt_outcome",
+        readable: true,
+        writable: true,
+        validate: true,
+        consume: &[],
+        emit: &["checkpoint-set-v1"],
+    },
+    Descriptor {
         schema_ref: "urn:bead-rs:schema:capabilities:native-v1",
         document_kind: "capabilities",
         readable: true,
@@ -81,6 +90,24 @@ const DESCRIPTORS: &[Descriptor] = &[
         validate: true,
         consume: &["checkpoint-set-v1"],
         emit: &["checkpoint-set-v1"],
+    },
+    Descriptor {
+        schema_ref: "urn:bead-rs:schema:resolve-receipt:native-v1",
+        document_kind: "resolve_receipt",
+        readable: true,
+        writable: true,
+        validate: true,
+        consume: &[],
+        emit: &["resolve"],
+    },
+    Descriptor {
+        schema_ref: "urn:bead-rs:schema:resolve-request:native-v1",
+        document_kind: "resolve_request",
+        readable: true,
+        writable: true,
+        validate: true,
+        consume: &["resolve"],
+        emit: &[],
     },
 ];
 
@@ -191,6 +218,49 @@ fn names(kind: &str) -> &'static [&'static str] {
             // Additive R026 handshake (plan section 11): optional because it
             // is absent until the compiled automatic-flush default flips on
             "auto_flush",
+        ],
+        "attempt_outcome" => &[
+            "$schema",
+            "attempt_id",
+            "issue_id",
+            "outcome",
+            "action",
+            "reason",
+            "canonical_request_hash",
+            "resulting_issue_revision",
+            "resulting_attempt_tier",
+            "receipt_id",
+            "actor",
+            "created_at",
+            "evidence_refs",
+            "model",
+            "harness",
+            "harness_version",
+        ],
+        "resolve_receipt" => &[
+            "receipt_id",
+            "canonical_request_hash",
+            "issue_id",
+            "attempt_id",
+            "resulting_issue_revision",
+            "resulting_state",
+            "resulting_attempt_tier",
+            "created_at",
+            "is_replay",
+        ],
+        "resolve_request" => &[
+            "attempt_id",
+            "issue_id",
+            "outcome",
+            "action",
+            "reason",
+            "if_revision",
+            "fencing_token",
+            "evidence_refs",
+            "actor",
+            "model",
+            "harness",
+            "harness_version",
         ],
         "checkpoint_pointer" => &[
             "schema_version",
@@ -315,6 +385,42 @@ fn property_schema(kind: &str, name: &str) -> Value {
         | ("capabilities", "commands") => json!({"type":"array"}),
         ("capabilities", "priorities") => json!({"type":"object"}),
         ("field_guide", "guide_version") => json!({"const":1}),
+        ("attempt_outcome", "attempt_id") => json!({"type":"string", "minLength":1, "maxLength":255}),
+        ("attempt_outcome", "issue_id") => json!({"type":"string", "minLength":1, "maxLength":255}),
+        ("attempt_outcome", "outcome") => json!({"type":"string", "enum":["verified_success","work_failure","infrastructure_failure","cancelled","indeterminate"]}),
+        ("attempt_outcome", "action") => json!({"type":"string", "enum":["close","release","quarantine","block","none"]}),
+        ("attempt_outcome", "reason") => json!({"type":["string","null"], "maxLength":4194304}),
+        ("attempt_outcome", "canonical_request_hash") => json!({"type":"string", "minLength":64, "maxLength":64}),
+        ("attempt_outcome", "resulting_issue_revision") => json!({"type":"integer", "minimum":1}),
+        ("attempt_outcome", "resulting_attempt_tier") => json!({"type":"integer", "minimum":0, "maximum":3}),
+        ("attempt_outcome", "receipt_id") => json!({"type":"string", "minLength":1}),
+        ("attempt_outcome", "actor") => json!({"type":"string", "minLength":1, "maxLength":255}),
+        ("attempt_outcome", "created_at") => timestamp(),
+        ("attempt_outcome", "evidence_refs") => json!({"type":"array", "items":{"type":"string"}}),
+        ("attempt_outcome", "model")
+        | ("attempt_outcome", "harness")
+        | ("attempt_outcome", "harness_version") => json!({"type":["string","null"]}),
+        ("resolve_receipt", "receipt_id") => json!({"type":"string", "minLength":1}),
+        ("resolve_receipt", "canonical_request_hash") => json!({"type":"string", "minLength":64, "maxLength":64}),
+        ("resolve_receipt", "issue_id") => json!({"type":"string", "minLength":1, "maxLength":255}),
+        ("resolve_receipt", "attempt_id") => json!({"type":"string", "minLength":1, "maxLength":255}),
+        ("resolve_receipt", "resulting_issue_revision") => json!({"type":"integer", "minimum":1}),
+        ("resolve_receipt", "resulting_state") => json!({"type":"string"}),
+        ("resolve_receipt", "resulting_attempt_tier") => json!({"type":"integer", "minimum":0, "maximum":3}),
+        ("resolve_receipt", "created_at") => timestamp(),
+        ("resolve_receipt", "is_replay") => json!({"type":"boolean"}),
+        ("resolve_request", "attempt_id") => json!({"type":"string", "minLength":1, "maxLength":255}),
+        ("resolve_request", "issue_id") => json!({"type":"string", "minLength":1, "maxLength":255}),
+        ("resolve_request", "outcome") => json!({"type":"string", "enum":["verified_success","work_failure","infrastructure_failure","cancelled","indeterminate"]}),
+        ("resolve_request", "action") => json!({"type":["string","null"], "enum":["close","release","quarantine","block","none"]}),
+        ("resolve_request", "reason") => json!({"type":["string","null"], "maxLength":4194304}),
+        ("resolve_request", "if_revision") => json!({"type":["integer","null"], "minimum":1}),
+        ("resolve_request", "fencing_token") => json!({"type":["string","null"]}),
+        ("resolve_request", "evidence_refs") => json!({"type":"array", "items":{"type":"string"}}),
+        ("resolve_request", "actor") => json!({"type":"string", "minLength":1, "maxLength":255}),
+        ("resolve_request", "model")
+        | ("resolve_request", "harness")
+        | ("resolve_request", "harness_version") => json!({"type":["string","null"]}),
         ("field_guide", "describes_schema_refs")
         | ("field_guide", "documents")
         | ("field_guide", "fields")
@@ -358,6 +464,9 @@ fn required_for(kind: &str) -> Vec<String> {
         // document without it validates; present-when-enabled documents
         // validate against the same additive identity (plan section 11)
         "capabilities" => &["auto_flush"],
+        "attempt_outcome" => &["reason", "model", "harness", "harness_version"],
+        "resolve_receipt" => &[],
+        "resolve_request" => &["action", "reason", "if_revision", "fencing_token", "evidence_refs", "model", "harness", "harness_version"],
         _ => &[],
     };
     names(kind)

@@ -61,9 +61,17 @@ impl SqliteStore {
     }
 
     /// Create a new SQLite store with a database path
+    ///
+    /// Applies any pending schema migrations before returning the store.
+    /// This ensures that workspaces created under an older schema advance
+    /// when opened by a newer binary.
     #[allow(dead_code)]
     pub fn with_path(path: &Path) -> Result<Self> {
         let conn = open_configured_connection(path)?;
+        // Apply migrations if needed behind a read-only precheck.
+        // The common path (already current) stays a pure read.
+        migrations::migrate_if_pending(&conn)
+            .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to apply migrations: {}", e)))?;
         Ok(Self { conn: Some(conn) })
     }
 

@@ -2,20 +2,22 @@
 //!
 //! This module provides the watchdog functionality that:
 //! - Scans for in_progress beads exceeding a time threshold
-//! - Checks if the assigning worker process is still alive
-//! - Automatically releases beads from dead workers
+//! - Uses store-native lease expiry detection (R002 fencing), not process-name search
+//! - Automatically releases beads with expired leases
 //! - Logs all actions to .beads/watchdog-releases.jsonl
+//!
+//! The watchdog does NOT use process-name search heuristics. Detection is based
+//! exclusively on lease expiry for leased claims, and time-based threshold for
+//! non-leased claims (recommendation-only).
 
 use crate::error::{Error, Result};
 use crate::model::BaseStatus;
-use crate::service::lifecycle::release_issue;
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::Command;
 
 /// Watchdog configuration
 #[derive(Debug, Clone)]
@@ -37,8 +39,8 @@ pub struct WatchdogResult {
     pub stale_beads: Vec<StaleBead>,
     /// Beads that were auto-released
     pub released_beads: Vec<ReleasedBead>,
-    /// Beads where worker is alive but no progress
-    pub alive_but_stale: Vec<StaleBead>,
+    /// Beads where lease is still valid but no progress (recommendation-only)
+    pub lease_valid_but_stale: Vec<StaleBead>,
 }
 
 /// A stale bead (old claim)
@@ -72,43 +74,73 @@ pub struct ReleasedBead {
 /// Parse a duration string (e.g., "4h", "2h30m", "8h")
 fn parse_duration(s: &str) -> Result<Duration> {
     let s = s.trim().to_lowercase();
-    
+
     // Parse hours (e.g., "4h", "4")
     if s.ends_with('h') {
-        let hours: i64 = s[..s.len()-1].parse()
+        let hours: i64 = s[..s.len() - 1]
+            .parse()
             .map_err(|_| Error::validation(format!("Invalid duration: {s}")))?;
         return Ok(Duration::hours(hours));
     }
-    
+
     // Parse minutes (e.g., "120m")
     if s.ends_with('m') && !s.ends_with("ms") {
-        let minutes: i64 = s[..s.len()-1].parse()
+        let minutes: i64 = s[..s.len() - 1]
+            .parse()
             .map_err(|_| Error::validation(format!("Invalid duration: {s}")))?;
         return Ok(Duration::minutes(minutes));
     }
-    
+
     // Try as raw number (assume hours)
-    let hours: i64 = s.parse()
-        .map_err(|_| Error::validation(format!("Invalid duration: {s} (use format like '4h' or '240m')")))?;
+    let hours: i64 = s.parse().map_err(|_| {
+        Error::validation(format!(
+            "Invalid duration: {s} (use format like '4h' or '240m')"
+        ))
+    })?;
     Ok(Duration::hours(hours))
 }
 
-/// Check if a process with the given name/pattern is running
-fn is_worker_alive(assignee: &str) -> bool {
-    // Use pgrep to search for processes matching the assignee name
-    // This searches the full command line, not just the process name
-    let output = Command::new("pgrep")
-        .arg("-f")
-        .arg(assignee)
-        .output();
-    
-    match output {
-        Ok(output) => output.status.success(),
-        Err(_) => {
-            // If pgrep fails, conservatively assume worker is alive
-            true
-        }
+/// Check if a claim has an expired lease (R002 store-native fencing)
+///
+/// This replaces the heuristic process-name search with store-native lease expiry:
+/// - For leased claims: lease expiry is authoritative, no process search needed
+/// - For non-leased claims: returns false (no fence to enforce)
+///
+/// The watchdog now only detects stale claims by their lease state, not by
+/// searching the process table for matching names.
+fn claim_has_expired_lease(conn: &Connection, issue_id: &str, assignee: &str) -> bool {
+    use rusqlite::params;
+
+    // Check if this issue has any lease rows at all
+    let has_lease_row: i64 = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM leases WHERE issue_id = ?1)",
+            params![issue_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    if has_lease_row == 0 {
+        // Non-leased claims have no lease-based fence to enforce
+        return false;
     }
+
+    // For leased claims, check if a valid active lease exists for this assignee
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+
+    conn.query_row(
+        "SELECT EXISTS(
+                 SELECT 1
+                 FROM leases
+                 WHERE issue_id = ?1
+                   AND assignee = ?2
+                   AND expires_at > ?3
+             )",
+        params![issue_id, assignee, now],
+        |row| row.get::<_, i64>(0),
+    )
+    .unwrap_or(0)
+        == 0
 }
 
 /// Log a watchdog action to the releases log
@@ -133,12 +165,11 @@ fn get_in_progress_beads(conn: &Connection) -> Result<Vec<IssueRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, title, assignee, updated_at, base_status
          FROM issues
-         WHERE base_status = ?"
+         WHERE base_status = ?",
     )?;
-    
-    let issues = stmt.query_map(
-        [BaseStatus::InProgress.to_string()],
-        |row| {
+
+    let issues = stmt
+        .query_map([BaseStatus::InProgress.to_string()], |row| {
             Ok(IssueRow {
                 id: row.get(0)?,
                 title: row.get(1)?,
@@ -146,11 +177,10 @@ fn get_in_progress_beads(conn: &Connection) -> Result<Vec<IssueRow>> {
                 updated_at: row.get(3)?,
                 base_status: row.get(4)?,
             })
-        }
-    )?
-    .collect::<std::result::Result<Vec<_>, _>>()
-    .map_err(|e| Error::integrity(format!("Failed to fetch issues: {e}")))?;
-    
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| Error::integrity(format!("Failed to fetch issues: {e}")))?;
+
     Ok(issues)
 }
 
@@ -165,36 +195,35 @@ struct IssueRow {
 }
 
 /// Run watchdog scan
-pub fn run_watchdog(
-    conn: &Connection,
-    config: WatchdogConfig,
-) -> Result<WatchdogResult> {
+pub fn run_watchdog(conn: &Connection, config: WatchdogConfig) -> Result<WatchdogResult> {
     let in_progress = get_in_progress_beads(conn)?;
     let mut result = WatchdogResult {
         total_scanned: in_progress.len(),
         stale_beads: vec![],
         released_beads: vec![],
-        alive_but_stale: vec![],
+        lease_valid_but_stale: vec![],
     };
-    
+
     let now = Utc::now();
     let threshold = config.threshold;
-    
+
     for issue in in_progress {
         let assignee = match &issue.assignee {
             Some(a) => a.clone(),
             None => continue, // Skip unassigned in_progress beads (shouldn't happen)
         };
-        
+
         // Parse updated_at timestamp
-        let updated_at: DateTime<Utc> = issue.updated_at
+        let updated_at: DateTime<Utc> = issue
+            .updated_at
             .parse()
             .map_err(|e| Error::integrity(format!("Invalid updated_at for {}: {}", issue.id, e)))?;
-        
+
         let time_since_update = now.signed_duration_since(updated_at);
-        let hours_since_update = time_since_update.num_milliseconds() as f64 / (1000.0 * 60.0 * 60.0);
-        
-        // Check if bead is stale
+        let hours_since_update =
+            time_since_update.num_milliseconds() as f64 / (1000.0 * 60.0 * 60.0);
+
+        // Check if bead is stale by threshold
         if time_since_update > threshold {
             let stale_bead = StaleBead {
                 id: issue.id.clone(),
@@ -203,25 +232,25 @@ pub fn run_watchdog(
                 updated_at: issue.updated_at.clone(),
             };
             result.stale_beads.push(stale_bead.clone());
-            
-            // Check if worker is alive
-            let worker_alive = is_worker_alive(&assignee);
 
-            if !worker_alive || config.force {
-                // Worker is dead or force mode - release the bead
+            // Check if the claim has an expired lease (store-native fencing)
+            let lease_expired = claim_has_expired_lease(conn, &issue.id, &assignee);
+
+            if lease_expired || config.force {
+                // Lease expired or force mode - release the bead
                 if !config.force {
                     // Release only if not in dry-run mode
-                    match release_issue(conn, &issue.id, None, None) {
+                    match crate::service::lifecycle::release_issue(conn, &issue.id, None, None) {
                         Ok(_) => {
                             let released = ReleasedBead {
                                 id: issue.id.clone(),
                                 assignee: assignee.clone(),
                                 hours_since_update,
                                 released_at: now.to_rfc3339(),
-                                reason: if worker_alive {
-                                    "Force release (--force) with worker alive".to_string()
+                                reason: if lease_expired {
+                                    format!("Lease expired for assignee '{}'", assignee)
                                 } else {
-                                    format!("Worker '{}' not found in process table", assignee)
+                                    "Force release (--force)".to_string()
                                 },
                             };
 
@@ -244,12 +273,12 @@ pub fn run_watchdog(
                     result.released_beads.push(released);
                 }
             } else {
-                // Worker is alive but bead is stale
-                result.alive_but_stale.push(stale_bead);
+                // Lease is still valid but bead is stale (recommendation-only)
+                result.lease_valid_but_stale.push(stale_bead);
             }
         }
     }
-    
+
     Ok(result)
 }
 
@@ -260,8 +289,10 @@ pub fn config_from_options(
     workspace_root: &PathBuf,
 ) -> Result<WatchdogConfig> {
     let threshold = parse_duration(threshold_str)?;
-    let log_path = workspace_root.join(".beads").join("watchdog-releases.jsonl");
-    
+    let log_path = workspace_root
+        .join(".beads")
+        .join("watchdog-releases.jsonl");
+
     Ok(WatchdogConfig {
         threshold,
         force,

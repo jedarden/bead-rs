@@ -4,7 +4,7 @@
 .SH NAME
 bead doctor \- Diagnose workspace integrity and optionally perform repairs
 .SH SYNOPSIS
-\fBbead doctor\fR [\fB\-\-repair\fR] [\fB\-\-rehearse\fR] [\fB\-\-scope\fR] [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBbead doctor\fR [\fB\-\-repair\fR] [\fB\-\-rehearse\fR] [\fB\-\-starvation\-check\fR] [\fB\-\-starvation\-recovery\fR] [\fB\-\-force\fR] [\fB\-\-scope\fR] [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] 
 .SH DESCRIPTION
 Perform read\-only integrity checks on the workspace.
 .PP
@@ -12,11 +12,15 @@ Doctor validates workspace configuration, database integrity, checkpoint
 state, and filesystem without modifying data. With \-\-repair, performs
 safe automatic repairs for diagnosed issues. With \-\-rehearse, performs
 a disposable recovery rehearsal to verify disaster recovery procedures.
+With \-\-starvation\-recovery, automatically diagnoses and repairs common
+starvation causes that prevent workers from claiming beads.
 .PP
 EXAMPLES:
   bead doctor                           # Read\-only diagnostics
   bead doctor \-\-repair                  # Diagnose and attempt repairs
   bead doctor \-\-rehearse                # Test disaster recovery with temporary workspace
+  bead doctor \-\-starvation\-recovery     # Diagnose and repair starvation issues
+  bead doctor \-\-starvation\-check        # Diagnose starvation issues without repair
 .PP
 CHECKS PERFORMED:
   \- Workspace configuration and permissions
@@ -42,6 +46,20 @@ RECOVERY REHEARSAL (with \-\-rehearse):
   \- Generate comprehensive report with comparison results
   \- Clean up only operation\-owned temporary files
 .PP
+STARVATION RECOVERY (with \-\-starvation\-recovery):
+  \- Run SQLite integrity checks on beads.db
+  \- Verify checkpoint/current.json matches database state
+  \- Identify and fix beads with inconsistent status (e.g., assigned\-but\-open)
+  \- Reset stale_since timestamps on beads that appear stuck
+  \- Clear stale assignees from open beads
+  \- Release stale in\-progress claims
+  \- Log all repairs to .beads/doctor\-recovery.log for audit
+.PP
+STARVATION CHECK (with \-\-starvation\-check):
+  \- Diagnose beads that are open but not appearing in the ready frontier
+  \- Identify reasons for exclusion (assignees, manual blocks, dependencies, conflicts)
+  \- Generate detailed report without performing repairs
+.PP
 DOCTOR OUTPUT:
   OK  \- Check passed
   WARN \- Non\-critical issue detected
@@ -62,6 +80,15 @@ Attempt automatic repairs
 .TP
 \fB\-\-rehearse\fR
 Run disposable recovery rehearsal: create temp workspace, run diagnostics, re\-export, compare semantic equivalence
+.TP
+\fB\-\-starvation\-check\fR
+Run starvation check: diagnose beads that are open but not appearing in the ready frontier
+.TP
+\fB\-\-starvation\-recovery\fR
+Run starvation recovery: automatically diagnose and repair common starvation causes
+.TP
+\fB\-\-force\fR
+Force mutations during starvation recovery (default: recommendation\-only)
 .TP
 \fB\-\-scope\fR \fI<SCOPE>\fR
 Diagnostic scopes: store, backup, schema, dependencies, comments, all (default: all)

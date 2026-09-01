@@ -55,6 +55,9 @@ pub struct WhyExplanation {
     /// Claim ranking factors (why this issue ranks where it does)
     pub ranking_factors: RankingFactors,
 
+    /// Attempt outcome history and analysis
+    pub attempt_info: Option<AttemptInfo>,
+
     /// Legal next operations for this issue
     pub legal_operations: Vec<LegalOperation>,
 
@@ -157,6 +160,72 @@ pub struct LegalOperation {
     pub command_example: Option<String>,
 }
 
+/// Attempt outcome information for an issue
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttemptInfo {
+    /// Current attempt tier (0-3)
+    pub current_tier: i64,
+
+    /// Consecutive failures count
+    pub consecutive_failures: i64,
+
+    /// Human-readable tier description
+    pub tier_description: String,
+
+    /// Most recent attempt outcome (if any)
+    pub last_attempt: Option<LastAttemptOutcome>,
+
+    /// Attempt history (most recent first, max 10)
+    pub attempt_history: Vec<AttemptHistoryEntry>,
+}
+
+/// Last attempt outcome summary
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LastAttemptOutcome {
+    /// Attempt ID
+    pub attempt_id: String,
+
+    /// Outcome classification
+    pub outcome: String,
+
+    /// Lifecycle action applied
+    pub action: String,
+
+    /// Human-readable reason
+    pub reason: Option<String>,
+
+    /// When the attempt was resolved
+    pub created_at: String,
+
+    /// Receipt ID for traceability
+    pub receipt_id: String,
+
+    /// Actor who performed the resolution
+    pub actor: String,
+}
+
+/// Attempt history entry
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttemptHistoryEntry {
+    /// Attempt ID
+    pub attempt_id: String,
+
+    /// Outcome classification
+    pub outcome: String,
+
+    /// Issue revision after this outcome
+    pub resulting_revision: i64,
+
+    /// Attempt tier after this outcome
+    pub resulting_tier: i64,
+
+    /// When the attempt was resolved
+    pub created_at: String,
+
+    /// Receipt ID for traceability
+    pub receipt_id: String,
+}
+
 /// Generate comprehensive why explanation for an issue
 pub fn explain_why(conn: &Connection, issue_id: &str) -> Result<WhyExplanation> {
     // Get issue state
@@ -170,6 +239,9 @@ pub fn explain_why(conn: &Connection, issue_id: &str) -> Result<WhyExplanation> 
 
     // Get ranking factors
     let ranking_factors = get_ranking_factors(conn, issue_id)?;
+
+    // Get attempt information (may not exist in legacy workspaces)
+    let attempt_info = get_attempt_info(conn, issue_id)?;
 
     // Determine legal operations
     let legal_operations = get_legal_operations(&issue, &blockers, &ranking_factors);
@@ -191,6 +263,7 @@ pub fn explain_why(conn: &Connection, issue_id: &str) -> Result<WhyExplanation> 
         closed_at: issue.closed_at,
         blockers,
         ranking_factors,
+        attempt_info,
         legal_operations,
         reasons,
     })
@@ -618,4 +691,116 @@ fn get_dependencies(
     }
 
     Ok(dependencies)
+}
+
+/// Get attempt information for an issue
+///
+/// Returns None if attempt_outcomes table doesn't exist (legacy workspace)
+/// or if the issue has no attempt history.
+fn get_attempt_info(conn: &Connection, issue_id: &str) -> Result<Option<AttemptInfo>> {
+    // Check if attempt_outcomes table exists
+    let table_exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='attempt_outcomes'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    if table_exists == 0 {
+        return Ok(None);
+    }
+
+    // Get current attempt tier and consecutive failures from issues table
+    let (current_tier, consecutive_failures): (i64, i64) = conn
+        .query_row(
+            "SELECT attempt_tier, consecutive_failures FROM issues WHERE id = ?1",
+            [issue_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+        .unwrap_or((0, 0));
+
+    // Get human-readable tier description
+    let tier_description = match current_tier {
+        0 => "Normal (no failures)",
+        1 => "Retryable (1 failure, next attempt gets priority bump)",
+        2 => "Struggling (2 failures, needs careful attention)",
+        3 => "Quarantined (3+ failures, requires manual intervention)",
+        _ => "Unknown tier",
+    };
+
+    // Get most recent attempt outcome
+    let last_attempt = get_last_attempt_outcome(conn, issue_id)?;
+
+    // Get attempt history (most recent 10)
+    let attempt_history = get_attempt_history(conn, issue_id)?;
+
+    if last_attempt.is_none() && attempt_history.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(AttemptInfo {
+        current_tier,
+        consecutive_failures,
+        tier_description: tier_description.to_string(),
+        last_attempt,
+        attempt_history,
+    }))
+}
+
+/// Get the most recent attempt outcome for an issue
+fn get_last_attempt_outcome(
+    conn: &Connection,
+    issue_id: &str,
+) -> Result<Option<LastAttemptOutcome>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT attempt_id, outcome, action, reason, created_at, receipt_id, actor
+         FROM attempt_outcomes
+         WHERE issue_id = ?1
+         ORDER BY created_at DESC
+         LIMIT 1",
+    )?;
+
+    let result = stmt
+        .query_row([issue_id], |row| {
+            Ok(LastAttemptOutcome {
+                attempt_id: row.get(0)?,
+                outcome: row.get(1)?,
+                action: row.get(2)?,
+                reason: row.get(3)?,
+                created_at: row.get(4)?,
+                receipt_id: row.get(5)?,
+                actor: row.get(6)?,
+            })
+        })
+        .optional()?;
+
+    Ok(result)
+}
+
+/// Get attempt history for an issue (most recent 10)
+fn get_attempt_history(conn: &Connection, issue_id: &str) -> Result<Vec<AttemptHistoryEntry>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT attempt_id, outcome, resulting_issue_revision, resulting_attempt_tier, created_at, receipt_id
+         FROM attempt_outcomes
+         WHERE issue_id = ?1
+         ORDER BY created_at DESC
+         LIMIT 10",
+    )?;
+
+    let entries = stmt
+        .query_map([issue_id], |row| {
+            Ok(AttemptHistoryEntry {
+                attempt_id: row.get(0)?,
+                outcome: row.get(1)?,
+                resulting_revision: row.get(2)?,
+                resulting_tier: row.get(3)?,
+                created_at: row.get(4)?,
+                receipt_id: row.get(5)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+    Ok(entries)
 }

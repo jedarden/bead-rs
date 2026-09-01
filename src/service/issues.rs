@@ -318,7 +318,15 @@ fn detect_starvation_candidates(conn: &Connection) -> Result<Option<Vec<Starvati
     )?;
 
     let fallback_candidates: Vec<(String, String, i64, Option<String>, Option<bool>)> = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))?
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })?
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(|e| {
             Error::Internal(anyhow::anyhow!(
@@ -362,7 +370,7 @@ fn detect_starvation_candidates(conn: &Connection) -> Result<Option<Vec<Starvati
                          AND active_lease.fencing_token = held_lock.lease_fencing_token
                          AND active_lease.expires_at > ?2
                    ))",
-                [&bead_id, &now_string],
+                [bead_id, &now_string],
                 |row| row.get(0),
             )
             .unwrap_or(0);
@@ -384,7 +392,10 @@ fn detect_starvation_candidates(conn: &Connection) -> Result<Option<Vec<Starvati
 }
 
 /// Log fallback activation to diagnostics file
-fn log_fallback_activation(bead_ids: &[String], diagnostics: &[StarvationDiagnostic]) -> Result<()> {
+fn log_fallback_activation(
+    bead_ids: &[String],
+    diagnostics: &[StarvationDiagnostic],
+) -> Result<()> {
     use std::fs::OpenOptions;
     use std::io::Write;
 
@@ -423,26 +434,52 @@ fn log_fallback_activation(bead_ids: &[String], diagnostics: &[StarvationDiagnos
     // Log detailed diagnostics for each bead
     for diag in diagnostics {
         let reasons = vec![
-            if diag.assignee.is_some() { Some(format!("assignee: {}", diag.assignee.as_ref().unwrap())) } else { None },
-            if diag.has_blockers { Some(format!("{} unclosed blockers", diag.blocker_count)) } else { None },
-            if diag.has_resource_conflicts { Some(format!("{} resource conflicts", diag.conflict_count)) } else { None },
-        ].into_iter().filter_map(|x| x).collect::<Vec<_>>().join(", ");
+            if diag.assignee.is_some() {
+                Some(format!("assignee: {}", diag.assignee.as_ref().unwrap()))
+            } else {
+                None
+            },
+            if diag.has_blockers {
+                Some(format!("{} unclosed blockers", diag.blocker_count))
+            } else {
+                None
+            },
+            if diag.has_resource_conflicts {
+                Some(format!("{} resource conflicts", diag.conflict_count))
+            } else {
+                None
+            },
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(", ");
 
         let detail_entry = format!(
             "  - {} [{}] priority={} | {}\n",
-            diag.bead_id, diag.title, diag.priority,
-            if reasons.is_empty() { "no apparent blockers".to_string() } else { format!("excluded: {}", reasons) }
+            diag.bead_id,
+            diag.title,
+            diag.priority,
+            if reasons.is_empty() {
+                "no apparent blockers".to_string()
+            } else {
+                format!("excluded: {}", reasons)
+            }
         );
 
-        file.write_all(detail_entry.as_bytes())
-            .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to write diagnostic details: {}", e)))?;
+        file.write_all(detail_entry.as_bytes()).map_err(|e| {
+            Error::Internal(anyhow::anyhow!("Failed to write diagnostic details: {}", e))
+        })?;
     }
 
     Ok(())
 }
 
 /// Log starvation diagnostic to a specific path (recommendation-only)
-fn log_starvation_diagnostic_to_path(diagnostics: &[StarvationDiagnostic], log_path: &std::path::Path) -> Result<()> {
+fn log_starvation_diagnostic_to_path(
+    diagnostics: &[StarvationDiagnostic],
+    log_path: &std::path::Path,
+) -> Result<()> {
     use std::fs::OpenOptions;
     use std::io::Write;
 
@@ -461,7 +498,12 @@ fn log_starvation_diagnostic_to_path(diagnostics: &[StarvationDiagnostic], log_p
         .create(true)
         .append(true)
         .open(log_path)
-        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open starvation diagnostic log: {}", e)))?;
+        .map_err(|e| {
+            Error::Internal(anyhow::anyhow!(
+                "Failed to open starvation diagnostic log: {}",
+                e
+            ))
+        })?;
 
     let timestamp = time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
@@ -474,26 +516,53 @@ fn log_starvation_diagnostic_to_path(diagnostics: &[StarvationDiagnostic], log_p
         diagnostics.len()
     );
 
-    file.write_all(log_entry.as_bytes())
-        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to write to starvation diagnostic log: {}", e)))?;
+    file.write_all(log_entry.as_bytes()).map_err(|e| {
+        Error::Internal(anyhow::anyhow!(
+            "Failed to write to starvation diagnostic log: {}",
+            e
+        ))
+    })?;
 
     // Log detailed diagnostics for each bead
     for diag in diagnostics {
         let reasons = vec![
-            if diag.assignee.is_some() { Some(format!("assignee: {}", diag.assignee.as_ref().unwrap())) } else { None },
-            if diag.has_blockers { Some(format!("{} unclosed blockers", diag.blocker_count)) } else { None },
-            if diag.has_resource_conflicts { Some(format!("{} resource conflicts", diag.conflict_count)) } else { None },
-        ].into_iter().filter_map(|x| x).collect::<Vec<_>>().join(", ");
+            if diag.assignee.is_some() {
+                Some(format!("assignee: {}", diag.assignee.as_ref().unwrap()))
+            } else {
+                None
+            },
+            if diag.has_blockers {
+                Some(format!("{} unclosed blockers", diag.blocker_count))
+            } else {
+                None
+            },
+            if diag.has_resource_conflicts {
+                Some(format!("{} resource conflicts", diag.conflict_count))
+            } else {
+                None
+            },
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(", ");
 
         let detail_entry = format!(
             "  - {} [{}] priority={} | {} | remedy: bead update {} --clear-assignee\n",
-            diag.bead_id, diag.title, diag.priority,
-            if reasons.is_empty() { "no apparent blockers".to_string() } else { format!("excluded: {}", reasons) },
+            diag.bead_id,
+            diag.title,
+            diag.priority,
+            if reasons.is_empty() {
+                "no apparent blockers".to_string()
+            } else {
+                format!("excluded: {}", reasons)
+            },
             diag.bead_id
         );
 
-        file.write_all(detail_entry.as_bytes())
-            .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to write diagnostic details: {}", e)))?;
+        file.write_all(detail_entry.as_bytes()).map_err(|e| {
+            Error::Internal(anyhow::anyhow!("Failed to write diagnostic details: {}", e))
+        })?;
     }
 
     Ok(())
@@ -622,9 +691,11 @@ fn write_pluck_diagnostics(
 
     // Get total open beads
     let total_open: i64 = conn
-        .query_row("SELECT COUNT(*) FROM issues WHERE base_status = 'open'", [], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT COUNT(*) FROM issues WHERE base_status = 'open'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap_or(0);
 
     // Count beads excluded by each criterion
@@ -787,10 +858,9 @@ fn write_pluck_diagnostics(
             })?;
 
             let log_path = diagnostics_dir.join("pluck-diagnostics.json");
-            let json_output =
-                serde_json::to_string_pretty(&diagnostics).map_err(|e| {
-                    Error::Internal(anyhow::anyhow!("Failed to serialize diagnostics: {}", e))
-                })?;
+            let json_output = serde_json::to_string_pretty(&diagnostics).map_err(|e| {
+                Error::Internal(anyhow::anyhow!("Failed to serialize diagnostics: {}", e))
+            })?;
 
             let mut file = OpenOptions::new()
                 .create(true)
@@ -798,19 +868,12 @@ fn write_pluck_diagnostics(
                 .truncate(true)
                 .open(&log_path)
                 .map_err(|e| {
-                    Error::Internal(anyhow::anyhow!(
-                        "Failed to open diagnostics file: {}",
-                        e
-                    ))
+                    Error::Internal(anyhow::anyhow!("Failed to open diagnostics file: {}", e))
                 })?;
 
-            file.write_all(json_output.as_bytes())
-                .map_err(|e| {
-                    Error::Internal(anyhow::anyhow!(
-                        "Failed to write diagnostics: {}",
-                        e
-                    ))
-                })?;
+            file.write_all(json_output.as_bytes()).map_err(|e| {
+                Error::Internal(anyhow::anyhow!("Failed to write diagnostics: {}", e))
+            })?;
 
             eprintln!("Structured diagnostics written to: {}", log_path.display());
         }
@@ -829,7 +892,8 @@ fn show_exclusion_reasons(conn: &Connection, limit: &i64) -> Result<()> {
          FROM issues
          WHERE base_status = 'open'
          ORDER BY priority ASC, created_at ASC, id ASC
-         LIMIT ?1")?;
+         LIMIT ?1",
+    )?;
 
     let beads: Vec<(String, String, i64, Option<String>, Option<bool>, String)> = stmt
         .query_map([limit], |row| {
@@ -882,7 +946,8 @@ fn show_exclusion_reasons(conn: &Connection, limit: &i64) -> Result<()> {
                 "SELECT blocker_issue_id FROM dependencies
                  WHERE blocked_issue_id = ?1 AND kind = 'blocks'
                  AND blocker_issue_id IN (SELECT id FROM issues WHERE base_status != 'closed')
-                 LIMIT 5")?;
+                 LIMIT 5",
+            )?;
 
             let blocker_ids: Vec<String> = blocker_stmt
                 .query_map([&id], |row| row.get(0))?
@@ -924,7 +989,10 @@ fn show_exclusion_reasons(conn: &Connection, limit: &i64) -> Result<()> {
             .unwrap_or(0);
 
         if has_conflicts > 0 {
-            reasons.push(format!("resource conflicts with {} other issue(s)", has_conflicts));
+            reasons.push(format!(
+                "resource conflicts with {} other issue(s)",
+                has_conflicts
+            ));
         }
 
         // Print result
@@ -954,9 +1022,11 @@ pub fn list_issues(
     // Log total open beads if verbose
     if verbose {
         let total_open: i64 = conn
-            .query_row("SELECT COUNT(*) FROM issues WHERE base_status = 'open'", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM issues WHERE base_status = 'open'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap_or(0);
 
         let total_with_assignee: i64 = conn
@@ -1133,14 +1203,18 @@ pub fn list_issues(
                 if let Some(db_path_str) = db_path {
                     let db_path = std::path::Path::new(&db_path_str);
                     if let Some(workspace_dir) = db_path.parent() {
-                        let log_path = workspace_dir.join("diagnostics/pluck-starvation-diagnostic.log");
+                        let log_path =
+                            workspace_dir.join("diagnostics/pluck-starvation-diagnostic.log");
                         log_starvation_diagnostic_to_path(&diagnostics, &log_path)?;
                     }
                 }
 
                 // Print enhanced diagnostic to stderr
                 eprintln!("=== Ready Frontier Starvation Detected ===");
-                eprintln!("Found {} open bead(s) with stale assignees", diagnostics.len());
+                eprintln!(
+                    "Found {} open bead(s) with stale assignees",
+                    diagnostics.len()
+                );
                 eprintln!("Recommendation: Use explicit recovery commands:");
                 eprintln!("  - 'bead watchdog --threshold 4h' to auto-release stale leased claims");
                 eprintln!("  - 'bead doctor --starvation-recovery' to diagnose and repair");
@@ -1381,14 +1455,18 @@ pub fn analyze_exclusion(
         // Check assignee
         if assignee.is_some() {
             reasons.push(format!("has assignee: {}", assignee.as_ref().unwrap()));
-            *exclusion_summary.entry("has assignee".to_string()).or_insert(0) += 1;
+            *exclusion_summary
+                .entry("has assignee".to_string())
+                .or_insert(0) += 1;
             is_ready = false;
         }
 
         // Check manual block
         if manual_blocked.unwrap_or(false) {
             reasons.push("manually blocked".to_string());
-            *exclusion_summary.entry("manually blocked".to_string()).or_insert(0) += 1;
+            *exclusion_summary
+                .entry("manually blocked".to_string())
+                .or_insert(0) += 1;
             is_ready = false;
         }
 
@@ -1430,7 +1508,9 @@ pub fn analyze_exclusion(
                     blocker_ids.join(", ")
                 ));
             }
-            *exclusion_summary.entry("has blocking dependencies".to_string()).or_insert(0) += 1;
+            *exclusion_summary
+                .entry("has blocking dependencies".to_string())
+                .or_insert(0) += 1;
             is_ready = false;
         }
 
@@ -1548,10 +1628,7 @@ pub fn add_comment(conn: &Connection, issue_id: &str, body: &str, actor: &str) -
         .unwrap_or(false);
 
     if !exists {
-        return Err(Error::not_found(&format!(
-            "Issue {} not found",
-            issue_id
-        )));
+        return Err(Error::not_found(format!("Issue {} not found", issue_id)));
     }
 
     // Generate a unique comment ID
