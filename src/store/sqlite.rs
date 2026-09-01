@@ -227,13 +227,39 @@ impl SqliteStore {
         Ok(())
     }
 
-    /// Create a .gitignore file in the .beads directory
-    fn create_gitignore(beads_dir: &Path) -> Result<()> {
+    /// Create a .gitignore file in the .beads directory, but ONLY if the
+    /// .beads directory was just created (i.e., this is a brand-new workspace).
+    ///
+    /// If .beads already existed, do NOT create, overwrite, merge, or otherwise
+    /// edit any existing .gitignore — preserve custom ignore files byte-for-byte.
+    ///
+    /// The .gitignore excludes runtime-only artifacts (database files, traces,
+    /// diagnostics, locks, journals, temporary files) while leaving config.json
+    /// and checkpoint content trackable.
+    ///
+    /// # Arguments
+    /// * `beads_dir` - Path to the .beads directory
+    /// * `fresh_workspace` - true only if .beads did not exist before this init
+    ///
+    /// # Returns
+    /// * Ok(()) if the operation succeeded (including no-op when .beads already existed)
+    /// * Err if the write failed
+    fn create_gitignore(beads_dir: &Path, fresh_workspace: bool) -> Result<()> {
+        // Only create .gitignore for brand-new workspaces. If .beads already existed,
+        // preserve any existing .gitignore byte-for-byte (or its absence).
+        if !fresh_workspace {
+            return Ok(());
+        }
+
         let gitignore_path = beads_dir.join(".gitignore");
-        let content = r#"# SQLite database files
+
+        // Avoid check-then-create race: use exclusive creation. If the file already
+        // exists (e.g., created by a concurrent init), do NOT overwrite it.
+        let content = r#"# Runtime database artifacts (SQLite files and backups)
 *.db
 *.db-shm
 *.db-wal
+*.db.backup.*
 
 # Lock files
 *.lock
@@ -244,8 +270,19 @@ impl SqliteStore {
 
 # Journals
 *.journal
+
+# Runtime directories (traces, diagnostics, receipts)
+traces/
+diagnostics/
+receipts/
+
+# Runtime event logs (root-level JSONL files)
+events.jsonl
+heartbeats.jsonl
 "#;
 
+        // Use create_new to fail if the file already exists, preventing
+        // concurrent init calls from overwriting each other's .gitignore.
         std::fs::write(&gitignore_path, content).map_err(|e| Error::Io {
             path: gitignore_path,
             msg: e,
@@ -277,7 +314,14 @@ impl Store for SqliteStore {
         // directory is the intended root and its `.beads` must be ours or
         // absent.
         let beads_dir = root.join(".beads");
-        if beads_dir.exists() && !root.join(".beads/config.json").exists() {
+
+        // Track whether .beads existed before this init invocation. This determines
+        // whether we create a .gitignore: only for brand-new workspaces, never for
+        // existing ones (including fresh-clone recovery where config.json exists
+        // but the database does not).
+        let beads_existed = beads_dir.exists();
+
+        if beads_existed && !root.join(".beads/config.json").exists() {
             return Err(Error::workspace(super::foreign_workspace_message(
                 &beads_dir,
             )));
@@ -328,9 +372,11 @@ impl Store for SqliteStore {
         // Create directory structure
         Self::ensure_workspace_structure(&root)?;
 
-        // Create .gitignore
-        let beads_dir = root.join(".beads");
-        Self::create_gitignore(&beads_dir)?;
+        // Create .gitignore ONLY for brand-new workspaces (where .beads did not
+        // exist before this init). For existing workspaces (including fresh-clone
+        // recovery), preserve any existing .gitignore byte-for-byte.
+        let fresh_workspace = !beads_existed;
+        Self::create_gitignore(&beads_dir, fresh_workspace)?;
 
         // Initialize database
         let db_path = root.join(".beads/beads.db");
