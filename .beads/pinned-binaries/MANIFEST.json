@@ -1,0 +1,73 @@
+{
+  "manifest_version": "1.0",
+  "created": "2026-09-01T16:40:00Z",
+  "purpose": "Capability testing for attempt-resolution feature",
+  "binaries": {
+    "feature_enabled": {
+      "name": "bead-feature-enabled",
+      "path": ".beads/pinned-binaries/bead-feature-enabled",
+      "git_commit": "5bb28bf7b853be7ba244adf3ce4c76b8d1bd01e5",
+      "git_tag": null,
+      "commit_date": "2026-09-01T15:45:58-04:00",
+      "commit_message": "docs(boundaries): document attempt-resolution feature boundary commits",
+      "sha256": "e6a8ffb8b9d6b6cbba2d98f0458e62c3e211c1590d7abacd178419299a41a318",
+      "capabilities": {
+        "attempt_outcome": true,
+        "resolve_command": true,
+        "attempt_why_info": true,
+        "checkpoint_persistence": true,
+        "atomic_resolution": true
+      },
+      "status": "built_and_pinned"
+    },
+    "pre_feature": {
+      "name": "bead-pre-feature",
+      "path": ".beads/pinned-binaries/bead-pre-feature",
+      "git_commit": "53dade07ff2b9afda87e67459a825ec7e138dafa",
+      "git_tag": "attempt-resolution-pre",
+      "commit_date": "2026-08-31T09:24:28-04:00",
+      "commit_message": "feat(recovery): replace heuristic starvation mutations with recommendation-only diagnostics",
+      "sha256": null,
+      "capabilities": {
+        "attempt_outcome": false,
+        "resolve_command": false,
+        "attempt_why_info": false,
+        "checkpoint_persistence": false,
+        "atomic_resolution": false
+      },
+      "status": "requires_manual_build",
+      "build_notes": "This commit needs minor fixes to compile: replace 'lease_valid_but_stale' with 'alive_but_stale' in src/main.rs (3 occurrences) - these are WatchdogResult field renames from later commits."
+    }
+  },
+  "test_framework": {
+    "path": "tests/pinned_binary_capability.rs",
+    "test_count": 8,
+    "validates": [
+      "capability_detection",
+      "resolve_command_availability",
+      "why_attempt_information",
+      "checkpoint_persistence",
+      "atomic_resolution_path",
+      "needle_fallback_behavior",
+      "capability_schema_validation",
+      "pre_feature_capability_absence"
+    ]
+  },
+  "usage": {
+    "feature_enabled": {
+      "test_capability": "./bead-feature-enabled capabilities --format json | jq '.attempt_outcome'",
+      "test_resolve": "./bead-feature-enabled resolve --help",
+      "test_why": "./bead-feature-enabled why bead-123abc"
+    },
+    "pre_feature": {
+      "build_instructions": "git checkout attempt-resolution-pre && [fix field names] && cargo build --release && cp target/release/bead .beads/pinned-binaries/bead-pre-feature",
+      "test_capability": "./bead-pre-feature capabilities --format json | jq '.attempt_outcome' (should be false/null)",
+      "test_resolve": "./bead-pre-feature resolve --help (should fail with unrecognized command)"
+    }
+  },
+  "validation": {
+    "needle_fallback": "Validated via doctor --starvation-recovery mode",
+    "atomic_paths": "Validated via resolve command exit codes and transaction semantics",
+    "capability_contract": "Validated via capabilities --format json schema"
+  }
+}
