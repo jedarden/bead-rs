@@ -88,15 +88,18 @@ fn test_fallback_activates_on_empty_ready_frontier_with_assigned_open_beads() {
         "Bead 1 should have an assignee before fallback"
     );
 
-    // Test: Query ready frontier - this should trigger fallback
+    // Test: Query ready frontier - this should trigger starvation detection (read-only)
     let ready_beads = issues::list_issues(&conn, None, None, true, false, 10, false).unwrap();
+
+    // Post-53dade0 behavior: NO automatic recovery, only diagnostic emission
+    // The ready frontier remains empty because assignees are NOT cleared
     assert_eq!(
         ready_beads.len(),
-        2,
-        "Ready frontier should have 2 beads after fallback"
+        0,
+        "Ready frontier should be empty (no automatic recovery)"
     );
 
-    // Verify fallback was triggered - check that assignees were cleared
+    // Verify assignees were NOT cleared (recommendation-only behavior)
     let bead1_assignee: Option<String> = conn
         .query_row(
             "SELECT assignee FROM issues WHERE id = 'test-bead-001'",
@@ -105,8 +108,8 @@ fn test_fallback_activates_on_empty_ready_frontier_with_assigned_open_beads() {
         )
         .unwrap();
     assert!(
-        bead1_assignee.is_none(),
-        "Bead 1 should have assignee cleared after fallback"
+        bead1_assignee.is_some(),
+        "Bead 1 should still have assignee (recommendation-only, no automatic clearing)"
     );
 
     let bead2_assignee: Option<String> = conn
@@ -117,46 +120,13 @@ fn test_fallback_activates_on_empty_ready_frontier_with_assigned_open_beads() {
         )
         .unwrap();
     assert!(
-        bead2_assignee.is_none(),
-        "Bead 2 should have assignee cleared after fallback"
+        bead2_assignee.is_some(),
+        "Bead 2 should still have assignee (recommendation-only, no automatic clearing)"
     );
 
-    // Verify beads are now in ready frontier
-    let ready_beads_after = issues::list_issues(&conn, None, None, true, false, 10, false).unwrap();
-    assert_eq!(
-        ready_beads_after.len(),
-        2,
-        "Ready frontier should have 2 beads after fallback"
-    );
-
-    // Verify beads are now in ready frontier and assignees are cleared
-    let bead1_assignee_after: Option<String> = conn
-        .query_row(
-            "SELECT assignee FROM issues WHERE id = 'test-bead-001'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert!(
-        bead1_assignee_after.is_none(),
-        "Bead 1 should have assignee cleared after fallback"
-    );
-
-    let bead2_assignee_after: Option<String> = conn
-        .query_row(
-            "SELECT assignee FROM issues WHERE id = 'test-bead-002'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert!(
-        bead2_assignee_after.is_none(),
-        "Bead 2 should have assignee cleared after fallback"
-    );
-
-    // Verify fallback log was created
-    let log_path = workspace_path.join(".beads/diagnostics/pluck-fallback.log");
-    assert!(log_path.exists(), "Fallback log should be created");
+    // Verify starvation diagnostic log was created (not fallback log)
+    let log_path = workspace_path.join(".beads/diagnostics/pluck-starvation-diagnostic.log");
+    assert!(log_path.exists(), "Starvation diagnostic log should be created");
 
     let log_content = std::fs::read_to_string(&log_path).unwrap();
     assert!(
@@ -166,6 +136,17 @@ fn test_fallback_activates_on_empty_ready_frontier_with_assigned_open_beads() {
     assert!(
         log_content.contains("test-bead-002"),
         "Log should contain bead-002"
+    );
+    assert!(
+        log_content.contains("Starvation diagnostic detected"),
+        "Log should indicate this is a diagnostic, not a recovery"
+    );
+
+    // Verify the old fallback log was NOT created (behavior changed in 53dade0)
+    let old_log_path = workspace_path.join(".beads/diagnostics/pluck-fallback.log");
+    assert!(
+        !old_log_path.exists(),
+        "Old fallback log should not exist (replaced with diagnostic log)"
     );
 }
 
