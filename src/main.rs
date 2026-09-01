@@ -3808,6 +3808,39 @@ fn print_human_readable_why(why: &service::WhyExplanation) {
         }
     }
 
+    // Attempt information section
+    if let Some(attempt_info) = &why.attempt_info {
+        println!("\n=== Attempt Information ===");
+        println!("Current Tier: {}", attempt_info.current_tier);
+        println!("Consecutive Failures: {}", attempt_info.consecutive_failures);
+        println!("Tier Description: {}", attempt_info.tier_description);
+
+        if let Some(last_attempt) = &attempt_info.last_attempt {
+            println!("\nLast Attempt:");
+            println!("  Attempt ID: {}", last_attempt.attempt_id);
+            println!("  Outcome: {}", last_attempt.outcome);
+            println!("  Action: {}", last_attempt.action);
+            if let Some(reason) = &last_attempt.reason {
+                println!("  Reason: {}", reason);
+            }
+            println!("  Created At: {}", last_attempt.created_at);
+            println!("  Receipt ID: {}", last_attempt.receipt_id);
+            println!("  Actor: {}", last_attempt.actor);
+        }
+
+        if !attempt_info.attempt_history.is_empty() {
+            println!("\nAttempt History (most recent {}):", attempt_info.attempt_history.len());
+            for (i, entry) in attempt_info.attempt_history.iter().enumerate() {
+                println!("  {}. {}", i + 1, entry.attempt_id);
+                println!("     Outcome: {}", entry.outcome);
+                println!("     Resulting Revision: {}", entry.resulting_revision);
+                println!("     Resulting Tier: {}", entry.resulting_tier);
+                println!("     Created At: {}", entry.created_at);
+                println!("     Receipt ID: {}", entry.receipt_id);
+            }
+        }
+    }
+
     // Reason codes section
     if !why.reasons.is_empty() {
         println!("\n=== Reason Codes ===");
