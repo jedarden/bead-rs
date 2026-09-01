@@ -7449,6 +7449,24 @@ fn read_all_provenance_receipts(tx: &Transaction) -> Result<Vec<ProvenanceReceip
 fn read_all_attempt_outcomes(tx: &Transaction) -> Result<Vec<AttemptOutcomeRecord>> {
     let mut outcomes = Vec::new();
 
+    // A workspace created before migration 14 has no attempt_outcomes table.
+    // `doctor` reports such a store healthy ("legacy workspace"), so the
+    // publisher has to agree the table is optional. When they disagree the
+    // store passes every diagnostic while every publication fails: the
+    // mutation commits to SQLite and the Git-tracked checkpoint silently
+    // stops advancing.
+    let table_exists: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='attempt_outcomes'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    if table_exists == 0 {
+        return Ok(outcomes);
+    }
+
     let mut stmt = tx.prepare(
         "SELECT receipt_id, attempt_id, issue_id, outcome, action, reason,
                 canonical_request_hash, prior_attempt_tier, resulting_attempt_tier,
@@ -7916,6 +7934,43 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    /// `doctor` calls a store with no attempt_outcomes table a healthy legacy
+    /// workspace. The publisher must agree, or such a store passes every
+    /// diagnostic while every checkpoint publication fails and the Git-tracked
+    /// checkpoint silently stops advancing.
+    #[test]
+    fn read_all_attempt_outcomes_tolerates_a_legacy_workspace() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::store::migrations::apply_migrations(&conn).unwrap();
+        conn.execute("DROP TABLE attempt_outcomes", []).unwrap();
+
+        let tx = conn.transaction().unwrap();
+        let outcomes = read_all_attempt_outcomes(&tx).unwrap();
+        assert!(outcomes.is_empty());
+    }
+
+    /// The guard must not mask a real read: a migrated store still returns
+    /// what it holds.
+    #[test]
+    fn read_all_attempt_outcomes_reads_a_migrated_workspace() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::store::migrations::apply_migrations(&conn).unwrap();
+
+        let tx = conn.transaction().unwrap();
+        let outcomes = read_all_attempt_outcomes(&tx).unwrap();
+        assert!(outcomes.is_empty(), "a fresh store holds no outcomes");
+        drop(tx);
+
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='attempt_outcomes'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(exists, 1, "the table must still be present");
+    }
 
     fn fork_sequence_staging(with_matching_receipt: bool) -> ForensicStaging {
         let fork_uuid = "0123abcd-fork-52-0123456789abcdef".to_string();

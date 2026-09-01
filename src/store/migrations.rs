@@ -9,6 +9,37 @@ use sha2::{Digest, Sha256};
 /// Current migration version
 pub const CURRENT_VERSION: i64 = 14;
 
+/// Whether the store has already reached [`CURRENT_VERSION`].
+///
+/// Deliberately read-only. [`apply_migrations`] unconditionally runs
+/// `CREATE TABLE IF NOT EXISTS schema_migrations`, which takes a write lock,
+/// and many workers share one workspace -- doing that on every open would
+/// serialise them. A missing `schema_migrations` table reads as "not current"
+/// so the caller falls through and creates it.
+pub fn schema_is_current(conn: &Connection) -> bool {
+    conn.query_row(
+        "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+        [],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|version| version >= CURRENT_VERSION)
+    .unwrap_or(false)
+}
+
+/// Apply pending migrations, skipping the write path when there are none.
+///
+/// Opening an existing store must advance its schema. Without this a
+/// workspace created under an older `CURRENT_VERSION` stays at that version
+/// forever while newer code assumes the tables its migrations add, and the
+/// mismatch surfaces far from its cause -- as a missing table inside an
+/// unrelated operation.
+pub fn migrate_if_pending(conn: &Connection) -> SqliteResult<()> {
+    if schema_is_current(conn) {
+        return Ok(());
+    }
+    apply_migrations(conn)
+}
+
 /// Apply all pending migrations to the database
 pub fn apply_migrations(conn: &Connection) -> SqliteResult<()> {
     // Enable foreign keys (this PRAGMA doesn't return rows)
@@ -757,6 +788,75 @@ mod tests {
         let checksum = migration_checksum(&migration.sql);
         // Ensure checksum is stable
         assert_eq!(checksum.len(), 64);
+    }
+
+    /// A store left behind by an older binary must advance when opened, not
+    /// stay behind until someone happens to run `init`. 61 of 63 workspaces on
+    /// ex44 were found stuck this way on 2026-09-01.
+    #[test]
+    fn migrate_if_pending_advances_a_legacy_store() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_migrations(&conn).unwrap();
+
+        // Rewind to what a pre-14 binary would have left behind.
+        conn.execute("DROP TABLE attempt_outcomes", []).unwrap();
+        conn.execute("DELETE FROM schema_migrations WHERE version >= 14", [])
+            .unwrap();
+        assert!(!schema_is_current(&conn));
+
+        migrate_if_pending(&conn).unwrap();
+
+        assert!(schema_is_current(&conn));
+        let version: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, CURRENT_VERSION);
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='attempt_outcomes'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(exists, 1);
+    }
+
+    /// The common path is a pure read: an already-current store must not be
+    /// rewritten on open, or every worker sharing a workspace serialises
+    /// behind a write lock.
+    #[test]
+    fn migrate_if_pending_is_a_noop_when_current() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_migrations(&conn).unwrap();
+        let before: String = conn
+            .query_row(
+                "SELECT applied_at FROM schema_migrations WHERE version = ?1",
+                [&CURRENT_VERSION.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        migrate_if_pending(&conn).unwrap();
+
+        let after: String = conn
+            .query_row(
+                "SELECT applied_at FROM schema_migrations WHERE version = ?1",
+                [&CURRENT_VERSION.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(before, after, "an up-to-date store was rewritten on open");
+    }
+
+    /// A database with no schema_migrations table at all is still migrated.
+    #[test]
+    fn migrate_if_pending_bootstraps_an_unversioned_store() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert!(!schema_is_current(&conn));
+        migrate_if_pending(&conn).unwrap();
+        assert!(schema_is_current(&conn));
     }
 
     #[test]

@@ -38,6 +38,14 @@ pub fn open_configured_connection(path: &Path) -> SqliteResult<Connection> {
 
     conn.execute("PRAGMA synchronous = NORMAL", [])?;
 
+    // Advance the schema here, at the one point every connection passes
+    // through. Most callers build a store with `SqliteStore::from_conn` and
+    // never touch `with_path`, so migrating in a constructor would leave the
+    // common path behind: a workspace created under an older CURRENT_VERSION
+    // would stay there while newer code assumed the tables its migrations add.
+    // `migrate_if_pending` is a read when there is nothing to do.
+    migrations::migrate_if_pending(&conn)?;
+
     Ok(conn)
 }
 
