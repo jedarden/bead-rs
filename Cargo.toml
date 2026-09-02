@@ -38,6 +38,10 @@ tempfile = "3.27.0"
 chrono = "0.4"
 fs2 = "0.4.3"
 
+[features]
+default = []
+attempt-resolution = []
+
 [dev-dependencies]
 tempfile = "3.27.0"
 assert_cmd = "2.2.2"
