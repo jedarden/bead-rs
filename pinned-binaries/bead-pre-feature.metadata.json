@@ -1,0 +1,23 @@
+{
+  "binary_name": "bead-pre-feature",
+  "description": "Early-development baseline bead-rs binary, built before the attempt-resolution work began. Metadata was reconstructed from the binary's own embedded version string during the beadrs-b6441e82 re-verification, because no staging metadata was recorded when this binary was pinned.",
+  "git_commit_sha": "af023ad47740cf5458f52398e70937b2cc1c18df",
+  "git_commit_short": "af023ad",
+  "git_commit_message": "chore(beadrs-4fcead71): release 0.2.4 — v0.2.3 tag landed behind a checkpoint commit",
+  "embedded_version_string": "bead 0.2.4 (af023ad 2026-09-01T19:14:12Z)",
+  "embedded_build_timestamp": "2026-09-01T19:14:12Z",
+  "binary_sha256": "7e0e73defebb75fc987ddf8b6fb959f47c73ccbbcd7e066e2af302a6a43db6b5",
+  "binary_size_bytes": 6788016,
+  "binary_size_human": "6.5M",
+  "cargo_package_version": "0.2.4",
+  "build_features": "default (the attempt-resolution feature does not exist in the 0.2.4 tree)",
+  "build_profile": "release",
+  "build_command": "cargo build --release",
+  "verified_by_bead": "beadrs-b6441e82",
+  "verified_timestamp": "2026-09-02T11:46:40Z",
+  "notes": [
+    "Commit attribution comes from the binary's embedded version string (`bead-pre-feature --version`), which build.rs derives from git at compile time. docs/pinned-binaries.md previously attributed this binary to 181f181; that is wrong — 181f181 is 31 commits later and its Cargo.toml declares 0.2.6, while the pinned binary embeds 0.2.4/af023ad. The docs have been corrected.",
+    "Because the attempt-resolution cargo feature does not exist at this commit, this binary is a true pre-feature baseline: any hash difference against the bead-attempt-resolution-* pins reflects all intervening development, not the feature flag (which is an empty marker feature that gates no code).",
+    "sha256 is NOT reproducible across rebuilds: build.rs re-embeds BEAD_BUILD_TIMESTAMP whenever .git/index changes, so a rebuild of identical source hashes differently. Verify by hash comparison against this file; never by rebuilding."
+  ]
+}

@@ -29,12 +29,37 @@ sha256sum pinned-binaries/bead-attempt-resolution-f25ab5c
 ```
 ✅ **VERIFIED**: Hash matches documented value in metadata file; identical to the hash recorded at build time by `beadrs-efb89f33`, proving the pinned bytes are byte-exact copies of the staged build (not a rebuild — rebuilds hash differently because build.rs re-embeds `BEAD_BUILD_TIMESTAMP`)
 
+### bead-pre-feature
+```bash
+sha256sum pinned-binaries/bead-pre-feature
+# Result: 7e0e73defebb75fc987ddf8b6fb959f47c73ccbbcd7e066e2af302a6a43db6b5  pinned-binaries/bead-pre-feature
+```
+✅ **VERIFIED**: Hash matches the value documented in `pinned-binaries/README.md`, `docs/attempts-binary-build.md`, and `docs/pinned-binaries.md`. Embedded version string: `bead 0.2.4 (af023ad 2026-09-01T19:14:12Z)`. Full metadata now recorded in `pinned-binaries/bead-pre-feature.metadata.json`.
+Re-verified 2026-09-02 by beadrs-5ea503fa (`sha256sum` matched, prior to committing the metadata file).
+
 ### Reproducibility caveat (f25ab5c)
 
 The sha256 of this binary is **not** reproducible across rebuilds: `build.rs` embeds `BEAD_BUILD_TIMESTAMP` at compile time (and refreshes it whenever `.git/index` changes), so two rebuilds of identical source produce different hashes. Reproducibility for this pin means **byte-identity with the staged build**, which the hash match above proves. Do not rebuild to verify — verify by hash comparison only.
 
 ### Binary Distinctness
 ✅ **CONFIRMED**: Binaries are cryptographically distinct (different SHA256 hashes)
+
+### New binary vs pre-feature (re-verified 2026-09-02 by beadrs-b6441e82)
+
+The pinned HEAD build was compared directly against the pre-feature baseline:
+
+| Property | bead-attempt-resolution-f25ab5c | bead-pre-feature |
+|----------|---------------------------------|------------------|
+| SHA256 | `9a8455f25bacf5bc961bd740442fdc1b30a67fb6e38d304c23c97a57cf57b04e` | `7e0e73defebb75fc987ddf8b6fb959f47c73ccbbcd7e066e2af302a6a43db6b5` |
+| Size | 7,305,184 bytes | 6,788,016 bytes |
+| Embedded version | `bead 0.2.6 (f25ab5c-dirty 2026-09-02T10:52:25Z)` | `bead 0.2.4 (af023ad 2026-09-01T19:14:12Z)` |
+| Source commit | `f25ab5c91c09a3408f23b9cdf2f3e95e81abc060` | `af023ad47740cf5458f52398e70937b2cc1c18df` (release 0.2.4) |
+| `bead resolve` subcommand | present | **absent** (`resolve --help` → "unrecognized subcommand") |
+| `attempt_outcome` in `capabilities` | present | absent |
+
+✅ **DISTINCT**: different SHA256, different size, different embedded version and source commit — and a real functional difference: the 0.2.4 baseline has no `resolve` command at all.
+
+⚠️ **What the difference does *not* prove:** `attempt-resolution` is an empty marker cargo feature — `grep -rn 'cfg(feature' src/` returns nothing, so the flag gates no code. That is proven by the `bead-pre-attempt-resolution` (946a727, built `--no-default-features`) / `bead-attempt-resolution-e115609` (built `--features attempt-resolution`) pair, which both expose `bead resolve` and advertise `attempt_outcome` regardless of the flag (see the functional verification above). The pre-feature binary is a different matter: it is release 0.2.4, 31 commits before the previously-documented `181f181`, and it **predates the resolve work entirely** — it has no `bead resolve` subcommand and no `attempt_outcome` capability. The hash and size deltas between `bead-pre-feature` and HEAD therefore reflect all intervening development between 0.2.4 and HEAD (including the arrival of `resolve` itself), **not** the feature flag. Distinctness is a hash-level fact; it is not evidence of what the flag contributes.
 
 ## Functional Capability Verification
 
@@ -51,6 +76,8 @@ Both binaries include the `resolve` command:
 ```
 
 ✅ **CONFIRMED**: Both binaries support attempt-resolution functionality
+
+> Note the scope: "both binaries" here means `bead-attempt-resolution-e115609` and `bead-pre-attempt-resolution` — the pair that isolates the cargo flag. `bead-pre-feature` (release 0.2.4) is **not** in this set: it predates the resolve work and has no `resolve` subcommand at all.
 
 ### Resolve Command Functionality
 
@@ -148,6 +175,8 @@ The `attempt-resolution` feature flag in Cargo.toml is an **empty feature**:
 - Attempt outcome tracking
 - Schema URN support
 - Full ADR-011/ADR-012 compliance
+
+(As above, "both binaries" = the 946a727 / e115609 pair. `bead-pre-feature` — release 0.2.4 — predates this functionality entirely.)
 
 ### Recommendations
 
