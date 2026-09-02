@@ -9,9 +9,8 @@
 //!   which takes time. Run with: cargo test --test binary_variant_integration -- --ignored
 
 use serial_test::serial;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::fs;
 use tempfile::TempDir;
 
 mod capability_framework;
