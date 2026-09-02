@@ -1,0 +1,44 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead watchdog" 1  "bead watchdog " 
+.SH NAME
+bead watchdog \- Monitor bead claim duration and auto\-release stuck claims
+.SH SYNOPSIS
+\fBbead watchdog\fR [\fB\-\-threshold\fR] [\fB\-\-dry\-run\fR] [\fB\-\-force\fR] [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Watchdog monitors in_progress beads and automatically releases those that appear stuck.
+.PP
+A bead is considered stuck if:
+  \- It has been in_progress for longer than the threshold (default: 4 hours)
+  \- The assigned worker process is no longer running
+.PP
+The watchdog checks process liveness by searching for the assignee name in the
+process table. If the worker is dead, the bead is automatically released back to
+the ready frontier. All auto\-releases are logged to .beads/watchdog\-releases.jsonl.
+.PP
+This prevents starvation where a crashed or hung worker holds beads indefinitely.
+.PP
+EXAMPLES:
+  bead watchdog \-\-dry\-run                                 # Report what would happen
+  bead watchdog \-\-threshold 8h                            # Use 8\-hour threshold
+  bead watchdog \-\-threshold 2h \-\-force                     # Release beads stale >2h
+  bead watchdog \-\-json                                     # Machine\-readable output
+.PP
+The watchdog is designed to run as a periodic systemd service (bead\-watchdog.timer)
+but can also be run manually for ad\-hoc cleanup.
+.SH OPTIONS
+.TP
+\fB\-\-threshold\fR \fI<THRESHOLD>\fR [default: 4h]
+Maximum age of an in_progress bead before it\*(Aqs considered stale (default: 4h)
+.TP
+\fB\-\-dry\-run\fR
+Don\*(Aqt actually release beads, just report what would happen
+.TP
+\fB\-\-force\fR
+Force release of stale beads even if assignee process appears alive
+.TP
+\fB\-\-json\fR
+Output in JSON format
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
