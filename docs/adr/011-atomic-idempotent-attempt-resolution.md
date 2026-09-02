@@ -57,6 +57,23 @@ using the existing publication contract. A publication failure is reported as
 checkpoint state and must not roll back or repeat the committed semantic
 mutation.
 
+## Implementation
+
+This ADR was implemented between:
+- **Pre-feature**: `attempt-resolution-pre` (53dade0) - ADR documentation only
+- **Complete**: `attempt-resolution-complete` (bcda20a) - core implementation
+
+See `docs/boundaries/attempt-resolution-feature.md` for the complete implementation timeline and verification details.
+
+Quick reference:
+```bash
+# View the diff
+git diff attempt-resolution-pre..attempt-resolution-complete
+
+# Checkout the implementation state
+git checkout attempt-resolution-complete
+```
+
 An attempt ID is unique within a workspace. Its first successful resolution
 binds the complete canonical request hash. Reuse with the same hash is
 idempotent; reuse with different content is a conflict.

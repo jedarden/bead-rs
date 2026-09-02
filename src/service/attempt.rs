@@ -3,6 +3,15 @@
 //! This module implements the attempt-outcome-v1 specification for recording
 //! execution attempt outcomes atomically with lifecycle transitions.
 //!
+//! # Implementation Boundary
+//!
+//! This feature was implemented between:
+//! - Pre: `attempt-resolution-pre` (53dade0) - ADR documentation only
+//! - Complete: `attempt-resolution-complete` (bcda20a) - core implementation
+//!
+//! See `docs/boundaries/attempt-resolution-feature.md` for the full
+//! implementation timeline and verification details.
+//!
 //! # Architecture
 //!
 //! The resolve_attempt operation commits one attempt outcome and its requested
