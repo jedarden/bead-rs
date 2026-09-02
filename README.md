@@ -43,6 +43,91 @@ runtime.
 > **⚠️ Warning:** `cargo install bead` installs a different, unrelated crate
 > (an OCI container runtime). Use `--bin bead` or the one-liner above.
 
+## Building from source (reproducible builds)
+
+To build bead-rs reproducibly from source, use the exact commands and environment specification below.
+
+### Environment requirements
+
+- **Rust version:** 1.85 or newer (minimum MSRV: 1.85)
+- **Tested with:** rustc 1.97.1 (8bab26f4f 2026-07-14)
+- **Edition:** Rust 2024
+- **Cargo:** 1.85 or newer
+
+### Exact build commands
+
+```bash
+# Clone the repository at a specific commit
+git clone https://github.com/jedarden/bead-rs.git
+cd bead-rs
+git checkout fdc2b304fa9659c65ff42201a866a18637783dc2
+
+# Build the main binary
+cargo build --release --bin bead
+
+# (Optional) Build man page generator
+cargo build --release --bin generate-man-pages
+
+# (Optional) Build with attempt-resolution feature enabled
+cargo build --release --bin bead --features attempt-resolution
+```
+
+### Build artifacts
+
+After building, the binaries are located at:
+
+- `bead` binary: `target/release/bead`
+- Man page generator: `target/release/generate-man-pages`
+
+### Feature flags
+
+- **default** (empty): No features enabled by default
+- **attempt-resolution**: Enables attempt resolution functionality
+
+### Current version information
+
+- **Version:** 0.2.6
+- **Build commit:** fdc2b304fa9659c65ff42201a866a18637783dc2
+- **Short commit:** fdc2b30
+- **Git repository:** https://github.com/jedarden/bead-rs
+
+### Verifying the build
+
+After building, verify the installation:
+
+```bash
+./target/release/bead --version
+./target/release/bead capabilities
+```
+
+The `--version` output should show version 0.2.6, and `capabilities` should emit a machine-readable feature contract document.
+
+### Development build
+
+For faster iteration during development:
+
+```bash
+# Build without optimizations (faster compilation)
+cargo build --bin bead
+
+# Run tests
+cargo test
+
+# Check code formatting and linting
+cargo fmt --check
+cargo clippy -- -D warnings
+```
+
+### Installing locally
+
+To install the built binary to your local cargo bin directory:
+
+```bash
+cargo install --path .
+```
+
+This installs `bead` to `~/.cargo/bin/bead` (or your configured CARGO_HOME).
+
 ## Quick start
 
 ```bash
