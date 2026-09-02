@@ -240,6 +240,14 @@ General mutation idempotency remains a separate potential feature. BR-T03–T08
 adopt idempotency only for the attempt-resolution boundary required by the
 combined factory.
 
+**Binary builds never mutate the shared checkout (added 2026-09-02).** The pinned-binary
+work (BR-T10 evidence, beadrs-8eb168ca and children) built older commits by stashing, resetting
+and checking out inside the single shared NEEDLE checkout; 17 stash entries and several
+reset/checkout moves on 2026-09-01/02 erased another worker's uncommitted hour of work
+(beadrs-e167fde8). The sanctioned way is `scripts/build-from-archive.sh <sha>`: extract with
+`git archive` into a scratch directory, build there, copy the binary and metadata out, remove
+the directory on success. Bead: beadrs-5a0dc962.
+
 **Attribution (added 2026-09-01, revision 10).** `service::issues` already
 accepts an optional actor and defaults to `system` (`src/service/issues.rs`);
 only the CLI omits the flag, and the claim path is the sole command that
