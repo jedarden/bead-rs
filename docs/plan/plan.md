@@ -1,8 +1,8 @@
 # bead-rs Current Product and Software Factory Plan
 
-Plan revision: 9
+Plan revision: 10
 
-As of: 2026-08-31
+As of: 2026-09-01
 
 Status owner: bead-rs maintainers
 
@@ -234,9 +234,22 @@ profile rather than silently changing `native-v1` or `needle-v1`.
 | BR-T10 | release evidence and governance status | Produce current feature/capability matrix tied to tag, commit, spec and test hashes | noninteractive verifier passes; status documents agree | transition |
 | BR-T11 | NEEDLE consumer conformance | Test atomic path, unknown-result replay, and older-backend fallback | pinned NEEDLE + old/new bead-rs integration matrix | blocked by BR-T07–BR-T10 |
 
+| BR-T12 | mutating CLI commands (`close`, `release`, `reopen`, `update`, `claim`, `dep`, `label`, `comments`) and `service::issues` | Accept `--actor` and the `BEAD_ACTOR` environment variable on every mutating command and record it in the audit event instead of the `system` default; additive and profile-neutral | forensic fixtures show the caller actor on `closed`, `released` and `reopened`; old clients unaffected; `needle-v1` capability snapshot updated | transition (independent of BR-T03 to BR-T08) |
+
 General mutation idempotency remains a separate potential feature. BR-T03–T08
 adopt idempotency only for the attempt-resolution boundary required by the
 combined factory.
+
+**Attribution (added 2026-09-01, revision 10).** `service::issues` already
+accepts an optional actor and defaults to `system` (`src/service/issues.rs`);
+only the CLI omits the flag, and the claim path is the sole command that
+records a caller identity today. Because `git-activity-exporter` and the
+NEEDLE attempt ledger (NEEDLE plan section 4.4) both consume
+`.beads/checkpoint/forensic.jsonl`, a `system` actor on close makes every
+closure unattributable fleet-wide (measured 0 of all `closed`, `released`,
+`updated`, `reopened` events). BR-T12 closes that gap now, without waiting
+for the attempt-outcome tranche; the receipt in BR-T03 to BR-T06 carries the
+same actor field once it exists.
 
 ## 7. Release gates for the extension
 
@@ -268,7 +281,9 @@ bead-rs reports facts useful to, but does not optimize, the learning system:
 - failure-tier transitions by readiness epoch;
 - time from claim to durable resolution;
 - checkpoint publication state and recovery;
-- atomic versus caller-reconciled resolution capability.
+- atomic versus caller-reconciled resolution capability;
+- share of lifecycle events whose actor is a caller identity rather than
+  `system` (BR-T12).
 
 NEEDLE owns verified-closure yield, lesson effectiveness, recurrence,
 experiments, cost, and policy rollback. bead-rs must not change scheduling or
