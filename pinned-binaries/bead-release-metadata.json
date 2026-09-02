@@ -1,19 +1,35 @@
 {
   "binary_name": "bead",
   "binary_path": "/home/coding/target/release/bead",
-  "description": "Current bead-rs release binary",
-  "build_timestamp": "2026-09-02T05:43:56Z",
-  "git_commit_sha": "9205655cb340a1fabd6290bd7f263a6e7e11abf0",
-  "git_commit_short": "9205655",
-  "git_commit_message": "docs(pinned-binaries): add comprehensive documentation for both pinned binaries",
-  "git_commit_date": "2026-09-02T01:28:02-04:00",
+  "description": "Current bead-rs release binary built with the attempt-resolution feature enabled",
+  "build_timestamp": "2026-09-02T12:23:42Z",
+  "build_command": "cargo build --release --features attempt-resolution",
+  "build_features": "attempt-resolution",
+  "git_commit_sha": "a3ada84f8773e59fa1fb5a97c7556ba4e28285df",
+  "git_commit_short": "a3ada84",
+  "git_commit_message": "feat(pinned-binaries): pin HEAD attempt-resolution binary at f25ab5c",
+  "git_commit_date": "2026-09-02T07:28:26-04:00",
   "git_author": "jedarden",
-  "binary_sha256": "c33363ddb323b91bb2841d4ced5515701cc8769ce683586ca430044dd374b4ff",
+  "embedded_version_string": "bead 0.2.6 (a3ada84-dirty 2026-09-02T12:23:42Z)",
+  "binary_sha256": "9200cf4b8944ac017dfa6ac30a1be234c2c745fbc56f49e6408c05a487e1d1ab",
   "binary_size_bytes": 7305184,
   "binary_size_human": "7.0M",
   "cargo_version": "1.97.1",
-  "rust_version": "1.97.1",
+  "rust_version": "1.97.1 (8bab26f4f 2026-07-14)",
   "build_profile": "release",
-  "record_timestamp": "2026-09-02T05:43:56Z",
-  "verified": true
+  "record_timestamp": "2026-09-02T12:25:30Z",
+  "verified": true,
+  "verification": {
+    "hash_matches_fresh_build": true,
+    "method": "sha256 computed twice after a forced relink (touch build.rs && cargo build --release --features attempt-resolution); both reads identical",
+    "tracked_source_matches_head": true,
+    "attempt_outcome_capability": true,
+    "resolve_subcommand_present": true,
+    "resolve_receipt_schema": "urn:bead-rs:schema:resolve-receipt:native-v1"
+  },
+  "notes": [
+    "The '-dirty' marker comes from tracked .beads/* checkpoint files churned by the bead CLI's auto-flush in this shared checkout; compiled tracked source (src/, Cargo.toml, Cargo.lock, build.rs) is exactly HEAD (verified via 'git status --porcelain --untracked-files=no' on those paths).",
+    "sha256 is NOT reproducible across rebuilds: build.rs re-embeds BEAD_BUILD_TIMESTAMP whenever .git/HEAD or .git/index changes, so two rebuilds of identical source hash differently. Verify against the binary bytes present, not by rebuilding.",
+    "The attempt-resolution cargo feature is an empty marker feature; src/service/attempt.rs compiles unconditionally. Capability evidence is 'bead capabilities' advertising attempt_outcome and the 'bead resolve' subcommand, both confirmed on this binary."
+  ]
 }
