@@ -54,12 +54,23 @@ git show 946a7271796e15452c4a8a1f1ff9efc05d3e7307
 git show 1ee45e39f518a1e47a26fd312bbadbc36b1af00c
 ```
 
+## Integration Test Binary (Current)
+
+**Commit SHA**: `e1156098b01264bb998797047115521261443c13`  
+**Short SHA**: `e115609`  
+**Message**: `feat(tests): add binary variant integration test suite for capability detection`  
+**Date**: 2026-09-02  
+**Purpose**: Binary built WITH attempt-resolution feature for integration testing
+
+This commit represents the current state of bead-rs with the attempt-resolution feature fully implemented and integrated into the test suite. The binary built from this commit includes the complete attempt-resolution functionality and is used for capability detection tests.
+
 ## Binary Metadata
 
 For complete binary metadata (SHA256 hashes, build timestamps, etc.), see:
 - `pinned-binaries/bead-pre-attempt-resolution.metadata.json` - Pre-attempt-resolution binary details
+- `pinned-binaries/bead-attempt-resolution-e115609.metadata.json` - Post-attempt-resolution binary details (current)
 - `pinned-binaries/bead-pre-feature.metadata.json` - Early development baseline details
 - `docs/pinned-binaries.md` - Comprehensive documentation
 
 **Last Updated**: 2026-09-02  
-**Document Version**: 1.0
+**Document Version**: 1.1

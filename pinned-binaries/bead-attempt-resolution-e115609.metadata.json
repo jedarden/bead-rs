@@ -1,0 +1,16 @@
+{
+  "binary_name": "bead-attempt-resolution-e115609",
+  "description": "bead-rs binary built WITH attempt-resolution feature enabled for integration testing",
+  "build_timestamp": "2026-09-02T07:23:55Z",
+  "git_commit_sha": "e1156098b01264bb998797047115521261443c13",
+  "git_commit_short": "e115609",
+  "git_commit_message": "feat(tests): add binary variant integration test suite for capability detection",
+  "binary_sha256": "68fe8d534721be4ba4147312364d8f0b216b62f3093e85e7c91f0a0db695a645",
+  "cargo_version": "bead-rs 0.2.6",
+  "build_features": "default (attempt-resolution included)",
+  "build_profile": "release",
+  "rust_version": "1.97.1",
+  "binary_size_bytes": 7305144,
+  "binary_size_human": "7.0M",
+  "build_command": "cargo build --release"
+}
