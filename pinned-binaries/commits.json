@@ -1,0 +1,27 @@
+{
+  "pre_attempt_resolution": {
+    "full_sha": "946a7271796e15452c4a8a1f1ff9efc05d3e7307",
+    "short_sha": "946a727",
+    "message": "docs(boundaries): add reference shortcuts and pattern guide for attempt-resolution",
+    "date": "2026-09-01",
+    "description": "Baseline binary built WITHOUT attempt-resolution feature",
+    "build_features": "--no-default-features",
+    "binary_name": "bead-pre-attempt-resolution",
+    "purpose": "Pre-feature baseline for compatibility testing"
+  },
+  "post_attempt_resolution": {
+    "full_sha": "1ee45e39f518a1e47a26fd312bbadbc36b1af00c",
+    "short_sha": "1ee45e3",
+    "message": "docs(build): add reproducible build instructions to README",
+    "date": "2026-09-01",
+    "description": "Baseline binary built WITH attempt-resolution feature enabled",
+    "build_features": "--features attempt-resolution",
+    "binary_name": "bead-feature-enabled",
+    "purpose": "Feature-enabled baseline for testing new functionality"
+  },
+  "metadata": {
+    "document_version": "1.0",
+    "last_updated": "2026-09-02",
+    "repository": "/home/coding/bead-rs"
+  }
+}
