@@ -1,0 +1,18 @@
+{
+  "binary_name": "bead",
+  "binary_path": "/home/coding/target/debug/bead",
+  "description": "Current bead-rs debug binary",
+  "build_timestamp": "2026-09-01T21:29:00Z",
+  "git_commit_sha": "dd488b99488c6197583835560a402a1cc57764cc",
+  "git_commit_short": "dd488b9",
+  "git_commit_message": "docs: add build procedure for attempt-resolution-enabled bead-rs binary",
+  "git_commit_date": "2026-09-01T21:47:07-04:00",
+  "git_author": "jedarden",
+  "binary_sha256": "d9bc969ff4eea24d2f8a266bf14d0b3783bf29bcd945c36a7290ddce85707095",
+  "binary_size_bytes": 57185704,
+  "binary_size_human": "54.5M",
+  "cargo_version": "1.97.1",
+  "rust_version": "1.97.1",
+  "build_profile": "debug",
+  "record_timestamp": "2026-09-01T22:11:00Z"
+}
