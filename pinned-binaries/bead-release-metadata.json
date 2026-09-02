@@ -1,0 +1,19 @@
+{
+  "binary_name": "bead",
+  "binary_path": "/home/coding/target/release/bead",
+  "description": "Current bead-rs release binary",
+  "build_timestamp": "2026-09-02T05:43:56Z",
+  "git_commit_sha": "9205655cb340a1fabd6290bd7f263a6e7e11abf0",
+  "git_commit_short": "9205655",
+  "git_commit_message": "docs(pinned-binaries): add comprehensive documentation for both pinned binaries",
+  "git_commit_date": "2026-09-02T01:28:02-04:00",
+  "git_author": "jedarden",
+  "binary_sha256": "c33363ddb323b91bb2841d4ced5515701cc8769ce683586ca430044dd374b4ff",
+  "binary_size_bytes": 7305184,
+  "binary_size_human": "7.0M",
+  "cargo_version": "1.97.1",
+  "rust_version": "1.97.1",
+  "build_profile": "release",
+  "record_timestamp": "2026-09-02T05:43:56Z",
+  "verified": true
+}
