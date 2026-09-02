@@ -129,13 +129,15 @@ To verify binary uniqueness:
 # Compare hashes
 sha256sum pinned-binaries/bead-pre-feature
 sha256sum pinned-binaries/bead-attempt-resolution-e115609
+sha256sum pinned-binaries/bead-attempt-resolution-f25ab5c
 
 # Compare sizes
-ls -lh pinned-binaries/bead-pre-feature pinned-binaries/bead-attempt-resolution-e115609
+ls -lh pinned-binaries/bead-pre-feature pinned-binaries/bead-attempt-resolution-e115609 pinned-binaries/bead-attempt-resolution-f25ab5c
 
 # Compare versions
 ./pinned-binaries/bead-pre-feature --version
 ./pinned-binaries/bead-attempt-resolution-e115609 --version
+./pinned-binaries/bead-attempt-resolution-f25ab5c --version
 ```
 
 ## Pinned Binary Storage
@@ -147,6 +149,8 @@ Once built and verified, store binaries with metadata:
 pinned-binaries/
 ├── bead-attempt-resolution-e115609
 ├── bead-attempt-resolution-e115609.metadata.json
+├── bead-attempt-resolution-f25ab5c
+├── bead-attempt-resolution-f25ab5c.metadata.json
 ├── bead-pre-attempt-resolution
 ├── bead-pre-attempt-resolution.metadata.json
 ├── bead-pre-feature

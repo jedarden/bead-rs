@@ -1,0 +1,46 @@
+{
+  "binary_name": "bead-attempt-resolution-f25ab5c",
+  "description": "bead-rs release binary built with --features attempt-resolution at HEAD, pinned byte-exact from the build bead's staging",
+  "bead": "beadrs-efb89f33",
+  "pinned_by_bead": "beadrs-759601d4",
+  "pinned_timestamp": "2026-09-02T11:15:00Z",
+  "git_commit_sha": "f25ab5c91c09a3408f23b9cdf2f3e95e81abc060",
+  "git_commit_short": "f25ab5c",
+  "git_commit_message": "docs(attempts-binary): add comprehensive build process and verification documentation",
+  "embedded_version_string": "bead 0.2.6 (f25ab5c-dirty 2026-09-02T10:52:25Z)",
+  "embedded_build_timestamp": "2026-09-02T10:52:25Z",
+  "build_window_utc": "2026-09-02T10:52:25Z..2026-09-02T10:53:31Z",
+  "binary_sha256": "9a8455f25bacf5bc961bd740442fdc1b30a67fb6e38d304c23c97a57cf57b04e",
+  "binary_size_bytes": 7305184,
+  "binary_size_human": "7.0M",
+  "cargo_package_version": "0.2.6",
+  "build_features": "attempt-resolution",
+  "build_profile": "release",
+  "rustc_version": "1.97.1",
+  "build_command": "cargo build --release --features attempt-resolution",
+  "capability_check": {
+    "attempt_outcome_supported": true,
+    "outcomes": [
+      "verified_success",
+      "work_failure",
+      "infrastructure_failure",
+      "cancelled",
+      "indeterminate"
+    ],
+    "actions": [
+      "close",
+      "release",
+      "quarantine",
+      "block",
+      "none"
+    ],
+    "resolve_receipt_schema": "urn:bead-rs:schema:resolve-receipt:native-v1"
+  },
+  "pinned_binary_path": "pinned-binaries/bead-attempt-resolution-f25ab5c",
+  "staged_from": "/var/tmp/bead-pin-staging/bead-attempt-resolution-f25ab5c (staging removed after pin)",
+  "notes": [
+    "The attempt-resolution cargo feature is an empty marker feature: no #[cfg(feature)] gates exist in src/, src/service/attempt.rs compiles unconditionally, and `bead capabilities` advertises attempt_outcome regardless of the flag. A binary built with and without the flag is functionally identical.",
+    "The '-dirty' marker in the version string comes from tracked .beads/* checkpoint files modified by the bead CLI's post-claim auto-flush; compiled tracked source (src/, Cargo.toml, Cargo.lock, build.rs) is exactly HEAD (verified via `git status --porcelain` on those paths).",
+    "sha256 is NOT reproducible across rebuilds: build.rs re-embeds BEAD_BUILD_TIMESTAMP whenever .git/index changes, so two rebuilds of identical source hash differently. Pin the staged binary bytes; do not rebuild and expect this hash."
+  ]
+}

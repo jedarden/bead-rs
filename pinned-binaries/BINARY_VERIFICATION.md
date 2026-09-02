@@ -22,6 +22,17 @@ sha256sum pinned-binaries/bead-pre-attempt-resolution
 ```
 ✅ **VERIFIED**: Hash matches documented value in metadata file
 
+### bead-attempt-resolution-f25ab5c
+```bash
+sha256sum pinned-binaries/bead-attempt-resolution-f25ab5c
+# Result: 9a8455f25bacf5bc961bd740442fdc1b30a67fb6e38d304c23c97a57cf57b04e  pinned-binaries/bead-attempt-resolution-f25ab5c
+```
+✅ **VERIFIED**: Hash matches documented value in metadata file; identical to the hash recorded at build time by `beadrs-efb89f33`, proving the pinned bytes are byte-exact copies of the staged build (not a rebuild — rebuilds hash differently because build.rs re-embeds `BEAD_BUILD_TIMESTAMP`)
+
+### Reproducibility caveat (f25ab5c)
+
+The sha256 of this binary is **not** reproducible across rebuilds: `build.rs` embeds `BEAD_BUILD_TIMESTAMP` at compile time (and refreshes it whenever `.git/index` changes), so two rebuilds of identical source produce different hashes. Reproducibility for this pin means **byte-identity with the staged build**, which the hash match above proves. Do not rebuild to verify — verify by hash comparison only.
+
 ### Binary Distinctness
 ✅ **CONFIRMED**: Binaries are cryptographically distinct (different SHA256 hashes)
 
