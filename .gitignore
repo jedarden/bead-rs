@@ -11,3 +11,6 @@ __pycache__/
 
 # runtime publication lock (empty; never checkpoint content)
 .beads/checkpoint/publish.lock
+
+# NEEDLE execution traces are local diagnostics.
+**/.beads/traces/
