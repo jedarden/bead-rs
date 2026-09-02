@@ -102,6 +102,36 @@ After building, verify the installation:
 
 The `--version` output should show version 0.2.6, and `capabilities` should emit a machine-readable feature contract document.
 
+### Pinned feature-enabled build (attempt-resolution)
+
+As of 2026-09-02, a feature-enabled build with attempt-resolution is available:
+
+- **Commit:** 1ee45e39f518a1e47a26fd312bbadbc36b1af00c
+- **Short commit:** 1ee45e3
+- **Feature:** attempt-resolution
+- **Binary SHA256:** 6d68dab8ddbe7dd6d8a66196376ccb09ef04d848e879b52fd6952779b38a9cfd
+- **Build command:**
+  ```bash
+  cargo build --release --bin bead --features attempt-resolution
+  ```
+- **Binary location:** `target/release/bead`
+
+To reproduce this exact build:
+```bash
+git clone https://github.com/jedarden/bead-rs.git
+cd bead-rs
+git checkout 1ee45e39f518a1e47a26fd312bbadbc36b1af00c
+cargo build --release --bin bead --features attempt-resolution
+sha256sum target/release/bead
+# Expected: 6d68dab8ddbe7dd6d8a66196376ccb09ef04d848e879b52fd6952779b38a9cfd
+```
+
+To verify the attempt-resolution feature is enabled:
+```bash
+./target/release/bead capabilities | jq '.attempt_outcome.supported'
+# Should output: true
+```
+
 ### Development build
 
 For faster iteration during development:
