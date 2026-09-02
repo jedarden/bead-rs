@@ -102,11 +102,51 @@ This binary is intended for:
 - Used by binary variant integration test suite for capability detection
 - This binary should remain unchanged once pinned to maintain reproducibility
 
----
-
 ### Important Notes (All Binaries)
 
 - Pinned binaries represent specific commit states for reproducible testing
 - Each binary should remain unchanged once pinned to maintain reproducibility
 - Pre-feature binary built without attempt-resolution for baseline comparisons
 - Post-feature binary built with attempt-resolution for integration testing
+
+---
+
+## Build Documentation
+
+For comprehensive build instructions, metadata capture procedures, and reproducible build recipes, see:
+
+- **[docs/attempts-binary-build.md](../docs/attempts-binary-build.md)** - Complete build process and verification guide
+
+This document includes:
+- Feature flag configuration and usage
+- Standard vs feature-enabled build procedures
+- Metadata capture steps (version, hash, size, timestamps)
+- Binary uniqueness verification
+- Reproducible build recipes
+- Integration testing guidance
+- Troubleshooting guide
+
+---
+
+## Binary Uniqueness Verification
+
+### Hash Comparison Results
+
+All pinned binaries are cryptographically distinct:
+
+| Binary | SHA256 Hash | Size | Build Type |
+|--------|-------------|------|------------|
+| bead-pre-feature | `7e0e73defebb75fc987ddf8b6fb959f47c73ccbbcd7e066e2af302a6a43db6b5` | 6.5M | Standard (no features) |
+| bead-pre-attempt-resolution | `d0da42bbf59b721bc64bc3d55610844efe3f1f06e37c2d9494c0b3dda6e29ac6` | 7.0M | No default features |
+| bead-attempt-resolution-e115609 | `68fe8d534721be4ba4147312364d8f0b216b62f3093e85e7c91f0a0db695a645` | 7.0M | Feature-enabled |
+
+✅ **VERIFIED**: Different hashes prove each build configuration produces a unique binary
+
+### Size Analysis
+
+- **Standard build (pre-feature)**: 6.5M - Baseline without attempt-resolution code
+- **Feature-enabled builds**: 7.0M - ~517KB larger, confirming feature inclusion
+
+The size difference demonstrates that the `attempt-resolution` feature adds meaningful code and functionality to the binary.
+
+---

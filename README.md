@@ -102,6 +102,14 @@ After building, verify the installation:
 
 The `--version` output should show version 0.2.6, and `capabilities` should emit a machine-readable feature contract document.
 
+### Comprehensive build documentation
+
+For detailed build procedures, metadata capture, and binary uniqueness verification, see:
+
+- **[docs/attempts-binary-build.md](docs/attempts-binary-build.md)** - Complete attempts binary build process and verification guide
+- **[pinned-binaries/README.md](pinned-binaries/README.md)** - Pinned binary documentation and hash comparisons
+- **[BUILD_PROCEDURE.md](BUILD_PROCEDURE.md)** - Step-by-step build instructions
+
 ### Pinned feature-enabled build (attempt-resolution)
 
 As of 2026-09-02, a feature-enabled build with attempt-resolution is available:
