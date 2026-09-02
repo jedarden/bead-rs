@@ -1,0 +1,18 @@
+{
+  "binary_name": "bead",
+  "binary_path": "/home/coding/target/debug/bead",
+  "description": "Current bead-rs debug binary with attempt-resolution support",
+  "build_timestamp": "2026-09-02T02:21:33Z",
+  "git_commit_sha": "4faffee36f9fcc39c3b6b3c433a92519da02ab0c",
+  "git_commit_short": "4faffee",
+  "git_commit_message": "feat(pluck): record binary metadata with git commit SHA and sha256 hash",
+  "git_commit_date": "2026-09-01T22:15:06-04:00",
+  "git_author": "jedarden",
+  "binary_sha256": "d9bc969ff4eea24d2f8a266bf14d0b3783bf29bcd945c36a7290ddce85707095",
+  "binary_size_bytes": 57185704,
+  "binary_size_human": "54.5M",
+  "cargo_version": "1.97.1",
+  "rust_version": "1.97.1",
+  "build_profile": "debug",
+  "record_timestamp": "2026-09-02T02:21:33Z"
+}
