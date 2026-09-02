@@ -106,30 +106,46 @@ The `--version` output should show version 0.2.6, and `capabilities` should emit
 
 As of 2026-09-02, a feature-enabled build with attempt-resolution is available:
 
-- **Commit:** 1ee45e39f518a1e47a26fd312bbadbc36b1af00c
-- **Short commit:** 1ee45e3
+- **Commit:** 77db95e3760855152619ab91ccadc27d33c0cc8f
+- **Short commit:** 77db95e
 - **Feature:** attempt-resolution
-- **Binary SHA256:** 6d68dab8ddbe7dd6d8a66196376ccb09ef04d848e879b52fd6952779b38a9cfd
+- **Binary SHA256:** e9d44131f7cfab3bf43d6a9dc0040e7759ed64f278808a354576f418429150b4
 - **Build command:**
   ```bash
   cargo build --release --bin bead --features attempt-resolution
   ```
-- **Binary location:** `target/release/bead`
+- **Binary location:** `~/.local/bin/bead-77db95e`
 
 To reproduce this exact build:
 ```bash
 git clone https://github.com/jedarden/bead-rs.git
 cd bead-rs
-git checkout 1ee45e39f518a1e47a26fd312bbadbc36b1af00c
+git checkout 77db95e3760855152619ab91ccadc27d33c0cc8f
 cargo build --release --bin bead --features attempt-resolution
 sha256sum target/release/bead
-# Expected: 6d68dab8ddbe7dd6d8a66196376ccb09ef04d848e879b52fd6952779b38a9cfd
+# Expected: e9d44131f7cfab3bf43d6a9dc0040e7759ed64f278808a354576f418429150b4
 ```
 
 To verify the attempt-resolution feature is enabled:
 ```bash
 ./target/release/bead capabilities | jq '.attempt_outcome.supported'
 # Should output: true
+```
+
+To retrieve commit SHA and verify binary hash:
+```bash
+# Get current commit SHA
+git rev-parse HEAD
+# Short version
+git rev-parse --short HEAD
+
+# Verify binary hash
+sha256sum ~/.local/bin/bead-77db95e
+# Expected: e9d44131f7cfab3bf43d6a9dc0040e7759ed64f278808a354576f418429150b4
+
+# Verify binary is executable and works
+~/.local/bin/bead-77db95e --version
+~/.local/bin/bead-77db95e capabilities | jq '.attempt_outcome.supported'
 ```
 
 ### Development build
