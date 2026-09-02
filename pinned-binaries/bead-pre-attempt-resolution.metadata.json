@@ -1,14 +1,16 @@
 {
   "binary_name": "bead-pre-attempt-resolution",
   "description": "bead-rs binary built WITHOUT attempt-resolution feature for compatibility testing",
-  "build_timestamp": "2026-09-01T18:29:00Z",
-  "git_commit_sha": "181f181b0e80f39f432846cabec30b0b7d640774",
-  "git_commit_short": "181f181",
-  "binary_sha256": "0b2ccfc74ad99aac18d2688b6f27786239ddfdb167642776f5ee83eebe6445ce",
+  "build_timestamp": "2026-09-02T01:35:01Z",
+  "git_commit_sha": "946a7271796e15452c4a8a1f1ff9efc05d3e7307",
+  "git_commit_short": "946a727",
+  "git_commit_message": "docs(boundaries): add reference shortcuts and pattern guide for attempt-resolution",
+  "binary_sha256": "d0da42bbf59b721bc64bc3d55610844efe3f1f06e37c2d9494c0b3dda6e29ac6",
   "cargo_version": "bead-rs 0.2.6",
   "build_features": "--no-default-features",
   "build_profile": "release",
   "rust_version": "1.85",
   "binary_size_bytes": 7340032,
-  "binary_size_human": "7.0M"
+  "binary_size_human": "7.0M",
+  "build_command": "cargo build --release --no-default-features"
 }
