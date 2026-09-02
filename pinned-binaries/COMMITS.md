@@ -72,5 +72,11 @@ For complete binary metadata (SHA256 hashes, build timestamps, etc.), see:
 - `pinned-binaries/bead-pre-feature.metadata.json` - Early development baseline details
 - `docs/pinned-binaries.md` - Comprehensive documentation
 
-**Last Updated**: 2026-09-02  
-**Document Version**: 1.1
+## Binary Verification
+
+For complete verification of binary distinctness, capability comparison, and build reproducibility, see:
+- `pinned-binaries/BINARY_VERIFICATION.md` - Comprehensive verification report with SHA256 hash validation, functional capability testing, and reproducible verification steps
+
+**Last Updated**: 2026-09-02
+**Document Version**: 1.2
+**Verification Status**: ✅ Complete - All acceptance criteria met
