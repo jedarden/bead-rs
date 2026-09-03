@@ -21,44 +21,55 @@ The `attempt-resolution` feature flag is defined in `Cargo.toml` and can be enab
 
 ### Prerequisites
 
-- Rust 1.85+
+- Rust 1.85+ (the pinned binaries were built with rustc/cargo 1.97.1 — recorded as `rustc_version` in each `*.metadata.json`)
 - Cargo
-- Clean git checkout at specific commit
-- Target directory: `/home/coding/target/release/`
+- A commit SHA that resolves in this repo (`git cat-file -t <sha>`) — **never** a checkout of it
+- `scripts/build-from-archive.sh` (see "Build Rule" in [`BUILD_PROCEDURE.md`](../BUILD_PROCEDURE.md))
+
+> **Never build a pinned commit by moving this checkout.** `/home/coding/bead-rs` is a
+> single shared NEEDLE workspace: `git clean -fdx`, `git checkout <sha>`, `git reset`,
+> and `git stash` here rewire or erase every other worker's tree — an earlier revision of
+> this document instructed exactly that, which is how a worker's uncommitted hour was
+> erased on 2026-09-01/02 (beadrs-5a0dc962). The archive script below is the only
+> sanctioned build path.
 
 ### Standard Build (Without Feature)
 
 **Purpose:** Baseline binary without attempt-resolution feature
 
 ```bash
-# From clean git state
 cd /home/coding/bead-rs
-git clean -fdx
-git checkout <commit-sha>
-
-# Build without features
-cargo build --release --no-default-features
-
-# Binary location
-/home/coding/target/release/bead
+scripts/build-from-archive.sh <commit-sha> --name bead-<role>-<shaslice> --out /var/tmp
 ```
+
+The script extracts `<commit-sha>` with `git archive` (read-only against the shared
+checkout) and underneath runs the equivalent of:
+
+```bash
+cargo build --release --locked
+```
+
+**Binary location:** `<out-dir>/<name>` as printed by the script — never
+`/home/coding/target/release/bead`, which is the shared checkout's own build.
 
 ### Feature-Enabled Build (With Attempt-Resolution)
 
 **Purpose:** Production binary with attempt-resolution functionality
 
 ```bash
-# From clean git state
 cd /home/coding/bead-rs
-git clean -fdx
-git checkout <commit-sha>
-
-# Build with feature enabled
-cargo build --release --features attempt-resolution
-
-# Binary location
-/home/coding/target/release/bead
+scripts/build-from-archive.sh <commit-sha> --features attempt-resolution --name bead-attempt-resolution-<shaslice> --out /var/tmp
 ```
+
+Underneath, the script runs:
+
+```bash
+cargo build --release --locked --features attempt-resolution
+```
+
+**Binary location:** `<out-dir>/<name>` as printed by the script. Omit `--out` only when
+the artifact is meant to become a pin in `pinned-binaries/` (the script refuses to
+overwrite an existing pin; see `pinned-binaries/README.md` for the pin inventory rules).
 
 ## Metadata Capture Process
 
@@ -198,31 +209,34 @@ Field names below follow the newest metadata file, `bead-attempt-resolution-f25a
 #!/bin/bash
 set -e
 
-TARGET_COMMIT="e1156098b01264bb998797047115521261443c13"
+# f25ab5c (the HEAD pin's built-from commit) was force-pushed away; b0d7840 is its
+# restored-lineage content twin and the pin's recorded rebuild target. Any sha that
+# resolves here works the same way: git cat-file -t <sha> must say "commit".
+TARGET_COMMIT="b0d7840f6c96cd45e16ea05b7babdb42ef0d2654"
 FEATURE="attempt-resolution"
 BUILD_DIR="/home/coding/bead-rs"
-OUTPUT_DIR="/home/coding/target/release"
+OUTPUT_DIR="/var/tmp/bead-build-verify"   # outside the repo unless you mean to pin
 
-echo "Building attempts binary and recording provenance..."
+echo "Building attempts binary from an archive extraction and recording provenance..."
 
-# Clean and checkout
+# The sanctioned path: git-archive extraction into scratch, never a checkout of the
+# shared workspace. The script prints the binary path, version, sha256 and size, and
+# writes a .metadata.json next to the binary.
 cd "$BUILD_DIR"
-git clean -fdx
-git checkout "$TARGET_COMMIT"
+scripts/build-from-archive.sh "$TARGET_COMMIT" \
+	--features "$FEATURE" \
+	--name bead-attempt-resolution-"${TARGET_COMMIT:0:7}" \
+	--out "$OUTPUT_DIR"
 
-# Build with feature
-cargo build --release --features "$FEATURE"
-
-# Record provenance for the new artifact
-BINARY="$OUTPUT_DIR/bead"
-echo "Binary: $BINARY"
+# Provenance of the new artifact is in $OUTPUT_DIR/*.metadata.json; the highlights:
+BINARY="$OUTPUT_DIR/bead-attempt-resolution-${TARGET_COMMIT:0:7}"
 echo "Version: $($BINARY --version)"
-echo "SHA256: $(sha256sum $BINARY | cut -d' ' -f1)"
-echo "Size: $(stat -c %s $BINARY)"
-echo "Commit: $(git rev-parse HEAD)"
+echo "SHA256: $(sha256sum "$BINARY" | cut -d' ' -f1)"
+echo "Size: $(stat -c %s "$BINARY")"
 
-# To pin this build: copy it to pinned-binaries/bead-attempt-resolution-<short-sha>
-# and write a matching .metadata.json with the values printed above.
+# To pin this build: move it into pinned-binaries/ under the naming scheme
+# (<role>-<shaslice>), together with its .metadata.json, then update the pin
+# inventory table in pinned-binaries/README.md.
 ```
 
 ## Integration Testing
