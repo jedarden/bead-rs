@@ -6,11 +6,13 @@ This directory contains pinned bead-rs binaries for testing capability differenc
 
 ### Feature-Enabled Binary (attempt-resolution-complete)
 - **Binary:** `bead-feature-enabled`
-- **Commit:** `5bb28bf7b853be7ba244adf3ce4c76b8d1bd01e5`
+- **Built from:** `5bb28bf7b853be7ba244adf3ce4c76b8d1bd01e5` — lost-lineage provenance since the 2026-09-02 twin-lineage force-push (unreachable in every clone); recorded by the binary's embedded version string `bead 0.2.6 (5bb28bf-dirty 2026-09-01T20:16:37Z)`
+- **Rebuild target (restored-lineage twin):** `e38430e42d2d915e8035dbaf7bcd59b43e12acbb` — same subject and author date, reachable from `origin/main` (reconciled by beadrs-da594f4b, 2026-09-03)
+- **Committed:** 266a4e5 (`feat(pluck): set up pinned binaries and compatibility framework`), an `origin/main` ancestor
 - **Date:** 2026-09-01 15:45:58 -0400
 - **Message:** `docs(boundaries): document attempt-resolution feature boundary commits`
-- **Hash:** `e6a8ffb8b9d6b6cbba2d98f0458e62c3e211c1590d7abacd178419299a41a318`
-- **Capabilities:** Full attempt-resolution support with atomic idempotent outcome recording
+- **Hash:** `e6a8ffb8b9d6b6cbba2d98f0458e62c3e211c1590d7abacd178419299a41a318` (verified live 2026-09-03; compare bytes, never rebuild — the hash embeds a wall-clock build timestamp)
+- **Capabilities:** Full attempt-resolution support with atomic idempotent outcome recording (verified live 2026-09-03: `capabilities` reports `attempt_outcome.supported=true` with `resolve` present; `resolve --help` exits 0)
 
 ### Pre-Feature Binary
 **Status:** Built and pinned — the pin of record lives in the canonical registry
@@ -61,5 +63,5 @@ See `tests/pinned_binary_capability.rs` for automated capability testing.
 ---
 
 **Created:** 2026-09-01  
-**Updated:** 2026-09-03 (beadrs-78ced0f1 — dropped the `capabilities --format json` examples; `capabilities` always prints JSON and no pin accepts `--format`)  
-**Bead:** `beadrs-78ced0f1`
+**Updated:** 2026-09-03 (beadrs-da594f4b — recorded the feature-enabled pin's restored-lineage twin `e38430e` as its rebuild target; earlier the same day beadrs-78ced0f1 dropped the `capabilities --format json` examples, which no pin accepts)  
+**Bead:** `beadrs-da594f4b`

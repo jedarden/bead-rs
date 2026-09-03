@@ -18,7 +18,8 @@
         "checkpoint_persistence": true,
         "atomic_resolution": true
       },
-      "status": "built_and_pinned"
+      "status": "built_and_pinned",
+      "build_notes": "Reconciled 2026-09-03 (beadrs-da594f4b). The recorded commit 5bb28bf7b853be7ba244adf3ce4c76b8d1bd01e5 was lost with the 2026-09-02 twin-lineage force-push: it resolves in no clone (git cat-file -t fails) and no origin ref contains it. Its restored-lineage content twin is e38430e42d2d915e8035dbaf7bcd59b43e12acbb - same subject ('docs(boundaries): document attempt-resolution feature boundary commits') and author date (2026-09-01T15:45:58-04:00) - and is reachable from origin/main; that twin is the rebuild target (scripts/build-from-archive.sh e38430e42d2d915e8035dbaf7bcd59b43e12acbb --features attempt-resolution). git_commit above stays as built-from provenance, not a rebuild target: the binary's embedded version string is 'bead 0.2.6 (5bb28bf-dirty 2026-09-01T20:16:37Z)'. The binary artifact itself was committed in 266a4e5 (feat(pluck): set up pinned binaries and compatibility framework), an origin/main ancestor. Verified live 2026-09-03: on-disk sha256 matches this entry; capabilities reports attempt_outcome.supported=true with the full outcome and action sets plus resolve_receipt/resolve_request schemas and a live 'resolve' subcommand (resolve --help exits 0). sha256 is hash-only, not rebuild-verifiable (build.rs embeds a wall-clock timestamp) - verify by byte comparison against the committed pin, never by rebuilding."
     },
     "pre_feature": {
       "name": "bead-pre-feature",

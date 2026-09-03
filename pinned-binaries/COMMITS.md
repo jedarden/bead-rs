@@ -68,7 +68,7 @@ This commit represents the state of bead-rs just **before** the `attempt-resolut
 **Date**: 2026-09-02  
 **Purpose**: First commit carrying the `attempt-resolution` cargo flag plus build documentation
 
-⚠️ **No pinned binary exists for this commit.** An earlier revision of the tracking docs referenced a binary named `bead-feature-enabled` at this commit; no such binary was ever committed. The feature-enabled binaries of record are `bead-attempt-resolution-e115609` and `bead-attempt-resolution-f25ab5c` (below).
+⚠️ **No pinned binary exists for this commit.** An earlier revision of the tracking docs referenced a binary named `bead-feature-enabled` at this commit; no binary was ever built from `c8836e0`. A committed binary named `bead-feature-enabled` does exist at `.beads/pinned-binaries/` (added by 266a4e5), but it is a legacy capability-test artifact built from `5bb28bf-dirty` — a lost-lineage object whose restored-lineage twin is `e38430e42d2d915e8035dbaf7bcd59b43e12acbb` (verified 2026-09-03 by beadrs-da594f4b) — and it is not one of this registry's pins. The feature-enabled binaries of record remain `bead-attempt-resolution-e115609` and `bead-attempt-resolution-f25ab5c` (below).
 
 ## Usage in Build Steps
 
