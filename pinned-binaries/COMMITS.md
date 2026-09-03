@@ -100,15 +100,46 @@ The built-from SHAs inside the `*.metadata.json` files name lost-lineage
 objects and are expected to fail this check — see "SHA lineage and
 provenance" above.
 
-## Integration Test Binary
+## Integration Test Binary — Declared Feature-Enabled Build SHA
 
-**Commit SHA (rebuild target)**: `861cdcbfebeb70a9ebc6a2e33ee98cef97274fec`  
+**Commit SHA (declared build target)**: `861cdcbfebeb70a9ebc6a2e33ee98cef97274fec`  
 **Short SHA**: `861cdcb`  
 **Message**: `feat(tests): add binary variant integration test suite for capability detection`  
 **Date**: 2026-09-02  
 **Purpose**: Binary built WITH attempt-resolution feature for integration testing
 
-This commit represents the current state of bead-rs with the attempt-resolution feature fully implemented and integrated into the test suite. The binary built from this commit includes the complete attempt-resolution functionality and is used for capability detection tests.
+**This section declares the single canonical feature-enabled build SHA** — the
+exact commit an attempt-resolution binary must be built from
+(`scripts/build-from-archive.sh <sha> --features attempt-resolution`). Chosen
+2026-09-03 by the beadrs-90f9a509 candidate audit; recorded by beadrs-12dd0849:
+
+1. **It is the restored-lineage twin of `e115609`** — the commit this record
+   originally named. Twin status is two-way verified:
+   `bead-attempt-resolution-e115609.metadata.json` declares
+   `restored_lineage_twin_sha = 861cdcbfebeb70a9ebc6a2e33ee98cef97274fec`,
+   and the twin's commit message matches the metadata's `git_commit_message`.
+2. **The original candidate `e115609` is rejected as a build target**: the
+   object no longer exists in any clone (`git cat-file -t
+   e1156098b01264bb998797047115521261443c13` fails — see "SHA lineage and
+   provenance" above). A SHA that cannot resolve cannot be rebuilt from.
+3. **It resolves everywhere**: it is one of the five SHAs the verification
+   loop below requires to be OK from any fresh clone of origin, and
+   `git branch -r --contains 861cdcb` lists `origin/main`.
+4. **It is the earliest resolvable commit carrying the complete
+   attempt-resolution feature**: `src/model/attempt.rs`,
+   `src/service/attempt.rs`, and `src/service/capabilities.rs` are all in its
+   tree. (The feature flag itself lands earlier, at `c8836e0`; the pre-flag
+   baseline is `bf10936`.)
+5. **Its compiled source is still current**: `git diff --stat
+   861cdcb..HEAD -- src/` is empty — every later commit touches only docs,
+   tests, build tooling, and pin bookkeeping. A feature-enabled build from
+   this SHA compiles the same code as one from HEAD, while naming the feature
+   commit rather than a later bookkeeping tip.
+
+Commits landing after this declaration (including the commit that records
+this paragraph) do not supersede it: the SHA above remains the declared build
+target, and by item 5 it produces the same attempt-resolution code as any
+later tip of `main`.
 
 ## Current HEAD Binary (Pinned)
 
@@ -140,5 +171,5 @@ For complete verification of binary distinctness, capability comparison, and bui
 - `pinned-binaries/BINARY_VERIFICATION.md` - Comprehensive verification report with SHA256 hash validation, functional capability testing, and reproducible verification steps
 
 **Last Updated**: 2026-09-03
-**Document Version**: 1.5
+**Document Version**: 1.6
 **Verification Status**: ✅ Complete - All acceptance criteria met
