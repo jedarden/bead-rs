@@ -34,7 +34,7 @@ Rebuilds of any pinned commit go through `scripts/build-from-archive.sh <sha>`: 
 | **Binary Name** | `bead-pre-attempt-resolution` |
 | **Binary Path** | `/home/coding/bead-rs/pinned-binaries/bead-pre-attempt-resolution` |
 | **SHA256 Hash** | `d0da42bbf59b721bc64bc3d55610844efe3f1f06e37c2d9494c0b3dda6e29ac6` |
-| **Binary Size** | 7.0M (7,340,032 bytes) |
+| **Binary Size** | 7.0M (7,305,144 bytes) |
 | **Build Profile** | `release` |
 | **Build Features** | `--no-default-features` |
 | **Build Date** | 2026-09-02T01:35:01Z |
@@ -123,7 +123,9 @@ scripts/build-from-archive.sh af023ad47740cf5458f52398e70937b2cc1c18df
 
 The script extracts this commit's tree into a scratch directory and builds there; the shared checkout is never moved to the pinned commit.
 
-> A rebuild will **not** reproduce the pinned hash: build.rs re-embeds `BEAD_BUILD_TIMESTAMP` whenever `.git/index` changes. Verify by hash comparison against the pinned bytes, never by rebuilding.
+> A rebuild will **not** reproduce the pinned hash: build.rs re-embeds `BEAD_BUILD_TIMESTAMP` whenever `.git/index` changes. Verify the pin by comparing its sha256 against the `binary_sha256` in its `*.metadata.json`, never by rebuilding.
+>
+> (Builds are *reproducible on demand*: setting `SOURCE_DATE_EPOCH` pins the embedded timestamp and `BEAD_COMMIT_SHA` supplies the commit for trees with no `.git`, making two builds of the same tree byte-identical — asserted by `tests/reproducible_build.rs`. That reproduces a build recipe, not a pin; verification remains byte comparison.)
 
 ### Installation
 
@@ -371,8 +373,10 @@ Update pinned binaries when:
 |--------|-----------|------|------|----------|---------|
 | `bead-pre-feature` | `af023ad` | 2026-08-29 | 6.5M | Default (feature did not yet exist) | Early development baseline (release 0.2.4) |
 | `bead-pre-attempt-resolution` | `946a727` | 2026-09-01 | 7.0M | `--no-default-features` | Pre-attempt-resolution-flag baseline (functionality already present) |
-| `bead-attempt-resolution-e115609` | `e115609` | 2026-09-02 | 7.0M | `--features attempt-resolution` | Feature-enabled test binary |
+| `bead-attempt-resolution-e115609` | `e115609` | 2026-09-02 | 7.0M | default (plain build; flag not explicitly enabled) | Post-feature test binary (flag gates no code) |
 | `bead-attempt-resolution-f25ab5c` | `f25ab5c` | 2026-09-02 | 7.0M | `--features attempt-resolution` | HEAD pin, byte-exact from staged build |
+
+**Naming scheme:** pins follow `<name>-<shaslice>`, where `<shaslice>` is the first 7 hex characters of the binary's source (built-from) commit — `bead-attempt-resolution-f25ab5c` → `f25ab5c`, matching the `Commit SHA` column above. The two baseline pins predate this convention and keep role-only names: `bead-pre-feature` and `bead-pre-attempt-resolution` are the `af023ad` / `946a727` rows above. See `pinned-binaries/README.md`, "Pin inventory", for the authoritative table.
 
 **Last Updated**: 2026-09-02
 **Document Version**: 1.0

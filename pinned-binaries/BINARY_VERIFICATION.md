@@ -39,7 +39,9 @@ Re-verified 2026-09-02 by beadrs-5ea503fa (`sha256sum` matched, prior to committ
 
 ### Reproducibility caveat (f25ab5c)
 
-The sha256 of this binary is **not** reproducible across rebuilds: `build.rs` embeds `BEAD_BUILD_TIMESTAMP` at compile time (and refreshes it whenever `.git/index` changes), so two rebuilds of identical source produce different hashes. Reproducibility for this pin means **byte-identity with the staged build**, which the hash match above proves. Do not rebuild to verify — verify by hash comparison only.
+The sha256 of this binary is **not** reproducible across rebuilds: `build.rs` embeds `BEAD_BUILD_TIMESTAMP` at compile time (and refreshes it whenever `.git/index` changes), so two rebuilds of identical source produce different hashes by default. (Setting `SOURCE_DATE_EPOCH` and `BEAD_COMMIT_SHA` makes two same-tree builds byte-identical — `tests/reproducible_build.rs` asserts this — but that reproduces a build recipe, never this pin's recorded hash: it was built without them.) Reproducibility for this pin means **byte-identity with the staged build**, which the hash match above proves. Do not rebuild to verify — verify by hash comparison only.
+
+The pin's SHA of record is `f25ab5c` — its metadata file (`git_commit_sha`) and the binary's embedded version string agree on it. (The pinning commit 63c2ee8's message instead names `b0d7840`, which had been force-pushed out of `main` at pin time; that is informational history only. Merge b057d2768a859270b2d9e8855f1467bfb3521a84 later restored that lineage, so `b0d7840` is reachable on `main` today as the content-identical twin of `f25ab5c` and serves as this pin's rebuild target — never as its provenance. See `pinned-binaries/README.md`, "bead-attempt-resolution-f25ab5c", for the full note.)
 
 ### Binary Distinctness
 ✅ **CONFIRMED**: Binaries are cryptographically distinct (different SHA256 hashes)
@@ -134,9 +136,9 @@ The `attempt-resolution` feature flag in Cargo.toml is an **empty feature**:
 | Binary | Size | Build Date |
 |--------|------|------------|
 | bead-attempt-resolution-e115609 | 7,305,144 bytes | 2026-09-02T07:23:55Z |
-| bead-pre-attempt-resolution | 7,340,032 bytes | 2026-09-02T01:35:01Z |
+| bead-pre-attempt-resolution | 7,305,144 bytes | 2026-09-02T01:35:01Z |
 
-✅ **CONFIRMED**: Different binary sizes (pre-attempt is slightly larger, likely due to different Rust compiler optimizations or build timestamps)
+ℹ️ **Corrected 2026-09-03 (beadrs-ed36ef53):** the two binaries are the **same size** — 7,305,144 bytes each, matching `stat` and the `binary_size_bytes` field in each `*.metadata.json`. An earlier revision of this table recorded `bead-pre-attempt-resolution` at 7,340,032 bytes, contradicting both; the stale figure is gone. These two binaries are distinguished cryptographically, not dimensionally: different SHA256 hashes (above) and different embedded build timestamps (2026-09-02T01:35:01Z vs 2026-09-02T07:23:55Z).
 
 ## Git Commit History
 
@@ -160,7 +162,7 @@ The `attempt-resolution` feature flag in Cargo.toml is an **empty feature**:
 ✅ **COMPLETE**: Build instructions are documented in:
 - `pinned-binaries/COMMITS.md` - Commit references and usage
 - `pinned-binaries/README.md` - Detailed build procedures
-- `BUILD_PROCEDURE.md` - Step-by-step build guide
+- `docs/attempts-binary-build.md` - Step-by-step build guide
 
 ### Binary Distinctness Status
 ✅ **VERIFIED**: Binaries are cryptographically and functionally distinct:
