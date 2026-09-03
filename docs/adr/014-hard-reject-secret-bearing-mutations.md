@@ -93,7 +93,10 @@ The scanner has exactly two tiers, and only one of them rejects:
 
 1. **Blocking tier — identifiable secret formats only.** A curated,
    versioned ruleset of provider-prefixed token patterns and private-key
-   armor headers, compiled into the binary. Placeholder-shaped matches
+   armor headers, **baked into the binary and closed**: no workspace,
+   config key, environment variable, or invocation can add, remove, or
+   alter a rule. The only channel that changes the ruleset is a bead-rs
+   release. Placeholder-shaped matches
    (all-one-character bodies, `example`/`REPLACE`/`YOUR_…_HERE` markers)
    pass. Where a format defines an embedded checksum (GitHub and npm
    tokens carry a base62-encoded CRC32 of the random portion, designed
@@ -135,11 +138,12 @@ Asymmetries, deliberate:
   and harness transcripts. Per ADR-007 the rejection message names the real
   remedy: treat the value as exposed, rotate it, and store the *reference*
   (a vault path or retrieval command), not the credential.
-- **The scanner is fail-closed about its own configuration.** A
-  workspace-supplied additional pattern that does not compile fails the
-  mutation with an error naming the config key, consistent with the plan's
-  "unknown or contradictory state fails closed." The built-in ruleset
-  cannot fail to compile: it is exercised at build time by tests.
+- **The scanner is fail-closed about its own configuration.** An
+  unrecognized `secret_scan.mode` value or a malformed acknowledgment
+  list fails the mutation with an error naming the config key, consistent
+  with the plan's "unknown or contradictory state fails closed." The
+  ruleset itself has no configuration surface and cannot fail at runtime:
+  it is compiled into the binary and exercised by build-time tests.
 
 No network, ever. Live verification is rejected outright: sending a
 candidate secret to a third-party API to see whether it works is itself the
@@ -198,6 +202,28 @@ no-backtracking model that the gitleaks ruleset already targets — rules
 port without lookaround surprises and scan in linear time, which also
 bounds the cost of scanning a hostile 4 MiB field.
 
+**Why the ruleset is baked in with no local rule channel:** three reasons,
+each sufficient alone. *Determinism*: a scan verdict must be a pure
+function of binary version and input text. Fleet workspaces are shared
+checkouts driven by many harnesses; a mutation rejected on one machine and
+accepted on another — because their configs carry different rules — makes
+the gate's guarantee machine-local and its behavior undiagnosable.
+*Precision discipline*: every blocking rule earns its place through
+generation-time true/false-positive fixtures (the gitleaks and Nosey
+Parker practice). A config-supplied regex never passes that bar, and one
+sloppy rule misfiring on routine traffic erodes the trust the entire
+blocking tier depends on. *Threat boundary*: `.beads/config.json` is
+writable by the same automated actors the gate polices. A config-level
+rule channel — even an additive-only one — would let an agent install a
+match-everything rule and deny every mutation in the workspace, or land
+rule changes no release review ever saw. GitHub does offer custom
+push-protection patterns, but they are administered by an org security
+team behind an administrative boundary that a bead-rs workspace directory
+does not have; the equivalent boundary here is the release process, so
+that is where rules live. Mode and acknowledgments remain configurable
+precisely because they are visible (capabilities, doctor) and audited;
+rules would silently reshape what blocks.
+
 **Why default-on:** a scanner that ships off protects the workspaces that
 least need it. The workspaces most at risk — unattended fleet workers — are
 exactly those that will never run an opt-in. `advisory` and `off` exist
@@ -214,6 +240,9 @@ of silent.
   per-value acknowledgment.
 - The guarantee is uniform across every harness, transport, and workspace,
   instead of depending on which hooks a particular agent runs.
+- Scan verdicts are a pure function of binary version and input text:
+  reproducible on any machine, diagnosable from the ruleset version alone,
+  and immune to per-workspace rule drift.
 - Findings never echo the value, so the rejection path cannot itself become
   the leak (unlike ad-hoc scanners that print the match).
 - Doctor's advisory scan gives the fleet a way to *find* pre-existing
@@ -225,9 +254,10 @@ of silent.
   fingerprint acknowledgment step; documentation-heavy workflows will feel
   it. Mitigated by placeholder heuristics and the narrow blocking tier.
 - The ruleset ages: a new provider format is invisible until a bead-rs
-  release ships the rule. Accepted — a stale high-precision ruleset still
-  catches the dominant formats; workspace-supplied additive patterns cover
-  local urgency.
+  release ships the rule, and there is deliberately no local override to
+  bridge the gap. Accepted — a stale high-precision ruleset still catches
+  the dominant formats, and rule delivery rides the same release-and-update
+  cadence the fleet already runs for the binary itself.
 - The blocking tier misses unstructured secrets by design. The decision
   trades recall for a gate that can be trusted; the advisory tier reports
   what the blocking tier will not reject.
@@ -257,6 +287,12 @@ of silent.
   blocking gates must be self-contained.
 - **Harness/hook-side enforcement only (status quo)**: rejected — per
   harness, fails open, already bypassed in practice by the incidents above.
+- **Workspace-supplied custom patterns** (config-level rules, even
+  additive-only): rejected — breaks verdict determinism across machines,
+  bypasses the fixture-validated precision bar every baked rule must
+  pass, and hands a rule-shaping channel to the agent-writable workspace
+  config (a match-everything rule is a mutation denial-of-service).
+  Rules change only through releases.
 - **Field-level or rule-level standing exemptions**: rejected — too coarse;
   equivalent to disabling the gate for the exempted surface.
 - **Scanning harness trace artifacts (`.beads/traces/`)**: out of scope —
