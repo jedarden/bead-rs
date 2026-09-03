@@ -158,10 +158,12 @@ pinned-binaries/
 ├── bead-pre-attempt-resolution.metadata.json
 ├── bead-pre-feature
 ├── bead-pre-feature.metadata.json
+├── bead-metadata.json
 ├── bead-release-metadata.json
 ├── BINARY_VERIFICATION.md
 ├── COMMITS.md
-└── README.md
+├── README.md
+└── commits.json
 ```
 
 ### Metadata File Format
@@ -190,7 +192,7 @@ Field names below follow the newest metadata file, `bead-attempt-resolution-f25a
 
 ## Build Recipe
 
-> **A rebuild does not reproduce a pinned hash.** `build.rs` embeds `BEAD_BUILD_TIMESTAMP` at compile time and re-runs whenever `.git/index` changes, so two builds of identical source produce different bytes (see `pinned-binaries/BINARY_VERIFICATION.md`, "Reproducibility caveat"). The recipe below therefore **records the provenance of a fresh build** — it does not, and cannot, check a new build against a previously pinned hash. To verify a pinned binary, compare its sha256 against its `*.metadata.json`; never rebuild for that purpose.
+> **A rebuild does not reproduce a pinned hash.** `build.rs` embeds `BEAD_BUILD_TIMESTAMP` at compile time and re-runs whenever `.git/index` changes, so two builds of identical source produce different bytes unless the build is pinned with `SOURCE_DATE_EPOCH` (embedded timestamp) and `BEAD_COMMIT_SHA` (commit, for trees with no `.git`) — with both set, builds of the same tree are byte-identical (`tests/reproducible_build.rs` asserts this; see `pinned-binaries/BINARY_VERIFICATION.md`, "Reproducibility caveat"). The recipe below therefore **records the provenance of a fresh build** — it does not, and cannot, check a new build against a previously pinned hash. To verify a pinned binary, compare its sha256 against its `*.metadata.json`; never rebuild for that purpose.
 
 ```bash
 #!/bin/bash
@@ -276,7 +278,7 @@ Expected output (identical for `bead-pre-attempt-resolution`, `bead-attempt-reso
 ### Hash Mismatch After Build
 
 **Issue**: Reproduced binary has a different hash than the pinned version
-**Expected behavior**: This always happens. `build.rs` embeds `BEAD_BUILD_TIMESTAMP` at compile time and re-runs whenever `.git/index` changes, so no two builds — even of identical source — are byte-identical. This is not an error to fix; it is why pinned binaries are copied byte-exact rather than rebuilt.
+**Expected behavior**: This always happens by default. `build.rs` embeds `BEAD_BUILD_TIMESTAMP` at compile time and re-runs whenever `.git/index` changes, so unpinned builds — even of identical source — are never byte-identical. That is why pinned binaries are copied byte-exact rather than rebuilt. (Pinning both `SOURCE_DATE_EPOCH` and `BEAD_COMMIT_SHA` does make same-tree builds byte-identical; see `tests/reproducible_build.rs`. A matching hash after a pinned rebuild is then the expected outcome, not a coincidence.)
 
 **Solution**: Treat the rebuild as a new artifact:
 ```bash

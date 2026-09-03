@@ -1,58 +1,72 @@
 {
   "pre_feature": {
-    "full_sha": "af023ad47740cf5458f52398e70937b2cc1c18df",
-    "short_sha": "af023ad",
+    "full_sha": "ea4e317e697306275aa1a781497a133f472c0df5",
+    "short_sha": "ea4e317",
     "message": "chore(beadrs-4fcead71): release 0.2.4 — v0.2.3 tag landed behind a checkpoint commit",
     "date": "2026-08-29",
     "description": "Earliest baseline binary; the attempt-resolution cargo feature does not exist in this tree, and the binary has no 'bead resolve' subcommand",
     "build_features": "default (plain cargo build --release)",
     "binary_name": "bead-pre-feature",
-    "purpose": "Before-any-feature-work comparison point (release 0.2.4). Commit attribution taken from the binary's embedded version string; earlier docs wrongly said 181f181"
+    "purpose": "Before-any-feature-work comparison point (release 0.2.4). Commit attribution taken from the binary's embedded version string; earlier docs wrongly said 181f181",
+    "original_lineage_sha": "af023ad47740cf5458f52398e70937b2cc1c18df",
+    "original_lineage_note": "Rebuilt-from-provenance: the binary was built from original_lineage_sha on the force-pushed-away lineage, whose objects no longer exist in any clone (verified 2026-09-03). full_sha is its restored-lineage content twin (same subject, author date, tree content) and is the rebuild target via scripts/build-from-archive.sh. Re-pinned by beadrs-e030cc56, 2026-09-03.",
+    "sha256_verifiability": "hash-only: build.rs embeds a wall-clock timestamp, so no fresh build reproduces the recorded hash; verify by byte comparison with the committed pin"
   },
   "pre_attempt_resolution": {
-    "full_sha": "946a7271796e15452c4a8a1f1ff9efc05d3e7307",
-    "short_sha": "946a727",
+    "full_sha": "bf1093601dbb6367378a09c813700b4664115a51",
+    "short_sha": "bf10936",
     "message": "docs(boundaries): add reference shortcuts and pattern guide for attempt-resolution",
     "date": "2026-09-01",
     "description": "Baseline binary built just before the attempt-resolution cargo flag was added; the functionality itself (bead resolve, attempt_outcome capability) is fully present because the flag gates no code",
     "build_features": "--no-default-features",
     "binary_name": "bead-pre-attempt-resolution",
-    "purpose": "Pre-flag baseline for compatibility testing (functionally identical to a flag-enabled build of this commit)"
+    "purpose": "Pre-flag baseline for compatibility testing (functionally identical to a flag-enabled build of this commit)",
+    "original_lineage_sha": "946a7271796e15452c4a8a1f1ff9efc05d3e7307",
+    "original_lineage_note": "Rebuilt-from-provenance: the binary was built from original_lineage_sha on the force-pushed-away lineage, whose objects no longer exist in any clone (verified 2026-09-03). full_sha is its restored-lineage content twin (same subject, author date, tree content) and is the rebuild target via scripts/build-from-archive.sh. Re-pinned by beadrs-e030cc56, 2026-09-03.",
+    "sha256_verifiability": "hash-only: build.rs embeds a wall-clock timestamp, so no fresh build reproduces the recorded hash; verify by byte comparison with the committed pin"
   },
   "post_attempt_resolution": {
-    "full_sha": "1ee45e39f518a1e47a26fd312bbadbc36b1af00c",
-    "short_sha": "1ee45e3",
+    "full_sha": "c8836e0138c4b305739dd7e33d0fa10efe1242f9",
+    "short_sha": "c8836e0",
     "message": "docs(build): add reproducible build instructions to README",
     "date": "2026-09-02",
     "description": "First commit carrying the attempt-resolution cargo flag plus build documentation; no binary is pinned at this commit",
     "build_features": "--features attempt-resolution",
     "binary_name": null,
-    "purpose": "Historical reference only. An earlier revision of this file claimed a binary named 'bead-feature-enabled' lived here; no such binary was ever committed. The feature-enabled binaries of record are bead-attempt-resolution-e115609 and bead-attempt-resolution-f25ab5c"
+    "purpose": "Historical reference only. An earlier revision of this file claimed a binary named 'bead-feature-enabled' lived here; no such binary was ever committed. The feature-enabled binaries of record are bead-attempt-resolution-e115609 and bead-attempt-resolution-f25ab5c",
+    "original_lineage_sha": "1ee45e39f518a1e47a26fd312bbadbc36b1af00c",
+    "original_lineage_note": "Rebuilt-from-provenance: the binary was built from original_lineage_sha on the force-pushed-away lineage, whose objects no longer exist in any clone (verified 2026-09-03). full_sha is its restored-lineage content twin (same subject, author date, tree content) and is the rebuild target via scripts/build-from-archive.sh. Re-pinned by beadrs-e030cc56, 2026-09-03."
   },
   "attempt_resolution_e115609": {
-    "full_sha": "e1156098b01264bb998797047115521261443c13",
-    "short_sha": "e115609",
+    "full_sha": "861cdcbfebeb70a9ebc6a2e33ee98cef97274fec",
+    "short_sha": "861cdcb",
     "message": "feat(tests): add binary variant integration test suite for capability detection",
     "date": "2026-09-02",
     "description": "Feature-enabled binary used by the binary-variant integration test suite for capability detection",
     "build_features": "default (plain cargo build --release; the flag is an empty marker and not in default features)",
     "binary_name": "bead-attempt-resolution-e115609",
-    "purpose": "Integration testing and capability-detection fixtures"
+    "purpose": "Integration testing and capability-detection fixtures",
+    "original_lineage_sha": "e1156098b01264bb998797047115521261443c13",
+    "original_lineage_note": "Rebuilt-from-provenance: the binary was built from original_lineage_sha on the force-pushed-away lineage, whose objects no longer exist in any clone (verified 2026-09-03). full_sha is its restored-lineage content twin (same subject, author date, tree content) and is the rebuild target via scripts/build-from-archive.sh. Re-pinned by beadrs-e030cc56, 2026-09-03.",
+    "sha256_verifiability": "hash-only: build.rs embeds a wall-clock timestamp, so no fresh build reproduces the recorded hash; verify by byte comparison with the committed pin"
   },
   "attempt_resolution_f25ab5c": {
-    "full_sha": "f25ab5c91c09a3408f23b9cdf2f3e95e81abc060",
-    "short_sha": "f25ab5c",
+    "full_sha": "b0d7840f6c96cd45e16ea05b7babdb42ef0d2654",
+    "short_sha": "b0d7840",
     "message": "docs(attempts-binary): add comprehensive build process and verification documentation",
     "date": "2026-09-02",
     "description": "HEAD pin, byte-exact from the build bead's staging; compiled tracked source is identical to e115609",
     "build_features": "--features attempt-resolution",
     "binary_name": "bead-attempt-resolution-f25ab5c",
-    "purpose": "Binary of record for the current HEAD state"
+    "purpose": "Binary of record for the current HEAD state",
+    "original_lineage_sha": "f25ab5c91c09a3408f23b9cdf2f3e95e81abc060",
+    "original_lineage_note": "Rebuilt-from-provenance: the binary was built from original_lineage_sha on the force-pushed-away lineage, whose objects no longer exist in any clone (verified 2026-09-03). full_sha is its restored-lineage content twin (same subject, author date, tree content) and is the rebuild target via scripts/build-from-archive.sh. Re-pinned by beadrs-e030cc56, 2026-09-03.",
+    "sha256_verifiability": "hash-only: build.rs embeds a wall-clock timestamp, so no fresh build reproduces the recorded hash; verify by byte comparison with the committed pin"
   },
   "metadata": {
-    "document_version": "1.1",
-    "last_updated": "2026-09-02",
+    "document_version": "1.2",
+    "last_updated": "2026-09-03",
     "repository": "/home/coding/bead-rs",
-    "notes": "Corrected 2026-09-02 by beadrs-b6441e82: removed the phantom 'bead-feature-enabled' binary reference (never committed), added the pre-feature and feature-enabled pins actually present in pinned-binaries/."
+    "notes": "Corrected 2026-09-02 by beadrs-b6441e82: removed the phantom 'bead-feature-enabled' binary reference (never committed), added the pre-feature and feature-enabled pins actually present in pinned-binaries/. Re-pinned 2026-09-03 by beadrs-e030cc56: every full_sha is now a resolvable restored-lineage twin of the commit the binary was built from (original_lineage_sha, kept as provenance; lost with the 2026-09-02 force-push). Recorded binary sha256 values are hash-only, not rebuild-verifiable, until SOURCE_DATE_EPOCH determinism lands."
   }
 }

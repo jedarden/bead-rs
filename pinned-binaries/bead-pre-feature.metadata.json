@@ -19,5 +19,8 @@
     "Commit attribution comes from the binary's embedded version string (`bead-pre-feature --version`), which build.rs derives from git at compile time. docs/pinned-binaries.md previously attributed this binary to 181f181; that is wrong — 181f181 is 31 commits later and its Cargo.toml declares 0.2.6, while the pinned binary embeds 0.2.4/af023ad. The docs have been corrected.",
     "Because the attempt-resolution cargo feature does not exist at this commit, this binary is a true pre-feature baseline: any hash difference against the bead-attempt-resolution-* pins reflects all intervening development, not the feature flag (which is an empty marker feature that gates no code).",
     "sha256 is NOT reproducible across rebuilds: build.rs re-embeds BEAD_BUILD_TIMESTAMP whenever .git/index changes, so a rebuild of identical source hashes differently. Verify by hash comparison against this file; never by rebuilding."
-  ]
+  ],
+  "restored_lineage_twin_sha": "ea4e317e697306275aa1a781497a133f472c0df5",
+  "restored_lineage_twin_short": "ea4e317",
+  "restored_lineage_note": "git_commit_sha above is built-from provenance: it names a commit of the force-pushed-away lineage that no longer exists in any clone (verified 2026-09-03). restored_lineage_twin_sha is its content twin (same subject, author date, tree content) and is the rebuild target via scripts/build-from-archive.sh. The recorded binary_sha256 is hash-only, not rebuild-verifiable, until SOURCE_DATE_EPOCH determinism lands (beadrs-dc295092 / beadrs-baba38b8). Re-pinned by beadrs-e030cc56, 2026-09-03."
 }
