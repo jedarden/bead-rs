@@ -41,7 +41,7 @@
   },
   "test_framework": {
     "path": "tests/pinned_binary_capability.rs",
-    "test_count": 8,
+    "test_count": 10,
     "validates": [
       "capability_detection",
       "resolve_command_availability",
@@ -55,7 +55,7 @@
   },
   "usage": {
     "feature_enabled": {
-      "test_capability": "./bead-feature-enabled capabilities --format json | jq '.attempt_outcome'",
+      "test_capability": "./bead-feature-enabled capabilities | jq '.attempt_outcome' (output is always JSON; --format is accepted by no pin)",
       "test_resolve": "./bead-feature-enabled resolve --help",
       "test_why": "./bead-feature-enabled why bead-123abc"
     },
@@ -69,6 +69,6 @@
   "validation": {
     "needle_fallback": "Validated via doctor --starvation-recovery mode",
     "atomic_paths": "Validated via resolve command exit codes and transaction semantics",
-    "capability_contract": "Validated via capabilities --format json schema"
+    "capability_contract": "Validated via the capabilities document schema (output is always JSON on stdout; --format is accepted by no pin)"
   }
 }

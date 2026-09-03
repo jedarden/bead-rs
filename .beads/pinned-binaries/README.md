@@ -45,8 +45,8 @@ The test framework validates:
 ## Usage
 
 ```bash
-# Test feature-enabled binary
-./bead-feature-enabled capabilities --format json | jq '.attempt_outcome.supported'
+# Test feature-enabled binary (capabilities output is always JSON; --format is accepted by no pin)
+./bead-feature-enabled capabilities | jq '.attempt_outcome.supported'
 ./bead-feature-enabled why bead-123abc
 
 # Test pre-feature binary
@@ -61,5 +61,5 @@ See `tests/pinned_binary_capability.rs` for automated capability testing.
 ---
 
 **Created:** 2026-09-01  
-**Updated:** 2026-09-03 (beadrs-455a56ac — pre-feature entry reconciled to the canonical pin)  
+**Updated:** 2026-09-03 (beadrs-78ced0f1 — dropped the `capabilities --format json` examples; `capabilities` always prints JSON and no pin accepts `--format`)  
 **Bead:** `beadrs-78ced0f1`
