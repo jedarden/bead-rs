@@ -148,9 +148,10 @@ The `attempt-resolution` feature flag in Cargo.toml is an **empty feature**:
    - Used for pre-attempt-resolution binary
    - Attempt-resolution code was already present in the codebase
 
-2. **9efbc92** (2026-09-02): "feat(cargo): add attempt-resolution feature and build documentation"
+2. **0c7bab9** (2026-09-02): "feat(cargo): add attempt-resolution feature and build documentation"
    - Added empty `attempt-resolution = []` feature flag to Cargo.toml
    - Documented build procedures
+   - Listed by its restored-lineage twin (`0c7bab9`, resolvable); the original-lineage object `9efbc92` was removed by the 2026-09-02 force-push and no longer resolves — see `COMMITS.md`, "SHA lineage and provenance"
 
 3. **e115609** (2026-09-02): "feat(tests): add binary variant integration test suite for capability detection"
    - Used for current attempt-resolution binary

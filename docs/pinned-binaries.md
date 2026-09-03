@@ -11,7 +11,7 @@ The `pinned-binaries/` directory contains four pinned binaries representing spec
 - **Migration testing**: Verifying upgrade/downgrade scenarios
 - **Capability detection**: Testing feature probing and capability negotiation
 
-Rebuilds of any pinned commit go through `scripts/build-from-archive.sh <sha>`: pinned binaries are built from a git-archive extraction in scratch, never by stashing, resetting, or checking out commits inside the shared checkout at `/home/coding/bead-rs` (see `../BUILD_PROCEDURE.md`, "Build Rule"). The script can only build commits that still resolve in this repo — check `git cat-file -t <sha>` first; the source commits recorded for the existing pins are unreachable after the 2026-09-02 twin-lineage force-push, so the per-binary invocations below document the sanctioned form rather than currently runnable rebuilds.
+Rebuilds of any pinned commit go through `scripts/build-from-archive.sh <sha>`: pinned binaries are built from a git-archive extraction in scratch, never by stashing, resetting, or checking out commits inside the shared checkout at `/home/coding/bead-rs` (see `../BUILD_PROCEDURE.md`, "Build Rule"). The script can only build commits that still resolve in this repo — check `git cat-file -t <sha>` first. The source commits the existing pins were built from are unreachable after the 2026-09-02 twin-lineage force-push, so they are recorded as built-from provenance only (see `pinned-binaries/README.md`, "Pin inventory", and `pinned-binaries/COMMITS.md`, "SHA lineage and provenance"); the per-binary invocations below are runnable today — each builds the pin's restored-lineage content twin (same subject, author date, and tree content), recorded as `restored_lineage_twin_sha` in the pin's `*.metadata.json`.
 
 ## Binary 1: `bead-pre-attempt-resolution`
 
@@ -19,7 +19,7 @@ Rebuilds of any pinned commit go through `scripts/build-from-archive.sh <sha>`: 
 
 | Property | Value |
 |----------|-------|
-| **Full SHA** | `946a7271796e15452c4a8a1f1ff9efc05d3e7307` |
+| **Source commit (built-from provenance, unresolvable)** | `946a7271796e15452c4a8a1f1ff9efc05d3e7307` |
 | **Short SHA** | `946a727` |
 | **Commit Date** | 2026-09-01 |
 | **Author** | jedarden |
@@ -41,15 +41,18 @@ Rebuilds of any pinned commit go through `scripts/build-from-archive.sh <sha>`: 
 
 ### Purpose
 
-This binary was built just before the `attempt-resolution` cargo **feature flag** was added to Cargo.toml (the flag landed in 9efbc92). The attempt-resolution *functionality* was already fully present in this tree — `bead resolve` works and `capabilities` advertises `attempt_outcome` — because the feature is an empty marker that gates no code (see `pinned-binaries/BINARY_VERIFICATION.md`). It is built with `--no-default-features` for maximum compatibility, which changes nothing functionally.
+This binary was built just before the `attempt-resolution` cargo **feature flag** was added to Cargo.toml (the flag landed in `0c7bab9`, the restored-lineage twin of the originally-recorded `9efbc92`, which the 2026-09-02 force-push removed — see `pinned-binaries/COMMITS.md`, "SHA lineage and provenance"). The attempt-resolution *functionality* was already fully present in this tree — `bead resolve` works and `capabilities` advertises `attempt_outcome` — because the feature is an empty marker that gates no code (see `pinned-binaries/BINARY_VERIFICATION.md`). It is built with `--no-default-features` for maximum compatibility, which changes nothing functionally.
 
 ### Build Procedure
 
-To reproduce this binary from source, build its commit through the sanctioned archive-build path:
+To reproduce this binary from source, build its restored-lineage twin through the sanctioned archive-build path:
 
 ```bash
 cd /home/coding/bead-rs
-scripts/build-from-archive.sh 946a7271796e15452c4a8a1f1ff9efc05d3e7307
+# bf10936 = restored-lineage content twin of 946a727 (the built-from commit
+# recorded above): same subject, author date, and tree content. The original
+# object was removed by the 2026-09-02 force-push and no longer resolves.
+scripts/build-from-archive.sh bf1093601dbb6367378a09c813700b4664115a51
 ```
 
 The script extracts this commit's tree into a scratch directory and builds there; the shared checkout is never moved to the pinned commit. This pin was recorded with `--no-default-features`, which is functionally identical to the script's default-feature build because the attempt-resolution flag gates no code (see `pinned-binaries/BINARY_VERIFICATION.md`).
@@ -89,7 +92,7 @@ test -x /home/coding/bead-rs/pinned-binaries/bead-pre-attempt-resolution && echo
 
 | Property | Value |
 |----------|-------|
-| **Full SHA** | `af023ad47740cf5458f52398e70937b2cc1c18df` |
+| **Source commit (built-from provenance, unresolvable)** | `af023ad47740cf5458f52398e70937b2cc1c18df` |
 | **Short SHA** | `af023ad` |
 | **Commit Date** | 2026-08-29 22:45:04 -0400 |
 | **Author** | jedarden |
@@ -114,11 +117,14 @@ This binary is the earliest baseline in the attempt-resolution feature developme
 
 ### Build Procedure
 
-To reproduce this binary from source, build its commit through the sanctioned archive-build path:
+To reproduce this binary from source, build its restored-lineage twin through the sanctioned archive-build path:
 
 ```bash
 cd /home/coding/bead-rs
-scripts/build-from-archive.sh af023ad47740cf5458f52398e70937b2cc1c18df
+# ea4e317 = restored-lineage content twin of af023ad (the built-from commit
+# recorded above): same subject, author date, and tree content. The original
+# object was removed by the 2026-09-02 force-push and no longer resolves.
+scripts/build-from-archive.sh ea4e317e697306275aa1a781497a133f472c0df5
 ```
 
 The script extracts this commit's tree into a scratch directory and builds there; the shared checkout is never moved to the pinned commit.
@@ -286,10 +292,12 @@ Rebuilding from source is only for producing a *new* artifact (record its proven
 
 ```bash
 # bead-pre-feature: release 0.2.4 (feature did not yet exist)
-scripts/build-from-archive.sh af023ad47740cf5458f52398e70937b2cc1c18df
+# (ea4e317 = restored-lineage twin of the built-from commit af023ad)
+scripts/build-from-archive.sh ea4e317e697306275aa1a781497a133f472c0df5
 
 # bead-pre-attempt-resolution (recorded with --no-default-features; the flag gates no code)
-scripts/build-from-archive.sh 946a7271796e15452c4a8a1f1ff9efc05d3e7307
+# (bf10936 = restored-lineage twin of the built-from commit 946a727)
+scripts/build-from-archive.sh bf1093601dbb6367378a09c813700b4664115a51
 ```
 
 #### 3. Wrong architecture/platform
@@ -369,15 +377,15 @@ Update pinned binaries when:
 
 ## Summary Table
 
-| Binary | Commit SHA | Date | Size | Features | Purpose |
+| Binary | Source commit | Date | Size | Features | Purpose |
 |--------|-----------|------|------|----------|---------|
 | `bead-pre-feature` | `af023ad` | 2026-08-29 | 6.5M | Default (feature did not yet exist) | Early development baseline (release 0.2.4) |
 | `bead-pre-attempt-resolution` | `946a727` | 2026-09-01 | 7.0M | `--no-default-features` | Pre-attempt-resolution-flag baseline (functionality already present) |
 | `bead-attempt-resolution-e115609` | `e115609` | 2026-09-02 | 7.0M | default (plain build; flag not explicitly enabled) | Post-feature test binary (flag gates no code) |
 | `bead-attempt-resolution-f25ab5c` | `f25ab5c` | 2026-09-02 | 7.0M | `--features attempt-resolution` | HEAD pin, byte-exact from staged build |
 
-**Naming scheme:** pins follow `<name>-<shaslice>`, where `<shaslice>` is the first 7 hex characters of the binary's source (built-from) commit — `bead-attempt-resolution-f25ab5c` → `f25ab5c`, matching the `Commit SHA` column above. The two baseline pins predate this convention and keep role-only names: `bead-pre-feature` and `bead-pre-attempt-resolution` are the `af023ad` / `946a727` rows above. See `pinned-binaries/README.md`, "Pin inventory", for the authoritative table.
+**Naming scheme:** pins follow `<name>-<shaslice>`, where `<shaslice>` is the first 7 hex characters of the binary's source (built-from) commit — `bead-attempt-resolution-f25ab5c` → `f25ab5c`, matching the `Source commit` column above (built-from provenance — those commits no longer resolve; rebuilds go through the restored-lineage twins, see "Overview"). The two baseline pins predate this convention and keep role-only names: `bead-pre-feature` and `bead-pre-attempt-resolution` are the `af023ad` / `946a727` rows above. See `pinned-binaries/README.md`, "Pin inventory", for the authoritative table.
 
-**Last Updated**: 2026-09-02
-**Document Version**: 1.0
+**Last Updated**: 2026-09-03
+**Document Version**: 1.1
 **Maintainer**: bead-rs project
