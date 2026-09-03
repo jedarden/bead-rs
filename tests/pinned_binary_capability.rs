@@ -28,7 +28,11 @@ fn default_build_has_attempt_capability() {
         .and_then(|v| v.get("supported"))
         .and_then(|v| v.as_bool());
 
-    assert_eq!(supported, Some(true), "Default build should support attempt_outcome");
+    assert_eq!(
+        supported,
+        Some(true),
+        "Default build should support attempt_outcome"
+    );
 }
 
 #[test]
@@ -139,7 +143,10 @@ fn needle_fallback_validation() {
         .output()
         .expect("Failed to execute doctor command");
 
-    assert!(output.status.success(), "Doctor command should be available");
+    assert!(
+        output.status.success(),
+        "Doctor command should be available"
+    );
 
     let help = String::from_utf8_lossy(&output.stdout);
     // Doctor should support various recovery scenarios
@@ -189,7 +196,9 @@ fn capability_schema_validation() {
     );
 
     // Validate schemas array
-    let schemas = caps["schemas"].as_array().expect("Should have schemas array");
+    let schemas = caps["schemas"]
+        .as_array()
+        .expect("Should have schemas array");
     assert!(!schemas.is_empty(), "Schemas array should not be empty");
 
     // Each schema should have required fields
@@ -254,9 +263,7 @@ fn default_build_checkpoint_round_trip_support() {
     harness.init_workspace().unwrap();
 
     // Verify checkpoint operations are available
-    let required_commands = vec![
-        "sync", "flush-only", "import-only", "reconcile", "status",
-    ];
+    let required_commands = vec!["sync", "flush-only", "import-only", "reconcile", "status"];
 
     for command in required_commands {
         // These are subcommands under 'sync', not root commands
@@ -271,26 +278,17 @@ fn default_build_checkpoint_round_trip_support() {
     let schemas = caps["schemas"].as_array().unwrap();
 
     // Should have resolve-receipt schema
-    let receipt_schema = schemas
-        .iter()
-        .find(|s| {
-            s.get("schema_ref")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .contains("resolve-receipt")
-        });
+    let receipt_schema = schemas.iter().find(|s| {
+        s.get("schema_ref")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .contains("resolve-receipt")
+    });
 
     assert!(
         receipt_schema.is_some(),
         "Should advertise resolve-receipt schema"
     );
-}
-
-/// Setup helper for tests that need a workspace
-fn setup_test_workspace() -> BinaryHarness {
-    let harness = BinaryHarness::new().unwrap();
-    harness.init_workspace().unwrap();
-    harness
 }
 
 /// Helper to test capability absence (for testing against pre-feature builds)
@@ -304,9 +302,7 @@ fn framework_handles_capability_absence() {
     let harness = BinaryHarness::new().unwrap();
 
     // Test that the framework correctly reports absence of non-existent fields
-    assert!(!harness
-        .has_capability_field("nonexistent_field")
-        .unwrap());
+    assert!(!harness.has_capability_field("nonexistent_field").unwrap());
 
     assert!(!harness
         .has_capability_field("attempt_outcome.nonexistent")
