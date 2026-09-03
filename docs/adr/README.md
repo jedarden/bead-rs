@@ -48,4 +48,5 @@ Use the template in `000-template.md` for new ADRs. Each ADR should include:
 | [011](011-atomic-idempotent-attempt-resolution.md) | Resolve an attempt and its lifecycle transition atomically | Accepted | 2026-08-31 |
 | [012](012-capability-gated-attempt-contract-rollout.md) | Roll out attempt resolution through versioned capabilities | Accepted | 2026-08-31 |
 | [013](013-read-only-git-reachability-reporting.md) | Report Git reachability in `sync status` through the git binary, read-only | Accepted | 2026-09-02 |
-| [014](014-hard-reject-secret-bearing-mutations.md) | Hard-reject mutations that would publish a detectable secret | Proposed | 2026-09-03 |
+| [014](014-hard-reject-secret-bearing-mutations.md) | Hard-reject mutations that would publish a detectable secret | Accepted | 2026-09-03 |
+| [015](015-audited-historical-redaction.md) | Audited historical redaction over hand-edited recovery artifacts | Accepted | 2026-09-03 |

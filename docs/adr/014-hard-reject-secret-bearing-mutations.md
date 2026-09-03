@@ -1,6 +1,6 @@
 # ADR-014: Hard-Reject Mutations That Would Publish a Detectable Secret
 
-**Status**: Proposed
+**Status**: Accepted
 
 **Date**: 2026-09-03
 
