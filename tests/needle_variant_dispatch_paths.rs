@@ -10,7 +10,9 @@
 //! registry lookup instead of importing `capability_framework`, so this suite
 //! stays decoupled from that file's ongoing rework and states its own
 //! preconditions. Evidence and the deploy-safety verdict this suite encodes
-//! live in `docs/verification/needle-variant-dispatch-validation.md`.
+//! live in `docs/verification/needle-variant-dispatch-validation.md`; the
+//! consumer-contract companion suite is `tests/needle_variant_paths.rs`
+//! (report: `docs/verification/needle-variant-paths-validation-2026-09-03.md`).
 
 use serial_test::serial;
 use sha2::{Digest, Sha256};
