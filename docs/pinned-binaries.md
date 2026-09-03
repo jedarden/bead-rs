@@ -11,6 +11,8 @@ The `pinned-binaries/` directory contains four pinned binaries representing spec
 - **Migration testing**: Verifying upgrade/downgrade scenarios
 - **Capability detection**: Testing feature probing and capability negotiation
 
+Rebuilds of any pinned commit go through `scripts/build-from-archive.sh <sha>`: pinned binaries are built from a git-archive extraction in scratch, never by stashing, resetting, or checking out commits inside the shared checkout at `/home/coding/bead-rs` (see `../BUILD_PROCEDURE.md`, "Build Rule"). The script can only build commits that still resolve in this repo — check `git cat-file -t <sha>` first; the source commits recorded for the existing pins are unreachable after the 2026-09-02 twin-lineage force-push, so the per-binary invocations below document the sanctioned form rather than currently runnable rebuilds.
+
 ## Binary 1: `bead-pre-attempt-resolution`
 
 ### Commit Information
@@ -43,20 +45,14 @@ This binary was built just before the `attempt-resolution` cargo **feature flag*
 
 ### Build Procedure
 
-To reproduce this binary from source:
+To reproduce this binary from source, build its commit through the sanctioned archive-build path:
 
 ```bash
-# Navigate to repository
 cd /home/coding/bead-rs
-
-# Checkout exact commit
-git checkout 946a7271796e15452c4a8a1f1ff9efc05d3e7307
-
-# Build without default features (functionally identical — the flag gates no code)
-cargo build --release --no-default-features
-
-# Binary will be at: target/release/bead
+scripts/build-from-archive.sh 946a7271796e15452c4a8a1f1ff9efc05d3e7307
 ```
+
+The script extracts this commit's tree into a scratch directory and builds there; the shared checkout is never moved to the pinned commit. This pin was recorded with `--no-default-features`, which is functionally identical to the script's default-feature build because the attempt-resolution flag gates no code (see `pinned-binaries/BINARY_VERIFICATION.md`).
 
 ### Installation
 
@@ -118,20 +114,14 @@ This binary is the earliest baseline in the attempt-resolution feature developme
 
 ### Build Procedure
 
-To reproduce this binary from source:
+To reproduce this binary from source, build its commit through the sanctioned archive-build path:
 
 ```bash
-# Navigate to repository
 cd /home/coding/bead-rs
-
-# Checkout exact commit
-git checkout af023ad47740cf5458f52398e70937b2cc1c18df
-
-# Build with default configuration
-cargo build --release
-
-# Binary will be at: target/release/bead
+scripts/build-from-archive.sh af023ad47740cf5458f52398e70937b2cc1c18df
 ```
+
+The script extracts this commit's tree into a scratch directory and builds there; the shared checkout is never moved to the pinned commit.
 
 > A rebuild will **not** reproduce the pinned hash: build.rs re-embeds `BEAD_BUILD_TIMESTAMP` whenever `.git/index` changes. Verify by hash comparison against the pinned bytes, never by rebuilding.
 
@@ -275,31 +265,29 @@ chmod +x /home/coding/bead-rs/pinned-binaries/bead-pre-feature
 
 **Symptom**: SHA256 hash doesn't match expected value
 
-**Solution**: Restore the pinned bytes from git — the binaries are committed to the repo, so the correct copy is the committed one. **Do not rebuild to restore a pin**: `build.rs` re-embeds `BEAD_BUILD_TIMESTAMP` on every build, so a rebuild hashes differently and copying it over the pin would replace the pinned bytes with a different artifact.
+**Solution**: Restore the pinned bytes from git — the binaries are committed to the repo, so the correct copy is the committed one. **Do not rebuild to restore a pin**: `build.rs` re-embeds `BEAD_BUILD_TIMESTAMP` on every build, so a rebuild hashes differently and copying it over the pin would replace the pinned bytes with a different artifact. Restore with `git show`, which writes only the named file — this shared checkout must never have its HEAD moved or its index touched by a restore, since other workers hold in-flight edits here.
 
 ```bash
 cd /home/coding/bead-rs
 
-# Restore any pinned binary from the committed bytes
-git checkout HEAD -- pinned-binaries/bead-pre-feature
-git checkout HEAD -- pinned-binaries/bead-pre-attempt-resolution
-git checkout HEAD -- pinned-binaries/bead-attempt-resolution-f25ab5c
+# Restore any pinned binary from the committed bytes — only after sha256sum proves the pin is corrupt
+git show HEAD:pinned-binaries/bead-pre-feature > pinned-binaries/bead-pre-feature
+git show HEAD:pinned-binaries/bead-pre-attempt-resolution > pinned-binaries/bead-pre-attempt-resolution
+git show HEAD:pinned-binaries/bead-attempt-resolution-f25ab5c > pinned-binaries/bead-attempt-resolution-f25ab5c
 
 # Confirm against the metadata files
 sha256sum pinned-binaries/bead-pre-feature
 # must equal binary_sha256 in pinned-binaries/bead-pre-feature.metadata.json
 ```
 
-Rebuilding from source is only for producing a *new* artifact (record its provenance; see `docs/attempts-binary-build.md`):
+Rebuilding from source is only for producing a *new* artifact (record its provenance; see `docs/attempts-binary-build.md`), and it goes through the archive script:
 
 ```bash
 # bead-pre-feature: release 0.2.4 (feature did not yet exist)
-git checkout af023ad47740cf5458f52398e70937b2cc1c18df
-cargo build --release
+scripts/build-from-archive.sh af023ad47740cf5458f52398e70937b2cc1c18df
 
-# bead-pre-attempt-resolution
-git checkout 946a7271796e15452c4a8a1f1ff9efc05d3e7307
-cargo build --release --no-default-features
+# bead-pre-attempt-resolution (recorded with --no-default-features; the flag gates no code)
+scripts/build-from-archive.sh 946a7271796e15452c4a8a1f1ff9efc05d3e7307
 ```
 
 #### 3. Wrong architecture/platform
@@ -358,7 +346,7 @@ Update pinned binaries when:
 ### Update Procedure
 
 1. Choose target commit SHA
-2. Build binary with appropriate features
+2. Build it with `scripts/build-from-archive.sh <sha>` (the only sanctioned build path)
 3. Calculate SHA256 hash
 4. Update metadata files
 5. Update this documentation

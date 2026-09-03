@@ -34,19 +34,18 @@ This commit represents the state of bead-rs just **before** the `attempt-resolut
 
 ## Usage in Build Steps
 
-When referencing these commits in build scripts or CI/CD pipelines:
+When referencing these commits in build scripts or CI/CD pipelines, build them through the sanctioned archive script — pinned binaries are built from a git-archive extraction in scratch, never by moving the shared checkout to the pinned commit:
 
 ```bash
-# Pre-attempt-resolution-flag build (functionally identical to a flag-enabled build)
-PRE_ATTEMPT_COMMIT="946a7271796e15452c4a8a1f1ff9efc05d3e7307"
-git checkout $PRE_ATTEMPT_COMMIT
-cargo build --release --no-default-features
+# Pre-attempt-resolution-flag build (recorded with --no-default-features, which is
+# functionally identical to a flag-enabled build: the flag gates no code)
+scripts/build-from-archive.sh 946a7271796e15452c4a8a1f1ff9efc05d3e7307
 
 # Feature-enabled build at a pinned commit
-FEATURE_COMMIT="f25ab5c91c09a3408f23b9cdf2f3e95e81abc060"
-git checkout $FEATURE_COMMIT
-cargo build --release --features attempt-resolution
+scripts/build-from-archive.sh f25ab5c91c09a3408f23b9cdf2f3e95e81abc060 --features attempt-resolution
 ```
+
+The script extracts the commit's tree via `git archive` into a scratch directory and builds there, so the shared checkout's HEAD, index, stash, and working tree are untouched (see `../BUILD_PROCEDURE.md`, "Build Rule"). Reachability caveat: it can only build commits that still resolve in this repo (`git cat-file -t <sha>`); the source commits recorded for the pins above are unreachable after the 2026-09-02 twin-lineage force-push, so these commands document the sanctioned form for future pins rather than runnable rebuilds of the listed ones.
 
 ## Verification
 

@@ -42,6 +42,10 @@ carefully as its correctness.
 - Never claim compatibility without passing the corresponding conformance
   suite.
 - Preserve unrelated and untracked work. Never force-push.
+- Pinned binaries are built from a git-archive extraction in scratch via
+  `scripts/build-from-archive.sh <sha>` — never by stashing, resetting, or
+  checking out commits inside this shared checkout; the script is the only
+  sanctioned way to build one (see [BUILD_PROCEDURE.md](BUILD_PROCEDURE.md)).
 
 ## Verification
 
