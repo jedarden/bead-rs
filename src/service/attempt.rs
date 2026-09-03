@@ -57,7 +57,7 @@ use time::OffsetDateTime;
 /// - `AttemptError::Integrity` - Database corruption (exit 5)
 /// - `AttemptError::Transient` - Lock contention (exit 6)
 pub fn resolve_attempt(
-    tx: &Transaction,
+    tx: &mut Transaction,
     workspace_uuid: &str,
     request: ResolveRequest,
 ) -> std::result::Result<ResolveReceipt, AttemptError> {
@@ -76,6 +76,18 @@ pub fn resolve_attempt(
     // Validate combination
     validate_outcome_action_combo(&outcome, &action)
         .map_err(|e| AttemptError::Usage(format!("Invalid combination: {}", e)))?;
+
+    // `close` delegates to the standard close path, which requires a reason
+    // (mirroring `bead close`). Reject a missing one as usage here, before any
+    // mutation, instead of letting the inner validation error surface as an
+    // integrity failure.
+    if matches!(action, Action::Close)
+        && request.reason.as_deref().map_or(true, |r| r.trim().is_empty())
+    {
+        return Err(AttemptError::Usage(
+            "action 'close' requires a non-empty reason".to_string(),
+        ));
+    }
 
     // Get current issue state
     let issue_state = get_issue_state(tx, &request.issue_id).map_err(|e| match e {
@@ -133,7 +145,7 @@ pub fn resolve_attempt(
                 issue_id: request.issue_id.clone(),
                 attempt_id: request.attempt_id.clone(),
                 resulting_issue_revision: existing.resulting_issue_revision,
-                resulting_state: existing.resulting_state,
+                resulting_state: derive_resulting_state(&existing.action),
                 resulting_attempt_tier: existing.resulting_attempt_tier,
                 created_at: existing.created_at,
                 is_replay: true,
@@ -243,9 +255,17 @@ struct IssueState {
 }
 
 /// Get current issue state
+///
+/// Selects `revision` — the logical-revision column migration 3 creates
+/// (src/store/migrations.rs) and every mutation bumps — not anything derived
+/// from the `updated_at` timestamp. An earlier draft named the column
+/// `updated_at_revision`, which no migration creates, so every resolve failed
+/// with an exit-5 integrity error (beadrs-6b891bb7) while `capabilities` still
+/// advertised the feature; `resolve_attempt_e2e.rs` now drives this path
+/// end-to-end so a regression here cannot go unseen again.
 fn get_issue_state(tx: &Transaction, issue_id: &str) -> std::result::Result<IssueState, Error> {
     let mut stmt = tx.prepare_cached(
-        "SELECT updated_at_revision, base_status, attempt_tier, consecutive_failures
+        "SELECT revision, base_status, attempt_tier, consecutive_failures
          FROM issues WHERE id = ?1",
     )?;
 
@@ -329,9 +349,22 @@ struct ExistingAttempt {
     canonical_request_hash: String,
     outcome: String,
     resulting_issue_revision: i64,
-    resulting_state: String,
     resulting_attempt_tier: i64,
     created_at: String,
+    action: String,
+}
+
+/// Derive the resulting state of a resolved attempt from its stored action.
+///
+/// `attempt_outcomes` does not persist the post-action status, so a replayed
+/// receipt reconstructs it from the recorded action, the same derivation the
+/// checkpoint publisher applies when emitting outcome records.
+fn derive_resulting_state(action: &str) -> String {
+    if action == "close" {
+        "closed".to_string()
+    } else {
+        "open".to_string()
+    }
 }
 
 /// Get existing attempt by attempt_id
@@ -341,7 +374,7 @@ fn get_existing_attempt(
 ) -> std::result::Result<Option<ExistingAttempt>, Error> {
     let mut stmt = tx.prepare_cached(
         "SELECT receipt_id, canonical_request_hash, outcome, resulting_issue_revision,
-                resulting_state, resulting_attempt_tier, created_at
+                resulting_attempt_tier, created_at, action
          FROM attempt_outcomes WHERE attempt_id = ?1",
     )?;
 
@@ -352,9 +385,9 @@ fn get_existing_attempt(
                 canonical_request_hash: row.get(1)?,
                 outcome: row.get(2)?,
                 resulting_issue_revision: row.get(3)?,
-                resulting_state: row.get(4)?,
-                resulting_attempt_tier: row.get(5)?,
-                created_at: row.get(6)?,
+                resulting_attempt_tier: row.get(4)?,
+                created_at: row.get(5)?,
+                action: row.get(6)?,
             })
         })
         .optional()?;
@@ -414,8 +447,12 @@ fn apply_action_validate(
 }
 
 /// Apply lifecycle action
+///
+/// `tx` is the resolver's own write transaction: the lifecycle bodies applied
+/// here are the `_in_tx` variants, which run against a caller-owned
+/// transaction instead of opening a nested one.
 fn apply_action(
-    tx: &Transaction,
+    tx: &mut Transaction,
     action: &Action,
     issue_id: &str,
     reason: &Option<String>,
@@ -426,10 +463,10 @@ fn apply_action(
             // No action
         }
         Action::Close => {
-            lifecycle::close_issue(tx, issue_id, reason.as_deref().unwrap_or(""), None, None)?;
+            lifecycle::close_issue_in_tx(tx, issue_id, reason.as_deref().unwrap_or(""), None, None)?;
         }
         Action::Release => {
-            lifecycle::release_issue(tx, issue_id, None, None)?;
+            lifecycle::release_issue_in_tx(tx, issue_id)?;
         }
         Action::Quarantine => {
             // Quarantine: set tier=3 and optionally retry_after
@@ -461,6 +498,7 @@ fn update_attempt_tier(
 }
 
 /// Insert attempt outcome record
+#[allow(clippy::too_many_arguments)]
 fn insert_attempt_outcome(
     tx: &Transaction,
     request: &ResolveRequest,
@@ -506,6 +544,7 @@ fn insert_attempt_outcome(
 }
 
 /// Append audit event for attempt resolution
+#[allow(clippy::too_many_arguments)]
 fn append_audit_event(
     tx: &Transaction,
     workspace_uuid: &str,
@@ -532,7 +571,7 @@ fn append_audit_event(
 
     tx.execute(
         "INSERT INTO events (
-            origin_store_uuid, issue_id, kind, actor, data, created_at
+            origin_store_uuid, issue_id, kind, actor, detail, time
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
             workspace_uuid,
