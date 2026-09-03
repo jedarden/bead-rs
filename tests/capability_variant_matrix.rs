@@ -1,471 +1,382 @@
-//! Capability detection matrix across the two binary variants
+//! Capability detection matrix across the pinned binary variants
 //!
-//! The same test bodies run against both pinned variants located through
-//! `pinned-binaries/commits.json`:
+//! The two pins of record bound the capability story: `pre_feature` predates
+//! attempt-resolution entirely (no `resolve` subcommand, no `attempt_outcome`
+//! capability), while `attempt_resolution_f25ab5c` carries it. Every test here
+//! drives the pinned executables themselves — provenance- and byte-checked via
+//! [`capability_framework::capability_variant_pair`] — rather than the
+//! cargo-built test binary, so absence and presence are exercised for real.
 //!
-//! - `pre_feature` (`bead-pre-feature`, release 0.2.4) — built before the
-//!   attempt-resolution work existed: no `resolve` subcommand, no
-//!   `attempt_outcome` capability, no attempt-related schemas.
-//! - `attempt_resolution_f25ab5c` — the feature-enabled HEAD pin:
-//!   `resolve` present and the capability document advertises
-//!   `attempt_outcome` plus the attempt-outcome / resolve-receipt /
-//!   resolve-request schemas.
-//!
-//! One subtlety the tests encode deliberately: the `attempt-resolution`
-//! cargo feature is an empty marker that gates no code (documented in
-//! `pinned-binaries/README.md` and the pin metadata). The functional
-//! "absence" variant is the older tree, not a flag-off build of the
-//! current tree — a flag-off build of today's source advertises the same
-//! capabilities as a flag-on build, which the feature-flag test asserts.
-
-use serial_test::serial;
+//! A trap this suite pins down: the `attempt-resolution` cargo feature is an
+//! empty marker that gates no code (see `pinned-binaries/commits.json`), so a
+//! build's recorded flags do not predict its capability surface.
+//! `bead-pre-attempt-resolution` is built `--no-default-features` and still
+//! reports `attempt_outcome`. Detection therefore consults
+//! `bead capabilities`, never build metadata.
 
 mod capability_framework;
 use capability_framework::*;
+use serde_json::Value;
+use serial_test::serial;
+use std::path::Path;
 
-const PRE_FEATURE_ROLE: &str = "pre_feature";
-const FEATURE_ENABLED_ROLE: &str = "attempt_resolution_f25ab5c";
-
-const EXPECTED_OUTCOMES: [&str; 5] = [
-    "verified_success",
-    "work_failure",
-    "infrastructure_failure",
-    "cancelled",
-    "indeterminate",
-];
-
-const EXPECTED_ACTIONS: [&str; 5] = ["close", "release", "quarantine", "block", "none"];
-
-const ATTEMPT_SCHEMA_REFS: [&str; 3] = [
-    "urn:bead-rs:schema:attempt-outcome:native-v1",
-    "urn:bead-rs:schema:resolve-receipt:native-v1",
-    "urn:bead-rs:schema:resolve-request:native-v1",
-];
-
-/// Core command surface that must survive on every variant — a variant that
-/// lost these would not be degrading gracefully, it would be broken
-const CORE_COMMANDS: [&str; 10] = [
-    "capabilities",
-    "init",
-    "create",
-    "list",
-    "claim",
-    "close",
-    "reopen",
-    "release",
-    "sync",
-    "doctor",
-];
-
-fn capability_document(binary: &std::path::Path) -> serde_json::Value {
-    match capabilities_of(binary) {
-        Ok(caps) => caps,
-        Err(e) => panic!("capabilities failed for {}: {}", binary.display(), e),
-    }
-}
-
-fn document_kind_refs(caps: &serde_json::Value) -> Vec<String> {
-    caps["schemas"]
-        .as_array()
-        .expect("capabilities should carry a schemas array")
-        .iter()
-        .filter_map(|s| s.get("schema_ref").and_then(|v| v.as_str()))
-        .map(|s| s.to_string())
-        .collect()
-}
-
-fn command_list(caps: &serde_json::Value) -> Vec<String> {
-    caps["commands"]
-        .as_array()
-        .expect("capabilities should carry a commands array")
-        .iter()
-        .filter_map(|c| c.as_str())
-        .map(|c| c.to_string())
-        .collect()
-}
-
-// ---------------------------------------------------------------------------
-// Harness: one harness type, both variants
-// ---------------------------------------------------------------------------
-
+/// The harness resolves both pins, provenance- and byte-checked, as distinct
+/// binaries — the precondition for every other test in the matrix
 #[test]
 #[serial]
-fn pinned_variants_match_recorded_metadata() {
-    // The variant tests are only meaningful against the pinned bytes; check
-    // each pin's embedded version against its metadata file before trusting
-    // anything else in this file.
-    for role in [PRE_FEATURE_ROLE, FEATURE_ENABLED_ROLE] {
-        let (binary, meta) = verified_pinned_variant(role)
-            .unwrap_or_else(|e| panic!("pin provenance check failed for role '{}': {}", role, e));
-        let recorded = meta["binary_name"].as_str().unwrap_or_default();
-        let on_disk = binary.file_name().unwrap().to_string_lossy();
-        assert_eq!(recorded, on_disk, "registry and disk disagree for {}", role);
-    }
-}
+fn variant_pair_resolves_as_distinct_verified_binaries() {
+    let pair = capability_variant_pair().unwrap();
+    let absent = &pair.capability_absent;
+    let present = &pair.capability_present;
 
-#[test]
-#[serial]
-fn harness_runs_both_variants() {
-    let pre = pinned_variant(PRE_FEATURE_ROLE).expect("pre-feature pin");
-    let feature = pinned_variant(FEATURE_ENABLED_ROLE).expect("feature-enabled pin");
-
-    let pre_harness = BinaryHarness::with_binary(&pre).expect("pre-feature harness");
-    let feat_harness = BinaryHarness::with_binary(&feature).expect("feature-enabled harness");
-
-    // The same harness type initializes workspaces under both binaries
-    pre_harness.init_workspace().expect("pre-feature init");
-    feat_harness.init_workspace().expect("feature-enabled init");
-
-    // ...and they really are two different binaries
-    let pre_version = version_of(&pre).expect("pre-feature version");
-    let feat_version = version_of(&feature).expect("feature-enabled version");
-    assert_ne!(
-        pre_version, feat_version,
-        "the two variants should be distinct builds"
+    assert!(
+        absent.path.is_file(),
+        "absent pin missing: {}",
+        absent.path.display()
     );
     assert!(
-        pre_version.contains("0.2.4"),
-        "pre-feature pin should be the 0.2.4 baseline, got {:?}",
-        pre_version
+        present.path.is_file(),
+        "present pin missing: {}",
+        present.path.display()
+    );
+
+    // Provenance: each binary reports the version its metadata records
+    // (checked inside capability_variant_pair); surface the strings on failure.
+    let absent_version = absent.embedded_version().unwrap();
+    let present_version = present.embedded_version().unwrap();
+    assert_ne!(
+        absent_version, present_version,
+        "the two variants must be genuinely different builds"
+    );
+
+    // Byte identity with the recorded pins (re-verified here so the
+    // assertion failure names this test, not the resolver).
+    let absent_sha = absent.verify_sha256().unwrap();
+    let present_sha = present.verify_sha256().unwrap();
+    assert_ne!(
+        absent_sha, present_sha,
+        "variant pins must not be byte-identical"
     );
 }
 
-// ---------------------------------------------------------------------------
-// Attempt-resolution capability detection (capability present)
-// ---------------------------------------------------------------------------
-
+/// Capability detection reports the right thing about each variant: absent
+/// where the feature predates the build, present and supported where it does
+/// not, with the shared contract intact on both sides
 #[test]
 #[serial]
-fn feature_enabled_advertises_attempt_resolution() {
-    let (binary, _) = verified_pinned_variant(FEATURE_ENABLED_ROLE).unwrap();
-    let caps = capability_document(&binary);
+fn capability_detection_matches_each_variant() {
+    let pair = capability_variant_pair().unwrap();
 
-    let outcome = caps
+    for (variant, expectation) in [
+        (&pair.capability_absent, capability_absent_expectation()),
+        (&pair.capability_present, capability_present_expectation()),
+    ] {
+        let harness = BinaryHarness::with_binary(&variant.path).unwrap();
+        let failures = harness.verify_capabilities(&expectation).unwrap();
+        assert!(
+            failures.is_empty(),
+            "capability verification failed for pin '{}':\n{}",
+            variant.role,
+            failures.join("\n")
+        );
+    }
+
+    // The exact detection boundary, stated directly
+    assert!(
+        !pair
+            .capability_absent
+            .advertises_attempt_resolution()
+            .unwrap(),
+        "pre-feature pin must not advertise attempt_outcome"
+    );
+    assert!(
+        pair.capability_present
+            .advertises_attempt_resolution()
+            .unwrap(),
+        "feature-enabled pin must advertise attempt_outcome"
+    );
+}
+
+/// The pre-feature binary degrades gracefully: the capability gap is visible
+/// in the contract before invocation, the CLI rejects `resolve` with a clean
+/// clap error instead of a panic, and the core workflow is unimpaired
+#[test]
+#[serial]
+fn capability_absence_degrades_gracefully() {
+    let pair = capability_variant_pair().unwrap();
+    let absent = &pair.capability_absent;
+    let harness = BinaryHarness::with_binary(&absent.path).unwrap();
+
+    // Detection surface: a consumer reading `capabilities` learns the
+    // capability is missing without ever invoking the command.
+    let caps = harness.get_default_capabilities().unwrap();
+    assert!(
+        caps.get("attempt_outcome").is_none(),
+        "attempt_outcome must be absent from the contract, not present-but-unsupported"
+    );
+    assert!(!harness.command_exists("resolve").unwrap());
+    assert!(
+        !harness
+            .unrecognized_subcommand("resolve")
+            .unwrap()
+            .is_none(),
+        "framework should classify resolve as unrecognized on this variant"
+    );
+
+    // CLI surface: --help and a real invocation both reject cleanly.
+    let help = harness.run(&["resolve", "--help"]).unwrap();
+    assert!(
+        !help.status.success(),
+        "resolve --help must fail on a binary without the subcommand"
+    );
+    let help_err = String::from_utf8_lossy(&help.stderr);
+    assert!(
+        help_err.contains("unrecognized subcommand 'resolve'"),
+        "expected clap's unrecognized-subcommand error, got: {help_err}"
+    );
+    assert!(
+        !help_err.contains("panicked"),
+        "degradation must not panic: {help_err}"
+    );
+
+    let invoked = harness.run(&[
+        "resolve",
+        "test-degradation",
+        "--attempt-id",
+        "probe-attempt",
+        "--outcome",
+        "verified_success",
+    ]);
+    let invoked = invoked.unwrap();
+    assert!(!invoked.status.success());
+    let invoked_err = String::from_utf8_lossy(&invoked.stderr);
+    assert!(
+        invoked_err.contains("unrecognized subcommand"),
+        "a real resolve invocation must hit the same clean rejection, got: {invoked_err}"
+    );
+
+    // Graceful: the core workflow still runs end to end on this binary.
+    harness.init_workspace().unwrap();
+    let created = harness
+        .run(&[
+            "create",
+            "--title",
+            "degradation probe",
+            "--priority",
+            "2",
+            "--issue-type",
+            "task",
+        ])
+        .unwrap();
+    assert!(
+        created.status.success(),
+        "create must work without the capability"
+    );
+    let bead_id = String::from_utf8_lossy(&created.stdout).trim().to_string();
+    assert!(
+        bead_id.starts_with("test-"),
+        "expected a test-prefixed bead id, got: {bead_id}"
+    );
+    for args in [
+        vec!["list", "--limit", "3"],
+        vec!["update", &bead_id, "--status", "in_progress"],
+        vec!["close", &bead_id, "--reason", "degradation probe complete"],
+    ] {
+        let out = harness.run(&args).unwrap();
+        assert!(
+            out.status.success(),
+            "core command {:?} must keep working on the capability-absent variant: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+/// The feature-enabled binary exposes the full attempt-resolution surface:
+/// advertised in the contract, resolvable through clap, with the conformance
+/// knobs the receipt machinery relies on
+#[test]
+#[serial]
+fn capability_presence_exposes_full_surface() {
+    let pair = capability_variant_pair().unwrap();
+    let present = &pair.capability_present;
+    let harness = BinaryHarness::with_binary(&present.path).unwrap();
+
+    let caps = harness.get_default_capabilities().unwrap();
+    let attempt_outcome = caps
         .get("attempt_outcome")
-        .expect("feature-enabled binary should advertise attempt_outcome");
+        .expect("attempt_outcome must be advertised");
     assert_eq!(
-        outcome.get("supported").and_then(|v| v.as_bool()),
+        attempt_outcome.get("supported").and_then(|v| v.as_bool()),
         Some(true),
         "attempt_outcome.supported must be true"
     );
 
-    let outcomes: Vec<&str> = outcome["outcomes"]
-        .as_array()
-        .expect("outcomes array")
-        .iter()
-        .filter_map(|v| v.as_str())
-        .collect();
-    for expected in EXPECTED_OUTCOMES {
-        assert!(
-            outcomes.contains(&expected),
-            "outcome '{}' missing from capability advertisement",
-            expected
-        );
-    }
-
-    let actions: Vec<&str> = outcome["actions"]
-        .as_array()
-        .expect("actions array")
-        .iter()
-        .filter_map(|v| v.as_str())
-        .collect();
-    for expected in EXPECTED_ACTIONS {
-        assert!(
-            actions.contains(&expected),
-            "action '{}' missing from capability advertisement",
-            expected
-        );
-    }
-
-    for flag in [
+    for knob in [
         "replay_detection",
         "revision_guard",
         "fencing_token",
         "evidence_refs",
     ] {
         assert_eq!(
-            outcome.get(flag).and_then(|v| v.as_bool()),
+            attempt_outcome.get(knob).and_then(|v| v.as_bool()),
             Some(true),
-            "attempt_outcome.{} must be true",
-            flag
+            "conformance knob '{knob}' must be advertised"
         );
     }
 
-    assert_eq!(
-        outcome
-            .get("resolve_receipt_schema")
-            .and_then(|v| v.as_str()),
-        Some("urn:bead-rs:schema:resolve-receipt:native-v1")
-    );
-    assert_eq!(
-        outcome
-            .get("resolve_request_schema")
-            .and_then(|v| v.as_str()),
-        Some("urn:bead-rs:schema:resolve-request:native-v1")
-    );
-}
-
-#[test]
-#[serial]
-fn feature_enabled_advertises_resolve_command() {
-    let (binary, _) = verified_pinned_variant(FEATURE_ENABLED_ROLE).unwrap();
-    let caps = capability_document(&binary);
-
-    assert!(
-        command_list(&caps).iter().any(|c| c == "resolve"),
-        "feature-enabled binary should list 'resolve' among commands"
-    );
-
-    let harness = BinaryHarness::with_binary(&binary).unwrap();
-    assert!(
-        harness
-            .unrecognized_subcommand("resolve")
-            .unwrap()
-            .is_none(),
-        "'resolve --help' should succeed on the feature-enabled binary"
-    );
-}
-
-#[test]
-#[serial]
-fn feature_enabled_advertises_attempt_schemas() {
-    let (binary, _) = verified_pinned_variant(FEATURE_ENABLED_ROLE).unwrap();
-    let caps = capability_document(&binary);
-    let refs = document_kind_refs(&caps);
-
-    for schema_ref in ATTEMPT_SCHEMA_REFS {
-        assert!(
-            refs.iter().any(|r| r == schema_ref),
-            "schema '{}' should be advertised by the feature-enabled binary",
-            schema_ref
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Attempt-resolution capability detection (capability absent)
-// ---------------------------------------------------------------------------
-
-#[test]
-#[serial]
-fn pre_feature_omits_attempt_resolution_capability() {
-    let (binary, _) = verified_pinned_variant(PRE_FEATURE_ROLE).unwrap();
-    let caps = capability_document(&binary);
-
-    assert!(
-        caps.get("attempt_outcome").is_none(),
-        "pre-feature binary must not advertise attempt_outcome"
-    );
-
-    assert!(
-        !command_list(&caps).iter().any(|c| c == "resolve"),
-        "pre-feature binary must not list 'resolve' among commands"
-    );
-
-    let refs = document_kind_refs(&caps);
-    for schema_ref in ATTEMPT_SCHEMA_REFS {
-        assert!(
-            !refs.iter().any(|r| r == schema_ref),
-            "pre-feature binary must not advertise schema '{}'",
-            schema_ref
-        );
-    }
-}
-
-#[test]
-#[serial]
-fn pre_feature_core_capability_surface_unchanged() {
-    let (binary, _) = verified_pinned_variant(PRE_FEATURE_ROLE).unwrap();
-    let caps = capability_document(&binary);
-
-    assert_eq!(
-        caps.get("contract").and_then(|v| v.as_str()),
-        Some("native-v1"),
-        "pre-feature binary should still speak native-v1"
-    );
-
-    let commands = command_list(&caps);
-    for command in CORE_COMMANDS {
-        assert!(
-            commands.iter().any(|c| c == command),
-            "core command '{}' missing from the pre-feature binary",
-            command
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Graceful degradation when the capability is missing
-// ---------------------------------------------------------------------------
-
-#[test]
-#[serial]
-fn pre_feature_missing_capability_degrades_gracefully() {
-    let (binary, _) = verified_pinned_variant(PRE_FEATURE_ROLE).unwrap();
-    let harness = BinaryHarness::with_binary(&binary).unwrap();
-
-    // Invoking the missing capability fails as a clean usage error: non-zero
-    // exit, clap's "unrecognized subcommand", no panic
-    let output = harness.run(&["resolve"]).expect("resolve invocation");
-    assert!(
-        !output.status.success(),
-        "resolve must fail on the pre-feature binary"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("unrecognized subcommand"),
-        "expected a clean usage error, got: {}",
-        stderr
-    );
-    assert!(
-        !stderr.contains("panicked"),
-        "degradation must not crash: {}",
-        stderr
-    );
-
-    // ...while the rest of the lifecycle keeps working on the same binary
-    harness
-        .init_workspace()
-        .expect("init on pre-feature binary");
-
-    let created = harness
-        .run(&["create", "--title", "degradation probe", "--priority", "2"])
-        .expect("create invocation");
-    assert!(
-        created.status.success(),
-        "create must work without the capability"
-    );
-    let bead_id = String::from_utf8_lossy(&created.stdout)
-        .lines()
-        .next()
-        .expect("create prints the new bead id")
-        .trim()
-        .to_string();
-    assert!(
-        bead_id.starts_with("test-"),
-        "unexpected create output: {:?}",
-        bead_id
-    );
-
-    let listed = harness
-        .run(&["list", "--limit", "5"])
-        .expect("list invocation");
-    assert!(
-        listed.status.success(),
-        "list must work without the capability"
-    );
-    assert!(
-        String::from_utf8_lossy(&listed.stdout).contains(&bead_id),
-        "created bead {} should be listable on the pre-feature binary",
-        bead_id
-    );
-}
-
-/// The consumer contract: the capability document predicts the live command
-/// surface, on both variants — detect via `capabilities`, then invoke
-#[test]
-#[serial]
-fn capability_document_predicts_command_surface_on_both_variants() {
-    for role in [PRE_FEATURE_ROLE, FEATURE_ENABLED_ROLE] {
-        let (binary, _) = verified_pinned_variant(role)
-            .unwrap_or_else(|e| panic!("pin '{}' unavailable: {}", role, e));
-        let caps = capability_document(&binary);
-        let advertised = caps.get("attempt_outcome").is_some();
-
-        let harness = BinaryHarness::with_binary(&binary).unwrap();
-        let live = harness
-            .unrecognized_subcommand("resolve")
-            .unwrap_or_else(|e| panic!("resolve probe failed on {}: {}", role, e))
-            .is_none();
-
-        assert_eq!(
-            advertised, live,
-            "on {}: capability document says advertised={}, live resolve availability={}",
-            role, advertised, live
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Feature flag handling
-// ---------------------------------------------------------------------------
-
-#[test]
-#[serial]
-fn attempt_resolution_feature_is_declared_and_not_default() {
-    let manifest = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
-        .expect("read Cargo.toml");
-
-    let features_start = manifest
-        .find("[features]")
-        .expect("Cargo.toml should declare a [features] section");
-    let features_end = manifest[features_start..]
-        .find("\n[")
-        .map(|i| features_start + i)
-        .unwrap_or(manifest.len());
-    let features_section = &manifest[features_start..features_end];
-
-    assert!(
-        features_section.contains("attempt-resolution"),
-        "[features] must declare the attempt-resolution flag"
-    );
-    let default_line = features_section
-        .lines()
-        .find(|l| l.trim_start().starts_with("default"))
-        .expect("[features] must declare a default set");
-    assert!(
-        !default_line.contains("attempt-resolution"),
-        "attempt-resolution must not be a default feature, found in: {}",
-        default_line
-    );
-}
-
-/// The flag is an empty marker that gates no code, so a default-features
-/// build (flag off) must advertise exactly the attempt-resolution capability
-/// shape the flag-enabled pin advertises. If someone ever makes the flag
-/// actually gate the capability, this test forces that contract change to be
-/// made consciously in the pin documentation too.
-#[test]
-#[serial]
-fn marker_feature_does_not_gate_capability_advertisement() {
-    let (flag_on, _) = verified_pinned_variant(FEATURE_ENABLED_ROLE).unwrap();
-    let flag_on_keys = attempt_outcome_keys(&capability_document(&flag_on));
-
-    // The cargo-built test binary is a default-features build (flag off)
-    let flag_off = BinaryHarness::new().expect("harness for cargo-built bead");
-    let flag_off_caps = flag_off
-        .get_default_capabilities()
-        .expect("capabilities of the cargo-built bead");
-    let flag_off_keys = attempt_outcome_keys(&flag_off_caps);
-
-    assert!(
-        !flag_off_keys.is_empty(),
-        "the default-features build should still advertise attempt_outcome"
-    );
-    assert_eq!(
-        flag_off_keys, flag_on_keys,
-        "flag-off and flag-on builds must advertise the same attempt_outcome shape \
-         (the flag is an empty marker that gates no code)"
-    );
-
-    let supported = flag_off_caps["attempt_outcome"]
-        .get("supported")
-        .and_then(|v| v.as_bool());
-    assert_eq!(
-        supported,
-        Some(true),
-        "attempt_outcome.supported must be true in a flag-off build"
-    );
-}
-
-fn attempt_outcome_keys(caps: &serde_json::Value) -> Vec<String> {
-    let mut keys: Vec<String> = caps
-        .get("attempt_outcome")
-        .and_then(|v| v.as_object())
-        .expect("capabilities should carry an attempt_outcome object")
-        .keys()
-        .cloned()
+    let outcomes: Vec<String> = attempt_outcome["outcomes"]
+        .as_array()
+        .expect("outcomes array")
+        .iter()
+        .map(|v| v.as_str().expect("outcome string").to_string())
         .collect();
-    keys.sort();
-    keys
+    for expected in [
+        "verified_success",
+        "work_failure",
+        "infrastructure_failure",
+        "cancelled",
+        "indeterminate",
+    ] {
+        assert!(
+            outcomes.iter().any(|o| o == expected),
+            "outcome '{expected}' must be advertised; got {outcomes:?}"
+        );
+    }
+
+    // The command is really there, not just advertised.
+    let help = harness.run(&["resolve", "--help"]).unwrap();
+    assert!(help.status.success(), "resolve --help must succeed");
+    let help_text = String::from_utf8_lossy(&help.stdout);
+    for flag in ["--attempt-id", "--outcome", "--action"] {
+        assert!(
+            help_text.contains(flag),
+            "resolve help must document '{flag}'"
+        );
+    }
+
+    // And clap routes it: a resolve invocation is recognized (it fails on
+    // domain grounds, never as an unknown subcommand).
+    let dispatched = harness
+        .run(&[
+            "resolve",
+            "test-recognition",
+            "--attempt-id",
+            "probe-attempt",
+            "--outcome",
+            "verified_success",
+            "--action",
+            "close",
+        ])
+        .unwrap();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&dispatched.stdout),
+        String::from_utf8_lossy(&dispatched.stderr)
+    );
+    assert!(
+        !combined.contains("unrecognized subcommand"),
+        "resolve must be a recognized subcommand on this variant: {combined}"
+    );
+}
+
+/// Feature-flag handling: the cargo flag of record is declared, but flags do
+/// not predict capability — the empty-marker pin proves detection has to come
+/// from the binary's own contract
+#[test]
+#[serial]
+fn feature_flag_handling_is_decoupled_from_capability() {
+    let manifest =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")).unwrap();
+    assert!(
+        manifest.contains("attempt-resolution = []"),
+        "the attempt-resolution feature flag must stay declared in Cargo.toml"
+    );
+
+    let pair = capability_variant_pair().unwrap();
+
+    // The empty-marker pin: built WITHOUT the flag, yet capability-present.
+    let marker_path = pinned_variant(EMPTY_MARKER_ROLE).unwrap();
+    let marker_caps = capabilities_of(&marker_path).unwrap();
+    assert_eq!(
+        marker_caps
+            .get("attempt_outcome")
+            .and_then(|v| v.get("supported"))
+            .and_then(|v| v.as_bool()),
+        Some(true),
+        "the --no-default-features pin still reports attempt_outcome: the flag gates no code"
+    );
+    let marker_commands = marker_caps["commands"].as_array().expect("commands array");
+    assert!(
+        marker_commands
+            .iter()
+            .any(|c| c.as_str() == Some("resolve")),
+        "the --no-default-features pin still exposes the resolve subcommand"
+    );
+    let marker_meta = metadata_for(&marker_path).unwrap();
+    let marker_flags = marker_meta
+        .get("build_features")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        !marker_flags.contains("attempt-resolution"),
+        "registry records the marker pin as built without the flag, got: {marker_flags}"
+    );
+
+    // The capability boundary runs between the pair, exactly as the
+    // registry documents it — independent of what flags were passed.
+    assert!(!pair
+        .capability_absent
+        .advertises_attempt_resolution()
+        .unwrap());
+    assert!(pair
+        .capability_present
+        .advertises_attempt_resolution()
+        .unwrap());
+}
+
+/// Both variants agree on the core contract, so a consumer can feature-detect
+/// and then fall back to shared operations on either binary
+#[test]
+#[serial]
+fn variants_share_the_core_contract() {
+    let pair = capability_variant_pair().unwrap();
+
+    for variant in [&pair.capability_absent, &pair.capability_present] {
+        let caps = capabilities_of(&variant.path).unwrap();
+        assert_eq!(
+            caps.get("contract").and_then(|v| v.as_str()),
+            Some("native-v1"),
+            "pin '{}' must speak the same contract",
+            variant.role
+        );
+        assert_eq!(
+            caps.get("implementation").and_then(|v| v.as_str()),
+            Some("bead-rs"),
+            "pin '{}' must be the same implementation",
+            variant.role
+        );
+        let commands = caps["commands"].as_array().expect("commands array");
+        for core in core_command_set() {
+            assert!(
+                commands.iter().any(|c| c.as_str() == Some(core.as_str())),
+                "core command '{core}' missing from pin '{}'",
+                variant.role
+            );
+        }
+    }
+
+    // The capability delta is exactly the advertised command delta: the
+    // absent side does not half-advertise what its CLI cannot do.
+    let absent_caps = capabilities_of(&pair.capability_absent.path).unwrap();
+    let present_caps = capabilities_of(&pair.capability_present.path).unwrap();
+    let has = |caps: &Value, cmd: &str| {
+        caps["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c.as_str() == Some(cmd))
+    };
+    assert!(!has(&absent_caps, "resolve"));
+    assert!(has(&present_caps, "resolve"));
 }

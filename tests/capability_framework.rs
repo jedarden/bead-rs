@@ -12,6 +12,7 @@
 
 use assert_cmd::Command;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
@@ -61,6 +62,19 @@ impl Default for ExpectedCapabilities {
         }
     }
 }
+
+/// Pin role in `pinned-binaries/commits.json` whose tree predates attempt-resolution
+/// entirely: no `resolve` subcommand, no `attempt_outcome` capability
+pub const CAPABILITY_ABSENT_ROLE: &str = "pre_feature";
+
+/// Pin role of record for the capability-present side of the matrix
+pub const CAPABILITY_PRESENT_ROLE: &str = "attempt_resolution_f25ab5c";
+
+/// Pin role built `--no-default-features` from a tree that already carries
+/// attempt-resolution. The cargo flag is an empty marker that gates no code, so
+/// this binary is capability-present despite its flags saying otherwise — the
+/// reason capability detection must consult `capabilities`, never build metadata.
+pub const EMPTY_MARKER_ROLE: &str = "pre_attempt_resolution";
 
 /// Directory holding the pinned binary variants (the pin location of record)
 pub fn pinned_binaries_dir() -> PathBuf {
@@ -127,31 +141,178 @@ pub fn capabilities_of(binary: &Path) -> anyhow::Result<Value> {
     Ok(serde_json::from_slice(&output.stdout)?)
 }
 
-/// Verify a pinned binary's embedded `--version` matches the version recorded in
-/// its metadata file, so the variant tests assert against the pinned bytes and
-/// not whatever happens to sit at that name. Returns the binary path and metadata.
-pub fn verified_pinned_variant(role: &str) -> anyhow::Result<(PathBuf, Value)> {
-    let binary = pinned_variant(role)?;
+/// Parsed `<binary>.metadata.json` for a pin resolved under `pinned-binaries/`
+pub fn metadata_for(binary: &Path) -> anyhow::Result<Value> {
     let name = binary
         .file_name()
         .expect("pin path has a file name")
         .to_string_lossy()
         .to_string();
     let meta_path = pinned_binaries_dir().join(format!("{}.metadata.json", name));
-    let meta: Value = serde_json::from_slice(&std::fs::read(&meta_path)?)?;
+    Ok(serde_json::from_slice(&std::fs::read(&meta_path)?)?)
+}
+
+/// Verify a pinned binary's embedded `--version` matches the version recorded in
+/// its metadata file, so the variant tests assert against the pinned bytes and
+/// not whatever happens to sit at that name. Returns the binary path and metadata.
+pub fn verified_pinned_variant(role: &str) -> anyhow::Result<(PathBuf, Value)> {
+    let binary = pinned_variant(role)?;
+    let meta = metadata_for(&binary)?;
     let recorded = meta
         .get("embedded_version_string")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("{} lacks embedded_version_string", meta_path.display()))?;
+        .ok_or_else(|| anyhow::anyhow!("pin '{}' metadata lacks embedded_version_string", role))?;
     let actual = version_of(&binary)?;
     anyhow::ensure!(
         actual == recorded,
         "pin provenance mismatch for {}: binary reports {:?}, metadata records {:?}",
-        name,
+        binary.display(),
         actual,
         recorded
     );
     Ok((binary, meta))
+}
+
+/// A pinned binary resolved through the registry, together with its metadata
+pub struct PinnedVariant {
+    /// Registry role this variant was resolved from
+    pub role: &'static str,
+    /// Path to the pinned executable
+    pub path: PathBuf,
+    /// Parsed `<binary>.metadata.json` for the pin
+    pub metadata: Value,
+}
+
+impl PinnedVariant {
+    /// The `--version` string embedded in the binary at build time
+    pub fn embedded_version(&self) -> anyhow::Result<String> {
+        version_of(&self.path)
+    }
+
+    /// sha256 of the bytes on disk must equal the metadata's `binary_sha256`,
+    /// so a test failure can never be traced to a silently swapped pin
+    pub fn verify_sha256(&self) -> anyhow::Result<String> {
+        let recorded = self
+            .metadata
+            .get("binary_sha256")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("pin '{}' metadata lacks binary_sha256", self.role))?;
+        let bytes = std::fs::read(&self.path)?;
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        let digest = hex::encode(hasher.finalize());
+        anyhow::ensure!(
+            digest == recorded,
+            "pin '{}' sha256 mismatch: disk has {}, metadata records {}",
+            self.role,
+            digest,
+            recorded
+        );
+        Ok(digest)
+    }
+
+    /// The `build_features` string recorded for this pin, if any
+    pub fn recorded_build_features(&self) -> Option<String> {
+        self.metadata
+            .get("build_features")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    }
+
+    /// Whether the variant's `capabilities` output advertises attempt-resolution
+    pub fn advertises_attempt_resolution(&self) -> anyhow::Result<bool> {
+        Ok(capabilities_of(&self.path)?
+            .get("attempt_outcome")
+            .is_some())
+    }
+}
+
+/// The two pins bounding the capability matrix, resolved and verified
+pub struct VariantPair {
+    /// Pre-attempt-resolution build: the capability is absent
+    pub capability_absent: PinnedVariant,
+    /// Current build of record: the capability is present
+    pub capability_present: PinnedVariant,
+}
+
+/// Resolve the capability-absent and capability-present pins of record
+///
+/// Both are provenance-checked (`--version` against metadata) and
+/// byte-checked (sha256 against metadata) before being handed to a test, and
+/// are asserted to be genuinely different binaries — otherwise the matrix
+/// would silently test one binary twice.
+pub fn capability_variant_pair() -> anyhow::Result<VariantPair> {
+    let (absent_path, absent_meta) = verified_pinned_variant(CAPABILITY_ABSENT_ROLE)?;
+    let (present_path, present_meta) = verified_pinned_variant(CAPABILITY_PRESENT_ROLE)?;
+    let absent = PinnedVariant {
+        role: CAPABILITY_ABSENT_ROLE,
+        path: absent_path,
+        metadata: absent_meta,
+    };
+    let present = PinnedVariant {
+        role: CAPABILITY_PRESENT_ROLE,
+        path: present_path,
+        metadata: present_meta,
+    };
+    absent.verify_sha256()?;
+    present.verify_sha256()?;
+    anyhow::ensure!(
+        absent.path != present.path,
+        "both sides of the variant matrix resolved to the same pin: {}",
+        absent.path.display()
+    );
+    Ok(VariantPair {
+        capability_absent: absent,
+        capability_present: present,
+    })
+}
+
+/// Expectations for the capability-absent side of the matrix
+pub fn capability_absent_expectation() -> ExpectedCapabilities {
+    ExpectedCapabilities {
+        auto_flush_present: true,
+        auto_flush_value: Some(true),
+        attempt_outcome_present: false,
+        attempt_outcome_supported: false,
+        expected_commands: core_command_set(),
+        missing_commands: vec!["resolve".to_string()],
+    }
+}
+
+/// Expectations for the capability-present side of the matrix
+pub fn capability_present_expectation() -> ExpectedCapabilities {
+    let mut expected = core_command_set();
+    expected.push("resolve".to_string());
+    ExpectedCapabilities {
+        auto_flush_present: true,
+        auto_flush_value: Some(true),
+        attempt_outcome_present: true,
+        attempt_outcome_supported: true,
+        expected_commands: expected,
+        missing_commands: vec![],
+    }
+}
+
+/// Commands every variant must carry regardless of capability surface —
+/// the contract a consumer may rely on before feature detection runs
+pub fn core_command_set() -> Vec<String> {
+    [
+        "capabilities",
+        "init",
+        "create",
+        "list",
+        "claim",
+        "update",
+        "close",
+        "reopen",
+        "release",
+        "sync",
+        "why",
+        "doctor",
+    ]
+    .iter()
+    .map(|c| c.to_string())
+    .collect()
 }
 
 /// Disposable working directory for direct binary invocations
