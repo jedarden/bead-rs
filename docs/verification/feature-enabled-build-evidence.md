@@ -215,3 +215,65 @@ verifications cited by C3's brief: beadrs-65cd875e, beadrs-f5691af4.
   beadrs-0737200a, which recorded it live on 2026-09-03.
 - The recorded sha256 remains hash-only evidence until SOURCE_DATE_EPOCH
   determinism lands; rebuild-then-compare is expected to differ by design.
+
+## 7. Addendum (2026-09-03, later the same day) — the build was subsequently executed
+
+The chain-context note and §6 bullet 1 above are **superseded** by events
+recorded later on 2026-09-03 (~15:11–15:29Z, after this report was assembled
+and committed as 5fa9803): children 1 and 2 were re-dispatched and closed with
+first-hand evidence.
+
+- **C1 `beadrs-f173164a` (build) — closed 2026-09-03T15:24:52Z with executed-build
+  evidence**, built live by `claude-code-glm-4.7-glm-roam-17` via
+  `scripts/build-from-archive.sh` (git-archive extraction in scratch; the
+  shared checkout's HEAD/index/stash untouched). Full unedited log:
+  `/home/coding/scratch/beadrs-f173164a-evidence.txt`.
+- **C2 `beadrs-c775cff1` (SHA + hash evidence) — closed 2026-09-03T15:29:06Z**,
+  recorded by `claude-code-glm-vista`, which independently re-resolved the
+  declared SHA and double-hashed the artifact, matching C1 exactly.
+
+Fresh-build artifact of record for the declared SHA (from
+`/home/coding/scratch/beadrs-f173164a-pin/bead-861cdcb.metadata.json`):
+
+| property | value |
+| --- | --- |
+| `git_commit_sha` | `861cdcbfebeb70a9ebc6a2e33ee98cef97274fec` (the declared build SHA, §1) |
+| `binary_sha256` | `42b4335444d36bf7b7e6e3a21af229c47457fcb94962761eb185b05999e95f90` |
+| `binary_size_bytes` | 7,305,184 |
+| `build_features` / profile | `attempt-resolution` / release, `--locked` |
+| `build_command` | `cargo build --release --locked --features attempt-resolution` |
+| embedded version | `bead 0.2.6 (unknown 2026-09-03T15:12:33Z)` |
+
+The embedded commit reads `unknown` because a git-archive extraction carries no
+`.git`; `build.rs` documents that as the honest value for exported trees, and
+the authoritative source commit is the `git_commit_sha` field above.
+
+Independent re-verification at addendum time (recomputed live by
+`claude-code-glm-4.7-glm-roam-19` on the `beadrs-4bb8bf78` re-dispatch, not
+copied from either child's notes):
+
+```console
+$ sha256sum /home/coding/scratch/beadrs-f173164a-pin/bead-861cdcb
+42b4335444d36bf7b7e6e3a21af229c47457fcb94962761eb185b05999e95f90  /home/coding/scratch/beadrs-f173164a-pin/bead-861cdcb
+$ /home/coding/scratch/beadrs-f173164a-pin/bead-861cdcb capabilities | jq '.attempt_outcome.supported'
+true
+$ ./pinned-binaries/bead-pre-feature capabilities | jq 'has("attempt_outcome")'
+false
+```
+
+The capability probe returns `supported: true` with all five outcomes
+(`verified_success`, `work_failure`, `infrastructure_failure`, `cancelled`,
+`indeterminate`), and the negative control still holds.
+
+Distinctness: the fresh build's hash is distinct from all four inventory pins —
+`68fe8d53…` (e115609 pin of record), `9a8455f2…` (f25ab5c), `d0da42bb…`
+(pre-attempt-resolution), `7e0e73de…` (pre-feature) — as §2 predicts for a
+rebuild (`42b4335… ≠ 68fe8d5…`). The pin inventory is unchanged: still exactly
+four pins, no fifth binary added; the fresh artifact lives outside
+`pinned-binaries/` at the scratch path its metadata records.
+
+§6 bullet 3 stands unchanged: the fresh sha256 is likewise hash-only evidence
+until SOURCE_DATE_EPOCH determinism lands. What this addendum adds is that the
+declared-SHA archive build path is now demonstrated end-to-end with a recorded
+artifact, hash, and capability probe — the acceptance C1 and C2 existed to
+deliver.
