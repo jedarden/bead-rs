@@ -131,7 +131,7 @@ The script extracts this commit's tree into a scratch directory and builds there
 
 > A rebuild will **not** reproduce the pinned hash: build.rs re-embeds `BEAD_BUILD_TIMESTAMP` whenever `.git/index` changes. Verify the pin by comparing its sha256 against the `binary_sha256` in its `*.metadata.json`, never by rebuilding.
 >
-> (Builds are *reproducible on demand*: setting `SOURCE_DATE_EPOCH` pins the embedded timestamp and `BEAD_COMMIT_SHA` supplies the commit for trees with no `.git`, making two builds of the same tree byte-identical — asserted by `tests/reproducible_build.rs`. That reproduces a build recipe, not a pin; verification remains byte comparison.)
+> (Builds are not currently reproducible on demand: the committed `build.rs` embeds a wall-clock timestamp and honors no override — deterministic rebuilds via `SOURCE_DATE_EPOCH` / `BEAD_COMMIT_SHA` are tracked as separate work. Once they land they will reproduce a build recipe, not a pin; verification remains byte comparison.)
 
 ### Installation
 

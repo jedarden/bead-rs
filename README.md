@@ -84,13 +84,13 @@ See [BUILD_PROCEDURE.md](BUILD_PROCEDURE.md) ("Build Rule") and
 
 ### Note on byte-reproducibility
 
-`build.rs` embeds a wall-clock build timestamp, so two builds of the same
-source are not byte-identical by default and **no fresh build reproduces a
-recorded pin's hash** — pinned binaries are verified by comparing their
-sha256 against the `binary_sha256` in their `*.metadata.json`, never by
-rebuilding. Setting `SOURCE_DATE_EPOCH` (embedded timestamp) and
-`BEAD_COMMIT_SHA` (commit, for trees with no `.git`) makes two builds of the
-same tree byte-identical. Details:
+`build.rs` embeds a wall-clock build timestamp and reads no environment
+override, so two builds of the same source are never byte-identical and **no
+fresh build reproduces a recorded pin's hash** — pinned binaries are verified
+by comparing their sha256 against the `binary_sha256` in their
+`*.metadata.json`, never by rebuilding. Deterministic rebuilds
+(`SOURCE_DATE_EPOCH` / `BEAD_COMMIT_SHA`) are tracked as separate work and are
+not in the committed build script yet. Details:
 [docs/build-attempt-resolution-binary.md](docs/build-attempt-resolution-binary.md),
 "What 'reproduce' means here".
 

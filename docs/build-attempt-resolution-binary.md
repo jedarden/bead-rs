@@ -76,11 +76,12 @@ leaves the scratch directory in place only on failure.
   proves).
 - **`--locked`:** the script always passes it; the pinned `Cargo.lock` is part
   of the recipe.
-- **Environment variables:** `SOURCE_DATE_EPOCH` (pins the embedded build
-  timestamp) and `BEAD_COMMIT_SHA` (names the commit in trees with no `.git`,
-  such as this script's archive extractions) together make two builds of the
-  same tree byte-identical — `tests/reproducible_build.rs` asserts that. The
-  script's own metadata output documents them.
+- **Environment variables:** none. `build.rs` embeds a wall-clock build
+  timestamp and reads no environment override, so two builds of the same tree
+  are never byte-identical. Deterministic rebuilds (`SOURCE_DATE_EPOCH` for
+  the embedded timestamp, `BEAD_COMMIT_SHA` for the commit in trees with no
+  `.git`) are tracked as separate work and are not in the committed build
+  script yet.
 
 ### What "reproduce" means here
 
@@ -93,9 +94,9 @@ build hashes differently. Consequences:
 - A fresh build of `861cdcb` reproduces the *recipe* (same code, same
   capabilities), not any recorded pin's hash. A rebuild hash differing from
   the pin's is the expected outcome, not a failed verification.
-- With `SOURCE_DATE_EPOCH` and `BEAD_COMMIT_SHA` set, two builds of the same
-  tree are byte-identical — that reproduces a build recipe, still never a
-  recorded pin, since every pin was built without them.
+- Even once deterministic rebuilds land (`SOURCE_DATE_EPOCH` /
+  `BEAD_COMMIT_SHA`, tracked as separate work), they will reproduce a build
+  recipe, still never a recorded pin, since every pin was built without them.
 
 ## Distinctness
 

@@ -35,10 +35,10 @@ Consequences, applied consistently across the pin records:
   wall-clock build timestamp, so no fresh build reproduces any recorded
   pin's hash. Verify a pin by comparing its sha256 against the
   `binary_sha256` in its `*.metadata.json`, never by rebuilding.
-  (`SOURCE_DATE_EPOCH` + `BEAD_COMMIT_SHA` make two fresh builds of the
-  same tree byte-identical — see `docs/pinned-binaries.md`, "Build
-  Procedure" — but that reproduces a build recipe, never a recorded pin:
-  every pin was built without them.)
+  (Deterministic rebuilds via `SOURCE_DATE_EPOCH` + `BEAD_COMMIT_SHA` are
+  tracked as separate work — the committed `build.rs` honors no override,
+  and every pin was built without them — so verification stays byte
+  comparison, never rebuilding.)
 
 ## Pre-Feature Commit
 
