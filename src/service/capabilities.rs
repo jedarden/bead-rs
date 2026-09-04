@@ -4,6 +4,7 @@
 //! a JSON document describing what this implementation supports.
 
 use crate::error::Result;
+use crate::scan::{Mode, CONTRACT_IDENTITY, RULESET_VERSION};
 use crate::service::checkpoint::AUTO_FLUSH_COMPILED_DEFAULT;
 use serde::{Deserialize, Serialize};
 
@@ -50,6 +51,20 @@ pub struct Capabilities {
     /// Attempt outcome resolution capabilities (ADR-012)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attempt_outcome: Option<AttemptOutcome>,
+    /// Secret rejection and diagnostic capabilities (ADR-014).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_scan: Option<SecretScanCapabilities>,
+}
+
+/// Offline secret-scanning capability handshake.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretScanCapabilities {
+    pub contract_identity: String,
+    pub ruleset_version: u32,
+    pub effective_mode: String,
+    pub blocking: bool,
+    pub advisory: bool,
+    pub exact_fingerprint_acknowledgment: bool,
 }
 
 /// Priority capabilities
@@ -116,6 +131,16 @@ pub struct SchemaEntry {
 
 /// Generate capabilities for the native profile
 pub fn generate_capabilities(profile: &str) -> Result<Capabilities> {
+    generate_capabilities_with_secret_mode(profile, Mode::Enforce)
+}
+
+/// Generate capabilities using the effective policy of a discovered
+/// workspace. Callers without a workspace use [`generate_capabilities`],
+/// which advertises the compiled `enforce` default.
+pub fn generate_capabilities_with_secret_mode(
+    profile: &str,
+    secret_mode: Mode,
+) -> Result<Capabilities> {
     // Validate profile
     if profile != "native-v1" && profile != "needle-v1" {
         return Err(crate::Error::validation(format!(
@@ -217,6 +242,14 @@ pub fn generate_capabilities(profile: &str) -> Result<Capabilities> {
             evidence_refs: true,
             resolve_receipt_schema: "urn:bead-rs:schema:resolve-receipt:native-v1".to_string(),
             resolve_request_schema: "urn:bead-rs:schema:resolve-request:native-v1".to_string(),
+        }),
+        secret_scan: Some(SecretScanCapabilities {
+            contract_identity: CONTRACT_IDENTITY.to_string(),
+            ruleset_version: RULESET_VERSION,
+            effective_mode: secret_mode.as_str().to_string(),
+            blocking: true,
+            advisory: true,
+            exact_fingerprint_acknowledgment: true,
         }),
     })
 }

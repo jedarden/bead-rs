@@ -2958,8 +2958,21 @@ fn load_comments(
 }
 
 fn cmd_capabilities(opts: cli::CapabilitiesOptions) -> Result<()> {
-    // Generate capabilities
-    let capabilities = service::generate_capabilities(&opts.profile)?;
+    let workspace_root = match store::WorkspaceConfig::probe()? {
+        store::WorkspaceState::Ready(config) => Some(config.root),
+        store::WorkspaceState::Uninitialized { root, .. } => Some(root),
+        store::WorkspaceState::NotFound | store::WorkspaceState::NotBeadRs { .. } => None,
+    };
+    let secret_mode = match workspace_root {
+        Some(root) => scan::ScanConfig::load_from_workspace_root(&root)
+            .map_err(|error| Error::cli_usage(error.to_string()))?
+            .mode(),
+        None => scan::Mode::Enforce,
+    };
+    let mut capabilities = service::generate_capabilities(&opts.profile)?;
+    if let Some(secret_scan) = capabilities.secret_scan.as_mut() {
+        secret_scan.effective_mode = secret_mode.as_str().to_string();
+    }
 
     // Output as JSON
     let output = serde_json::to_string_pretty(&capabilities)

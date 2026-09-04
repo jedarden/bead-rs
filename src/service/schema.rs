@@ -218,6 +218,7 @@ fn names(kind: &str) -> &'static [&'static str] {
             // Additive R026 handshake (plan section 11): optional because it
             // is absent until the compiled automatic-flush default flips on
             "auto_flush",
+            "secret_scan",
         ],
         "attempt_outcome" => &[
             "$schema",
@@ -384,6 +385,7 @@ fn property_schema(kind: &str, name: &str) -> Value {
         | ("capabilities", "schemas")
         | ("capabilities", "commands") => json!({"type":"array"}),
         ("capabilities", "priorities") => json!({"type":"object"}),
+        ("capabilities", "secret_scan") => json!({"type":"object"}),
         ("field_guide", "guide_version") => json!({"const":1}),
         ("attempt_outcome", "attempt_id") => json!({"type":"string", "minLength":1, "maxLength":255}),
         ("attempt_outcome", "issue_id") => json!({"type":"string", "minLength":1, "maxLength":255}),
@@ -463,7 +465,7 @@ fn required_for(kind: &str) -> Vec<String> {
         // Optional while the R026 gate keeps the compiled default off, so a
         // document without it validates; present-when-enabled documents
         // validate against the same additive identity (plan section 11)
-        "capabilities" => &["auto_flush"],
+        "capabilities" => &["auto_flush", "secret_scan"],
         "attempt_outcome" => &["reason", "model", "harness", "harness_version"],
         "resolve_receipt" => &[],
         "resolve_request" => &["action", "reason", "if_revision", "fencing_token", "evidence_refs", "model", "harness", "harness_version"],
