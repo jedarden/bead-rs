@@ -1189,8 +1189,8 @@ fn cmd_resolve(opts: cli::ResolveOptions) -> Result<()> {
     };
 
     // Execute resolution in transaction
-    let tx = conn.unchecked_transaction()?;
-    let result = service::resolve_attempt(&tx, &workspace_uuid, request);
+    let mut tx = conn.unchecked_transaction()?;
+    let result = service::resolve_attempt(&mut tx, &workspace_uuid, request);
 
     // Handle errors with proper exit codes
     match result {
