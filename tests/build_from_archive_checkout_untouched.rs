@@ -11,12 +11,23 @@
 //! encodes that promise as assertions on the shared checkout's own state,
 //! snapshotted immediately before and after a full script run:
 //!
+//! - `git rev-parse HEAD` -- a run must not commit or move the branch;
+//! - `git reflog` -- the same violation class through the ref, checked
+//!   separately because the reflog can legitimately be empty (it is in this
+//!   checkout: it was expired while recovering the incident) and an empty
+//!   reflog makes the reflog comparison vacuous;
 //! - `git stash list` -- a run must not stash;
-//! - `git reflog` -- a run must not reset, checkout or commit;
-//! - `git rev-parse HEAD` -- the same violation class, checked directly,
-//!   because the reflog can legitimately be empty (it is in this checkout:
-//!   it was expired while recovering the incident) and an empty reflog makes
-//!   the reflog comparison vacuous.
+//! - `git ls-files -s` -- the index itself, as mode + blob + stage per path,
+//!   so a `git add` the script never runs is caught even when HEAD and the
+//!   worktree still look clean;
+//! - `git status --porcelain` -- tracked working-tree content and untracked
+//!   litter. This is the probe that carries the actual harm from the
+//!   incident: `git checkout -- .` and `git restore` erase uncommitted work,
+//!   and `git clean -fd` deletes untracked files, while moving no ref and
+//!   appending nothing to any reflog, so neither HEAD, reflog, stash list
+//!   nor the index notices. Verified 2026-09-04: after `git checkout -- .`
+//!   discarded a tracked modification, all three VCS probes read back
+//!   byte-identical to before it ran.
 //!
 //! Both runs are end to end. The success run extracts HEAD and compiles it
 //! (`cargo build --release`, tens of seconds), so the checkout-untouched
@@ -32,16 +43,37 @@
 //! for the next worker's `git status` to trip over. The script supports that
 //! flag for exactly this kind of redirected pinning.
 //!
-//! Concurrency caveat: another worker committing in this shared checkout
-//! while the test runs legitimately moves HEAD and appends to the reflog and
-//! will fail the comparison. The failure output shows both snapshots, so
-//! check `git log` / `git reflog` timestamps for concurrent activity before
-//! blaming the script.
+//! Concurrency caveat: this is a shared checkout on a box where several
+//! workers work at once, and the build itself takes minutes. Another worker
+//! committing, `git add`-ing, or editing a tracked file during the run
+//! legitimately moves HEAD, appends to the reflog or changes the worktree and
+//! fails the comparison. The one exception is `.beads/`, which every worker's
+//! bead mutations republish as a git-tracked side effect and which a build
+//! script has no way to write: the worktree probe excludes it so the test
+//! measures this run, not the fleet. The failure output shows both snapshots,
+//! so check `git log` / `git reflog` timestamps for concurrent activity
+//! before blaming the script.
 //!
 //! A packaged or `git archive` source tree has no local `.git` marker. In
 //! that environment these VCS-state assertions are inapplicable and skip
 //! explicitly; package verification exercises the script build separately.
 //! If the marker exists, every Git discovery failure still fails the test.
+//!
+//! Skipping on `.git` absence alone would be careless: absence is also what
+//! a checkout looks like after its `.git` is destroyed, and what any
+//! directory looks like once git's upward discovery walks out of it and
+//! resolves a parent work tree. The second case is the dangerous one -- the
+//! probes would snapshot a repository this test did not select, and the
+//! script resolves its own `REPO` the same way, so the run would measure and
+//! build from the wrong checkout. git is therefore asked to confirm the
+//! absence, and disagreement is a failure rather than a skip.
+//!
+//! The checkout under test defaults to the tree this binary was compiled in
+//! (`CARGO_MANIFEST_DIR`) and can be aimed elsewhere with the
+//! `BEADRS_ARCHIVE_TEST_CHECKOUT` fixture path, so one compiled binary can be
+//! proven against a real checkout and against an archive extraction. The
+//! override chooses which environment is measured; it never weakens what is
+//! measured.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -59,10 +91,15 @@ const SCRATCH_REMOVED: &str = "scratch dir removed: ";
 /// The script's own report that it kept the scratch dir for diagnosis.
 const SCRATCH_RETAINED: &str = "scratch dir left in place for diagnosis: ";
 
+/// Fixture path to the checkout whose untouched-ness is asserted. Unset means
+/// the tree this test binary was compiled in, which is the real checkout for
+/// a plain `cargo test` and an archive extraction for the packaged suite.
+const CHECKOUT_OVERRIDE: &str = "BEADRS_ARCHIVE_TEST_CHECKOUT";
+
 /// The script is landed by beadrs-53e55a45; until that commit arrives this
 /// test has nothing to run and skips loudly instead of failing the suite.
-fn require_script() -> Option<PathBuf> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(SCRIPT);
+fn require_script(root: &Path) -> Option<PathBuf> {
+    let path = root.join(SCRIPT);
     if !path.exists() {
         let msg = format!(
             "skipping: {SCRIPT} does not exist yet (beadrs-53e55a45 has not landed); \
@@ -76,21 +113,64 @@ fn require_script() -> Option<PathBuf> {
 }
 
 fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    match std::env::var_os(CHECKOUT_OVERRIDE) {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+    }
 }
 
-fn require_vcs_checkout(root: &Path) -> bool {
+/// Whether the VCS-state assertions apply to `root`.
+#[derive(Debug, PartialEq)]
+enum CheckoutContext {
+    /// `.git` is present, so every git probe must succeed and the full
+    /// checkout-untouched invariant holds.
+    Real,
+    /// An exported tree -- a `git archive` extraction or an unpacked package.
+    /// There is no VCS state to snapshot, so those assertions are skipped.
+    ExportedTree,
+}
+
+/// Classify `root`, refusing to skip on `.git` absence alone.
+///
+/// `.git` missing is expected for an exported tree, but it is also what a
+/// checkout looks like after its `.git` has been destroyed, and what any
+/// directory looks like when git's upward discovery leaves it and resolves a
+/// parent work tree. The second case is the dangerous one: the probes would
+/// snapshot a repository this test did not select, and the script resolves
+/// its own `REPO` the same way, so the run would be measuring -- and building
+/// from -- the wrong checkout. git is therefore asked to confirm the absence;
+/// disagreement is a failure, never a skip.
+fn checkout_context(root: &Path) -> CheckoutContext {
     if root.join(".git").exists() {
-        return true;
+        return CheckoutContext::Real;
+    }
+    let discovery = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .output()
+        .expect("spawn git");
+    if discovery.status.success() {
+        let resolved = String::from_utf8_lossy(&discovery.stdout).trim().to_owned();
+        panic!(
+            "{} has no .git marker but git resolved a work tree from it \
+             (is-inside-work-tree = {resolved:?}); the checkout-state probes \
+             would measure a repository this test did not select, and \
+             {SCRIPT} would build from it. Move this exported tree out from \
+             inside any enclosing repository instead of skipping.",
+            root.display()
+        );
     }
     let msg = format!(
-        "skipping checkout-state assertion: {} has no local .git marker \
-         (expected for cargo package and git-archive verification)",
+        "skipping checkout-state assertion: {} is an exported tree -- no .git \
+         marker and git confirms it is not inside a work tree (expected for \
+         cargo package and git-archive verification); the script build itself \
+         is exercised from a real checkout",
         root.display()
     );
     println!("{msg}");
     eprintln!("{msg}");
-    false
+    CheckoutContext::ExportedTree
 }
 
 fn git(root: &Path, args: &[&str]) -> String {
@@ -113,37 +193,58 @@ fn git(root: &Path, args: &[&str]) -> String {
 /// point of this file.
 #[derive(Debug, Clone)]
 struct SharedState {
-    stash_list: String,
-    reflog: String,
     head: String,
+    reflog: String,
+    stash_list: String,
+    /// The index as `git ls-files -s` renders it -- mode, blob and stage per
+    /// path. Independent of HEAD and of the worktree, so staged-only
+    /// tampering is visible on its own.
+    index: String,
+    /// Tracked working-tree content plus untracked litter. `.beads/` is
+    /// excluded: any worker's bead mutations republish that git-tracked
+    /// checkpoint, and a build script cannot write it, so including it would
+    /// make the probe measure the fleet instead of this run.
+    worktree: String,
 }
 
 fn snapshot(root: &Path) -> SharedState {
     SharedState {
-        stash_list: git(root, &["stash", "list"]),
-        reflog: git(root, &["reflog"]),
         head: git(root, &["rev-parse", "HEAD"]),
+        reflog: git(root, &["reflog"]),
+        stash_list: git(root, &["stash", "list"]),
+        index: git(root, &["ls-files", "-s"]),
+        worktree: git(
+            root,
+            &["status", "--porcelain", "--", ".", ":(exclude).beads"],
+        ),
     }
 }
 
 fn assert_shared_untouched(before: &SharedState, after: &SharedState) {
     let mut changed = Vec::new();
-    if before.stash_list != after.stash_list {
-        changed.push("git stash list");
+    if before.head != after.head {
+        changed.push("git rev-parse HEAD");
     }
     if before.reflog != after.reflog {
         changed.push("git reflog");
     }
-    if before.head != after.head {
-        changed.push("git rev-parse HEAD");
+    if before.stash_list != after.stash_list {
+        changed.push("git stash list");
+    }
+    if before.index != after.index {
+        changed.push("git ls-files -s (index)");
+    }
+    if before.worktree != after.worktree {
+        changed.push("git status --porcelain (tracked worktree + untracked, .beads excluded)");
     }
     assert!(
         changed.is_empty(),
         "the build-from-archive run mutated the shared checkout: {changed:?}\n\
          before: {before:#?}\n\
          after: {after:#?}\n\
-         (a concurrent worker committing during the run also moves this state; \
-         check git log / git reflog timestamps before blaming the script)"
+         (a concurrent worker committing, staging or editing during the run \
+         also moves this state; check git log / git reflog timestamps before \
+         blaming the script)"
     );
 }
 
@@ -202,11 +303,11 @@ fn pin_out_dir(label: &str) -> PathBuf {
 #[test]
 #[serial]
 fn archive_build_leaves_shared_checkout_untouched() {
-    let Some(script) = require_script() else {
+    let root = repo_root();
+    let Some(script) = require_script(&root) else {
         return;
     };
-    let root = repo_root();
-    if !require_vcs_checkout(&root) {
+    if matches!(checkout_context(&root), CheckoutContext::ExportedTree) {
         return;
     }
     let sha = git(&root, &["rev-parse", "HEAD"]);
@@ -256,11 +357,11 @@ fn archive_build_leaves_shared_checkout_untouched() {
 #[test]
 #[serial]
 fn failed_archive_build_retains_scratch_dir() {
-    let Some(script) = require_script() else {
+    let root = repo_root();
+    let Some(script) = require_script(&root) else {
         return;
     };
-    let root = repo_root();
-    if !require_vcs_checkout(&root) {
+    if matches!(checkout_context(&root), CheckoutContext::ExportedTree) {
         return;
     }
     let sha = git(&root, &["rev-parse", "HEAD"]);
@@ -304,4 +405,37 @@ fn failed_archive_build_retains_scratch_dir() {
     // this run reported is removed -- never a concurrent worker's.
     let _ = std::fs::remove_dir_all(&retained);
     let _ = std::fs::remove_dir_all(&out_dir);
+}
+
+/// The packaged suite reaches these two runs only through the archive-context
+/// skip, so the skip is itself part of the contract: it has to be loud, and
+/// it has to be reachable only by an exported tree. This test asserts the
+/// classification directly, so a real checkout that somehow stopped being
+/// probeable fails here instead of quietly borrowing the skip.
+#[test]
+#[serial]
+fn checkout_context_matches_the_environment_it_claims() {
+    let root = repo_root();
+    match checkout_context(&root) {
+        CheckoutContext::ExportedTree => {
+            // An exported tree still has to be the tree this file verifies,
+            // otherwise the skip is excusing the wrong directory.
+            assert!(
+                root.join(SCRIPT).exists(),
+                "an exported tree without {SCRIPT} is not a tree this test verifies"
+            );
+            println!(
+                "exported tree at {}: checkout-state assertions skipped",
+                root.display()
+            );
+        }
+        CheckoutContext::Real => {
+            // Proving HEAD is discoverable is what separates "the assertions
+            // ran" from "the assertions were skipped and the test went green
+            // anyway".
+            let head = git(&root, &["rev-parse", "HEAD"]);
+            assert_eq!(head.len(), 40, "unexpected HEAD shape: {head:?}");
+            println!("real checkout at {}: HEAD {head}", root.display());
+        }
+    }
 }
