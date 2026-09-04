@@ -1905,13 +1905,19 @@ pub struct DoctorOptions {
     #[arg(long, requires = "starvation_recovery")]
     pub force: bool,
 
-    /// Diagnostic scopes: store, backup, schema, dependencies, comments, all (default: all)
+    /// Diagnostic scopes: store, backup, schema, dependencies, comments,
+    /// attempts, secrets, all (default: all)
     #[arg(long, value_delimiter = ',')]
     pub scope: Option<Vec<String>>,
 
     /// Output diagnostics in JSON format
     #[arg(long)]
     pub json: bool,
+
+    /// Output format. `--format json` is equivalent to `--json` and is the
+    /// stable secret-diagnostics contract spelling.
+    #[arg(long, value_parser = ["text", "json"])]
+    pub format: Option<String>,
 }
 
 /// Options for capabilities command

@@ -51,6 +51,7 @@ pub enum DiagnosticScope {
     Dependencies,
     Comments,
     Attempts,
+    Secrets,
     All,
 }
 
@@ -64,6 +65,7 @@ impl DiagnosticScope {
             "dependencies" => Some(DiagnosticScope::Dependencies),
             "comments" => Some(DiagnosticScope::Comments),
             "attempts" => Some(DiagnosticScope::Attempts),
+            "secrets" => Some(DiagnosticScope::Secrets),
             "all" => Some(DiagnosticScope::All),
             _ => None,
         }
@@ -77,6 +79,7 @@ impl DiagnosticScope {
             "dependencies",
             "comments",
             "attempts",
+            "secrets",
             "all",
         ]
     }
@@ -616,6 +619,49 @@ pub fn run_diagnostics_with_scopes(
                     details: Some(serde_json::json!({
                         "warning": e.to_string()
                     })),
+                });
+            }
+        }
+    }
+
+    if run_all || scopes.contains(&DiagnosticScope::Secrets) {
+        scopes_checked.push("secrets".to_string());
+        match crate::service::secret_diagnostics::run_secret_diagnostics(store) {
+            Ok(report) if report.findings.is_empty() => {
+                checks.push(DiagnosticCheck {
+                    name: "secret_scan".to_string(),
+                    status: DiagnosticStatus::Ok,
+                    message: format!(
+                        "No secret findings across {} live fields and {} retained checkpoint generation(s); effective mode {}",
+                        report.live_fields_scanned,
+                        report.checkpoint_generations_scanned.len(),
+                        report.effective_mode
+                    ),
+                    scope: Some("secrets".to_string()),
+                    details: Some(serde_json::to_value(report)?),
+                });
+            }
+            Ok(report) => {
+                has_warnings = true;
+                checks.push(DiagnosticCheck {
+                    name: "secret_scan".to_string(),
+                    status: DiagnosticStatus::Warning,
+                    message: format!(
+                        "Secret scan found {} blocking and {} advisory finding(s) across live state and retained checkpoints; matched bytes are never shown",
+                        report.blocking_findings, report.advisory_findings
+                    ),
+                    scope: Some("secrets".to_string()),
+                    details: Some(serde_json::to_value(report)?),
+                });
+            }
+            Err(error) => {
+                has_errors = true;
+                checks.push(DiagnosticCheck {
+                    name: "secret_scan".to_string(),
+                    status: DiagnosticStatus::Error,
+                    message: format!("Secret diagnostic failed: {error}"),
+                    scope: Some("secrets".to_string()),
+                    details: Some(serde_json::json!({"error": error.to_string()})),
                 });
             }
         }

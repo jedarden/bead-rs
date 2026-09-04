@@ -29,6 +29,7 @@ pub mod rehearsal;
 pub mod resource_locks;
 pub mod scheduling;
 pub mod schema;
+pub mod secret_diagnostics;
 pub mod why;
 
 // Archaeology report types are public library API; the binary uses the command

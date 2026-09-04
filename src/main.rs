@@ -2368,6 +2368,7 @@ fn cmd_sync_import_diagnostics(opts: cli::SyncImportOptions) -> Result<()> {
 }
 
 fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
+    let json_output = opts.json || opts.format.as_deref() == Some("json");
     // Discover workspace. Doctor is the tool an operator reaches for when the
     // workspace is broken, so it must still run — and report — when the
     // database is missing its schema, rather than failing to start.
@@ -2493,7 +2494,7 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
         eprintln!("Running visibility check...");
         let report = service::doctor::run_visibility_check(&store::SqliteStore::new())?;
 
-        if opts.json {
+        if json_output {
             // Output JSON report
             let json_output = serde_json::to_string_pretty(&report).map_err(|e| {
                 Error::Internal(anyhow::anyhow!(
@@ -2568,7 +2569,7 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
         eprintln!("Running starvation check...");
         let report = service::doctor::run_starvation_check(&store::SqliteStore::new())?;
 
-        if opts.json {
+        if json_output {
             // Output JSON report
             let json_output = serde_json::to_string_pretty(&report).map_err(|e| {
                 Error::Internal(anyhow::anyhow!(
@@ -2649,7 +2650,7 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
         let mut store_wrapper = store::SqliteStore::new();
         let result = service::doctor::run_starvation_recovery(&mut store_wrapper, opts.force)?;
 
-        if opts.json {
+        if json_output {
             // Output JSON result
             let json_output = serde_json::to_string_pretty(&result).map_err(|e| {
                 Error::Internal(anyhow::anyhow!(
@@ -2750,7 +2751,7 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
             service::run_diagnostics_with_scopes(&store::SqliteStore::new(), &scopes)?
         };
 
-        if opts.json {
+        if json_output {
             // Output stable JSON diagnostics
             let json_output = serde_json::to_string_pretty(&diagnostics).map_err(|e| {
                 Error::Internal(anyhow::anyhow!("Failed to serialize diagnostics: {}", e))

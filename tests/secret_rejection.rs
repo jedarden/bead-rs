@@ -219,3 +219,77 @@ fn manifest_is_scanned_as_one_request_before_its_transaction() {
         .unwrap();
     assert_eq!(audits, 1);
 }
+
+#[test]
+fn doctor_reports_live_and_both_retained_generations_without_matched_bytes() {
+    let workspace = tempfile::Builder::new()
+        .prefix("bead-secret-doctor-")
+        .tempdir_in("/var/tmp")
+        .unwrap();
+    Command::cargo_bin("bead")
+        .unwrap()
+        .current_dir(workspace.path())
+        .arg("init")
+        .assert()
+        .success();
+    let value = provider_shaped_value();
+    let rejected = Command::cargo_bin("bead")
+        .unwrap()
+        .current_dir(workspace.path())
+        .args(["create", "--title", "safe title", "--description"])
+        .arg(&value)
+        .output()
+        .unwrap();
+    let finding_fingerprint = fingerprint(&String::from_utf8(rejected.stderr).unwrap());
+
+    let created = Command::cargo_bin("bead")
+        .unwrap()
+        .current_dir(workspace.path())
+        .args(["create", "--title", "safe title", "--description"])
+        .arg(&value)
+        .args(["--acknowledge-secret", &finding_fingerprint])
+        .output()
+        .unwrap();
+    assert!(created.status.success());
+    let issue_id = String::from_utf8(created.stdout).unwrap();
+    let issue_id = issue_id.trim();
+    Command::cargo_bin("bead")
+        .unwrap()
+        .current_dir(workspace.path())
+        .args(["label", "add", issue_id, "--label", "safe"])
+        .assert()
+        .success();
+
+    let output = Command::cargo_bin("bead")
+        .unwrap()
+        .current_dir(workspace.path())
+        .args(["doctor", "--scope", "secrets", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(!String::from_utf8(output.stderr).unwrap().contains(&value));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(!stdout.contains(&value));
+    let diagnostics: Value = serde_json::from_str(&stdout).unwrap();
+    let check = diagnostics["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["name"] == "secret_scan")
+        .unwrap();
+    assert_eq!(check["status"], "warning");
+    assert_eq!(
+        check["details"]["checkpoint_generations_scanned"],
+        serde_json::json!(["current", "previous"])
+    );
+    let findings = check["details"]["findings"].as_array().unwrap();
+    assert!(findings.iter().any(|finding| finding["selector"]
+        .as_str()
+        .is_some_and(|selector| selector.starts_with("live:"))));
+    assert!(findings.iter().any(|finding| finding["selector"]
+        .as_str()
+        .is_some_and(|selector| selector.starts_with("checkpoint:current:"))));
+    assert!(findings.iter().any(|finding| finding["selector"]
+        .as_str()
+        .is_some_and(|selector| selector.starts_with("checkpoint:previous:"))));
+}
