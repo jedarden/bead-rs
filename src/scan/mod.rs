@@ -557,6 +557,30 @@ impl ScanReport {
     pub fn is_admitted(&self) -> bool {
         self.blocking.is_empty()
     }
+
+    /// Combine independently selected canonical records into one invocation
+    /// report. This is used by bulk manifests and diagnostics, where each
+    /// record needs its own stable selector but one all-or-none verdict.
+    pub fn merge(reports: impl IntoIterator<Item = ScanReport>) -> Self {
+        let mut merged = Self::default();
+        for report in reports {
+            merged.findings.extend(report.findings);
+            merged.acknowledged.extend(report.acknowledged);
+            merged.blocking.extend(report.blocking);
+        }
+        let order = |a: &Finding, b: &Finding| {
+            (&a.selector, &a.field_path, a.start, &a.rule_id).cmp(&(
+                &b.selector,
+                &b.field_path,
+                b.start,
+                &b.rule_id,
+            ))
+        };
+        merged.findings.sort_by(order);
+        merged.acknowledged.sort_by(order);
+        merged.blocking.sort_by(order);
+        merged
+    }
 }
 
 /// A rejection: the unacknowledged blocking finding plus the full operator

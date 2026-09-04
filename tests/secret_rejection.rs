@@ -154,3 +154,68 @@ fn advisory_and_off_workspace_modes_do_not_reject() {
         assert_eq!(counts(workspace.path()).0, 1);
     }
 }
+
+#[test]
+fn manifest_is_scanned_as_one_request_before_its_transaction() {
+    let workspace = workspace();
+    let value = provider_shaped_value();
+    let manifest_path = workspace.path().join("manifest.json");
+    let manifest = serde_json::json!({
+        "manifest_version": 1,
+        "operations": [
+            {
+                "op": "create",
+                "local_id": "first",
+                "title": "safe title",
+                "description": value.clone()
+            },
+            {
+                "op": "create",
+                "title": "must not partially commit"
+            }
+        ]
+    });
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    let before = counts(workspace.path());
+
+    let rejected = Command::cargo_bin("bead")
+        .unwrap()
+        .current_dir(workspace.path())
+        .args(["manifest", "commit", "--input"])
+        .arg(&manifest_path)
+        .arg("--no-auto-flush")
+        .output()
+        .unwrap();
+    assert_eq!(rejected.status.code(), Some(2));
+    assert_eq!(counts(workspace.path()), before);
+    let stderr = String::from_utf8(rejected.stderr).unwrap();
+    assert!(!stderr.contains(&value));
+    let finding_fingerprint = fingerprint(&stderr);
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .current_dir(workspace.path())
+        .args(["manifest", "commit", "--input"])
+        .arg(&manifest_path)
+        .args([
+            "--acknowledge-secret",
+            &finding_fingerprint,
+            "--no-auto-flush",
+        ])
+        .assert()
+        .success();
+    assert_eq!(counts(workspace.path()).0, 2);
+    let conn = Connection::open(workspace.path().join(".beads/beads.db")).unwrap();
+    let audits: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE kind = 'secret_acknowledged'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(audits, 1);
+}

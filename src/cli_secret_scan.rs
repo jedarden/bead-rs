@@ -30,6 +30,19 @@ struct CanonicalRequest<'a> {
     fields: Vec<Field<'a>>,
 }
 
+fn record_selector(kind: &str, candidate: &str) -> String {
+    let safe = !candidate.is_empty()
+        && candidate.len() <= 255
+        && candidate
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
+    if safe {
+        format!("{kind}:{candidate}")
+    } else {
+        format!("{kind}:input")
+    }
+}
+
 impl<'a> CanonicalRequest<'a> {
     fn new(selector: impl Into<String>, actor: &'a str) -> Self {
         Self {
@@ -62,6 +75,20 @@ impl<'a> CanonicalRequest<'a> {
 /// Recovery inputs are deliberately excluded: the bytes already exist and
 /// the contract requires reporting rather than refusal for recovery paths.
 pub(crate) fn prepare(cli: &crate::cli::Cli) -> Result<Option<PreparedScan>> {
+    if let Command::Manifest(command) = &cli.command {
+        let opts = match command {
+            crate::cli::ManifestCommand::DryRun(opts)
+            | crate::cli::ManifestCommand::Commit(opts) => opts,
+        };
+        let manifest = crate::service::load_manifest(std::path::Path::new(&opts.input))?;
+        let Some(workspace) = WorkspaceConfig::discover()? else {
+            return Ok(None);
+        };
+        let config = configured_policy(cli, &workspace)?;
+        let report = crate::service::manifest::scan_manifest(&config, &manifest);
+        return finalize(config, report, "cli");
+    }
+
     let Some(request) = canonical_request(&cli.command) else {
         if !cli.acknowledge_secret.is_empty() {
             return Err(Error::cli_usage(
@@ -76,18 +103,27 @@ pub(crate) fn prepare(cli: &crate::cli::Cli) -> Result<Option<PreparedScan>> {
         // recovery never reach this branch, and there is no state to mutate.
         return Ok(None);
     };
+    let config = configured_policy(cli, &workspace)?;
+    let report = scan::scan(&config, &request.selector, &request.fields);
+    finalize(config, report, request.actor)
+}
+
+fn configured_policy(cli: &crate::cli::Cli, workspace: &WorkspaceConfig) -> Result<ScanConfig> {
     let mut config = ScanConfig::load_from_workspace_root(&workspace.root)
         .map_err(|error| Error::cli_usage(error.to_string()))?;
     config
         .add_invocation_acknowledgments(cli.acknowledge_secret.iter().map(String::as_str))
         .map_err(|error| Error::cli_usage(error.to_string()))?;
-    let report = scan::scan(&config, &request.selector, &request.fields);
+    Ok(config)
+}
+
+fn finalize(config: ScanConfig, report: ScanReport, actor: &str) -> Result<Option<PreparedScan>> {
     if let Some(rejection) = scan::reject_if_blocked(&config, &report) {
         return Err(Error::cli_usage(rejection.message));
     }
     Ok(Some(PreparedScan {
         report,
-        actor: request.actor.to_string(),
+        actor: actor.to_string(),
     }))
 }
 
@@ -106,12 +142,12 @@ fn canonical_request(command: &Command) -> Option<CanonicalRequest<'_>> {
                 .optional("unsupported.notes", opts.notes.as_deref()),
         ),
         Command::Claim(opts) => Some(
-            CanonicalRequest::new("claim:ready-frontier", &opts.assignee)
+            CanonicalRequest::new("claim:ready-frontier", "cli")
                 .field("assignee", &opts.assignee)
                 .field("policy", &opts.policy),
         ),
         Command::Update(opts) => Some(
-            CanonicalRequest::new(format!("issue:{}", opts.id), "cli")
+            CanonicalRequest::new(record_selector("issue", &opts.id), "cli")
                 .field("id", &opts.id)
                 .optional("status", opts.status.as_deref())
                 .optional("assignee", opts.assignee.as_deref())
@@ -121,20 +157,20 @@ fn canonical_request(command: &Command) -> Option<CanonicalRequest<'_>> {
                 .optional("unsupported.issue_type", opts.issue_type_hidden.as_deref())
                 .optional("unsupported.label", opts.label.as_deref()),
         ),
-        Command::Release(opts) => {
-            Some(CanonicalRequest::new(format!("issue:{}", opts.id), "cli").field("id", &opts.id))
-        }
+        Command::Release(opts) => Some(
+            CanonicalRequest::new(record_selector("issue", &opts.id), "cli").field("id", &opts.id),
+        ),
         Command::Close(opts) => Some(
-            CanonicalRequest::new(format!("issue:{}", opts.id), "cli")
+            CanonicalRequest::new(record_selector("issue", &opts.id), "cli")
                 .field("id", &opts.id)
                 .optional("close_reason", opts.reason.as_deref())
                 .optional("unsupported.body", opts.body.as_deref()),
         ),
-        Command::Reopen(opts) => {
-            Some(CanonicalRequest::new(format!("issue:{}", opts.id), "cli").field("id", &opts.id))
-        }
+        Command::Reopen(opts) => Some(
+            CanonicalRequest::new(record_selector("issue", &opts.id), "cli").field("id", &opts.id),
+        ),
         Command::Resolve(opts) => Some(
-            CanonicalRequest::new(format!("issue:{}", opts.id), &opts.actor)
+            CanonicalRequest::new(record_selector("issue", &opts.id), "cli")
                 .field("id", &opts.id)
                 .field("attempt_id", &opts.attempt_id)
                 .field("outcome", &opts.outcome)
@@ -148,24 +184,24 @@ fn canonical_request(command: &Command) -> Option<CanonicalRequest<'_>> {
         ),
         Command::Label(command) => match command {
             LabelCommand::Add(opts) => Some(
-                CanonicalRequest::new(format!("issue:{}", opts.id), "cli")
+                CanonicalRequest::new(record_selector("issue", &opts.id), "cli")
                     .field("id", &opts.id)
                     .field("label", &opts.label),
             ),
             LabelCommand::Remove(opts) => Some(
-                CanonicalRequest::new(format!("issue:{}", opts.id), "cli")
+                CanonicalRequest::new(record_selector("issue", &opts.id), "cli")
                     .field("id", &opts.id)
                     .field("label", &opts.label),
             ),
         },
         Command::Resource(command) => match command {
             ResourceCommand::Add(opts) => Some(
-                CanonicalRequest::new(format!("issue:{}", opts.id), "cli")
+                CanonicalRequest::new(record_selector("issue", &opts.id), "cli")
                     .field("id", &opts.id)
                     .repeated("resource_keys[]", &opts.keys),
             ),
             ResourceCommand::Remove(opts) => Some(
-                CanonicalRequest::new(format!("issue:{}", opts.id), "cli")
+                CanonicalRequest::new(record_selector("issue", &opts.id), "cli")
                     .field("id", &opts.id)
                     .repeated("resource_keys[]", &opts.keys),
             ),
@@ -173,35 +209,29 @@ fn canonical_request(command: &Command) -> Option<CanonicalRequest<'_>> {
         },
         Command::Dep(command) => match command {
             DepCommand::Add(opts) => Some(
-                CanonicalRequest::new(
-                    format!("dependency:{}:{}", opts.blocked, opts.blocker),
-                    "cli",
-                )
-                .field("blocked_issue_id", &opts.blocked)
-                .field("blocker_issue_id", &opts.blocker)
-                .field("kind", &opts.kind)
-                .optional("condition", opts.condition.as_deref()),
+                CanonicalRequest::new("dependency:input", "cli")
+                    .field("blocked_issue_id", &opts.blocked)
+                    .field("blocker_issue_id", &opts.blocker)
+                    .field("kind", &opts.kind)
+                    .optional("condition", opts.condition.as_deref()),
             ),
             DepCommand::Remove(opts) => Some(
-                CanonicalRequest::new(
-                    format!("dependency:{}:{}", opts.blocked, opts.blocker),
-                    "cli",
-                )
-                .field("blocked_issue_id", &opts.blocked)
-                .field("blocker_issue_id", &opts.blocker)
-                .optional("kind", opts.kind.as_deref()),
+                CanonicalRequest::new("dependency:input", "cli")
+                    .field("blocked_issue_id", &opts.blocked)
+                    .field("blocker_issue_id", &opts.blocker)
+                    .optional("kind", opts.kind.as_deref()),
             ),
         },
         Command::Ref(command) => match command {
             RefCommand::Add(opts) => Some(
-                CanonicalRequest::new(format!("issue:{}", opts.id), "cli")
+                CanonicalRequest::new(record_selector("issue", &opts.id), "cli")
                     .field("id", &opts.id)
                     .field("external_ref.namespace", &opts.namespace)
                     .field("external_ref.key", &opts.key)
                     .field("external_ref.value", &opts.value),
             ),
             RefCommand::Remove(opts) => Some(
-                CanonicalRequest::new(format!("issue:{}", opts.id), "cli")
+                CanonicalRequest::new(record_selector("issue", &opts.id), "cli")
                     .field("id", &opts.id)
                     .field("external_ref.namespace", &opts.namespace)
                     .field("external_ref.key", &opts.key),
@@ -210,14 +240,14 @@ fn canonical_request(command: &Command) -> Option<CanonicalRequest<'_>> {
         },
         Command::Data(command) => match command {
             DataCommand::Set(opts) => Some(
-                CanonicalRequest::new(format!("issue:{}", opts.id), "cli")
+                CanonicalRequest::new(record_selector("issue", &opts.id), "cli")
                     .field("id", &opts.id)
                     .field("data.namespace", &opts.namespace)
                     .field("data.schema_ref", &opts.schema_ref)
                     .field("data.value", &opts.value),
             ),
             DataCommand::Remove(opts) => Some(
-                CanonicalRequest::new(format!("issue:{}", opts.id), "cli")
+                CanonicalRequest::new(record_selector("issue", &opts.id), "cli")
                     .field("id", &opts.id)
                     .field("data.namespace", &opts.namespace),
             ),
@@ -225,7 +255,7 @@ fn canonical_request(command: &Command) -> Option<CanonicalRequest<'_>> {
         },
         Command::Recurrence(command) => match command {
             RecurrenceCommand::Create(opts) => Some(
-                CanonicalRequest::new(format!("recurrence:{}", opts.id), "cli")
+                CanonicalRequest::new(record_selector("recurrence", &opts.id), "cli")
                     .field("id", &opts.id)
                     .field("title", &opts.title)
                     .optional("description", opts.description.as_deref())
@@ -235,23 +265,20 @@ fn canonical_request(command: &Command) -> Option<CanonicalRequest<'_>> {
                     .optional("labels", opts.labels.as_deref()),
             ),
             RecurrenceCommand::Delete(opts) => Some(
-                CanonicalRequest::new(format!("recurrence:{}", opts.id), "cli")
+                CanonicalRequest::new(record_selector("recurrence", &opts.id), "cli")
                     .field("id", &opts.id),
             ),
             RecurrenceCommand::Materialize(opts) => Some(
-                CanonicalRequest::new(
-                    format!("recurrence:{}:next", opts.id),
-                    opts.actor.as_deref().unwrap_or("cli"),
-                )
-                .field("id", &opts.id)
-                .optional("actor", opts.actor.as_deref()),
+                CanonicalRequest::new(record_selector("recurrence", &opts.id), "cli")
+                    .field("id", &opts.id)
+                    .optional("actor", opts.actor.as_deref()),
             ),
             RecurrenceCommand::Show(_)
             | RecurrenceCommand::List(_)
             | RecurrenceCommand::History(_) => None,
         },
         Command::Sync(SyncCommand::Fork(opts)) => Some(
-            CanonicalRequest::new("workspace:fork", &opts.actor)
+            CanonicalRequest::new("workspace:fork", "cli")
                 .field("actor", &opts.actor)
                 .optional("reason", opts.reason.as_deref()),
         ),

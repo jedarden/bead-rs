@@ -13,6 +13,7 @@
 
 use crate::error::{Error, Result};
 use crate::model::Issue;
+use crate::scan::{self, Field, ScanConfig, ScanReport};
 use crate::store::WorkspaceConfig;
 use rusqlite::{Connection, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -223,6 +224,74 @@ pub fn parse_manifest(content: &str) -> Result<Manifest> {
         version,
         operations,
     })
+}
+
+/// Scan the complete canonical text of every operation before the manifest's
+/// single semantic transaction opens. Each operation has its own stable,
+/// non-secret selector; the merged report provides one all-or-none verdict.
+pub fn scan_manifest(config: &ScanConfig, manifest: &Manifest) -> ScanReport {
+    ScanReport::merge(
+        manifest
+            .operations
+            .iter()
+            .enumerate()
+            .map(|(index, operation)| {
+                let selector = format!("manifest:operation:{index}");
+                let fields = manifest_fields(operation);
+                scan::scan(config, &selector, &fields)
+            }),
+    )
+}
+
+fn manifest_fields(operation: &ManifestOp) -> Vec<Field<'_>> {
+    let mut fields = Vec::new();
+    match operation {
+        ManifestOp::Create(op) => {
+            push_optional(&mut fields, "local_id", op.local_id.as_deref());
+            fields.push(Field::new("title", &op.title));
+            push_optional(&mut fields, "description", op.description.as_deref());
+            push_optional(&mut fields, "issue_type", op.issue_type.as_deref());
+            push_optional(&mut fields, "assignee", op.assignee.as_deref());
+            fields.extend(op.labels.iter().map(|value| Field::new("labels[]", value)));
+            fields.extend(
+                op.resource_keys
+                    .iter()
+                    .map(|value| Field::new("resource_keys[]", value)),
+            );
+            push_optional(&mut fields, "unique_ref", op.unique_ref.as_deref());
+        }
+        ManifestOp::Update(op) => {
+            fields.push(Field::new("id", &op.id));
+            push_optional(&mut fields, "status", op.status.as_deref());
+            push_optional(&mut fields, "assignee", op.assignee.as_deref());
+            push_optional(&mut fields, "notes", op.notes.as_deref());
+        }
+        ManifestOp::LabelAdd(op) | ManifestOp::LabelRemove(op) => {
+            fields.push(Field::new("id", &op.id));
+            fields.push(Field::new("label", &op.label));
+        }
+        ManifestOp::DepAdd(op) => {
+            fields.push(Field::new("blocked_issue_id", &op.blocked));
+            fields.push(Field::new("blocker_issue_id", &op.blocker));
+            fields.push(Field::new("kind", &op.kind));
+        }
+        ManifestOp::DepRemove(op) => {
+            fields.push(Field::new("blocked_issue_id", &op.blocked));
+            fields.push(Field::new("blocker_issue_id", &op.blocker));
+            push_optional(&mut fields, "kind", op.kind.as_deref());
+        }
+        ManifestOp::Close(op) => {
+            fields.push(Field::new("id", &op.id));
+            fields.push(Field::new("close_reason", &op.reason));
+        }
+    }
+    fields
+}
+
+fn push_optional<'a>(fields: &mut Vec<Field<'a>>, path: &'a str, value: Option<&'a str>) {
+    if let Some(value) = value {
+        fields.push(Field::new(path, value));
+    }
 }
 
 /// Closed-schema parse of one operation object.
@@ -780,6 +849,29 @@ mod tests {
         assert_eq!(manifest.operations.len(), 2);
         assert_eq!(manifest.operations[0].kind(), "create");
         assert_eq!(manifest.operations[1].kind(), "dep_add");
+    }
+
+    #[test]
+    fn scans_every_operation_before_the_manifest_transaction() {
+        let value = [["AK", "IA"].concat(), "7M4Q9Z2N8C5R3T6V".to_string()].concat();
+        let document = serde_json::json!({
+            "manifest_version": 1,
+            "operations": [
+                {"op": "create", "local_id": "a", "title": "one", "description": value},
+                {"op": "update", "id": "$a", "notes": "safe"},
+                {"op": "label_add", "id": "$a", "label": "safe"},
+                {"op": "dep_add", "blocked": "$a", "blocker": "bead-00000000"},
+                {"op": "close", "id": "$a", "reason": "safe"}
+            ]
+        });
+        let manifest = parse_manifest(&document.to_string()).unwrap();
+        let report = scan_manifest(&ScanConfig::enforce(), &manifest);
+        assert_eq!(report.blocking.len(), 1);
+        assert_eq!(report.blocking[0].selector, "manifest:operation:0");
+        assert_eq!(report.blocking[0].field_path, "description");
+        assert!(!serde_json::to_string(&report.blocking[0])
+            .unwrap()
+            .contains(&value));
     }
 
     #[test]
