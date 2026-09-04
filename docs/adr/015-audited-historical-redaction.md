@@ -46,6 +46,11 @@ fingerprint, actor, reason, time, and resulting generation identity. It never
 contains removed content. Import, merge, reconcile, and restore must honor a
 known receipt/tombstone over older matching content.
 
+Recovery precedence recomputes a tombstoned finding from its stored ruleset
+version, rule ID, semantic selector, field path, and byte range. It does not
+depend on the current scanner rediscovering that finding, because a legitimate
+ruleset release changes fingerprint identity and may retire a detector.
+
 Checkpoint publication for a redaction epoch is exceptional: it may discard a
 secret-bearing recovery generation instead of retaining it as `previous.json`.
 The sanitized pointer becomes durable before dirty objects are tombstoned. A

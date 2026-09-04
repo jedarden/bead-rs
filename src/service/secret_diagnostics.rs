@@ -130,6 +130,24 @@ pub(crate) struct LiveFindingLocation {
     pub finding: Finding,
 }
 
+/// Versioned metadata needed to recognize a previously redacted finding.
+///
+/// Recovery precedence must not depend on the current scanner still emitting
+/// the same fingerprint: ruleset version is part of fingerprint identity and
+/// necessarily changes when the compiled ruleset advances. This view carries
+/// only durable, nonsecret metadata from `redaction_findings`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct StoredFindingFingerprint<'a> {
+    pub fingerprint: &'a str,
+    pub ruleset_version: u32,
+    pub rule_id: &'a str,
+    pub record_kind: &'a str,
+    pub origin_identity: &'a str,
+    pub field_path: &'a str,
+    pub byte_start: usize,
+    pub byte_length: usize,
+}
+
 /// Scan current semantic state and each retained current/previous checkpoint
 /// generation. Workspace enforcement never changes this diagnostic: `off`
 /// and `advisory` are reported as the effective mode, but doctor still scans.
@@ -313,6 +331,82 @@ pub(crate) fn find_live_finding(
         }
     }
     Ok(located)
+}
+
+/// Determine whether current semantic state contains one exact historical
+/// finding, using the ruleset version stored with that finding.
+///
+/// This deliberately does not invoke the current ruleset. It resolves the
+/// durable semantic selector, reads only the named field, and recomputes the
+/// stored fingerprint over its original byte range. That keeps tombstones
+/// effective after a ruleset bump or detector removal without returning the
+/// matched bytes to the caller.
+pub(crate) fn live_range_matches_stored_fingerprint(
+    conn: &rusqlite::Connection,
+    stored: &StoredFindingFingerprint<'_>,
+) -> Result<bool> {
+    let Some(table) = LIVE_TABLES
+        .iter()
+        .find(|table| table.name == stored.record_kind)
+    else {
+        return Ok(false);
+    };
+    let Some(field) = table
+        .fields
+        .iter()
+        .copied()
+        .find(|field| *field == stored.field_path)
+    else {
+        return Ok(false);
+    };
+    let available = table_columns(conn, table.name)?;
+    if table
+        .identity_fields
+        .iter()
+        .any(|identity| !available.contains(*identity))
+    {
+        return Err(Error::integrity(format!(
+            "{} table is missing a stable identity column",
+            table.name
+        )));
+    }
+    if !available.contains(field) {
+        return Ok(false);
+    }
+
+    let mut selector_seen = false;
+    let mut located = None;
+    for row in live_table_rows(conn, table, &[field])? {
+        if row.selector != stored.origin_identity {
+            continue;
+        }
+        if selector_seen {
+            return Err(Error::integrity(
+                "one historical-redaction selector resolved to multiple live rows",
+            ));
+        }
+        selector_seen = true;
+        located = row.values.into_iter().next().flatten();
+    }
+    let Some(text) = located else {
+        return Ok(false);
+    };
+    let Some(end) = stored.byte_start.checked_add(stored.byte_length) else {
+        return Ok(false);
+    };
+    let Some(matched) = text.as_bytes().get(stored.byte_start..end) else {
+        return Ok(false);
+    };
+    let actual = scan::fingerprint::compute(
+        stored.ruleset_version,
+        stored.rule_id,
+        stored.origin_identity,
+        stored.field_path,
+        stored.byte_start,
+        end,
+        matched,
+    );
+    Ok(actual == stored.fingerprint)
 }
 
 fn live_table_rows(
@@ -834,6 +928,63 @@ mod tests {
             )
             .unwrap();
         assert_eq!(stored_identity, (None, None));
+    }
+
+    #[test]
+    fn stored_fingerprint_matching_survives_a_ruleset_version_change() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::store::migrations::apply_migrations(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO workspace (id, uuid, prefix, layout_version, created_at)
+             VALUES (1, 'versioned-fingerprint-store', 'test', 1,
+                     '2026-09-04T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let value: String = (0..40)
+            .map(|index| alphabet[(index * 11 + 7) % alphabet.len()] as char)
+            .collect();
+        let description = format!("BEDROCK_AWS_SECRET_ACCESS_KEY={value}");
+        conn.execute(
+            "INSERT INTO issues (
+                id, title, description, notes, priority, issue_type, base_status,
+                created_at, updated_at, revision
+             ) VALUES ('versioned-fingerprint', 'stable title', ?1, '', 2,
+                       'task', 'open', '2026-09-04T00:00:00Z',
+                       '2026-09-04T00:00:00Z', 1)",
+            [&description],
+        )
+        .unwrap();
+
+        let finding = scan_live_findings(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|finding| finding.rule_id == "aws-secret-access-key-assignment")
+            .unwrap();
+        let legacy_version = 1;
+        let legacy_fingerprint = scan::fingerprint::compute(
+            legacy_version,
+            &finding.rule_id,
+            &finding.selector,
+            &finding.field_path,
+            finding.start,
+            finding.end,
+            &description.as_bytes()[finding.start..finding.end],
+        );
+        assert_ne!(finding.fingerprint, legacy_fingerprint);
+
+        let stored = StoredFindingFingerprint {
+            fingerprint: &legacy_fingerprint,
+            ruleset_version: legacy_version,
+            rule_id: &finding.rule_id,
+            record_kind: "issues",
+            origin_identity: &finding.selector,
+            field_path: &finding.field_path,
+            byte_start: finding.start,
+            byte_length: finding.end - finding.start,
+        };
+        assert!(live_range_matches_stored_fingerprint(&conn, &stored).unwrap());
     }
 
     #[test]

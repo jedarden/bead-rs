@@ -65,8 +65,9 @@ in [`docs/research/secret-scanning-prior-art.md`](../research/secret-scanning-pr
 
 - **High-precision provider patterns** — regexes for deliberately
   identifiable token formats (GitHub `ghp_`/`gho_`/`github_pat_`, AWS
-  `AKIA…`, Slack `xox…`, Anthropic `sk-ant-…`, PEM private-key armor, and
-  peers). Providers engineered these prefixes precisely so scanners could
+  `AKIA…` and exact `AWS_SECRET_ACCESS_KEY` assignments, Slack `xox…`,
+  Anthropic `sk-ant-…`, PEM private-key armor, and peers). Providers
+  engineered these formats precisely so scanners could
   match them with near-zero false positives; GitHub's push protection blocks
   pushes on this class alone.
 - **Entropy / statistical detection** — Shannon-entropy thresholds

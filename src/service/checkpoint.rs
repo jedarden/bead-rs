@@ -5219,25 +5219,79 @@ fn ensure_restore_preserves_redaction_history(
 /// Fail the enclosing transaction if recovery made a finding guarded by any
 /// known tombstone live again. Diagnostics name only the safe fingerprint.
 fn reject_live_tombstoned_findings(tx: &Transaction<'_>) -> Result<()> {
+    let missing_metadata: i64 = tx.query_row(
+        "SELECT COUNT(*)
+         FROM redaction_tombstones AS tombstone
+         LEFT JOIN redaction_findings AS finding
+           ON finding.fingerprint = tombstone.finding_fingerprint
+         WHERE finding.fingerprint IS NULL",
+        [],
+        |row| row.get(0),
+    )?;
+    if missing_metadata != 0 {
+        bail!("recovery refused: historical-redaction tombstone is missing finding metadata");
+    }
     let mut statement = tx.prepare(
-        "SELECT finding_fingerprint FROM redaction_tombstones ORDER BY finding_fingerprint",
+        "SELECT tombstone.finding_fingerprint, finding.ruleset_version,
+                finding.rule_id, finding.record_kind, finding.origin_identity,
+                finding.field_path, finding.byte_start, finding.byte_length
+         FROM redaction_tombstones AS tombstone
+         JOIN redaction_findings AS finding
+           ON finding.fingerprint = tombstone.finding_fingerprint
+         ORDER BY tombstone.finding_fingerprint",
     )?;
     let protected = statement
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<rusqlite::Result<HashSet<_>>>()?;
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     if protected.is_empty() {
         return Ok(());
     }
-    let findings = crate::service::secret_diagnostics::scan_live_findings(tx)
-        .map_err(|error| anyhow!("could not enforce redaction recovery precedence: {error}"))?;
-    if let Some(finding) = findings
-        .into_iter()
-        .find(|finding| protected.contains(&finding.fingerprint))
+    for (
+        fingerprint,
+        ruleset_version,
+        rule_id,
+        record_kind,
+        origin_identity,
+        field_path,
+        byte_start,
+        byte_length,
+    ) in protected
     {
-        bail!(
-            "recovery refused: incoming content matches historical-redaction tombstone {}",
-            finding.fingerprint
-        );
+        let stored = crate::service::secret_diagnostics::StoredFindingFingerprint {
+            fingerprint: &fingerprint,
+            ruleset_version: u32::try_from(ruleset_version)
+                .map_err(|_| anyhow!("invalid stored redaction ruleset version"))?,
+            rule_id: &rule_id,
+            record_kind: &record_kind,
+            origin_identity: &origin_identity,
+            field_path: &field_path,
+            byte_start: usize::try_from(byte_start)
+                .map_err(|_| anyhow!("invalid stored redaction byte start"))?,
+            byte_length: usize::try_from(byte_length)
+                .map_err(|_| anyhow!("invalid stored redaction byte length"))?,
+        };
+        let is_live =
+            crate::service::secret_diagnostics::live_range_matches_stored_fingerprint(tx, &stored)
+                .map_err(|error| {
+                    anyhow!("could not enforce redaction recovery precedence: {error}")
+                })?;
+        if is_live {
+            bail!(
+                "recovery refused: incoming content matches historical-redaction tombstone {}",
+                fingerprint
+            );
+        }
     }
     Ok(())
 }

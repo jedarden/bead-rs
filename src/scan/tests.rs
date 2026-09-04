@@ -5,6 +5,20 @@ fn aws_shaped_value() -> String {
     ["AK", "IA", "7Q9W2E4R6T8Y1U3I"].concat()
 }
 
+fn aws_secret_access_key_value() -> String {
+    let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    (0..40)
+        .map(|index| alphabet[(index * 11 + 7) % alphabet.len()] as char)
+        .collect()
+}
+
+fn aws_secret_access_key_assignment(namespace: &str) -> String {
+    format!(
+        "{namespace}AWS_SECRET_ACCESS_KEY={}",
+        aws_secret_access_key_value()
+    )
+}
+
 fn github_checksum_value() -> String {
     let alphabet = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
     let payload: String = (0..30)
@@ -35,6 +49,54 @@ fn provider_formatted_value_blocks_without_exposing_bytes() {
     );
     assert!(!rendered.contains(&value));
     assert!(rendered.contains(&finding.fingerprint));
+}
+
+#[test]
+fn aws_secret_access_key_assignment_blocks_with_or_without_namespace() {
+    for namespace in ["", "BEDROCK_"] {
+        let assignment = aws_secret_access_key_assignment(namespace);
+        let text = format!("runtime setting: {assignment}\n");
+        let report = scan(
+            &ScanConfig::enforce(),
+            "issue:new",
+            &[Field::new("description", &text)],
+        );
+        let finding = report
+            .blocking
+            .iter()
+            .find(|finding| finding.rule_id == "aws-secret-access-key-assignment")
+            .expect("the exact AWS assignment must block");
+        assert_eq!(&text[finding.start..finding.end], assignment);
+        let rendered = format!("{finding:?} {finding}");
+        assert!(!rendered.contains(&assignment));
+        assert!(!rendered.contains(&aws_secret_access_key_value()));
+    }
+}
+
+#[test]
+fn aws_secret_access_key_assignment_preserves_placeholder_downgrade() {
+    let assignment = format!("AWS_SECRET_ACCESS_KEY={}", "A".repeat(40));
+    let report = scan(
+        &ScanConfig::enforce(),
+        "issue:new",
+        &[Field::new("notes", &assignment)],
+    );
+    assert!(report.blocking.is_empty());
+    assert!(report.findings.iter().any(|finding| {
+        finding.rule_id == "aws-secret-access-key-assignment"
+            && finding.disposition == Disposition::Placeholder
+    }));
+}
+
+#[test]
+fn unlabelled_aws_secret_access_key_shape_does_not_block() {
+    let value = aws_secret_access_key_value();
+    let report = scan(
+        &ScanConfig::enforce(),
+        "issue:new",
+        &[Field::new("notes", &value)],
+    );
+    assert!(report.blocking.is_empty());
 }
 
 #[test]

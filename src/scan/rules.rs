@@ -14,7 +14,7 @@
 /// Version of the compiled ruleset. Bumping it changes every fingerprint
 /// (the version is hashed into the finding fingerprint), so it moves only
 /// with a release that re-justifies each blocking rule.
-pub const RULESET_VERSION: u32 = 1;
+pub const RULESET_VERSION: u32 = 2;
 
 /// Identity of the normative contract this ruleset implements.
 pub const CONTRACT_IDENTITY: &str = "urn:bead-rs:spec:secret-rejection:v1";
@@ -85,6 +85,17 @@ pub const RULES: &[Rule] = &[
         tier: Tier::Blocking,
         keywords: &["akia", "asia", "abia", "acca"],
         pattern: r"\b(?:AKIA|ASIA|ABIA|ACCA)([0-9A-Z]{16})\b",
+        checksum: None,
+    },
+    Rule {
+        id: "aws-secret-access-key-assignment",
+        provider: "aws",
+        tier: Tier::Blocking,
+        // The prefilter emits non-overlapping matches. Use the leading AWS
+        // segment so the shorter advisory `secret` anchor cannot mask this
+        // rule before the exact assignment regex runs.
+        keywords: &["aws_"],
+        pattern: r#"(?i)\b(?:[A-Z][A-Z0-9]*_)*AWS_SECRET_ACCESS_KEY["']?[ \t]*[:=][ \t]*["']?([A-Za-z0-9/+=]{40})["']?"#,
         checksum: None,
     },
     Rule {
@@ -356,7 +367,7 @@ mod tests {
 
     #[test]
     fn ruleset_is_closed_and_versioned() {
-        assert_eq!(RULESET_VERSION, 1);
+        assert_eq!(RULESET_VERSION, 2);
         assert_eq!(CONTRACT_IDENTITY, "urn:bead-rs:spec:secret-rejection:v1");
         // The blocking tier is provider formats and armor only.
         for rule in RULES.iter().filter(|r| r.tier == Tier::Blocking) {

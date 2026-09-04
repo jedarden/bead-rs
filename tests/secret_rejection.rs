@@ -25,6 +25,14 @@ fn provider_shaped_value() -> String {
     value
 }
 
+fn aws_secret_access_key_assignment() -> String {
+    let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let value: String = (0..40)
+        .map(|index| alphabet[(index * 11 + 7) % alphabet.len()] as char)
+        .collect();
+    format!("BEDROCK_AWS_SECRET_ACCESS_KEY={value}")
+}
+
 fn placeholder_shaped_value() -> String {
     let mut value = ["AK", "IA"].concat();
     value.push_str(&"A".repeat(16));
@@ -114,6 +122,30 @@ fn blocking_finding_is_atomic_redacted_and_exactly_acknowledgeable() {
     assert!(detail.contains(&finding_fingerprint));
     assert!(detail.contains("description"));
     assert!(!detail.contains(&value));
+}
+
+#[test]
+fn aws_secret_access_key_assignment_rejects_atomically_without_disclosure() {
+    let workspace = workspace();
+    let assignment = aws_secret_access_key_assignment();
+    let before = counts(workspace.path());
+
+    let rejected = Command::cargo_bin("bead")
+        .unwrap()
+        .current_dir(workspace.path())
+        .args(["create", "--title", "safe title", "--description"])
+        .arg(&assignment)
+        .arg("--no-auto-flush")
+        .output()
+        .unwrap();
+
+    assert_eq!(rejected.status.code(), Some(2));
+    assert_eq!(counts(workspace.path()), before);
+    let stderr = String::from_utf8(rejected.stderr).unwrap();
+    let stdout = String::from_utf8(rejected.stdout).unwrap();
+    assert!(stderr.contains("aws-secret-access-key-assignment"));
+    assert!(!stderr.contains(&assignment));
+    assert!(!stdout.contains(&assignment));
 }
 
 #[test]

@@ -22,7 +22,7 @@ fn secret_scan_capability_uses_compiled_default_without_workspace() {
         capabilities["secret_scan"]["contract_identity"],
         "urn:bead-rs:spec:secret-rejection:v1"
     );
-    assert_eq!(capabilities["secret_scan"]["ruleset_version"], 1);
+    assert_eq!(capabilities["secret_scan"]["ruleset_version"], 2);
     assert_eq!(capabilities["secret_scan"]["effective_mode"], "enforce");
     assert_eq!(capabilities["secret_scan"]["blocking"], true);
     assert_eq!(capabilities["secret_scan"]["advisory"], true);

@@ -36,6 +36,14 @@ fn shaped_value() -> String {
     ["AK", "IA", "7Q9W2E4R6T8Y1U3I"].concat()
 }
 
+fn aws_secret_access_key_assignment() -> String {
+    let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let value: String = (0..40)
+        .map(|index| alphabet[(index * 11 + 7) % alphabet.len()] as char)
+        .collect();
+    format!("BEDROCK_AWS_SECRET_ACCESS_KEY={value}")
+}
+
 fn insert_issue(conn: &rusqlite::Connection, id: &str, description: &str, assignee: Option<&str>) {
     conn.execute(
         "INSERT INTO issues (
@@ -160,6 +168,46 @@ fn issue_redaction_is_exact_atomic_and_idempotent() {
         )
         .unwrap();
     assert_eq!(counts, (1, 1, 1, 1, 1));
+}
+
+#[test]
+fn aws_secret_access_key_assignment_is_discoverable_and_redactable() {
+    let workspace = workspace();
+    let mut store = store(workspace.path());
+    let assignment = aws_secret_access_key_assignment();
+    insert_issue(store.conn(), "redact-aws-assignment", &assignment, None);
+    let finding = scan_live_findings(store.conn())
+        .unwrap()
+        .into_iter()
+        .find(|finding| {
+            finding.field_path == "description"
+                && finding.rule_id == "aws-secret-access-key-assignment"
+                && finding.is_blocking_match()
+        })
+        .expect("historical assignment must have an exact redaction fingerprint");
+
+    let outcome = redact_finding(
+        &mut store,
+        workspace.path(),
+        &finding.fingerprint,
+        "operator",
+        "remove exposed AWS assignment",
+    )
+    .unwrap();
+    let stored: String = store
+        .conn()
+        .query_row(
+            "SELECT description FROM issues WHERE id = 'redact-aws-assignment'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored, REDACTION_MARKER);
+    assert_eq!(outcome.receipt.ruleset_version, 2);
+    assert_eq!(outcome.receipt.rule_id, "aws-secret-access-key-assignment");
+    assert!(!serde_json::to_string(&outcome)
+        .unwrap()
+        .contains(&assignment));
 }
 
 #[test]
