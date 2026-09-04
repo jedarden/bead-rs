@@ -1,0 +1,208 @@
+use super::*;
+use std::time::{Duration, Instant};
+
+fn aws_shaped_value() -> String {
+    ["AK", "IA", "7Q9W2E4R6T8Y1U3I"].concat()
+}
+
+fn github_checksum_value() -> String {
+    let alphabet = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    let payload: String = (0..30)
+        .map(|index| alphabet[(index * 7 + 3) % alphabet.len()] as char)
+        .collect();
+    let checksum = rules::encode_base62_crc32(Checksum::GithubBase62Crc32, payload.as_bytes());
+    [["gh", "p_"].concat(), payload, checksum].concat()
+}
+
+#[test]
+fn provider_formatted_value_blocks_without_exposing_bytes() {
+    let value = aws_shaped_value();
+    let report = scan(
+        &ScanConfig::enforce(),
+        "issue:new",
+        &[Field::new("description", &value)],
+    );
+    assert_eq!(report.blocking.len(), 1);
+    let finding = &report.blocking[0];
+    assert_eq!(finding.rule_id, "aws-access-key-id");
+    assert_eq!((finding.start, finding.end), (0, value.len()));
+
+    let rendered = format!(
+        "{:?}\n{}\n{}",
+        finding,
+        finding,
+        serde_json::to_string(finding).expect("finding serializes")
+    );
+    assert!(!rendered.contains(&value));
+    assert!(rendered.contains(&finding.fingerprint));
+}
+
+#[test]
+fn placeholder_shape_is_advisory_not_blocking() {
+    let value = ["AK", "IA", &"A".repeat(16)].concat();
+    let report = scan(
+        &ScanConfig::enforce(),
+        "issue:new",
+        &[Field::new("notes", &value)],
+    );
+    assert!(report.blocking.is_empty());
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.disposition == Disposition::Placeholder));
+}
+
+#[test]
+fn embedded_checksum_controls_blocking_disposition() {
+    let valid = github_checksum_value();
+    let valid_report = scan(
+        &ScanConfig::enforce(),
+        "issue:new",
+        &[Field::new("notes", &valid)],
+    );
+    assert_eq!(valid_report.blocking.len(), 1);
+
+    let mut invalid = valid;
+    let replacement = if invalid.ends_with('0') { "1" } else { "0" };
+    invalid.replace_range(invalid.len() - 1.., replacement);
+    let invalid_report = scan(
+        &ScanConfig::enforce(),
+        "issue:new",
+        &[Field::new("notes", &invalid)],
+    );
+    assert!(invalid_report.blocking.is_empty());
+    assert!(invalid_report
+        .findings
+        .iter()
+        .any(|finding| finding.disposition == Disposition::ChecksumFailed));
+}
+
+#[test]
+fn exact_fingerprint_acknowledgment_admits_only_that_finding() {
+    let value = aws_shaped_value();
+    let first = scan(
+        &ScanConfig::enforce(),
+        "issue:new",
+        &[Field::new("description", &value)],
+    );
+    let fingerprint = first.blocking[0].fingerprint.clone();
+    let acknowledged = serde_json::json!([fingerprint]);
+    let config = ScanConfig::from_config_values(None, Some(&acknowledged)).unwrap();
+    let admitted = scan(&config, "issue:new", &[Field::new("description", &value)]);
+
+    assert!(admitted.is_admitted());
+    assert_eq!(admitted.acknowledged.len(), 1);
+
+    let changed_selector = scan(
+        &config,
+        "issue:different",
+        &[Field::new("description", &value)],
+    );
+    assert_eq!(changed_selector.blocking.len(), 1);
+}
+
+#[test]
+fn malformed_configuration_fails_closed_without_echoing_the_value() {
+    let invalid_mode = ["not", "-a-secret-mode"].concat();
+    let raw = serde_json::Value::String(invalid_mode.clone());
+    let error = ScanConfig::from_config_values(Some(&raw), None).unwrap_err();
+    let rendered = format!("{error:?} {error}");
+    assert!(!rendered.contains(&invalid_mode));
+
+    let invalid_ack = ["credential", "-shaped-not-a-fingerprint"].concat();
+    let raw = serde_json::json!([invalid_ack]);
+    let error = ScanConfig::from_config_values(None, Some(&raw)).unwrap_err();
+    let rendered = format!("{error:?} {error}");
+    assert!(!rendered.contains("credential-shaped"));
+}
+
+#[test]
+fn fingerprints_are_deterministic_and_bind_location() {
+    let value = aws_shaped_value();
+    let field = Field::new("description", &value);
+    let first = scan(&ScanConfig::enforce(), "issue:a", &[field]);
+    let second = scan(
+        &ScanConfig::enforce(),
+        "issue:a",
+        &[Field::new("description", &value)],
+    );
+    let moved = scan(
+        &ScanConfig::enforce(),
+        "issue:a",
+        &[Field::new("notes", &value)],
+    );
+    assert_eq!(
+        first.findings[0].fingerprint,
+        second.findings[0].fingerprint
+    );
+    assert_ne!(first.findings[0].fingerprint, moved.findings[0].fingerprint);
+}
+
+#[test]
+fn unicode_prefix_uses_byte_offsets() {
+    let prefix = "é🎯 ";
+    let value = format!("{prefix}{}", aws_shaped_value());
+    let report = scan(
+        &ScanConfig::enforce(),
+        "issue:new",
+        &[Field::new("description", &value)],
+    );
+    assert_eq!(report.blocking[0].start, prefix.len());
+    assert_eq!(report.blocking[0].end, value.len());
+}
+
+#[test]
+fn advisory_and_off_modes_never_reject() {
+    let value = aws_shaped_value();
+    let advisory = scan(
+        &ScanConfig::new(Mode::Advisory),
+        "issue:new",
+        &[Field::new("notes", &value)],
+    );
+    assert!(reject_if_blocked(&ScanConfig::new(Mode::Advisory), &advisory).is_none());
+    assert!(!advisory.findings.is_empty());
+
+    let off = scan(
+        &ScanConfig::new(Mode::Off),
+        "issue:new",
+        &[Field::new("notes", &value)],
+    );
+    assert!(off.is_clean());
+}
+
+#[test]
+fn hostile_four_mebibyte_clean_field_has_bounded_scan_cost() {
+    let text = "z".repeat(4 * 1024 * 1024);
+    let started = Instant::now();
+    let report = scan(
+        &ScanConfig::enforce(),
+        "issue:new",
+        &[Field::new("description", &text)],
+    );
+    assert!(report.is_clean());
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "4 MiB no-anchor scan exceeded the generous regression bound"
+    );
+}
+
+#[test]
+fn rejection_contains_remediation_but_never_the_value() {
+    let value = aws_shaped_value();
+    let config = ScanConfig::enforce();
+    let report = scan(&config, "issue:new", &[Field::new("description", &value)]);
+    let rejection = reject_if_blocked(&config, &report).expect("must reject");
+    assert!(rejection.message.contains(SECRET_DETECTED));
+    assert!(rejection.message.contains("rotate"));
+    assert!(rejection.message.contains(&rejection.finding.fingerprint));
+    assert!(!rejection.message.contains(&value));
+}
+
+#[test]
+fn secret_buffer_rendering_is_redacted() {
+    let value = aws_shaped_value();
+    let secret = SecretBytes::from_str(&value);
+    assert_eq!(secret.len(), value.len());
+    let rendered = format!("{secret:?} {secret}");
+    assert!(!rendered.contains(&value));
+}

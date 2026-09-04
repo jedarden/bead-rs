@@ -5,6 +5,7 @@ pub mod docs;
 pub mod error;
 pub mod model;
 pub mod profile;
+pub mod scan;
 pub mod service;
 pub mod store;
 
