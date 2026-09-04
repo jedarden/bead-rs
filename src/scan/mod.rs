@@ -20,6 +20,7 @@ pub use rules::{rule_ids, Checksum, Rule, Tier, CONTRACT_IDENTITY, RULESET_VERSI
 use rules::{keyword_anchors, ADVISORY_ENTROPY_RULE_ID};
 use std::collections::BTreeSet;
 use std::fmt;
+use std::path::Path;
 use std::sync::LazyLock;
 
 use aho_corasick::AhoCorasick;
@@ -68,6 +69,10 @@ impl Mode {
 /// Malformed `secret_scan` workspace configuration. Fails closed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScanConfigError {
+    ConfigUnreadable,
+    ConfigInvalidJson,
+    WrongRootType,
+    WrongSectionType,
     UnknownMode,
     InvalidAcknowledgment { index: usize },
     WrongAcknowledgmentType,
@@ -77,6 +82,22 @@ pub enum ScanConfigError {
 impl fmt::Display for ScanConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            ScanConfigError::ConfigUnreadable => write!(
+                f,
+                "cannot read .beads/config.json while resolving secret_scan; fix the file to continue"
+            ),
+            ScanConfigError::ConfigInvalidJson => write!(
+                f,
+                "invalid JSON in .beads/config.json while resolving secret_scan; fix the file to continue"
+            ),
+            ScanConfigError::WrongRootType => write!(
+                f,
+                "invalid .beads/config.json: expected a JSON object while resolving secret_scan; fix the file to continue"
+            ),
+            ScanConfigError::WrongSectionType => write!(
+                f,
+                "invalid secret_scan in .beads/config.json: expected an object; fix the key to continue"
+            ),
             ScanConfigError::UnknownMode => write!(
                 f,
                 "invalid secret_scan.mode in .beads/config.json: expected \
@@ -125,6 +146,26 @@ impl ScanConfig {
             mode,
             acknowledged: BTreeSet::new(),
         }
+    }
+
+    /// Resolve the effective configuration from a workspace root.
+    ///
+    /// A missing `secret_scan` object uses the compiled `enforce` default.
+    /// The workspace fingerprint itself must already exist; an unreadable or
+    /// malformed file fails closed without retaining or echoing its content.
+    pub fn load_from_workspace_root(root: &Path) -> Result<Self, ScanConfigError> {
+        let bytes = std::fs::read(root.join(".beads/config.json"))
+            .map_err(|_| ScanConfigError::ConfigUnreadable)?;
+        let document: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|_| ScanConfigError::ConfigInvalidJson)?;
+        let root = document.as_object().ok_or(ScanConfigError::WrongRootType)?;
+        let Some(section) = root.get("secret_scan") else {
+            return Ok(Self::enforce());
+        };
+        let section = section
+            .as_object()
+            .ok_or(ScanConfigError::WrongSectionType)?;
+        Self::from_config_values(section.get("mode"), section.get("acknowledged"))
     }
 
     /// Build from parsed `secret_scan` workspace configuration values.

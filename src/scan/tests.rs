@@ -117,6 +117,56 @@ fn malformed_configuration_fails_closed_without_echoing_the_value() {
 }
 
 #[test]
+fn workspace_configuration_defaults_to_enforce_and_loads_exact_acknowledgments() {
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::create_dir(workspace.path().join(".beads")).unwrap();
+    std::fs::write(
+        workspace.path().join(".beads/config.json"),
+        serde_json::to_vec(&serde_json::json!({"uuid":"test"})).unwrap(),
+    )
+    .unwrap();
+    let defaulted = ScanConfig::load_from_workspace_root(workspace.path()).unwrap();
+    assert_eq!(defaulted.mode(), Mode::Enforce);
+    assert_eq!(defaulted.acknowledged().count(), 0);
+
+    let fingerprint = "a".repeat(64);
+    std::fs::write(
+        workspace.path().join(".beads/config.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "secret_scan": {
+                "mode": "advisory",
+                "acknowledged": [fingerprint.clone()]
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let configured = ScanConfig::load_from_workspace_root(workspace.path()).unwrap();
+    assert_eq!(configured.mode(), Mode::Advisory);
+    assert_eq!(
+        configured.acknowledged().collect::<Vec<_>>(),
+        vec![fingerprint.as_str()]
+    );
+}
+
+#[test]
+fn workspace_configuration_fails_closed_without_echoing_content() {
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::create_dir(workspace.path().join(".beads")).unwrap();
+    let config_path = workspace.path().join(".beads/config.json");
+
+    std::fs::write(&config_path, br#"{"secret_scan":"not-an-object"}"#).unwrap();
+    let wrong_section = ScanConfig::load_from_workspace_root(workspace.path()).unwrap_err();
+    assert!(matches!(wrong_section, ScanConfigError::WrongSectionType));
+    assert!(!wrong_section.to_string().contains("not-an-object"));
+
+    std::fs::write(&config_path, b"not-json").unwrap();
+    let malformed = ScanConfig::load_from_workspace_root(workspace.path()).unwrap_err();
+    assert!(matches!(malformed, ScanConfigError::ConfigInvalidJson));
+    assert!(!malformed.to_string().contains("not-json"));
+}
+
+#[test]
 fn fingerprints_are_deterministic_and_bind_location() {
     let value = aws_shaped_value();
     let field = Field::new("description", &value);
