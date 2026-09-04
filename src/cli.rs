@@ -62,6 +62,13 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub no_auto_flush: bool,
 
+    /// Admit only findings whose exact scanner fingerprint matches this
+    /// value. Repeat for multiple findings. Every successful mutation using
+    /// an acknowledgment records a same-transaction audit event; there is no
+    /// blanket bypass flag.
+    #[arg(long = "acknowledge-secret", global = true, value_name = "FINGERPRINT")]
+    pub acknowledge_secret: Vec<String>,
+
     /// Let workspace discovery continue past the first `.beads` directory
     /// when it is not a bead-rs workspace (no `.beads/config.json`), so a
     /// bead-rs workspace farther up the tree can be used. Discovery

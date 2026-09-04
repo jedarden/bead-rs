@@ -1,11 +1,14 @@
 #![forbid(unsafe_code)]
 
 mod cli;
+mod cli_secret_scan;
 mod error;
 mod model;
 #[allow(dead_code)]
 mod profile;
 mod service;
+#[allow(dead_code, unused_imports)]
+mod scan;
 mod store;
 
 use crate::cli::{Cli, Command};
@@ -295,7 +298,12 @@ fn execute_command(cli: Cli) -> Result<()> {
     let no_auto_flush = cli.no_auto_flush;
     let restore_without_probe = matches!(&cli.command, Command::Restore(_));
     let init_without_probe = matches!(&cli.command, Command::Init(_));
+    let prepared_scan = cli_secret_scan::prepare(&cli)?;
     let probe = publication_probe(no_auto_flush);
+    // Arm only after the publication probe opens its read connection: the
+    // acknowledgment bridge belongs on the command's mutation connection,
+    // where its audit event commits or rolls back with semantic state.
+    let _acknowledgment_audit = prepared_scan.as_ref().map(|scan| scan.arm_audit());
 
     let result = dispatch_command(cli);
 

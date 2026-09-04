@@ -18,6 +18,7 @@ pub mod rules;
 pub use rules::{rule_ids, Checksum, Rule, Tier, CONTRACT_IDENTITY, RULESET_VERSION};
 
 use rules::{keyword_anchors, ADVISORY_ENTROPY_RULE_ID};
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::path::Path;
@@ -75,6 +76,7 @@ pub enum ScanConfigError {
     WrongSectionType,
     UnknownMode,
     InvalidAcknowledgment { index: usize },
+    InvalidInvocationAcknowledgment { index: usize },
     WrongAcknowledgmentType,
     WrongModeType,
 }
@@ -120,6 +122,11 @@ impl fmt::Display for ScanConfigError {
                  .beads/config.json: expected a 64-character lowercase hex finding \
                  fingerprint; fix the key to continue",
                 index
+            ),
+            ScanConfigError::InvalidInvocationAcknowledgment { index } => write!(
+                f,
+                "invalid --acknowledge-secret value at position {}: expected a 64-character lowercase hex finding fingerprint",
+                index + 1
             ),
         }
     }
@@ -213,6 +220,21 @@ impl ScanConfig {
     /// these are fingerprints, never values).
     pub fn acknowledged(&self) -> impl Iterator<Item = &str> {
         self.acknowledged.iter().map(String::as_str)
+    }
+
+    /// Add invocation-scoped exact-fingerprint acknowledgments. Invalid
+    /// values fail closed and are identified only by position, never echoed.
+    pub fn add_invocation_acknowledgments<'a>(
+        &mut self,
+        values: impl IntoIterator<Item = &'a str>,
+    ) -> Result<(), ScanConfigError> {
+        for (index, fingerprint) in values.into_iter().enumerate() {
+            if !is_fingerprint_shape(fingerprint) {
+                return Err(ScanConfigError::InvalidInvocationAcknowledgment { index });
+            }
+            self.acknowledged.insert(fingerprint.to_string());
+        }
+        Ok(())
     }
 
     fn is_acknowledged(&self, fingerprint: &str) -> bool {
@@ -406,6 +428,123 @@ pub struct ScanReport {
     /// Unacknowledged blocking findings. Non-empty under `enforce` mode
     /// means the request must be rejected before any transaction opens.
     pub blocking: Vec<Finding>,
+}
+
+/// Sanitized metadata for one exact-fingerprint admission. This is the only
+/// state carried from the pre-transaction scan to the connection that will
+/// perform the mutation; matched bytes are never retained here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingAcknowledgment {
+    fingerprint: String,
+    rule_id: String,
+    actor: String,
+    selector: String,
+    field_path: String,
+}
+
+thread_local! {
+    static PENDING_ACKNOWLEDGMENTS: RefCell<Vec<PendingAcknowledgment>> = const {
+        RefCell::new(Vec::new())
+    };
+}
+
+/// Scope guard for an invocation's acknowledgment audit metadata.
+///
+/// The CLI is single-shot, but the guard prevents library tests and future
+/// embedded callers from accidentally carrying an admission into a later
+/// operation on the same thread.
+pub struct AcknowledgmentAuditGuard;
+
+impl Drop for AcknowledgmentAuditGuard {
+    fn drop(&mut self) {
+        PENDING_ACKNOWLEDGMENTS.with(|pending| pending.borrow_mut().clear());
+    }
+}
+
+/// Arm same-transaction audit insertion for every exact finding admitted by
+/// this scan report. The next configured SQLite connection receives a
+/// connection-local trigger that appends the audit events inside the first
+/// semantic event transaction. A no-op or rolled-back mutation therefore
+/// cannot leave a false acknowledgment event.
+pub fn arm_acknowledgment_audit(report: &ScanReport, actor: &str) -> AcknowledgmentAuditGuard {
+    PENDING_ACKNOWLEDGMENTS.with(|pending| {
+        let mut pending = pending.borrow_mut();
+        pending.clear();
+        pending.extend(
+            report
+                .acknowledged
+                .iter()
+                .map(|finding| PendingAcknowledgment {
+                    fingerprint: finding.fingerprint.clone(),
+                    rule_id: finding.rule_id.clone(),
+                    actor: actor.to_string(),
+                    selector: finding.selector.clone(),
+                    field_path: finding.field_path.clone(),
+                }),
+        );
+    });
+    AcknowledgmentAuditGuard
+}
+
+/// Install the connection-local audit bridge, if this thread has pending
+/// admissions. The TEMP table and trigger are private to this connection.
+/// Their writes participate in the caller's semantic transaction, so audit
+/// rows commit and roll back with the mutation without changing every service
+/// function signature.
+pub(crate) fn install_acknowledgment_audit_bridge(
+    conn: &rusqlite::Connection,
+) -> rusqlite::Result<()> {
+    let pending = PENDING_ACKNOWLEDGMENTS.with(|pending| pending.borrow().clone());
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS pending_secret_acknowledgments (
+             fingerprint TEXT PRIMARY KEY,
+             rule_id TEXT NOT NULL,
+             actor TEXT NOT NULL,
+             selector TEXT NOT NULL,
+             field_path TEXT NOT NULL,
+             detail TEXT NOT NULL,
+             emitted INTEGER NOT NULL DEFAULT 0 CHECK (emitted IN (0, 1))
+         );
+         DELETE FROM temp.pending_secret_acknowledgments;
+         CREATE TEMP TRIGGER IF NOT EXISTS audit_pending_secret_acknowledgments
+         AFTER INSERT ON main.events
+         WHEN NEW.kind <> 'secret_acknowledged'
+         BEGIN
+             INSERT INTO main.events (issue_id, kind, actor, time, detail)
+             SELECT NULL, 'secret_acknowledged', actor, NEW.time, detail
+             FROM temp.pending_secret_acknowledgments
+             WHERE emitted = 0
+             ORDER BY fingerprint;
+             UPDATE temp.pending_secret_acknowledgments SET emitted = 1;
+         END;",
+    )?;
+
+    let mut insert = conn.prepare_cached(
+        "INSERT INTO temp.pending_secret_acknowledgments
+         (fingerprint, rule_id, actor, selector, field_path, detail)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?;
+    for acknowledgment in pending {
+        let detail = serde_json::json!({
+            "fingerprint": acknowledgment.fingerprint,
+            "rule_id": acknowledgment.rule_id,
+            "selector": acknowledgment.selector,
+            "field_path": acknowledgment.field_path,
+        });
+        insert.execute(rusqlite::params![
+            detail["fingerprint"].as_str(),
+            detail["rule_id"].as_str(),
+            acknowledgment.actor,
+            detail["selector"].as_str(),
+            detail["field_path"].as_str(),
+            detail.to_string(),
+        ])?;
+    }
+    Ok(())
 }
 
 impl ScanReport {

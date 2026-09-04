@@ -167,6 +167,20 @@ fn workspace_configuration_fails_closed_without_echoing_content() {
 }
 
 #[test]
+fn invocation_acknowledgment_validation_never_echoes_input() {
+    let mut config = ScanConfig::enforce();
+    let invalid = "not-a-fingerprint";
+    let error = config
+        .add_invocation_acknowledgments([invalid])
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        ScanConfigError::InvalidInvocationAcknowledgment { index: 0 }
+    ));
+    assert!(!error.to_string().contains(invalid));
+}
+
+#[test]
 fn fingerprints_are_deterministic_and_bind_location() {
     let value = aws_shaped_value();
     let field = Field::new("description", &value);
@@ -255,4 +269,110 @@ fn secret_buffer_rendering_is_redacted() {
     assert_eq!(secret.len(), value.len());
     let rendered = format!("{secret:?} {secret}");
     assert!(!rendered.contains(&value));
+}
+
+fn exact_acknowledged_report() -> (String, ScanReport) {
+    let value = aws_shaped_value();
+    let first = scan(
+        &ScanConfig::enforce(),
+        "issue:new",
+        &[Field::new("description", &value)],
+    );
+    let acknowledged = serde_json::json!([first.blocking[0].fingerprint]);
+    let config = ScanConfig::from_config_values(None, Some(&acknowledged)).unwrap();
+    let report = scan(&config, "issue:new", &[Field::new("description", &value)]);
+    (value, report)
+}
+
+fn audit_test_connection() -> rusqlite::Connection {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE events (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            issue_id TEXT,
+            kind TEXT NOT NULL,
+            actor TEXT,
+            time TEXT NOT NULL,
+            detail TEXT NOT NULL
+        );",
+    )
+    .unwrap();
+    conn
+}
+
+#[test]
+fn exact_acknowledgment_audit_commits_once_with_the_mutation() {
+    let (value, report) = exact_acknowledged_report();
+    let _guard = arm_acknowledgment_audit(&report, "test-actor");
+    let mut conn = audit_test_connection();
+    install_acknowledgment_audit_bridge(&conn).unwrap();
+
+    let tx = conn.transaction().unwrap();
+    tx.execute(
+        "INSERT INTO events (kind, actor, time, detail) VALUES ('created', 'test-actor', 'now', '{}')",
+        [],
+    )
+    .unwrap();
+    tx.execute(
+        "INSERT INTO events (kind, actor, time, detail) VALUES ('updated', 'test-actor', 'now', '{}')",
+        [],
+    )
+    .unwrap();
+    tx.commit().unwrap();
+
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE kind = 'secret_acknowledged'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+    let (actor, detail): (String, String) = conn
+        .query_row(
+            "SELECT actor, detail FROM events WHERE kind = 'secret_acknowledged'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(actor, "test-actor");
+    assert!(!detail.contains(&value));
+    assert!(detail.contains(&report.acknowledged[0].fingerprint));
+    assert!(detail.contains(&report.acknowledged[0].rule_id));
+}
+
+#[test]
+fn exact_acknowledgment_audit_rolls_back_with_the_mutation() {
+    let (_, report) = exact_acknowledged_report();
+    let _guard = arm_acknowledgment_audit(&report, "test-actor");
+    let mut conn = audit_test_connection();
+    install_acknowledgment_audit_bridge(&conn).unwrap();
+
+    let tx = conn.transaction().unwrap();
+    tx.execute(
+        "INSERT INTO events (kind, actor, time, detail) VALUES ('created', 'test-actor', 'now', '{}')",
+        [],
+    )
+    .unwrap();
+    tx.rollback().unwrap();
+    let rolled_back: i64 = conn
+        .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rolled_back, 0);
+
+    let tx = conn.transaction().unwrap();
+    tx.execute(
+        "INSERT INTO events (kind, actor, time, detail) VALUES ('created', 'test-actor', 'later', '{}')",
+        [],
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    let committed: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE kind = 'secret_acknowledged'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(committed, 1);
 }
