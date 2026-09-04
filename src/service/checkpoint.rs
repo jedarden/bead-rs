@@ -8623,7 +8623,7 @@ pub(crate) fn read_all_events(conn: &rusqlite::Connection) -> Result<Vec<EventRe
 
 /// The basis every derived local wire identity is numbered from: this
 /// store's UUID and one past its highest explicit local-UUID identity.
-fn local_identity_basis(conn: &rusqlite::Connection) -> (String, i64) {
+pub(crate) fn local_identity_basis(conn: &rusqlite::Connection) -> (String, i64) {
     let local_store_uuid: String = conn
         .query_row("SELECT uuid FROM workspace WHERE id = 1", [], |row| {
             row.get(0)
@@ -8644,7 +8644,7 @@ fn local_identity_basis(conn: &rusqlite::Connection) -> (String, i64) {
 /// origin columns. The single definition shared by export enumeration
 /// ([`read_all_events`]) and merge-time canonicalization
 /// ([`canonicalize_local_event_identities`]) so the two cannot drift.
-fn derive_wire_identity(
+pub(crate) fn derive_wire_identity(
     stored_uuid: Option<&str>,
     stored_sequence: Option<i64>,
     local_store_uuid: &str,
@@ -8676,7 +8676,7 @@ fn derive_wire_identity(
 /// key, and no ordering, and is idempotent because the derivation is
 /// deterministic: after the write the rows carry their derived identities
 /// explicitly and later derivations preserve them verbatim.
-fn canonicalize_local_event_identities(tx: &Transaction<'_>) -> Result<usize> {
+pub(crate) fn canonicalize_local_event_identities(tx: &Transaction<'_>) -> Result<usize> {
     let (local_store_uuid, mut next_local_origin_sequence) = local_identity_basis(tx);
 
     let mut stmt = tx.prepare(

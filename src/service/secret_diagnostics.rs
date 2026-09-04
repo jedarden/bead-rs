@@ -29,6 +29,12 @@ struct LiveTable {
     fields: &'static [&'static str],
 }
 
+struct LiveScanRow {
+    identity_values: Vec<rusqlite::types::Value>,
+    selector: String,
+    values: Vec<Option<String>>,
+}
+
 const LIVE_TABLES: &[LiveTable] = &[
     LiveTable {
         name: "issues",
@@ -216,42 +222,14 @@ fn scan_live_rows(
         if fields.is_empty() {
             continue;
         }
-        let mut selections: Vec<String> = table
-            .identity_fields
-            .iter()
-            .map(|field| format!("CAST({field} AS TEXT)"))
-            .collect();
-        selections.extend(fields.iter().map(|field| (*field).to_string()));
-        let order = table.identity_fields.join(", ");
-        let sql = format!(
-            "SELECT {} FROM {} ORDER BY {}",
-            selections.join(", "),
-            table.name,
-            order
-        );
-        let mut statement = conn.prepare(&sql)?;
-        let rows = statement.query_map([], |row| {
-            let identity = (0..table.identity_fields.len())
-                .map(|index| row.get::<_, Option<String>>(index))
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            let values = (0..fields.len())
-                .map(|index| row.get::<_, Option<String>>(index + table.identity_fields.len()))
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok((identity, values))
-        })?;
-        for row in rows {
-            let (identity, values) = row?;
+        for row in live_table_rows(conn, table, &fields)? {
             let present: Vec<Field<'_>> = fields
                 .iter()
-                .zip(values.iter())
+                .zip(row.values.iter())
                 .filter_map(|(field, value)| value.as_deref().map(|value| Field::new(field, value)))
                 .collect();
             fields_scanned += present.len();
-            reports.push(scan::scan(
-                config,
-                &semantic_selector(table, &identity),
-                &present,
-            ));
+            reports.push(scan::scan(config, &row.selector, &present));
         }
     }
     Ok((reports, fields_scanned))
@@ -307,40 +285,12 @@ pub(crate) fn find_live_finding(
         if fields.is_empty() {
             continue;
         }
-        let mut selections: Vec<String> = table
-            .identity_fields
-            .iter()
-            .map(|field| (*field).to_string())
-            .collect();
-        selections.extend(fields.iter().map(|field| (*field).to_string()));
-        let sql = format!(
-            "SELECT {} FROM {} ORDER BY {}",
-            selections.join(", "),
-            table.name,
-            table.identity_fields.join(", ")
-        );
-        let mut statement = conn.prepare(&sql)?;
-        let rows = statement.query_map([], |row| {
-            let identity_values = (0..table.identity_fields.len())
-                .map(|index| row.get::<_, rusqlite::types::Value>(index))
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            let values = (0..fields.len())
-                .map(|index| row.get::<_, Option<String>>(index + table.identity_fields.len()))
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok((identity_values, values))
-        })?;
-        for row in rows {
-            let (identity_values, values) = row?;
-            let selector_values = identity_values
-                .iter()
-                .map(selector_identity_value)
-                .collect::<Result<Vec<_>>>()?;
-            let selector = semantic_selector(table, &selector_values);
-            for (field, value) in fields.iter().zip(values) {
+        for row in live_table_rows(conn, table, &fields)? {
+            for (field, value) in fields.iter().zip(row.values) {
                 let Some(text) = value else {
                     continue;
                 };
-                let report = scan::scan(&config, &selector, &[Field::new(field, &text)]);
+                let report = scan::scan(&config, &row.selector, &[Field::new(field, &text)]);
                 for finding in report
                     .findings
                     .into_iter()
@@ -354,7 +304,7 @@ pub(crate) fn find_live_finding(
                     located = Some(LiveFindingLocation {
                         table: table.name,
                         identity_fields: table.identity_fields,
-                        identity_values: identity_values.clone(),
+                        identity_values: row.identity_values.clone(),
                         field,
                         finding,
                     });
@@ -363,6 +313,113 @@ pub(crate) fn find_live_finding(
         }
     }
     Ok(located)
+}
+
+fn live_table_rows(
+    conn: &rusqlite::Connection,
+    table: &LiveTable,
+    fields: &[&'static str],
+) -> Result<Vec<LiveScanRow>> {
+    if table.name == "events" {
+        return live_event_rows(conn, table, fields);
+    }
+
+    let mut selections: Vec<String> = table
+        .identity_fields
+        .iter()
+        .map(|field| (*field).to_string())
+        .collect();
+    selections.extend(fields.iter().map(|field| (*field).to_string()));
+    let sql = format!(
+        "SELECT {} FROM {} ORDER BY {}",
+        selections.join(", "),
+        table.name,
+        table.identity_fields.join(", ")
+    );
+    let mut statement = conn.prepare(&sql)?;
+    let rows = statement.query_map([], |row| {
+        let identity_values = (0..table.identity_fields.len())
+            .map(|index| row.get::<_, rusqlite::types::Value>(index))
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let values = (0..fields.len())
+            .map(|index| row.get::<_, Option<String>>(index + table.identity_fields.len()))
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok((identity_values, values))
+    })?;
+
+    let mut scanned = Vec::new();
+    for row in rows {
+        let (identity_values, values) = row?;
+        let selector_values = identity_values
+            .iter()
+            .map(selector_identity_value)
+            .collect::<Result<Vec<_>>>()?;
+        scanned.push(LiveScanRow {
+            selector: semantic_selector(table, &selector_values),
+            identity_values,
+            values,
+        });
+    }
+    Ok(scanned)
+}
+
+/// Native events keep their origin columns NULL until an operation needs to
+/// persist the public wire identity. Derive that identity exactly as checkpoint
+/// export does so diagnostics remain read-only, distinct, and stable across a
+/// later canonicalization.
+fn live_event_rows(
+    conn: &rusqlite::Connection,
+    table: &LiveTable,
+    fields: &[&'static str],
+) -> Result<Vec<LiveScanRow>> {
+    let mut selections = vec![
+        "sequence".to_string(),
+        "origin_store_uuid".to_string(),
+        "origin_event_sequence".to_string(),
+    ];
+    selections.extend(fields.iter().map(|field| (*field).to_string()));
+    let sql = format!(
+        "SELECT {} FROM events ORDER BY sequence ASC",
+        selections.join(", ")
+    );
+    let mut statement = conn.prepare(&sql)?;
+    let rows = statement.query_map([], |row| {
+        let sequence = row.get::<_, i64>(0)?;
+        let stored_uuid = row.get::<_, Option<String>>(1)?;
+        let stored_sequence = row.get::<_, Option<i64>>(2)?;
+        let values = (0..fields.len())
+            .map(|index| row.get::<_, Option<String>>(index + 3))
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok((sequence, stored_uuid, stored_sequence, values))
+    })?;
+
+    let (local_store_uuid, mut next_local_origin_sequence) =
+        crate::service::checkpoint::local_identity_basis(conn);
+    let mut scanned = Vec::new();
+    for row in rows {
+        let (sequence, stored_uuid, stored_sequence, values) = row?;
+        let (origin_store_uuid, origin_event_sequence) =
+            crate::service::checkpoint::derive_wire_identity(
+                stored_uuid.as_deref(),
+                stored_sequence,
+                &local_store_uuid,
+                &mut next_local_origin_sequence,
+                sequence,
+            );
+        let selector_values = vec![
+            Some(origin_store_uuid.clone()),
+            Some(origin_event_sequence.to_string()),
+        ];
+        scanned.push(LiveScanRow {
+            identity_values: vec![
+                rusqlite::types::Value::Text(origin_store_uuid),
+                rusqlite::types::Value::Integer(origin_event_sequence),
+            ],
+            selector: semantic_selector(table, &selector_values),
+            values,
+        });
+    }
+    Ok(scanned)
 }
 
 #[allow(dead_code)]
@@ -725,6 +782,58 @@ mod tests {
         assert!(first.starts_with("live:labels:"));
         assert_eq!(first.rsplit(':').next().unwrap().len(), 64);
         assert!(!first.contains(&private_identity));
+    }
+
+    #[test]
+    fn native_event_selector_matches_read_only_checkpoint_wire_identity() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::store::migrations::apply_migrations(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO workspace (id, uuid, prefix, layout_version, created_at)
+             VALUES (1, 'event-selector-store', 'test', 1, '2026-09-03T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let value = [["AK", "IA"].concat(), "7M4Q9Z2N8C5R3T6V".to_string()].concat();
+        conn.execute(
+            "INSERT INTO events (kind, actor, time, detail)
+             VALUES ('fixture', 'worker', '2026-09-03T00:00:00Z', ?1)",
+            [format!(r#"{{"credential":"{value}"}}"#)],
+        )
+        .unwrap();
+
+        let finding = scan_live_findings(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|finding| {
+                finding.selector.starts_with("live:events:")
+                    && finding.field_path == "detail"
+                    && finding.rule_id == "aws-access-key-id"
+            })
+            .unwrap();
+        let exported = crate::service::checkpoint::read_all_events(&conn).unwrap();
+        assert_eq!(exported.len(), 1);
+        let event_table = LIVE_TABLES
+            .iter()
+            .find(|table| table.name == "events")
+            .unwrap();
+        let expected = semantic_selector(
+            event_table,
+            &[
+                Some(exported[0].origin_store_uuid.clone()),
+                Some(exported[0].origin_event_sequence.to_string()),
+            ],
+        );
+        assert_eq!(finding.selector, expected);
+
+        let stored_identity: (Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT origin_store_uuid, origin_event_sequence FROM events",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(stored_identity, (None, None));
     }
 
     #[test]

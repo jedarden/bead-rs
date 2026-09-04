@@ -159,6 +159,7 @@ pub fn preview_redaction_holding(
         .ok_or_else(|| {
             RedactionError::NotFound("no current live finding matches that fingerprint".to_string())
         })?;
+    let location = canonicalize_event_target(&tx, fingerprint, location)?;
     let target = target_spec(location.table, location.field).ok_or_else(|| {
         RedactionError::Conflict(format!(
             "finding addresses unsupported field {}.{}",
@@ -311,6 +312,7 @@ fn redact_in_transaction(
     let location = location.ok_or_else(|| {
         RedactionError::NotFound("no current live finding matches that fingerprint".to_string())
     })?;
+    let location = canonicalize_event_target(&tx, fingerprint, location)?;
     let target = target_spec(location.table, location.field).ok_or_else(|| {
         RedactionError::Conflict(format!(
             "finding addresses unsupported field {}.{}",
@@ -507,6 +509,26 @@ fn redact_in_transaction(
         receipt,
         is_replay: false,
     })
+}
+
+fn canonicalize_event_target(
+    tx: &Transaction<'_>,
+    fingerprint: &str,
+    location: LiveFindingLocation,
+) -> Result<LiveFindingLocation, RedactionError> {
+    if location.table != "events" {
+        return Ok(location);
+    }
+
+    crate::service::checkpoint::canonicalize_local_event_identities(tx)
+        .map_err(|_| integrity("could not canonicalize event identities"))?;
+    find_live_finding(tx, fingerprint)
+        .map_err(|_| integrity("could not rescan canonical event target"))?
+        .ok_or_else(|| {
+            RedactionError::Conflict(
+                "finding changed while canonicalizing its event identity".to_string(),
+            )
+        })
 }
 
 #[derive(Clone, Copy)]
@@ -1222,6 +1244,57 @@ mod tests {
             .unwrap();
         assert_eq!(description, value);
         assert_eq!(counts, (0, 0, 0));
+    }
+
+    #[test]
+    fn event_identity_canonicalization_rolls_back_with_redaction() {
+        let conn = connection();
+        let value = shaped_value();
+        let detail = format!(r#"{{"credential":"{value}"}}"#);
+        for _ in 0..2 {
+            conn.execute(
+                "INSERT INTO events (kind, actor, time, detail)
+                 VALUES ('fixture', 'worker', '2026-09-03T00:00:00Z', ?1)",
+                [&detail],
+            )
+            .unwrap();
+        }
+        let findings = crate::service::secret_diagnostics::scan_live_findings(&conn)
+            .unwrap()
+            .into_iter()
+            .filter(|finding| {
+                finding.selector.starts_with("live:events:")
+                    && finding.field_path == "detail"
+                    && finding.rule_id == "aws-access-key-id"
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(findings.len(), 2);
+
+        let error = redact_in_transaction(
+            &conn,
+            &findings[1].fingerprint,
+            "operator",
+            "remove exposed credential",
+            true,
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(error, RedactionError::Integrity(_)));
+
+        let state: (i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM events WHERE detail = ?1),
+                    (SELECT COUNT(*) FROM events
+                     WHERE origin_store_uuid IS NOT NULL
+                        OR origin_event_sequence IS NOT NULL),
+                    (SELECT COUNT(*) FROM redaction_receipts),
+                    (SELECT COUNT(*) FROM redaction_tombstones)",
+                [&detail],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(state, (2, 0, 0, 0));
     }
 
     #[test]
