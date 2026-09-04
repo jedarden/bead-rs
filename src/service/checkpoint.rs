@@ -67,6 +67,10 @@
 //! and the organizational decision is made to switch from pre-F017 format.
 
 use crate::cli::ImportMode;
+use crate::model::redaction::{
+    FieldSelector, RedactionAcknowledgment, RedactionEpoch, RedactionFinding, RedactionReceipt,
+    ResurrectionTombstone,
+};
 use crate::model::Issue;
 use crate::profile::ProfileLossReport;
 use crate::service::resource_locks::{
@@ -416,6 +420,9 @@ struct SerializedCorpus {
     receipt_lines: Vec<Vec<u8>>,
     /// Attempt outcome record lines, parallel to the sorted outcome list
     attempt_outcome_lines: Vec<Vec<u8>>,
+    /// Redaction record lines (findings, acknowledgments, receipts, epochs,
+    /// tombstones) in canonical kind-then-identity order
+    redaction_lines: Vec<Vec<u8>>,
 }
 
 /// Serialize every checkpoint record line in canonical order
@@ -424,6 +431,7 @@ fn serialize_corpus(
     events: &[EventRecord],
     receipts: &[ProvenanceReceipt],
     attempt_outcomes: &[AttemptOutcomeRecord],
+    redaction: &RedactionRecords,
     graph_data: &IssueGraphData,
 ) -> Result<SerializedCorpus> {
     let mut issue_lines = Vec::with_capacity(issues.len());
@@ -470,11 +478,14 @@ fn serialize_corpus(
         attempt_outcome_lines.push(serde_json::to_vec(&record)?);
     }
 
+    let redaction_lines = redaction.serialize_lines()?;
+
     Ok(SerializedCorpus {
         issue_lines,
         event_lines,
         receipt_lines,
         attempt_outcome_lines,
+        redaction_lines,
     })
 }
 
@@ -490,6 +501,7 @@ fn corpus_monolith_stats(corpus: &SerializedCorpus) -> MonolithStats {
         .chain(corpus.event_lines.iter())
         .chain(corpus.receipt_lines.iter())
         .chain(corpus.attempt_outcome_lines.iter())
+        .chain(corpus.redaction_lines.iter())
     {
         // +1 for the newline every JSONL line carries
         stats.total_bytes += line.len() as u64 + 1;
@@ -555,6 +567,147 @@ pub enum CheckpointRecord {
     AttemptOutcome {
         attempt_outcome: AttemptOutcomeRecord,
     },
+    #[serde(rename = "redaction_finding")]
+    RedactionFinding { redaction_finding: RedactionFinding },
+    #[serde(rename = "redaction_acknowledgment")]
+    RedactionAcknowledgment {
+        redaction_acknowledgment: RedactionAcknowledgment,
+    },
+    #[serde(rename = "redaction_receipt")]
+    RedactionReceipt { redaction_receipt: RedactionReceipt },
+    #[serde(rename = "redaction_epoch")]
+    RedactionEpoch { redaction_epoch: RedactionEpoch },
+    #[serde(rename = "redaction_tombstone")]
+    RedactionTombstone {
+        redaction_tombstone: ResurrectionTombstone,
+    },
+}
+
+/// Every durable redaction record a store holds, grouped by kind.
+///
+/// This is the unit the publisher reads and the importer writes: a checkpoint
+/// carries all five kinds or none, and an empty set is ordinary -- the
+/// overwhelming majority of workspaces never redact anything, so the absence
+/// of redaction records must be as representable as their presence.
+///
+/// Canonical order is kind-then-identity: findings, acknowledgments,
+/// receipts, epochs, tombstones, each sorted by its own identity. Sorting by
+/// identity rather than insertion order is what makes two publications of the
+/// same store byte-identical, which the content-addressed object names
+/// require.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RedactionRecords {
+    /// Stored scanner findings, sorted by fingerprint.
+    pub findings: Vec<RedactionFinding>,
+    /// Advisory-finding acknowledgments, sorted by fingerprint.
+    pub acknowledgments: Vec<RedactionAcknowledgment>,
+    /// Committed redaction receipts, sorted by receipt ID.
+    pub receipts: Vec<RedactionReceipt>,
+    /// Publication epochs, sorted by epoch ID.
+    pub epochs: Vec<RedactionEpoch>,
+    /// Anti-resurrection tombstones, sorted by tombstone ID.
+    pub tombstones: Vec<ResurrectionTombstone>,
+}
+
+impl RedactionRecords {
+    /// Total number of redaction records across every kind.
+    pub fn len(&self) -> usize {
+        self.findings.len()
+            + self.acknowledgments.len()
+            + self.receipts.len()
+            + self.epochs.len()
+            + self.tombstones.len()
+    }
+
+    /// Sort every kind into canonical order, in place.
+    fn sort(&mut self) {
+        self.findings
+            .sort_by(|a, b| a.fingerprint.cmp(&b.fingerprint));
+        self.acknowledgments
+            .sort_by(|a, b| a.fingerprint.cmp(&b.fingerprint));
+        self.receipts
+            .sort_by(|a, b| a.receipt_id.cmp(&b.receipt_id));
+        self.epochs.sort_by(|a, b| a.epoch_id.cmp(&b.epoch_id));
+        self.tombstones
+            .sort_by(|a, b| a.tombstone_id.cmp(&b.tombstone_id));
+    }
+
+    /// Reject two records of one kind sharing an identity.
+    ///
+    /// Shards are processed independently, so the same tombstone delivered by
+    /// two different objects is not visible until the corpus is assembled.
+    /// A duplicated tombstone is harmless on its own, but the same duplicate
+    /// arriving as a receipt would double-count the pointer total, so every
+    /// kind is checked rather than only the ones that hurt.
+    fn ensure_unique_identities(&self) -> Result<()> {
+        let mut seen: HashSet<String> = HashSet::new();
+        for fingerprint in self.findings.iter().map(|f| &f.fingerprint) {
+            if !seen.insert(fingerprint.clone()) {
+                bail!("Duplicate redaction finding: {}", fingerprint);
+            }
+        }
+        seen.clear();
+        for fingerprint in self.acknowledgments.iter().map(|a| &a.fingerprint) {
+            if !seen.insert(fingerprint.clone()) {
+                bail!("Duplicate redaction acknowledgment: {}", fingerprint);
+            }
+        }
+        seen.clear();
+        for receipt_id in self.receipts.iter().map(|r| &r.receipt_id) {
+            if !seen.insert(receipt_id.clone()) {
+                bail!("Duplicate redaction receipt: {}", receipt_id);
+            }
+        }
+        seen.clear();
+        for epoch_id in self.epochs.iter().map(|e| &e.epoch_id) {
+            if !seen.insert(epoch_id.clone()) {
+                bail!("Duplicate redaction epoch: {}", epoch_id);
+            }
+        }
+        seen.clear();
+        for tombstone_id in self.tombstones.iter().map(|t| &t.tombstone_id) {
+            if !seen.insert(tombstone_id.clone()) {
+                bail!("Duplicate redaction tombstone: {}", tombstone_id);
+            }
+        }
+        Ok(())
+    }
+
+    /// Serialize every record as one checkpoint line, in canonical order.
+    fn serialize_lines(&self) -> Result<Vec<Vec<u8>>> {
+        let mut sorted = self.clone();
+        sorted.sort();
+
+        let mut lines = Vec::with_capacity(sorted.len());
+        for finding in &sorted.findings {
+            lines.push(serde_json::to_vec(&CheckpointRecord::RedactionFinding {
+                redaction_finding: finding.clone(),
+            })?);
+        }
+        for acknowledgment in &sorted.acknowledgments {
+            lines.push(serde_json::to_vec(
+                &CheckpointRecord::RedactionAcknowledgment {
+                    redaction_acknowledgment: acknowledgment.clone(),
+                },
+            )?);
+        }
+        for receipt in &sorted.receipts {
+            lines.push(serde_json::to_vec(&CheckpointRecord::RedactionReceipt {
+                redaction_receipt: receipt.clone(),
+            })?);
+        }
+        for epoch in &sorted.epochs {
+            lines.push(serde_json::to_vec(&CheckpointRecord::RedactionEpoch {
+                redaction_epoch: epoch.clone(),
+            })?);
+        }
+        for tombstone in &sorted.tombstones {
+            lines.push(serde_json::to_vec(&CheckpointRecord::RedactionTombstone {
+                redaction_tombstone: tombstone.clone(),
+            })?);
+        }
+        Ok(lines)
+    }
 }
 
 /// Event record for forensic checkpoints
@@ -817,6 +970,7 @@ pub struct ForensicStaging {
     pub events: Vec<SerializedEvent>,
     pub receipts: Vec<SerializedReceipt>,
     pub attempt_outcomes: Vec<AttemptOutcomeRecord>,
+    pub redaction: RedactionRecords,
     pub input_hash: String,
     pub store_uuid: String,
     pub snapshot_sequence: i64,
@@ -825,6 +979,7 @@ pub struct ForensicStaging {
     pub event_count: usize,
     pub receipt_count: usize,
     pub attempt_outcome_count: usize,
+    pub redaction_record_count: usize,
 }
 
 /// Serialized event for forensic import
@@ -922,6 +1077,7 @@ pub struct RestoreDisplacedCounts {
     pub events: usize,
     pub provenance_receipts: usize,
     pub attempt_outcomes: usize,
+    pub redaction_records: usize,
     pub saved_views: usize,
     pub recurrence_templates: usize,
 }
@@ -932,6 +1088,7 @@ impl RestoreDisplacedCounts {
             && self.events == 0
             && self.provenance_receipts == 0
             && self.attempt_outcomes == 0
+            && self.redaction_records == 0
             && self.saved_views == 0
             && self.recurrence_templates == 0
     }
@@ -1431,6 +1588,8 @@ struct RestorePointer {
     receipt_count: usize,
     #[serde(default)]
     attempt_outcome_count: usize,
+    #[serde(default)]
+    redaction_record_count: usize,
     total_record_count: usize,
 }
 
@@ -1468,14 +1627,16 @@ pub fn verify_restore_source(source: &Path, generation_id: &str) -> Result<Verif
             + pointer.event_count
             + pointer.receipt_count
             + pointer.attempt_outcome_count
+            + pointer.redaction_record_count
     {
         bail!(
-            "Unverified restore source: pointer total_record_count {} does not equal issues {} + events {} + receipts {} + attempt outcomes {}",
+            "Unverified restore source: pointer total_record_count {} does not equal issues {} + events {} + receipts {} + attempt outcomes {} + redaction records {}",
             pointer.total_record_count,
             pointer.issue_count,
             pointer.event_count,
             pointer.receipt_count,
-            pointer.attempt_outcome_count
+            pointer.attempt_outcome_count,
+            pointer.redaction_record_count
         );
     }
     validate_sha256(&pointer.active_root.sha256, "pointer active_root.sha256")?;
@@ -1521,17 +1682,20 @@ pub fn verify_restore_source(source: &Path, generation_id: &str) -> Result<Verif
         || staging.event_count != pointer.event_count
         || staging.receipt_count != pointer.receipt_count
         || staging.attempt_outcome_count != pointer.attempt_outcome_count
+        || staging.redaction_record_count != pointer.redaction_record_count
     {
         bail!(
-            "Unverified restore source: pointer counts (issues={}, events={}, receipts={}, attempt outcomes={}) disagree with staged records ({}, {}, {}, {})",
+            "Unverified restore source: pointer counts (issues={}, events={}, receipts={}, attempt outcomes={}, redaction records={}) disagree with staged records ({}, {}, {}, {}, {})",
             pointer.issue_count,
             pointer.event_count,
             pointer.receipt_count,
             pointer.attempt_outcome_count,
+            pointer.redaction_record_count,
             staging.issue_count,
             staging.event_count,
             staging.receipt_count,
-            staging.attempt_outcome_count
+            staging.attempt_outcome_count,
+            staging.redaction_record_count
         );
     }
     validate_forensic_contents(&staging)?;
@@ -1870,7 +2034,17 @@ fn verify_monolithic_restore_records(root: &Path) -> Result<()> {
             record
                 .get("record_type")
                 .and_then(serde_json::Value::as_str),
-            Some("issue" | "event" | "provenance_receipt" | "attempt_outcome")
+            Some(
+                "issue"
+                    | "event"
+                    | "provenance_receipt"
+                    | "attempt_outcome"
+                    | "redaction_finding"
+                    | "redaction_acknowledgment"
+                    | "redaction_receipt"
+                    | "redaction_epoch"
+                    | "redaction_tombstone"
+            )
         ) {
             bail!(
                 "Unverified restore source: {}:{} is not a typed forensic checkpoint record",
@@ -1927,53 +2101,88 @@ fn verify_sharded_restore_closure(
     let manifest_issue_count = required_manifest_usize(&manifest, "issue_count")?;
     let manifest_event_count = required_manifest_usize(&manifest, "event_count")?;
     let manifest_receipt_count = required_manifest_usize(&manifest, "receipt_count")?;
-    // Pre-attempt-outcome manifests omit this field and pair with pointers
-    // whose serde default is zero. A present field must agree exactly.
+    let manifest_total = required_manifest_usize(&manifest, "total_record_count")?;
+    // Manifests from binaries that predate attempt outcomes omit the field;
+    // such a manifest can only pair with a pointer of the same vintage, whose
+    // deserialized attempt_outcome_count is likewise the zero default.
     let manifest_attempt_outcome_count = manifest
         .get("attempt_outcome_count")
         .and_then(serde_json::Value::as_u64)
-        .and_then(|value| usize::try_from(value).ok())
+        .map(|value| value as usize)
         .unwrap_or(0);
-    let manifest_total = required_manifest_usize(&manifest, "total_record_count")?;
+    // Same tolerance for redaction records: a manifest from a binary that
+    // predates redaction storage omits the field, and pairs only with a
+    // pointer whose deserialized count is likewise the zero default. A
+    // manifest that declares the field must agree with the pointer exactly,
+    // so a torn generation cannot pass as an old one.
+    let manifest_redaction_record_count = manifest
+        .get("redaction_record_count")
+        .and_then(serde_json::Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or(0);
     if (
         manifest_issue_count,
         manifest_event_count,
         manifest_receipt_count,
         manifest_attempt_outcome_count,
+        manifest_redaction_record_count,
         manifest_total,
     ) != (
         pointer.issue_count,
         pointer.event_count,
         pointer.receipt_count,
         pointer.attempt_outcome_count,
+        pointer.redaction_record_count,
         pointer.total_record_count,
     ) {
         bail!("Unverified restore source: manifest counts disagree with generation pointer");
     }
 
     let mut seen_paths = HashSet::new();
-    let mut verified_counts = [0usize; 4];
-    for (index, (field, expected_role, expected_record_type)) in [
-        ("issue_shards", "issues", "issue"),
-        ("event_shards", "events", "event"),
+    let mut verified_counts = [0usize; 5];
+    // One shard role may carry several record types: a redaction shard packs
+    // findings, acknowledgments, receipts, epochs, and tombstones together,
+    // because they are one redaction corpus and splitting them across objects
+    // would let a partial copy look complete.
+    const REDACTION_RECORD_TYPES: &[&str] = &[
+        "redaction_finding",
+        "redaction_acknowledgment",
+        "redaction_receipt",
+        "redaction_epoch",
+        "redaction_tombstone",
+    ];
+    for (index, (field, expected_role, expected_record_types)) in [
+        ("issue_shards", "issues", &["issue"][..]),
+        ("event_shards", "events", &["event"][..]),
         (
             "receipt_shards",
             "provenance_receipts",
-            "provenance_receipt",
+            &["provenance_receipt"][..],
         ),
         (
             "attempt_outcome_shards",
             "attempt_outcomes",
-            "attempt_outcome",
+            &["attempt_outcome"][..],
+        ),
+        (
+            "redaction_shards",
+            "redaction_records",
+            REDACTION_RECORD_TYPES,
         ),
     ]
     .into_iter()
     .enumerate()
     {
-        let shards = manifest
-            .get(field)
-            .and_then(serde_json::Value::as_array)
-            .ok_or_else(|| anyhow!("Unverified restore source: manifest missing {field}"))?;
+        // Manifests from binaries that predate redaction storage omit the
+        // role entirely. That is only consistent with a pointer of the same
+        // vintage, whose redaction_record_count is likewise the zero default;
+        // a pointer claiming redaction records without the shard role naming
+        // them is a torn generation, not an old one.
+        let shards = match manifest.get(field).and_then(serde_json::Value::as_array) {
+            Some(shards) => shards,
+            None if field == "redaction_shards" && pointer.redaction_record_count == 0 => continue,
+            None => bail!("Unverified restore source: manifest missing {field}"),
+        };
         for shard in shards {
             let path = shard
                 .get("path")
@@ -2032,11 +2241,11 @@ fn verify_sharded_restore_closure(
                     )
                 })?;
                 reject_archaeology_view(&record, &object)?;
-                if record
+                let actual_record_type = record
                     .get("record_type")
                     .and_then(serde_json::Value::as_str)
-                    != Some(expected_record_type)
-                {
+                    .unwrap_or_default();
+                if !expected_record_types.contains(&actual_record_type) {
                     bail!(
                         "Unverified restore source: {} contains a record outside its declared {} role",
                         object.display(),
@@ -2062,15 +2271,17 @@ fn verify_sharded_restore_closure(
             pointer.event_count,
             pointer.receipt_count,
             pointer.attempt_outcome_count,
+            pointer.redaction_record_count,
         ]
     {
         bail!(
-            "Unverified restore source: sharded object counts {:?} disagree with pointer ({}, {}, {}, {})",
+            "Unverified restore source: sharded object counts {:?} disagree with pointer ({}, {}, {}, {}, {})",
             verified_counts,
             pointer.issue_count,
             pointer.event_count,
             pointer.receipt_count,
-            pointer.attempt_outcome_count
+            pointer.attempt_outcome_count,
+            pointer.redaction_record_count
         );
     }
     Ok(())
@@ -2184,6 +2395,139 @@ fn stage_pointer_checkpoint(pointer_path: &Path) -> Result<ForensicStaging> {
     }
 }
 
+/// Duplicate identities already seen among staged redaction records.
+///
+/// Each kind is unique on its own identity, and the kinds are disjoint, so
+/// duplication is checked per kind rather than across the whole corpus.
+#[derive(Debug, Default)]
+struct RedactionIdentities {
+    findings: HashSet<String>,
+    acknowledgments: HashSet<String>,
+    receipts: HashSet<String>,
+    epochs: HashSet<String>,
+    tombstones: HashSet<String>,
+}
+
+/// Absorb one redaction record line into the staging accumulators.
+///
+/// Returns `Ok(false)` when `record_type` is not a redaction kind, so the
+/// caller's own unknown-record-type error can fire unchanged: a record this
+/// reader does not know about at all must stay a hard error, because silently
+/// dropping a tombstone is exactly how redacted bytes come back. Known kinds
+/// that fail validation are a hard error too -- a redaction record that does
+/// not parse is a corrupt checkpoint, not an ignorable line.
+fn stage_redaction_record(
+    record_type: &str,
+    record: &serde_json::Value,
+    location: &str,
+    redaction: &mut RedactionRecords,
+    seen: &mut RedactionIdentities,
+) -> Result<bool> {
+    let field = match record_type {
+        "redaction_finding" => "redaction_finding",
+        "redaction_acknowledgment" => "redaction_acknowledgment",
+        "redaction_receipt" => "redaction_receipt",
+        "redaction_epoch" => "redaction_epoch",
+        "redaction_tombstone" => "redaction_tombstone",
+        _ => return Ok(false),
+    };
+
+    let value = record
+        .get(field)
+        .ok_or_else(|| anyhow!("{}: missing '{}' field", location, field))?;
+
+    // Unknown fields inside a known record are tolerated: a newer writer may
+    // have added a field this reader has not learned, and refusing the whole
+    // checkpoint over it would make every forward-compatible publication
+    // unreadable. Deserialization ignores them by default; validation then
+    // checks the fields this schema version does know about.
+    match record_type {
+        "redaction_finding" => {
+            let finding: RedactionFinding = serde_json::from_value(value.clone())
+                .map_err(|e| anyhow!("{}: invalid redaction finding: {}", location, e))?;
+            finding
+                .validate()
+                .map_err(|e| anyhow!("{}: invalid redaction finding: {}", location, e))?;
+            if !seen.findings.insert(finding.fingerprint.clone()) {
+                bail!(
+                    "{}: duplicate redaction finding: {}",
+                    location,
+                    finding.fingerprint
+                );
+            }
+            redaction.findings.push(finding);
+        }
+        "redaction_acknowledgment" => {
+            let acknowledgment: RedactionAcknowledgment = serde_json::from_value(value.clone())
+                .map_err(|e| anyhow!("{}: invalid redaction acknowledgment: {}", location, e))?;
+            acknowledgment
+                .validate()
+                .map_err(|e| anyhow!("{}: invalid redaction acknowledgment: {}", location, e))?;
+            if !seen
+                .acknowledgments
+                .insert(acknowledgment.fingerprint.clone())
+            {
+                bail!(
+                    "{}: duplicate redaction acknowledgment: {}",
+                    location,
+                    acknowledgment.fingerprint
+                );
+            }
+            redaction.acknowledgments.push(acknowledgment);
+        }
+        "redaction_receipt" => {
+            let receipt: RedactionReceipt = serde_json::from_value(value.clone())
+                .map_err(|e| anyhow!("{}: invalid redaction receipt: {}", location, e))?;
+            receipt
+                .validate()
+                .map_err(|e| anyhow!("{}: invalid redaction receipt: {}", location, e))?;
+            receipt
+                .verify_identity()
+                .map_err(|e| anyhow!("{}: redaction receipt identity mismatch: {}", location, e))?;
+            if !seen.receipts.insert(receipt.receipt_id.clone()) {
+                bail!(
+                    "{}: duplicate redaction receipt: {}",
+                    location,
+                    receipt.receipt_id
+                );
+            }
+            redaction.receipts.push(receipt);
+        }
+        "redaction_epoch" => {
+            let epoch: RedactionEpoch = serde_json::from_value(value.clone())
+                .map_err(|e| anyhow!("{}: invalid redaction epoch: {}", location, e))?;
+            epoch
+                .validate()
+                .map_err(|e| anyhow!("{}: invalid redaction epoch: {}", location, e))?;
+            if !seen.epochs.insert(epoch.epoch_id.clone()) {
+                bail!(
+                    "{}: duplicate redaction epoch: {}",
+                    location,
+                    epoch.epoch_id
+                );
+            }
+            redaction.epochs.push(epoch);
+        }
+        "redaction_tombstone" => {
+            let tombstone: ResurrectionTombstone = serde_json::from_value(value.clone())
+                .map_err(|e| anyhow!("{}: invalid redaction tombstone: {}", location, e))?;
+            tombstone
+                .validate()
+                .map_err(|e| anyhow!("{}: invalid redaction tombstone: {}", location, e))?;
+            if !seen.tombstones.insert(tombstone.tombstone_id.clone()) {
+                bail!(
+                    "{}: duplicate redaction tombstone: {}",
+                    location,
+                    tombstone.tombstone_id
+                );
+            }
+            redaction.tombstones.push(tombstone);
+        }
+        _ => unreachable!("record_type was matched above"),
+    }
+    Ok(true)
+}
+
 /// Stage monolithic checkpoint from JSONL file
 fn stage_monolithic_checkpoint(input_path: &Path) -> Result<ForensicStaging> {
     let file = File::open(input_path)?;
@@ -2195,11 +2539,13 @@ fn stage_monolithic_checkpoint(input_path: &Path) -> Result<ForensicStaging> {
     let mut events = Vec::new();
     let mut receipts = Vec::new();
     let mut attempt_outcomes = Vec::new();
+    let mut redaction = RedactionRecords::default();
 
     let mut seen_issue_ids = HashSet::new();
     let mut seen_event_identities = HashSet::new();
     let mut seen_receipt_ids = HashSet::new();
     let mut seen_attempt_ids = HashSet::new();
+    let mut seen_redaction_ids = RedactionIdentities::default();
 
     let mut hasher = Sha256::new();
     let mut store_uuid = String::new();
@@ -2340,8 +2686,16 @@ fn stage_monolithic_checkpoint(input_path: &Path) -> Result<ForensicStaging> {
 
                     attempt_outcomes.push(outcome);
                 }
-                _ => {
-                    bail!("Line {}: unknown record type: {}", line_num, record_type);
+                other => {
+                    if !stage_redaction_record(
+                        other,
+                        &record,
+                        &format!("Line {}", line_num),
+                        &mut redaction,
+                        &mut seen_redaction_ids,
+                    )? {
+                        bail!("Line {}: unknown record type: {}", line_num, record_type);
+                    }
                 }
             }
         } else {
@@ -2418,6 +2772,8 @@ fn stage_monolithic_checkpoint(input_path: &Path) -> Result<ForensicStaging> {
         event_count: seen_event_identities.len(),
         receipt_count: seen_receipt_ids.len(),
         attempt_outcome_count: seen_attempt_ids.len(),
+        redaction: redaction.clone(),
+        redaction_record_count: redaction.len(),
     })
 }
 
@@ -2470,6 +2826,7 @@ fn stage_sharded_checkpoint(pointer_path: &Path) -> Result<ForensicStaging> {
     let mut events = Vec::new();
     let mut receipts = Vec::new();
     let mut attempt_outcomes = Vec::new();
+    let mut redaction = RedactionRecords::default();
 
     let mut seen_issue_ids = HashSet::new();
     let mut seen_event_identities = HashSet::new();
@@ -2570,6 +2927,34 @@ fn stage_sharded_checkpoint(pointer_path: &Path) -> Result<ForensicStaging> {
         }
     }
 
+    // Process redaction shards: one role covering all five record kinds.
+    // Absent on manifests from binaries that predate redaction storage.
+    if let Some(redaction_shards) = manifest.get("redaction_shards").and_then(|v| v.as_array()) {
+        for shard_info in redaction_shards {
+            let shard_path = shard_info
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow!("Redaction shard missing path"))?;
+
+            let shard_full_path = base.join(shard_path);
+            let shard_data = process_shard_file(
+                &shard_full_path,
+                &mut hasher,
+                &mut seen_issue_ids,
+                &mut seen_event_identities,
+                &mut seen_receipt_ids,
+            )?;
+
+            redaction.findings.extend(shard_data.redaction.findings);
+            redaction
+                .acknowledgments
+                .extend(shard_data.redaction.acknowledgments);
+            redaction.receipts.extend(shard_data.redaction.receipts);
+            redaction.epochs.extend(shard_data.redaction.epochs);
+            redaction.tombstones.extend(shard_data.redaction.tombstones);
+        }
+    }
+
     let input_hash = format!("{:x}", hasher.finalize());
 
     // Canonical order is a property of the staged corpus, not of the manifest
@@ -2585,6 +2970,9 @@ fn stage_sharded_checkpoint(pointer_path: &Path) -> Result<ForensicStaging> {
     });
     receipts.sort_by(|a, b| a.receipt_id.cmp(&b.receipt_id));
     attempt_outcomes.sort_by(|a, b| a.receipt_id.cmp(&b.receipt_id));
+    redaction.ensure_unique_identities()?;
+    redaction.sort();
+    let redaction_record_count = redaction.len();
 
     Ok(ForensicStaging {
         issues,
@@ -2593,6 +2981,8 @@ fn stage_sharded_checkpoint(pointer_path: &Path) -> Result<ForensicStaging> {
         events,
         receipts,
         attempt_outcomes,
+        redaction,
+        redaction_record_count,
         input_hash,
         store_uuid,
         snapshot_sequence,
@@ -2624,6 +3014,7 @@ fn process_shard_file(
         events: Vec::new(),
         receipts: Vec::new(),
         attempt_outcomes: Vec::new(),
+        redaction: RedactionRecords::default(),
     };
 
     for (line_num, line_result) in reader.lines().enumerate() {
@@ -2829,12 +3220,24 @@ fn process_shard_file(
                 shard_data.attempt_outcomes.push(outcome);
             }
             _ => {
-                bail!(
-                    "{} line {}: unknown record type: {}",
-                    shard_path.display(),
-                    line_num,
-                    record_type
-                );
+                // A redaction kind is parsed and validated here; anything
+                // else is a record this reader does not know, which stays a
+                // hard error rather than a silently dropped line.
+                let mut parsed = RedactionRecords::default();
+                let mut seen = RedactionIdentities::default();
+                let location = format!("{} line {}", shard_path.display(), line_num);
+                if !stage_redaction_record(record_type, &record, &location, &mut parsed, &mut seen)?
+                {
+                    bail!("{}: unknown record type: {}", location, record_type);
+                }
+                shard_data.redaction.findings.extend(parsed.findings);
+                shard_data
+                    .redaction
+                    .acknowledgments
+                    .extend(parsed.acknowledgments);
+                shard_data.redaction.receipts.extend(parsed.receipts);
+                shard_data.redaction.epochs.extend(parsed.epochs);
+                shard_data.redaction.tombstones.extend(parsed.tombstones);
             }
         }
     }
@@ -2851,6 +3254,7 @@ struct ShardData {
     events: Vec<SerializedEvent>,
     receipts: Vec<SerializedReceipt>,
     attempt_outcomes: Vec<AttemptOutcomeRecord>,
+    redaction: RedactionRecords,
 }
 
 /// Validate forensic checkpoint before import
@@ -2907,7 +3311,109 @@ pub(crate) fn validate_forensic_contents(staging: &ForensicStaging) -> Result<()
 
     validate_forensic_events(staging)?;
     validate_forensic_receipts(staging)?;
+    validate_redaction_relationships(&staging.redaction)?;
 
+    Ok(())
+}
+
+fn validate_redaction_relationships(redaction: &RedactionRecords) -> Result<()> {
+    let finding_ids: HashSet<&str> = redaction
+        .findings
+        .iter()
+        .map(|finding| finding.fingerprint.as_str())
+        .collect();
+    let receipts: HashMap<&str, &RedactionReceipt> = redaction
+        .receipts
+        .iter()
+        .map(|receipt| (receipt.receipt_id.as_str(), receipt))
+        .collect();
+    let epochs: HashMap<&str, &RedactionEpoch> = redaction
+        .epochs
+        .iter()
+        .map(|epoch| (epoch.epoch_id.as_str(), epoch))
+        .collect();
+
+    for acknowledgment in &redaction.acknowledgments {
+        if !finding_ids.contains(acknowledgment.fingerprint.as_str()) {
+            bail!(
+                "Redaction acknowledgment references missing finding {}",
+                acknowledgment.fingerprint
+            );
+        }
+    }
+    for receipt in &redaction.receipts {
+        if !finding_ids.contains(receipt.finding_fingerprint.as_str()) {
+            bail!(
+                "Redaction receipt {} references missing finding {}",
+                receipt.receipt_id,
+                receipt.finding_fingerprint
+            );
+        }
+        if let Some(epoch_id) = receipt.epoch_id.as_deref() {
+            let epoch = epochs.get(epoch_id).ok_or_else(|| {
+                anyhow!(
+                    "Redaction receipt {} references missing epoch {}",
+                    receipt.receipt_id,
+                    epoch_id
+                )
+            })?;
+            if !epoch.receipt_ids.contains(&receipt.receipt_id) {
+                bail!(
+                    "Redaction epoch {} does not contain linked receipt {}",
+                    epoch_id,
+                    receipt.receipt_id
+                );
+            }
+            if receipt.resulting_generation_id != epoch.resulting_generation_id {
+                bail!(
+                    "Redaction receipt {} and epoch {} disagree on resulting generation",
+                    receipt.receipt_id,
+                    epoch_id
+                );
+            }
+        }
+    }
+    for epoch in &redaction.epochs {
+        for receipt_id in &epoch.receipt_ids {
+            let receipt = receipts.get(receipt_id.as_str()).ok_or_else(|| {
+                anyhow!(
+                    "Redaction epoch {} references missing receipt {}",
+                    epoch.epoch_id,
+                    receipt_id
+                )
+            })?;
+            if receipt.epoch_id.as_deref() != Some(epoch.epoch_id.as_str()) {
+                bail!(
+                    "Redaction epoch {} and receipt {} disagree on linkage",
+                    epoch.epoch_id,
+                    receipt_id
+                );
+            }
+        }
+    }
+    for tombstone in &redaction.tombstones {
+        if !epochs.contains_key(tombstone.epoch_id.as_str()) {
+            bail!(
+                "Redaction tombstone {} references missing epoch {}",
+                tombstone.tombstone_id,
+                tombstone.epoch_id
+            );
+        }
+        let matching_receipt = redaction.receipts.iter().any(|receipt| {
+            receipt.finding_fingerprint == tombstone.finding_fingerprint
+                && receipt.selector.record_kind == tombstone.record_kind
+                && receipt.selector.origin_identity == tombstone.origin_identity
+                && receipt.selector.field_path == tombstone.field_path
+                && receipt.prior_record_hash == tombstone.prior_record_hash
+                && receipt.epoch_id.as_deref() == Some(tombstone.epoch_id.as_str())
+        });
+        if !matching_receipt {
+            bail!(
+                "Redaction tombstone {} has no matching receipt",
+                tombstone.tombstone_id
+            );
+        }
+    }
     Ok(())
 }
 
@@ -3052,6 +3558,58 @@ fn validate_canonical_ordering(staging: &ForensicStaging) -> Result<()> {
         }
         prev_receipt_id = receipt.receipt_id.clone();
     }
+
+    let strictly_sorted = |values: Vec<&str>, label: &str| -> Result<()> {
+        if !values.windows(2).all(|pair| pair[0] < pair[1]) {
+            bail!("{} are not in canonical identity order", label);
+        }
+        Ok(())
+    };
+    strictly_sorted(
+        staging
+            .redaction
+            .findings
+            .iter()
+            .map(|record| record.fingerprint.as_str())
+            .collect(),
+        "Redaction findings",
+    )?;
+    strictly_sorted(
+        staging
+            .redaction
+            .acknowledgments
+            .iter()
+            .map(|record| record.fingerprint.as_str())
+            .collect(),
+        "Redaction acknowledgments",
+    )?;
+    strictly_sorted(
+        staging
+            .redaction
+            .receipts
+            .iter()
+            .map(|record| record.receipt_id.as_str())
+            .collect(),
+        "Redaction receipts",
+    )?;
+    strictly_sorted(
+        staging
+            .redaction
+            .epochs
+            .iter()
+            .map(|record| record.epoch_id.as_str())
+            .collect(),
+        "Redaction epochs",
+    )?;
+    strictly_sorted(
+        staging
+            .redaction
+            .tombstones
+            .iter()
+            .map(|record| record.tombstone_id.as_str())
+            .collect(),
+        "Redaction tombstones",
+    )?;
 
     Ok(())
 }
@@ -3715,6 +4273,11 @@ fn read_restore_target_counts(conn: &rusqlite::Connection) -> Result<RestoreDisp
         events: count(conn, "events")?,
         provenance_receipts: count(conn, "provenance_receipts")?,
         attempt_outcomes: count(conn, "attempt_outcomes")?,
+        redaction_records: count(conn, "redaction_findings")?
+            + count(conn, "redaction_acknowledgments")?
+            + count(conn, "redaction_receipts")?
+            + count(conn, "redaction_epochs")?
+            + count(conn, "redaction_tombstones")?,
         saved_views: count(conn, "saved_views")?,
         recurrence_templates: count(conn, "recurrence_templates")?,
     })
@@ -3737,6 +4300,11 @@ fn clear_native_restore_target(tx: &Transaction<'_>) -> Result<()> {
         "dependencies",
         "labels",
         "issue_extensions",
+        "redaction_tombstones",
+        "redaction_epochs",
+        "redaction_receipts",
+        "redaction_acknowledgments",
+        "redaction_findings",
         "attempt_outcomes",
         "events",
         "issues",
@@ -3771,11 +4339,12 @@ fn execute_restore_into_empty(
     let displaced = read_restore_target_counts(&tx)?;
     if !displaced.is_empty() && !allow_non_empty {
         bail!(
-            "Target database is not empty (issues={}, events={}, provenance_receipts={}, attempt_outcomes={}, saved_views={}, recurrence_templates={}). Restore refused without mutation; inspect the target and rerun with --allow-non-empty only when replacing that native state is intended.",
+            "Target database is not empty (issues={}, events={}, provenance_receipts={}, attempt_outcomes={}, redaction_records={}, saved_views={}, recurrence_templates={}). Restore refused without mutation; inspect the target and rerun with --allow-non-empty only when replacing that native state is intended.",
             displaced.issues,
             displaced.events,
             displaced.provenance_receipts,
             displaced.attempt_outcomes,
+            displaced.redaction_records,
             displaced.saved_views,
             displaced.recurrence_templates
         );
@@ -3883,6 +4452,9 @@ fn execute_merge(
     // Import attempt outcomes
     import_attempt_outcomes(&tx, staging)?;
 
+    // Preserve durable redaction receipts and anti-resurrection tombstones.
+    import_redaction_records(&tx, staging)?;
+
     // Create merge summary event and receipt
     let activation_sequence = create_merge_summary(&tx, staging, actor)?;
 
@@ -3921,13 +4493,14 @@ fn activate_forensic_import(tx: &Transaction, staging: &ForensicStaging) -> Resu
     // Import labels
     import_labels(tx, staging)?;
 
-    // Import events, receipts, and attempt outcomes. Without this the restore
+    // Import events, receipts, attempt outcomes, and redaction records. Without this the restore
     // silently drops the entire audit trail — the forensic checkpoint's whole
     // reason for existing — while still reporting the events as restored.
     // Events carry a foreign key to issues, so this must run after import_issues above.
     import_events(tx, staging)?;
     import_receipts(tx, staging)?;
     import_attempt_outcomes(tx, staging)?;
+    import_redaction_records(tx, staging)?;
 
     // Get activation sequence
     let activation_sequence: i64 = tx
@@ -4252,6 +4825,192 @@ fn import_attempt_outcomes(tx: &Transaction, staging: &ForensicStaging) -> Resul
                 &outcome.resulting_state,
             ],
         )?;
+    }
+    Ok(())
+}
+
+/// Import the complete historical-redaction corpus idempotently.
+///
+/// Recovery can replay records already present in the destination. Exact
+/// records are harmless replays; an identity or precedence-key collision with
+/// different content is an integrity failure and rolls back the caller's
+/// transaction. `INSERT OR IGNORE` is followed by an exact typed comparison so
+/// no uniqueness constraint can silently discard divergent tombstone state.
+fn import_redaction_records(tx: &Transaction, staging: &ForensicStaging) -> Result<()> {
+    for finding in &staging.redaction.findings {
+        finding
+            .validate()
+            .map_err(|error| anyhow!("Invalid staged redaction finding: {error}"))?;
+        let extensions_json = serde_json::to_string(&finding.extensions)?;
+        let selector_extensions_json = serde_json::to_string(&finding.selector.extensions)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO redaction_findings (
+                fingerprint, ruleset_version, rule_id, record_kind,
+                origin_identity, field_path, byte_start, byte_length,
+                prior_record_hash, severity, detected_at, extensions_json,
+                selector_extensions_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+                       ?12, ?13)",
+            params![
+                &finding.fingerprint,
+                finding.ruleset_version,
+                &finding.rule_id,
+                &finding.selector.record_kind,
+                &finding.selector.origin_identity,
+                &finding.selector.field_path,
+                finding.selector.byte_start,
+                finding.selector.byte_length,
+                &finding.selector.prior_record_hash,
+                finding.severity.as_str(),
+                &finding.detected_at,
+                extensions_json,
+                selector_extensions_json,
+            ],
+        )?;
+    }
+
+    for acknowledgment in &staging.redaction.acknowledgments {
+        acknowledgment
+            .validate()
+            .map_err(|error| anyhow!("Invalid staged redaction acknowledgment: {error}"))?;
+        let extensions_json = serde_json::to_string(&acknowledgment.extensions)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO redaction_acknowledgments (
+                fingerprint, actor, reason, acknowledged_at, extensions_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                &acknowledgment.fingerprint,
+                &acknowledgment.actor,
+                &acknowledgment.reason,
+                &acknowledgment.acknowledged_at,
+                extensions_json,
+            ],
+        )?;
+    }
+
+    for receipt in &staging.redaction.receipts {
+        receipt
+            .validate()
+            .and_then(|_| receipt.verify_identity())
+            .map_err(|error| anyhow!("Invalid staged redaction receipt: {error}"))?;
+        let extensions_json = serde_json::to_string(&receipt.extensions)?;
+        let selector_extensions_json = serde_json::to_string(&receipt.selector.extensions)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO redaction_receipts (
+                receipt_id, finding_fingerprint, ruleset_version, rule_id,
+                record_kind, origin_identity, field_path, byte_start,
+                byte_length, prior_record_hash, sanitized_record_hash, actor,
+                reason, redacted_at, affected_issue_revision,
+                publication_state, resulting_generation_id, epoch_id,
+                extensions_json, selector_extensions_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+                       ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+            params![
+                &receipt.receipt_id,
+                &receipt.finding_fingerprint,
+                receipt.ruleset_version,
+                &receipt.rule_id,
+                &receipt.selector.record_kind,
+                &receipt.selector.origin_identity,
+                &receipt.selector.field_path,
+                receipt.selector.byte_start,
+                receipt.selector.byte_length,
+                &receipt.prior_record_hash,
+                &receipt.sanitized_record_hash,
+                &receipt.actor,
+                &receipt.reason,
+                &receipt.redacted_at,
+                receipt.affected_issue_revision,
+                receipt.publication_state.as_str(),
+                &receipt.resulting_generation_id,
+                &receipt.epoch_id,
+                extensions_json,
+                selector_extensions_json,
+            ],
+        )?;
+    }
+
+    for epoch in &staging.redaction.epochs {
+        epoch
+            .validate()
+            .map_err(|error| anyhow!("Invalid staged redaction epoch: {error}"))?;
+        let receipt_ids_json = serde_json::to_string(&epoch.receipt_ids)?;
+        let superseded_generations_json = serde_json::to_string(&epoch.superseded_generations)?;
+        let extensions_json = serde_json::to_string(&epoch.extensions)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO redaction_epochs (
+                epoch_id, publication_state, receipt_ids_json,
+                resulting_generation_id, previous_generation_reset,
+                superseded_generations_json, opened_at, published_at,
+                extensions_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                &epoch.epoch_id,
+                epoch.publication_state.as_str(),
+                receipt_ids_json,
+                &epoch.resulting_generation_id,
+                epoch.previous_generation_reset,
+                superseded_generations_json,
+                &epoch.opened_at,
+                &epoch.published_at,
+                extensions_json,
+            ],
+        )?;
+    }
+
+    for tombstone in &staging.redaction.tombstones {
+        tombstone
+            .validate()
+            .map_err(|error| anyhow!("Invalid staged redaction tombstone: {error}"))?;
+        let extensions_json = serde_json::to_string(&tombstone.extensions)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO redaction_tombstones (
+                tombstone_id, record_kind, origin_identity, field_path,
+                prior_record_hash, finding_fingerprint, epoch_id, created_at,
+                extensions_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                &tombstone.tombstone_id,
+                &tombstone.record_kind,
+                &tombstone.origin_identity,
+                &tombstone.field_path,
+                &tombstone.prior_record_hash,
+                &tombstone.finding_fingerprint,
+                &tombstone.epoch_id,
+                &tombstone.created_at,
+                extensions_json,
+            ],
+        )?;
+    }
+
+    let stored = read_all_redaction_records(tx)?;
+    let all_present = staging
+        .redaction
+        .findings
+        .iter()
+        .all(|record| stored.findings.contains(record))
+        && staging
+            .redaction
+            .acknowledgments
+            .iter()
+            .all(|record| stored.acknowledgments.contains(record))
+        && staging
+            .redaction
+            .receipts
+            .iter()
+            .all(|record| stored.receipts.contains(record))
+        && staging
+            .redaction
+            .epochs
+            .iter()
+            .all(|record| stored.epochs.contains(record))
+        && staging
+            .redaction
+            .tombstones
+            .iter()
+            .all(|record| stored.tombstones.contains(record));
+    if !all_present {
+        bail!("Redaction record identity conflict: stored content differs from checkpoint");
     }
     Ok(())
 }
@@ -5860,6 +6619,7 @@ pub fn publish_forensic_checkpoint_holding(
     let events = read_all_events(&tx)?;
     let receipts = read_all_provenance_receipts(&tx)?;
     let attempt_outcomes = read_all_attempt_outcomes(&tx)?;
+    let redaction = read_all_redaction_records(&tx)?;
 
     // Read all graph data for dependencies and labels
     let graph_data = IssueGraphData {
@@ -5886,12 +6646,17 @@ pub fn publish_forensic_checkpoint_holding(
     let mut sorted_attempt_outcomes = attempt_outcomes;
     sorted_attempt_outcomes.sort_by(|a, b| a.receipt_id.cmp(&b.receipt_id));
 
+    let mut sorted_redaction = redaction;
+    sorted_redaction.sort();
+
     // Calculate totals
     let issue_count = sorted_issues.len();
     let event_count = sorted_events.len();
     let receipt_count = sorted_receipts.len();
     let attempt_outcome_count = sorted_attempt_outcomes.len();
-    let total_record_count = issue_count + event_count + receipt_count + attempt_outcome_count;
+    let redaction_record_count = sorted_redaction.len();
+    let total_record_count =
+        issue_count + event_count + receipt_count + attempt_outcome_count + redaction_record_count;
 
     // Generate generation ID
     let timestamp = std::time::SystemTime::now()
@@ -5913,6 +6678,7 @@ pub fn publish_forensic_checkpoint_holding(
         &sorted_events,
         &sorted_receipts,
         &sorted_attempt_outcomes,
+        &sorted_redaction,
         &graph_data,
     )?;
 
@@ -6072,6 +6838,7 @@ pub fn publish_forensic_checkpoint_holding(
         event_count,
         receipt_count,
         attempt_outcome_count,
+        redaction_record_count,
         total_record_count,
         added_paths: added_paths_sorted,
         replaced_paths: replaced_paths_sorted,
@@ -6402,6 +7169,7 @@ fn publish_monolithic_checkpoint(
         .chain(corpus.event_lines.iter())
         .chain(corpus.receipt_lines.iter())
         .chain(corpus.attempt_outcome_lines.iter())
+        .chain(corpus.redaction_lines.iter())
     {
         writer.write_all(line)?;
         writer.write_all(b"\n")?;
@@ -6898,6 +7666,37 @@ fn publish_sharded_checkpoint(
         }));
     }
 
+    // ---- Redaction objects: packed in canonical order ----
+    let redaction_line_lens: Vec<usize> = corpus.redaction_lines.iter().map(|l| l.len()).collect();
+    let redaction_groups = pack_sealed_groups(
+        &redaction_line_lens,
+        thresholds.max_event_object_events,
+        thresholds.max_event_object_bytes,
+    );
+
+    let mut redaction_shard_metadata = Vec::new();
+    for (group_index, members) in redaction_groups.iter().enumerate() {
+        let mut body = Vec::new();
+        for &i in members {
+            body.extend_from_slice(&corpus.redaction_lines[i]);
+            body.push(b'\n');
+        }
+        let (rel, hash) = write_content_object(
+            &objects_dir,
+            &format!("redaction-{}-{}", config.generation_id, group_index),
+            &body,
+            changed_paths,
+        )?;
+        referenced_paths.push(rel.clone());
+        redaction_shard_metadata.push(serde_json::json!({
+            "path": rel,
+            "sha256": hash,
+            "byte_length": body.len(),
+            "record_count": members.len(),
+            "role": "redaction_records"
+        }));
+    }
+
     // ---- Manifest: the immutable, content-addressed sharded root ----
     let origins: Vec<serde_json::Value> = origin_stats
         .iter()
@@ -6927,11 +7726,13 @@ fn publish_sharded_checkpoint(
         "event_count": events.len(),
         "receipt_count": receipts.len(),
         "attempt_outcome_count": corpus.attempt_outcome_lines.len(),
-        "total_record_count": issues.len() + events.len() + receipts.len() + corpus.attempt_outcome_lines.len(),
+        "redaction_record_count": corpus.redaction_lines.len(),
+        "total_record_count": issues.len() + events.len() + receipts.len() + corpus.attempt_outcome_lines.len() + corpus.redaction_lines.len(),
         "issue_shards": issue_shard_metadata,
         "event_shards": event_shard_metadata,
         "receipt_shards": receipt_shard_metadata,
         "attempt_outcome_shards": attempt_outcome_shard_metadata,
+        "redaction_shards": redaction_shard_metadata,
         "origins": origins
     });
 
@@ -7018,6 +7819,7 @@ fn write_current_pointer(pointer_path: &Path, config: &PointerConfig) -> Result<
         "event_count": config.event_count,
         "receipt_count": config.receipt_count,
         "attempt_outcome_count": config.attempt_outcome_count,
+        "redaction_record_count": config.redaction_record_count,
         "total_record_count": config.total_record_count,
         "created_at": format_rfc3339(SystemTime::now())
     });
@@ -7602,6 +8404,337 @@ fn read_all_attempt_outcomes(tx: &Transaction) -> Result<Vec<AttemptOutcomeRecor
     Ok(outcomes)
 }
 
+/// Read the complete durable redaction corpus for checkpoint publication.
+///
+/// A pre-BR-T15 workspace legitimately has none of the five tables. A partial
+/// set is never legitimate because migration 16 is atomic; treating it as
+/// empty could publish a checkpoint that silently drops tombstones.
+fn read_all_redaction_records(tx: &Transaction) -> Result<RedactionRecords> {
+    let table_count: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type = 'table' AND name IN (
+             'redaction_findings', 'redaction_acknowledgments',
+             'redaction_receipts', 'redaction_epochs', 'redaction_tombstones'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if table_count == 0 {
+        return Ok(RedactionRecords::default());
+    }
+    if table_count != 5 {
+        bail!(
+            "Incomplete historical-redaction schema: expected 5 tables, found {}",
+            table_count
+        );
+    }
+
+    let selector = |record_kind: String,
+                    origin_identity: String,
+                    field_path: String,
+                    byte_start: i64,
+                    byte_length: i64,
+                    prior_record_hash: String,
+                    extensions_json: String|
+     -> Result<FieldSelector> {
+        let extensions = serde_json::from_str(&extensions_json)
+            .map_err(|error| anyhow!("Invalid stored selector extensions_json: {error}"))?;
+        Ok(FieldSelector {
+            schema_ref: crate::model::redaction::SCHEMA_REDACTION_FIELD_SELECTOR.to_string(),
+            record_kind,
+            origin_identity,
+            field_path,
+            byte_start,
+            byte_length,
+            prior_record_hash,
+            extensions,
+        })
+    };
+    let mut records = RedactionRecords::default();
+
+    let mut finding_stmt = tx.prepare(
+        "SELECT fingerprint, ruleset_version, rule_id, record_kind,
+                origin_identity, field_path, byte_start, byte_length,
+                prior_record_hash, severity, detected_at, extensions_json,
+                selector_extensions_json
+         FROM redaction_findings ORDER BY fingerprint",
+    )?;
+    let finding_rows = finding_stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, i64>(6)?,
+            row.get::<_, i64>(7)?,
+            row.get::<_, String>(8)?,
+            row.get::<_, String>(9)?,
+            row.get::<_, String>(10)?,
+            row.get::<_, String>(11)?,
+            row.get::<_, String>(12)?,
+        ))
+    })?;
+    for row in finding_rows {
+        let (
+            fingerprint,
+            ruleset_version,
+            rule_id,
+            record_kind,
+            origin_identity,
+            field_path,
+            byte_start,
+            byte_length,
+            prior_record_hash,
+            severity,
+            detected_at,
+            extensions_json,
+            selector_extensions_json,
+        ) = row?;
+        let finding = RedactionFinding {
+            schema_ref: crate::model::redaction::SCHEMA_REDACTION_FINDING.to_string(),
+            fingerprint,
+            ruleset_version: ruleset_version
+                .try_into()
+                .map_err(|_| anyhow!("Stored redaction ruleset version is out of range"))?,
+            rule_id,
+            selector: selector(
+                record_kind,
+                origin_identity,
+                field_path,
+                byte_start,
+                byte_length,
+                prior_record_hash,
+                selector_extensions_json,
+            )?,
+            severity: crate::model::redaction::FindingSeverity::parse(&severity)
+                .map_err(|error| anyhow!("Invalid stored redaction severity: {error}"))?,
+            detected_at,
+            extensions: serde_json::from_str(&extensions_json)
+                .map_err(|error| anyhow!("Invalid stored finding extensions_json: {error}"))?,
+        };
+        finding
+            .validate()
+            .map_err(|error| anyhow!("Invalid stored redaction finding: {error}"))?;
+        records.findings.push(finding);
+    }
+
+    let mut acknowledgment_stmt = tx.prepare(
+        "SELECT fingerprint, actor, reason, acknowledged_at, extensions_json
+         FROM redaction_acknowledgments ORDER BY fingerprint",
+    )?;
+    let acknowledgment_rows = acknowledgment_stmt.query_map([], |row| {
+        Ok(RedactionAcknowledgment {
+            schema_ref: crate::model::redaction::SCHEMA_REDACTION_ACKNOWLEDGMENT.to_string(),
+            fingerprint: row.get(0)?,
+            actor: row.get(1)?,
+            reason: row.get(2)?,
+            acknowledged_at: row.get(3)?,
+            extensions: serde_json::from_str(&row.get::<_, String>(4)?).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    4,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?,
+        })
+    })?;
+    for row in acknowledgment_rows {
+        let acknowledgment = row?;
+        acknowledgment
+            .validate()
+            .map_err(|error| anyhow!("Invalid stored redaction acknowledgment: {error}"))?;
+        records.acknowledgments.push(acknowledgment);
+    }
+
+    let mut receipt_stmt = tx.prepare(
+        "SELECT receipt_id, finding_fingerprint, ruleset_version, rule_id,
+                record_kind, origin_identity, field_path, byte_start,
+                byte_length, prior_record_hash, sanitized_record_hash, actor,
+                reason, redacted_at, affected_issue_revision,
+                publication_state, resulting_generation_id, epoch_id,
+                extensions_json, selector_extensions_json
+         FROM redaction_receipts ORDER BY receipt_id",
+    )?;
+    let receipt_rows = receipt_stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, String>(6)?,
+            row.get::<_, i64>(7)?,
+            row.get::<_, i64>(8)?,
+            row.get::<_, String>(9)?,
+            row.get::<_, String>(10)?,
+            row.get::<_, String>(11)?,
+            row.get::<_, String>(12)?,
+            row.get::<_, String>(13)?,
+            row.get::<_, Option<i64>>(14)?,
+            row.get::<_, String>(15)?,
+            row.get::<_, Option<String>>(16)?,
+            row.get::<_, Option<String>>(17)?,
+            row.get::<_, String>(18)?,
+            row.get::<_, String>(19)?,
+        ))
+    })?;
+    for row in receipt_rows {
+        let (
+            receipt_id,
+            finding_fingerprint,
+            ruleset_version,
+            rule_id,
+            record_kind,
+            origin_identity,
+            field_path,
+            byte_start,
+            byte_length,
+            prior_record_hash,
+            sanitized_record_hash,
+            actor,
+            reason,
+            redacted_at,
+            affected_issue_revision,
+            publication_state,
+            resulting_generation_id,
+            epoch_id,
+            extensions_json,
+            selector_extensions_json,
+        ) = row?;
+        let receipt = RedactionReceipt {
+            schema_ref: crate::model::redaction::SCHEMA_REDACTION_RECEIPT.to_string(),
+            receipt_id,
+            finding_fingerprint,
+            ruleset_version: ruleset_version
+                .try_into()
+                .map_err(|_| anyhow!("Stored redaction ruleset version is out of range"))?,
+            rule_id,
+            selector: selector(
+                record_kind,
+                origin_identity,
+                field_path,
+                byte_start,
+                byte_length,
+                prior_record_hash.clone(),
+                selector_extensions_json,
+            )?,
+            prior_record_hash,
+            sanitized_record_hash,
+            actor,
+            reason,
+            redacted_at,
+            affected_issue_revision,
+            publication_state: crate::model::redaction::PublicationState::parse(&publication_state)
+                .map_err(|error| anyhow!("Invalid stored receipt publication state: {error}"))?,
+            resulting_generation_id,
+            epoch_id,
+            extensions: serde_json::from_str(&extensions_json)
+                .map_err(|error| anyhow!("Invalid stored receipt extensions_json: {error}"))?,
+        };
+        receipt
+            .validate()
+            .and_then(|_| receipt.verify_identity())
+            .map_err(|error| anyhow!("Invalid stored redaction receipt: {error}"))?;
+        records.receipts.push(receipt);
+    }
+
+    let mut epoch_stmt = tx.prepare(
+        "SELECT epoch_id, publication_state, receipt_ids_json,
+                resulting_generation_id, previous_generation_reset,
+                superseded_generations_json, opened_at, published_at,
+                extensions_json
+         FROM redaction_epochs ORDER BY epoch_id",
+    )?;
+    let epoch_rows = epoch_stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, bool>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, String>(6)?,
+            row.get::<_, Option<String>>(7)?,
+            row.get::<_, String>(8)?,
+        ))
+    })?;
+    for row in epoch_rows {
+        let (
+            epoch_id,
+            publication_state,
+            receipt_ids_json,
+            resulting_generation_id,
+            previous_generation_reset,
+            superseded_generations_json,
+            opened_at,
+            published_at,
+            extensions_json,
+        ) = row?;
+        let epoch = RedactionEpoch {
+            schema_ref: crate::model::redaction::SCHEMA_REDACTION_EPOCH.to_string(),
+            epoch_id,
+            receipt_ids: serde_json::from_str(&receipt_ids_json)
+                .map_err(|error| anyhow!("Invalid stored epoch receipt_ids_json: {error}"))?,
+            publication_state: crate::model::redaction::PublicationState::parse(&publication_state)
+                .map_err(|error| anyhow!("Invalid stored epoch publication state: {error}"))?,
+            resulting_generation_id,
+            previous_generation_reset,
+            superseded_generations: serde_json::from_str(&superseded_generations_json).map_err(
+                |error| anyhow!("Invalid stored epoch superseded_generations_json: {error}"),
+            )?,
+            opened_at,
+            published_at,
+            extensions: serde_json::from_str(&extensions_json)
+                .map_err(|error| anyhow!("Invalid stored epoch extensions_json: {error}"))?,
+        };
+        epoch
+            .validate()
+            .map_err(|error| anyhow!("Invalid stored redaction epoch: {error}"))?;
+        records.epochs.push(epoch);
+    }
+
+    let mut tombstone_stmt = tx.prepare(
+        "SELECT tombstone_id, record_kind, origin_identity, field_path,
+                prior_record_hash, finding_fingerprint, epoch_id, created_at,
+                extensions_json
+         FROM redaction_tombstones ORDER BY tombstone_id",
+    )?;
+    let tombstone_rows = tombstone_stmt.query_map([], |row| {
+        Ok(ResurrectionTombstone {
+            schema_ref: crate::model::redaction::SCHEMA_REDACTION_TOMBSTONE.to_string(),
+            tombstone_id: row.get(0)?,
+            record_kind: row.get(1)?,
+            origin_identity: row.get(2)?,
+            field_path: row.get(3)?,
+            prior_record_hash: row.get(4)?,
+            finding_fingerprint: row.get(5)?,
+            epoch_id: row.get(6)?,
+            created_at: row.get(7)?,
+            extensions: serde_json::from_str(&row.get::<_, String>(8)?).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    8,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?,
+        })
+    })?;
+    for row in tombstone_rows {
+        let tombstone = row?;
+        tombstone
+            .validate()
+            .map_err(|error| anyhow!("Invalid stored redaction tombstone: {error}"))?;
+        records.tombstones.push(tombstone);
+    }
+
+    records.ensure_unique_identities()?;
+    records.sort();
+    Ok(records)
+}
+
 /// Configuration for sharded checkpoint publishing
 #[derive(Debug, Clone)]
 struct ShardedConfig {
@@ -7623,6 +8756,7 @@ struct PointerConfig {
     event_count: usize,
     receipt_count: usize,
     attempt_outcome_count: usize,
+    redaction_record_count: usize,
     total_record_count: usize,
     added_paths: Vec<String>,
     replaced_paths: Vec<String>,
@@ -8064,6 +9198,8 @@ mod tests {
             event_count: 1,
             receipt_count: usize::from(with_matching_receipt),
             attempt_outcome_count: 0,
+            redaction: RedactionRecords::default(),
+            redaction_record_count: 0,
         }
     }
 

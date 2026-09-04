@@ -458,10 +458,12 @@ fn cmd_restore(opts: cli::RestoreOptions) -> Result<()> {
         eprintln!("  Non-empty target override: {}", report.non_empty_override);
         if report.non_empty_override {
             eprintln!(
-                "  Displaced native state: {} issues, {} events, {} provenance receipts, {} saved views, {} recurrence templates",
+                "  Displaced native state: {} issues, {} events, {} provenance receipts, {} attempt outcomes, {} redaction records, {} saved views, {} recurrence templates",
                 report.displaced.issues,
                 report.displaced.events,
                 report.displaced.provenance_receipts,
+                report.displaced.attempt_outcomes,
+                report.displaced.redaction_records,
                 report.displaced.saved_views,
                 report.displaced.recurrence_templates
             );

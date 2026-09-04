@@ -4,6 +4,10 @@
 //! preventing those discovery surfaces from drifting apart.
 
 use crate::error::{Error, Result};
+use crate::model::redaction::{
+    SCHEMA_REDACTION_ACKNOWLEDGMENT, SCHEMA_REDACTION_EPOCH, SCHEMA_REDACTION_FIELD_SELECTOR,
+    SCHEMA_REDACTION_FINDING, SCHEMA_REDACTION_RECEIPT, SCHEMA_REDACTION_TOMBSTONE,
+};
 use crate::service::capabilities::SchemaEntry;
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
@@ -19,6 +23,60 @@ struct Descriptor {
 }
 
 const DESCRIPTORS: &[Descriptor] = &[
+    Descriptor {
+        schema_ref: SCHEMA_REDACTION_ACKNOWLEDGMENT,
+        document_kind: "redaction_acknowledgment",
+        readable: true,
+        writable: true,
+        validate: true,
+        consume: &["checkpoint-set-v1"],
+        emit: &["checkpoint-set-v1"],
+    },
+    Descriptor {
+        schema_ref: SCHEMA_REDACTION_EPOCH,
+        document_kind: "redaction_epoch",
+        readable: true,
+        writable: true,
+        validate: true,
+        consume: &["checkpoint-set-v1"],
+        emit: &["checkpoint-set-v1"],
+    },
+    Descriptor {
+        schema_ref: SCHEMA_REDACTION_FIELD_SELECTOR,
+        document_kind: "redaction_field_selector",
+        readable: true,
+        writable: true,
+        validate: true,
+        consume: &[],
+        emit: &[],
+    },
+    Descriptor {
+        schema_ref: SCHEMA_REDACTION_FINDING,
+        document_kind: "redaction_finding",
+        readable: true,
+        writable: true,
+        validate: true,
+        consume: &["checkpoint-set-v1"],
+        emit: &["checkpoint-set-v1"],
+    },
+    Descriptor {
+        schema_ref: SCHEMA_REDACTION_RECEIPT,
+        document_kind: "redaction_receipt",
+        readable: true,
+        writable: true,
+        validate: true,
+        consume: &["checkpoint-set-v1"],
+        emit: &["checkpoint-set-v1"],
+    },
+    Descriptor {
+        schema_ref: SCHEMA_REDACTION_TOMBSTONE,
+        document_kind: "redaction_tombstone",
+        readable: true,
+        writable: true,
+        validate: true,
+        consume: &["checkpoint-set-v1"],
+        emit: &["checkpoint-set-v1"],
+    },
     Descriptor {
         schema_ref: "urn:bead-rs:schema:attempt-outcome:native-v1",
         document_kind: "attempt_outcome",
@@ -264,6 +322,70 @@ fn names(kind: &str) -> &'static [&'static str] {
             "harness",
             "harness_version",
         ],
+        "redaction_field_selector" => &[
+            "$schema",
+            "record_kind",
+            "origin_identity",
+            "field_path",
+            "byte_start",
+            "byte_length",
+            "prior_record_hash",
+        ],
+        "redaction_finding" => &[
+            "$schema",
+            "fingerprint",
+            "ruleset_version",
+            "rule_id",
+            "selector",
+            "severity",
+            "detected_at",
+        ],
+        "redaction_acknowledgment" => &[
+            "$schema",
+            "fingerprint",
+            "actor",
+            "reason",
+            "acknowledged_at",
+        ],
+        "redaction_receipt" => &[
+            "$schema",
+            "receipt_id",
+            "finding_fingerprint",
+            "ruleset_version",
+            "rule_id",
+            "selector",
+            "prior_record_hash",
+            "sanitized_record_hash",
+            "actor",
+            "reason",
+            "redacted_at",
+            "affected_issue_revision",
+            "publication_state",
+            "resulting_generation_id",
+            "epoch_id",
+        ],
+        "redaction_epoch" => &[
+            "$schema",
+            "epoch_id",
+            "receipt_ids",
+            "publication_state",
+            "resulting_generation_id",
+            "previous_generation_reset",
+            "superseded_generations",
+            "opened_at",
+            "published_at",
+        ],
+        "redaction_tombstone" => &[
+            "$schema",
+            "tombstone_id",
+            "record_kind",
+            "origin_identity",
+            "field_path",
+            "prior_record_hash",
+            "finding_fingerprint",
+            "epoch_id",
+            "created_at",
+        ],
         "checkpoint_pointer" => &[
             "schema_version",
             "generation_id",
@@ -278,6 +400,7 @@ fn names(kind: &str) -> &'static [&'static str] {
             "event_count",
             "receipt_count",
             "attempt_outcome_count",
+            "redaction_record_count",
             "total_record_count",
             "created_at",
         ],
@@ -295,7 +418,9 @@ fn names(kind: &str) -> &'static [&'static str] {
             "event_shards",
             "receipt_shards",
             "attempt_outcome_count",
+            "redaction_record_count",
             "attempt_outcome_shards",
+            "redaction_shards",
         ],
         "field_guide" => &[
             "schema_ref",
@@ -359,6 +484,7 @@ fn property_schema(kind: &str, name: &str) -> Value {
         | ("checkpoint_pointer", "event_count")
         | ("checkpoint_pointer", "receipt_count")
         | ("checkpoint_pointer", "attempt_outcome_count")
+        | ("checkpoint_pointer", "redaction_record_count")
         | ("checkpoint_pointer", "total_record_count") => json!({"type":"integer", "minimum":0}),
         ("checkpoint_pointer", "mode") => json!({"type":"string", "enum":["monolithic","sharded"]}),
         ("checkpoint_pointer", "active_root") => {
@@ -377,8 +503,12 @@ fn property_schema(kind: &str, name: &str) -> Value {
         ("checkpoint_manifest", "issue_shards")
         | ("checkpoint_manifest", "event_shards")
         | ("checkpoint_manifest", "receipt_shards")
-        | ("checkpoint_manifest", "attempt_outcome_shards") => json!({"type":"array"}),
-        ("checkpoint_manifest", "attempt_outcome_count") => json!({"type":"integer", "minimum":0}),
+        | ("checkpoint_manifest", "attempt_outcome_shards")
+        | ("checkpoint_manifest", "redaction_shards") => json!({"type":"array"}),
+        ("checkpoint_manifest", "attempt_outcome_count")
+        | ("checkpoint_manifest", "redaction_record_count") => {
+            json!({"type":"integer", "minimum":0})
+        }
         ("checkpoint_manifest", "partition_thresholds") => json!({"type":"object"}),
         ("capabilities", "store_layout") => json!({"type":"integer", "minimum":1}),
         ("capabilities", "atomic_claim")
@@ -394,15 +524,27 @@ fn property_schema(kind: &str, name: &str) -> Value {
         ("capabilities", "priorities") => json!({"type":"object"}),
         ("capabilities", "secret_scan") => json!({"type":"object"}),
         ("field_guide", "guide_version") => json!({"const":1}),
-        ("attempt_outcome", "attempt_id") => json!({"type":"string", "minLength":1, "maxLength":255}),
+        ("attempt_outcome", "attempt_id") => {
+            json!({"type":"string", "minLength":1, "maxLength":255})
+        }
         ("attempt_outcome", "issue_id") => json!({"type":"string", "minLength":1, "maxLength":255}),
-        ("attempt_outcome", "outcome") => json!({"type":"string", "enum":["verified_success","work_failure","infrastructure_failure","cancelled","indeterminate"]}),
-        ("attempt_outcome", "action") => json!({"type":"string", "enum":["close","release","quarantine","block","none"]}),
+        ("attempt_outcome", "outcome") => {
+            json!({"type":"string", "enum":["verified_success","work_failure","infrastructure_failure","cancelled","indeterminate"]})
+        }
+        ("attempt_outcome", "action") => {
+            json!({"type":"string", "enum":["close","release","quarantine","block","none"]})
+        }
         ("attempt_outcome", "reason") => json!({"type":["string","null"], "maxLength":4194304}),
-        ("attempt_outcome", "canonical_request_hash") => json!({"type":"string", "minLength":64, "maxLength":64}),
-        ("attempt_outcome", "resulting_state") => json!({"type":"string", "enum":["open","in_progress","deferred","closed"]}),
+        ("attempt_outcome", "canonical_request_hash") => {
+            json!({"type":"string", "minLength":64, "maxLength":64})
+        }
+        ("attempt_outcome", "resulting_state") => {
+            json!({"type":"string", "enum":["open","in_progress","deferred","closed"]})
+        }
         ("attempt_outcome", "resulting_issue_revision") => json!({"type":"integer", "minimum":1}),
-        ("attempt_outcome", "resulting_attempt_tier") => json!({"type":"integer", "minimum":0, "maximum":3}),
+        ("attempt_outcome", "resulting_attempt_tier") => {
+            json!({"type":"integer", "minimum":0, "maximum":3})
+        }
         ("attempt_outcome", "receipt_id") => json!({"type":"string", "minLength":1}),
         ("attempt_outcome", "actor") => json!({"type":"string", "minLength":1, "maxLength":255}),
         ("attempt_outcome", "created_at") => timestamp(),
@@ -411,18 +553,30 @@ fn property_schema(kind: &str, name: &str) -> Value {
         | ("attempt_outcome", "harness")
         | ("attempt_outcome", "harness_version") => json!({"type":["string","null"]}),
         ("resolve_receipt", "receipt_id") => json!({"type":"string", "minLength":1}),
-        ("resolve_receipt", "canonical_request_hash") => json!({"type":"string", "minLength":64, "maxLength":64}),
+        ("resolve_receipt", "canonical_request_hash") => {
+            json!({"type":"string", "minLength":64, "maxLength":64})
+        }
         ("resolve_receipt", "issue_id") => json!({"type":"string", "minLength":1, "maxLength":255}),
-        ("resolve_receipt", "attempt_id") => json!({"type":"string", "minLength":1, "maxLength":255}),
+        ("resolve_receipt", "attempt_id") => {
+            json!({"type":"string", "minLength":1, "maxLength":255})
+        }
         ("resolve_receipt", "resulting_issue_revision") => json!({"type":"integer", "minimum":1}),
         ("resolve_receipt", "resulting_state") => json!({"type":"string"}),
-        ("resolve_receipt", "resulting_attempt_tier") => json!({"type":"integer", "minimum":0, "maximum":3}),
+        ("resolve_receipt", "resulting_attempt_tier") => {
+            json!({"type":"integer", "minimum":0, "maximum":3})
+        }
         ("resolve_receipt", "created_at") => timestamp(),
         ("resolve_receipt", "is_replay") => json!({"type":"boolean"}),
-        ("resolve_request", "attempt_id") => json!({"type":"string", "minLength":1, "maxLength":255}),
+        ("resolve_request", "attempt_id") => {
+            json!({"type":"string", "minLength":1, "maxLength":255})
+        }
         ("resolve_request", "issue_id") => json!({"type":"string", "minLength":1, "maxLength":255}),
-        ("resolve_request", "outcome") => json!({"type":"string", "enum":["verified_success","work_failure","infrastructure_failure","cancelled","indeterminate"]}),
-        ("resolve_request", "action") => json!({"type":["string","null"], "enum":["close","release","quarantine","block","none"]}),
+        ("resolve_request", "outcome") => {
+            json!({"type":"string", "enum":["verified_success","work_failure","infrastructure_failure","cancelled","indeterminate"]})
+        }
+        ("resolve_request", "action") => {
+            json!({"type":["string","null"], "enum":["close","release","quarantine","block","none"]})
+        }
         ("resolve_request", "reason") => json!({"type":["string","null"], "maxLength":4194304}),
         ("resolve_request", "if_revision") => json!({"type":["integer","null"], "minimum":1}),
         ("resolve_request", "fencing_token") => json!({"type":["string","null"]}),
@@ -431,6 +585,62 @@ fn property_schema(kind: &str, name: &str) -> Value {
         ("resolve_request", "model")
         | ("resolve_request", "harness")
         | ("resolve_request", "harness_version") => json!({"type":["string","null"]}),
+        ("redaction_field_selector", "byte_start") => {
+            json!({"type":"integer", "minimum":0, "maximum":4194303})
+        }
+        ("redaction_field_selector", "byte_length") => {
+            json!({"type":"integer", "minimum":1, "maximum":4194304})
+        }
+        ("redaction_field_selector", "prior_record_hash")
+        | ("redaction_finding", "fingerprint")
+        | ("redaction_acknowledgment", "fingerprint")
+        | ("redaction_receipt", "receipt_id")
+        | ("redaction_receipt", "finding_fingerprint")
+        | ("redaction_receipt", "prior_record_hash")
+        | ("redaction_receipt", "sanitized_record_hash")
+        | ("redaction_epoch", "epoch_id")
+        | ("redaction_tombstone", "tombstone_id")
+        | ("redaction_tombstone", "prior_record_hash")
+        | ("redaction_tombstone", "finding_fingerprint")
+        | ("redaction_tombstone", "epoch_id") => {
+            json!({"type":"string", "pattern":"^[0-9a-f]{64}$"})
+        }
+        ("redaction_finding", "ruleset_version") | ("redaction_receipt", "ruleset_version") => {
+            json!({"type":"integer", "minimum":1})
+        }
+        ("redaction_finding", "selector") | ("redaction_receipt", "selector") => {
+            json!({"type":"object"})
+        }
+        ("redaction_finding", "severity") => {
+            json!({"type":"string", "enum":["blocking","advisory"]})
+        }
+        ("redaction_receipt", "publication_state") | ("redaction_epoch", "publication_state") => {
+            json!({"type":"string", "enum":["committed","published","discarded"]})
+        }
+        ("redaction_receipt", "affected_issue_revision") => {
+            json!({"type":["integer","null"], "minimum":1})
+        }
+        ("redaction_receipt", "epoch_id")
+        | ("redaction_receipt", "resulting_generation_id")
+        | ("redaction_epoch", "resulting_generation_id")
+        | ("redaction_epoch", "published_at") => {
+            json!({"type":["string","null"]})
+        }
+        ("redaction_epoch", "receipt_ids") => {
+            json!({"type":"array", "minItems":1, "uniqueItems":true, "items":{"type":"string", "pattern":"^[0-9a-f]{64}$"}})
+        }
+        ("redaction_epoch", "superseded_generations") => {
+            json!({"type":"array", "items":{"type":"string"}})
+        }
+        ("redaction_epoch", "previous_generation_reset") => json!({"type":"boolean"}),
+        ("redaction_finding", "detected_at")
+        | ("redaction_acknowledgment", "acknowledged_at")
+        | ("redaction_receipt", "redacted_at")
+        | ("redaction_epoch", "opened_at")
+        | ("redaction_tombstone", "created_at") => timestamp(),
+        ("redaction_acknowledgment", "reason") | ("redaction_receipt", "reason") => {
+            json!({"type":"string", "minLength":1, "maxLength":1024})
+        }
         ("field_guide", "describes_schema_refs")
         | ("field_guide", "documents")
         | ("field_guide", "fields")
@@ -475,10 +685,34 @@ fn required_for(kind: &str) -> Vec<String> {
         // validate against the same additive identity (plan section 11)
         "capabilities" => &["auto_flush", "secret_scan"],
         "attempt_outcome" => &["reason", "model", "harness", "harness_version"],
-        "checkpoint_pointer" => &["attempt_outcome_count"],
-        "checkpoint_manifest" => &["attempt_outcome_count", "attempt_outcome_shards"],
         "resolve_receipt" => &[],
-        "resolve_request" => &["action", "reason", "if_revision", "fencing_token", "evidence_refs", "model", "harness", "harness_version"],
+        "resolve_request" => &[
+            "action",
+            "reason",
+            "if_revision",
+            "fencing_token",
+            "evidence_refs",
+            "model",
+            "harness",
+            "harness_version",
+        ],
+        "redaction_receipt" => &[
+            "affected_issue_revision",
+            "resulting_generation_id",
+            "epoch_id",
+        ],
+        "redaction_epoch" => &[
+            "resulting_generation_id",
+            "superseded_generations",
+            "published_at",
+        ],
+        "checkpoint_pointer" => &["attempt_outcome_count", "redaction_record_count"],
+        "checkpoint_manifest" => &[
+            "attempt_outcome_count",
+            "redaction_record_count",
+            "attempt_outcome_shards",
+            "redaction_shards",
+        ],
         _ => &[],
     };
     names(kind)
@@ -500,6 +734,7 @@ pub fn schema_document(schema_ref: &str) -> Result<Value> {
         "properties": properties,
         "required": required,
         "additionalProperties": descriptor.document_kind == "issue"
+            || descriptor.document_kind.starts_with("redaction_")
     }))
 }
 

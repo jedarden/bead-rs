@@ -686,3 +686,6 @@ mod tests {
 // Recurrence template module (R024)
 pub mod attempt;
 pub mod recurrence;
+
+// Audited historical redaction storage (ADR-015, R038 BR-T15)
+pub mod redaction;
