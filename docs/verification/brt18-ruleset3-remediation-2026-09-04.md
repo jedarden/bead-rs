@@ -17,6 +17,10 @@ this report.
 - Git-archive release build: pass, using `scripts/build-from-archive.sh`.
 - Installed binary SHA-256:
   `c78b05b46c07d1e7b69428cddf1268f99bccac17ec7d23cb393e7ac27ce6d438`.
+- `cargo package --locked`: pass; packaged 344 files; crate SHA-256
+  `0b79805024c5b60233974141bde7b251679c456e036fe1602c733be07c4f7a79`.
+- Isolated install from the packaged crate: pass; installed binary SHA-256
+  `b1ef0d56d765a872123e307e57d18b1fc1b8a0c1b049822aaaa4032f8bf22406`.
 - Installed capabilities: secret-rejection contract v1, ruleset version 3,
   enforce mode, and historical-redaction atomic-redact, anti-resurrection,
   sanitized-generation-set, and resumable-publication capabilities all present.
