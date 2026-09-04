@@ -50,3 +50,4 @@ Use the template in `000-template.md` for new ADRs. Each ADR should include:
 | [013](013-read-only-git-reachability-reporting.md) | Report Git reachability in `sync status` through the git binary, read-only | Accepted | 2026-09-02 |
 | [014](014-hard-reject-secret-bearing-mutations.md) | Hard-reject mutations that would publish a detectable secret | Accepted | 2026-09-03 |
 | [015](015-audited-historical-redaction.md) | Audited historical redaction over hand-edited recovery artifacts | Accepted | 2026-09-03 |
+| [016](016-observational-workspace-probes.md) | Keep workspace probes observational | Accepted | 2026-09-04 |
