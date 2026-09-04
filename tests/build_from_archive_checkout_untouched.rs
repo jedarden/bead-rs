@@ -43,7 +43,6 @@
 //! explicitly; package verification exercises the script build separately.
 //! If the marker exists, every Git discovery failure still fails the test.
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -54,6 +53,11 @@ const SCRIPT: &str = "scripts/build-from-archive.sh";
 /// dir exists, before anything compiles -- so the script's failure path is
 /// reachable quickly and deterministically.
 const NO_SUCH_FEATURE: &str = "beadrs-archive-test-no-such-feature";
+
+/// The script's own report that it removed the scratch dir it created.
+const SCRATCH_REMOVED: &str = "scratch dir removed: ";
+/// The script's own report that it kept the scratch dir for diagnosis.
+const SCRATCH_RETAINED: &str = "scratch dir left in place for diagnosis: ";
 
 /// The script is landed by beadrs-53e55a45; until that commit arrives this
 /// test has nothing to run and skips loudly instead of failing the suite.
@@ -87,14 +91,6 @@ fn require_vcs_checkout(root: &Path) -> bool {
     println!("{msg}");
     eprintln!("{msg}");
     false
-}
-
-fn scratch_base() -> PathBuf {
-    // The script extracts into `mktemp -d -p ~/scratch`; CI builders have no
-    // ~/scratch yet, and creating it is idempotent where it already exists.
-    let base = PathBuf::from(std::env::var_os("HOME").expect("HOME is set")).join("scratch");
-    std::fs::create_dir_all(&base).expect("create ~/scratch");
-    base
 }
 
 fn git(root: &Path, args: &[&str]) -> String {
@@ -151,40 +147,27 @@ fn assert_shared_untouched(before: &SharedState, after: &SharedState) {
     );
 }
 
-fn dir_entries(dir: &Path) -> BTreeSet<String> {
-    let mut names = BTreeSet::new();
-    if let Ok(read) = std::fs::read_dir(dir) {
-        for entry in read.flatten() {
-            names.insert(entry.file_name().to_string_lossy().into_owned());
-        }
-    }
-    names
-}
-
-/// Entries present in `after` but not in `before`.
-fn added_entries(before: &BTreeSet<String>, after: &BTreeSet<String>) -> Vec<String> {
-    after.difference(before).cloned().collect()
-}
-
-/// Best-effort removal of entries a test run added under `dir` (depth 1), so
-/// a green run leaves the directory exactly as it found it. Anything the test
-/// fails to remove is named on stdout.
-fn remove_added_entries(dir: &Path, before: &BTreeSet<String>, after: &BTreeSet<String>) {
-    for name in added_entries(before, after) {
-        let path = dir.join(&name);
-        let result = if path.is_dir() {
-            std::fs::remove_dir_all(&path)
-        } else {
-            std::fs::remove_file(&path)
-        };
-        match result {
-            Ok(()) => println!("removed artifact the run added: {}", path.display()),
-            Err(err) => println!(
-                "could not remove artifact the run added ({}): {err}",
-                path.display()
-            ),
-        }
-    }
+/// The scratch dir the script says it created, for the outcome `marker`
+/// names. Asserting on this reported path -- instead of diffing all of
+/// `~/scratch` -- is what keeps the cleanup assertions meaningful on a box
+/// where other workers extract archive builds into the same directory
+/// concurrently.
+fn reported_scratch_dir(log: &str, marker: &str) -> PathBuf {
+    let line = log
+        .lines()
+        .filter(|l| l.contains(marker))
+        .next_back()
+        .unwrap_or_else(|| panic!("no {marker:?} line in the script output:\n{log}"));
+    let path = line
+        .split(marker)
+        .last()
+        .expect("splitting on the marker yields a tail")
+        .trim();
+    assert!(
+        !path.is_empty(),
+        "the script printed {marker:?} with no path: {line:?}"
+    );
+    PathBuf::from(path)
 }
 
 fn run_script(script: &Path, cwd: &Path, args: &[&str]) -> (Option<i32>, String) {
@@ -228,7 +211,6 @@ fn archive_build_leaves_shared_checkout_untouched() {
     }
     let sha = git(&root, &["rev-parse", "HEAD"]);
     let before = snapshot(&root);
-    let scratch_before = dir_entries(&scratch_base());
     let out_dir = pin_out_dir("success");
 
     let (code, log) = run_script(
@@ -259,10 +241,13 @@ fn archive_build_leaves_shared_checkout_untouched() {
 
     assert_shared_untouched(&before, &snapshot(&root));
 
-    let leaked = added_entries(&scratch_before, &dir_entries(&scratch_base()));
+    // The script reports the scratch dir it removed; the report is only
+    // printed after the removal succeeds, so the path must be gone.
+    let scratch = reported_scratch_dir(&log, SCRATCH_REMOVED);
     assert!(
-        leaked.is_empty(),
-        "the run succeeded but left scratch dir(s) behind in ~/scratch: {leaked:?}\n{log}"
+        !scratch.exists(),
+        "the run reported removing its scratch dir but it is still present: {}\n{log}",
+        scratch.display()
     );
 
     let _ = std::fs::remove_dir_all(&out_dir);
@@ -280,7 +265,6 @@ fn failed_archive_build_retains_scratch_dir() {
     }
     let sha = git(&root, &["rev-parse", "HEAD"]);
     let before = snapshot(&root);
-    let scratch_before = dir_entries(&scratch_base());
     let out_dir = pin_out_dir("failure");
 
     let (code, log) = run_script(
@@ -302,22 +286,22 @@ fn failed_archive_build_retains_scratch_dir() {
         "expected --features {NO_SUCH_FEATURE} to fail the build, but the script succeeded:\n{log}"
     );
 
-    let retained = added_entries(&scratch_before, &dir_entries(&scratch_base()));
+    // The script names the scratch dir it kept for diagnosis; the rule under
+    // test is that the named dir really is still there.
+    let retained = reported_scratch_dir(&log, SCRATCH_RETAINED);
     assert!(
-        !retained.is_empty(),
-        "the run failed but no scratch dir remains under ~/scratch: it either failed \
-         before creating one or removed its scratch dir on failure, so the \
-         'leave it in place on failure for diagnosis' rule cannot hold\n{log}"
+        retained.is_dir(),
+        "the run failed but its reported scratch dir {} is gone (or was never \
+         created), so the 'leave it in place on failure for diagnosis' rule \
+         cannot hold\n{log}",
+        retained.display()
     );
 
     assert_shared_untouched(&before, &snapshot(&root));
 
     // The output above is the diagnostic record; do not leave the retained
-    // dir to accumulate in the shared ~/scratch on every run.
-    remove_added_entries(
-        &scratch_base(),
-        &scratch_before,
-        &dir_entries(&scratch_base()),
-    );
+    // dir to accumulate in the shared ~/scratch on every run. Only the path
+    // this run reported is removed -- never a concurrent worker's.
+    let _ = std::fs::remove_dir_all(&retained);
     let _ = std::fs::remove_dir_all(&out_dir);
 }
