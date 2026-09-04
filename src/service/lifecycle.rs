@@ -230,6 +230,17 @@ pub fn close_issue_in_tx(
     close_issue_impl(tx, &issue, reason)
 }
 
+/// Run one `bead release` against a caller-owned transaction (R033).
+///
+/// The attempt resolver already owns the IMMEDIATE transaction and validates
+/// its revision and lease before applying an action. Reusing this body avoids
+/// opening a nested transaction while keeping release and its audit event in
+/// the resolver's atomic commit.
+pub fn release_issue_in_tx(tx: &mut Transaction, id: &str) -> Result<String> {
+    let issue = get_issue_for_update(tx, id)?.ok_or_else(|| Error::not_found(id))?;
+    release_issue_impl(tx, &issue)
+}
+
 /// Reopen an issue
 pub fn reopen_issue(
     conn: &Connection,
