@@ -322,9 +322,14 @@ fn doctor_reports_live_and_both_retained_generations_without_matched_bytes() {
         serde_json::json!(["current", "previous"])
     );
     let findings = check["details"]["findings"].as_array().unwrap();
-    assert!(findings.iter().any(|finding| finding["selector"]
-        .as_str()
-        .is_some_and(|selector| selector.starts_with("live:"))));
+    let live_issue_selector = findings
+        .iter()
+        .filter_map(|finding| finding["selector"].as_str())
+        .find(|selector| selector.starts_with("live:issues:"))
+        .expect("live issue finding has a stable semantic selector");
+    let selector_digest = live_issue_selector.rsplit(':').next().unwrap();
+    assert_eq!(selector_digest.len(), 64);
+    assert!(selector_digest.bytes().all(|byte| byte.is_ascii_hexdigit()));
     assert!(findings.iter().any(|finding| finding["selector"]
         .as_str()
         .is_some_and(|selector| selector.starts_with("checkpoint:current:"))));

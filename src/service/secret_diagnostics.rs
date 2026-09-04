@@ -6,6 +6,7 @@ use crate::scan::{self, Field, Finding, Mode, ScanConfig, ScanReport, CONTRACT_I
 use crate::store::{open_configured_connection, Store};
 use serde::Serialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::io::BufRead;
 use std::path::{Component, Path, PathBuf};
@@ -24,12 +25,14 @@ pub struct SecretDiagnosticsReport {
 
 struct LiveTable {
     name: &'static str,
+    identity_fields: &'static [&'static str],
     fields: &'static [&'static str],
 }
 
 const LIVE_TABLES: &[LiveTable] = &[
     LiveTable {
         name: "issues",
+        identity_fields: &["id"],
         fields: &[
             "title",
             "description",
@@ -42,30 +45,37 @@ const LIVE_TABLES: &[LiveTable] = &[
     },
     LiveTable {
         name: "events",
+        identity_fields: &["origin_store_uuid", "origin_event_sequence"],
         fields: &["actor", "detail"],
     },
     LiveTable {
         name: "labels",
+        identity_fields: &["issue_id", "label"],
         fields: &["label"],
     },
     LiveTable {
         name: "dependencies",
+        identity_fields: &["blocked_issue_id", "blocker_issue_id", "kind"],
         fields: &["condition"],
     },
     LiveTable {
         name: "comments",
+        identity_fields: &["id"],
         fields: &["author", "body"],
     },
     LiveTable {
         name: "issue_data",
+        identity_fields: &["issue_id", "namespace"],
         fields: &["namespace", "schema_ref", "value"],
     },
     LiveTable {
         name: "external_references",
+        identity_fields: &["issue_id", "namespace", "key"],
         fields: &["namespace", "key", "value"],
     },
     LiveTable {
         name: "recurrence_templates",
+        identity_fields: &["id"],
         fields: &[
             "title",
             "description",
@@ -77,10 +87,12 @@ const LIVE_TABLES: &[LiveTable] = &[
     },
     LiveTable {
         name: "recurrence_materializations",
+        identity_fields: &["template_id", "series_sequence"],
         fields: &["actor"],
     },
     LiveTable {
         name: "attempt_outcomes",
+        identity_fields: &["receipt_id"],
         fields: &[
             "reason",
             "actor",
@@ -92,6 +104,7 @@ const LIVE_TABLES: &[LiveTable] = &[
     },
     LiveTable {
         name: "provenance_receipts",
+        identity_fields: &["receipt_id"],
         fields: &["actor"],
     },
 ];
@@ -141,6 +154,16 @@ fn scan_live_rows(
         if available.is_empty() {
             continue;
         }
+        if table
+            .identity_fields
+            .iter()
+            .any(|field| !available.contains(*field))
+        {
+            return Err(Error::integrity(format!(
+                "{} table is missing a stable identity column",
+                table.name
+            )));
+        }
         let fields: Vec<&str> = table
             .fields
             .iter()
@@ -150,21 +173,31 @@ fn scan_live_rows(
         if fields.is_empty() {
             continue;
         }
+        let mut selections: Vec<String> = table
+            .identity_fields
+            .iter()
+            .map(|field| format!("CAST({field} AS TEXT)"))
+            .collect();
+        selections.extend(fields.iter().map(|field| (*field).to_string()));
+        let order = table.identity_fields.join(", ");
         let sql = format!(
-            "SELECT rowid, {} FROM {} ORDER BY rowid",
-            fields.join(", "),
-            table.name
+            "SELECT {} FROM {} ORDER BY {}",
+            selections.join(", "),
+            table.name,
+            order
         );
         let mut statement = conn.prepare(&sql)?;
         let rows = statement.query_map([], |row| {
-            let rowid: i64 = row.get(0)?;
-            let values = (0..fields.len())
-                .map(|index| row.get::<_, Option<String>>(index + 1))
+            let identity = (0..table.identity_fields.len())
+                .map(|index| row.get::<_, Option<String>>(index))
                 .collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok((rowid, values))
+            let values = (0..fields.len())
+                .map(|index| row.get::<_, Option<String>>(index + table.identity_fields.len()))
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok((identity, values))
         })?;
         for row in rows {
-            let (rowid, values) = row?;
+            let (identity, values) = row?;
             let present: Vec<Field<'_>> = fields
                 .iter()
                 .zip(values.iter())
@@ -173,12 +206,37 @@ fn scan_live_rows(
             fields_scanned += present.len();
             reports.push(scan::scan(
                 config,
-                &format!("live:{}:{rowid}", table.name),
+                &semantic_selector(table, &identity),
                 &present,
             ));
         }
     }
     Ok((reports, fields_scanned))
+}
+
+/// A live selector commits to the table's durable primary/origin identity,
+/// rather than SQLite `rowid`, so it survives restore and table rebuilds. The
+/// identity is hashed because some compound keys contain operator text; a
+/// diagnostic selector must never become a second disclosure channel.
+fn semantic_selector(table: &LiveTable, identity: &[Option<String>]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"bead-rs-secret-live-selector-v1\0");
+    hasher.update(table.name.as_bytes());
+    hasher.update(b"\0");
+    for (field, value) in table.identity_fields.iter().zip(identity) {
+        hasher.update(field.as_bytes());
+        hasher.update(b"\0");
+        match value {
+            Some(value) => {
+                hasher.update(b"present\0");
+                hasher.update((value.len() as u64).to_be_bytes());
+                hasher.update(value.as_bytes());
+            }
+            None => hasher.update(b"null\0"),
+        }
+        hasher.update(b"\0");
+    }
+    format!("live:{}:{:x}", table.name, hasher.finalize())
 }
 
 fn table_columns(conn: &rusqlite::Connection, table: &str) -> Result<HashSet<String>> {
@@ -438,5 +496,28 @@ mod tests {
         assert!(confined_path(base, "objects/a.jsonl").is_ok());
         assert!(confined_path(base, "../outside").is_err());
         assert!(confined_path(base, "/outside").is_err());
+    }
+
+    #[test]
+    fn live_selector_is_stable_and_does_not_expose_identity_text() {
+        let table = LiveTable {
+            name: "labels",
+            identity_fields: &["issue_id", "label"],
+            fields: &["label"],
+        };
+        let private_identity = [["AK", "IA"].concat(), "7M4Q9Z2N8C5R3T6V".to_string()].concat();
+        let identity = vec![Some("issue-a".to_string()), Some(private_identity.clone())];
+        let first = semantic_selector(&table, &identity);
+        let second = semantic_selector(&table, &identity);
+        let moved = semantic_selector(
+            &table,
+            &[Some("issue-b".to_string()), Some(private_identity.clone())],
+        );
+
+        assert_eq!(first, second);
+        assert_ne!(first, moved);
+        assert!(first.starts_with("live:labels:"));
+        assert_eq!(first.rsplit(':').next().unwrap().len(), 64);
+        assert!(!first.contains(&private_identity));
     }
 }
