@@ -14,7 +14,7 @@
 /// Version of the compiled ruleset. Bumping it changes every fingerprint
 /// (the version is hashed into the finding fingerprint), so it moves only
 /// with a release that re-justifies each blocking rule.
-pub const RULESET_VERSION: u32 = 2;
+pub const RULESET_VERSION: u32 = 3;
 
 /// Identity of the normative contract this ruleset implements.
 pub const CONTRACT_IDENTITY: &str = "urn:bead-rs:spec:secret-rejection:v1";
@@ -96,6 +96,20 @@ pub const RULES: &[Rule] = &[
         // rule before the exact assignment regex runs.
         keywords: &["aws_"],
         pattern: r#"(?i)\b(?:[A-Z][A-Z0-9]*_)*AWS_SECRET_ACCESS_KEY["']?[ \t]*[:=][ \t]*["']?([A-Za-z0-9/+=]{40})["']?"#,
+        checksum: None,
+    },
+    Rule {
+        id: "garage-access-key-id-assignment",
+        provider: "garage",
+        tier: Tier::Blocking,
+        // A Garage key ID is an identifier rather than the signing secret,
+        // but it is still one half of an S3 credential. Require both its
+        // provider-specific shape and an explicit access-key assignment so
+        // an unrelated 24-character identifier cannot block bead text.
+        // Lead with the AWS namespace so the existing, shorter advisory
+        // `access_key` prefilter anchor cannot mask this rule.
+        keywords: &["aws_"],
+        pattern: r#"(?i:\b(?:[A-Z][A-Z0-9]*_)*AWS_ACCESS_KEY_ID["']?[ \t]*[:=][ \t]*["']?)(GK[0-9a-f]{22})["']?"#,
         checksum: None,
     },
     Rule {
@@ -367,7 +381,7 @@ mod tests {
 
     #[test]
     fn ruleset_is_closed_and_versioned() {
-        assert_eq!(RULESET_VERSION, 2);
+        assert_eq!(RULESET_VERSION, 3);
         assert_eq!(CONTRACT_IDENTITY, "urn:bead-rs:spec:secret-rejection:v1");
         // The blocking tier is provider formats and armor only.
         for rule in RULES.iter().filter(|r| r.tier == Tier::Blocking) {

@@ -44,6 +44,11 @@ fn aws_secret_access_key_assignment() -> String {
     format!("BEDROCK_AWS_SECRET_ACCESS_KEY={value}")
 }
 
+fn garage_access_key_id_assignment() -> String {
+    let value = [["G", "K"].concat(), "7e4a19c2b6d83f501ac942".to_string()].concat();
+    format!("SCCACHE_AWS_ACCESS_KEY_ID={value}")
+}
+
 fn insert_issue(conn: &rusqlite::Connection, id: &str, description: &str, assignee: Option<&str>) {
     conn.execute(
         "INSERT INTO issues (
@@ -203,8 +208,48 @@ fn aws_secret_access_key_assignment_is_discoverable_and_redactable() {
         )
         .unwrap();
     assert_eq!(stored, REDACTION_MARKER);
-    assert_eq!(outcome.receipt.ruleset_version, 2);
+    assert_eq!(outcome.receipt.ruleset_version, 3);
     assert_eq!(outcome.receipt.rule_id, "aws-secret-access-key-assignment");
+    assert!(!serde_json::to_string(&outcome)
+        .unwrap()
+        .contains(&assignment));
+}
+
+#[test]
+fn garage_access_key_id_assignment_is_discoverable_and_redactable() {
+    let workspace = workspace();
+    let mut store = store(workspace.path());
+    let assignment = garage_access_key_id_assignment();
+    insert_issue(store.conn(), "redact-garage-id", &assignment, None);
+    let finding = scan_live_findings(store.conn())
+        .unwrap()
+        .into_iter()
+        .find(|finding| {
+            finding.field_path == "description"
+                && finding.rule_id == "garage-access-key-id-assignment"
+                && finding.is_blocking_match()
+        })
+        .expect("historical Garage key ID assignment must be redacted");
+
+    let outcome = redact_finding(
+        &mut store,
+        workspace.path(),
+        &finding.fingerprint,
+        "operator",
+        "remove exposed Garage credential identifier",
+    )
+    .unwrap();
+    let stored: String = store
+        .conn()
+        .query_row(
+            "SELECT description FROM issues WHERE id = 'redact-garage-id'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored, REDACTION_MARKER);
+    assert_eq!(outcome.receipt.ruleset_version, 3);
+    assert_eq!(outcome.receipt.rule_id, "garage-access-key-id-assignment");
     assert!(!serde_json::to_string(&outcome)
         .unwrap()
         .contains(&assignment));

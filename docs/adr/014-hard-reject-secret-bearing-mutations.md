@@ -93,8 +93,9 @@ and the byte range — **never the matched value**.
 The scanner has exactly two tiers, and only one of them rejects:
 
 1. **Blocking tier — identifiable secret formats only.** A curated,
-   versioned ruleset of provider-prefixed token patterns and private-key
-   armor headers, **baked into the binary and closed**: no workspace,
+   versioned ruleset of provider-prefixed token patterns, context-bound
+   credential identifiers, and private-key armor headers, **baked into the
+   binary and closed**: no workspace,
    config key, environment variable, or invocation can add, remove, or
    alter a rule. The only channel that changes the ruleset is a bead-rs
    release. Placeholder-shaped matches
@@ -195,7 +196,10 @@ or trufflehog would gate every mutation on a third-party binary's presence
 and version, fail open when it is absent, and import a rule format bead-rs
 does not control. ADR-013 accepted a `git` dependency for a *read-only
 report*; a *blocking gate* on the hot mutation path deserves the opposite
-bias. The ruleset is small (tens of rules, not gitleaks' hundreds), the
+bias. A context-bound credential identifier blocks only when both its
+provider-specific shape and an explicit credential-assignment label are
+present; the same identifier shape in unlabelled prose does not block. The
+ruleset is small (tens of rules, not gitleaks' hundreds), the
 matching machinery (keyword prefilter, then anchored regex, then placeholder
 check) is a few hundred lines against crates already in the dependency
 tree's neighborhood, and Rust's regex engine shares RE2's

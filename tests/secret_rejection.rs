@@ -33,6 +33,11 @@ fn aws_secret_access_key_assignment() -> String {
     format!("BEDROCK_AWS_SECRET_ACCESS_KEY={value}")
 }
 
+fn garage_access_key_id_assignment() -> String {
+    let value = [["G", "K"].concat(), "7e4a19c2b6d83f501ac942".to_string()].concat();
+    format!("SCCACHE_AWS_ACCESS_KEY_ID={value}")
+}
+
 fn placeholder_shaped_value() -> String {
     let mut value = ["AK", "IA"].concat();
     value.push_str(&"A".repeat(16));
@@ -144,6 +149,30 @@ fn aws_secret_access_key_assignment_rejects_atomically_without_disclosure() {
     let stderr = String::from_utf8(rejected.stderr).unwrap();
     let stdout = String::from_utf8(rejected.stdout).unwrap();
     assert!(stderr.contains("aws-secret-access-key-assignment"));
+    assert!(!stderr.contains(&assignment));
+    assert!(!stdout.contains(&assignment));
+}
+
+#[test]
+fn garage_access_key_id_assignment_rejects_atomically_without_disclosure() {
+    let workspace = workspace();
+    let assignment = garage_access_key_id_assignment();
+    let before = counts(workspace.path());
+
+    let rejected = Command::cargo_bin("bead")
+        .unwrap()
+        .current_dir(workspace.path())
+        .args(["create", "--title", "safe title", "--description"])
+        .arg(&assignment)
+        .arg("--no-auto-flush")
+        .output()
+        .unwrap();
+
+    assert_eq!(rejected.status.code(), Some(2));
+    assert_eq!(counts(workspace.path()), before);
+    let stderr = String::from_utf8(rejected.stderr).unwrap();
+    let stdout = String::from_utf8(rejected.stdout).unwrap();
+    assert!(stderr.contains("garage-access-key-id-assignment"));
     assert!(!stderr.contains(&assignment));
     assert!(!stdout.contains(&assignment));
 }

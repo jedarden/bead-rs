@@ -1,15 +1,15 @@
 # bead-rs Current Product and Software Factory Plan
 
-Plan revision: 11
+Plan revision: 12
 
-As of: 2026-09-03
+As of: 2026-09-04
 
 Status owner: bead-rs maintainers
 
-Status: 0.2.4 is the latest tagged release; the checkout declares 0.2.6 while
-current-state governance, software-factory transition, secret rejection, and
-historical-redaction recovery are accepted. The exact R038 specifications are
-independently accepted and implementation is unblocked where dependencies permit
+Status: 0.2.4 is the latest tagged release; the checkout declares 0.2.6.
+Secret rejection and historical-redaction recovery are implemented on `main`,
+including the ruleset-v3 Garage credential-identifier extension, while BR-T18
+release conformance and motivating-incident remediation remain in progress.
 
 ## 0. How to read this plan
 
@@ -64,7 +64,7 @@ their specifications, capabilities, tests, tag, and release report agree.
 | Scheduling | FIFO plus aging, impact, rotation, balanced, attempt tiers, retry/quarantine state, and readiness explanations |
 | Structured extension | Public schema catalog, schema-bound bead data, namespaced references, unique-reference creation, safe queries, change feed, recurrence, and atomic bulk manifests |
 | Recovery | Read-only-by-default doctor, explicit verified restore, monolithic/sharded checkpoints, generation pointers, archaeology/reconcile support, and checkpoint auto-flush |
-| Sensitive-content safety | External push protection currently catches some findings only after local storage; built-in mutation rejection and audited historical redaction are accepted but not shipped |
+| Sensitive-content safety | Current `main` rejects high-confidence findings before mutation, reports advisory findings without values, and provides fingerprint-selected audited historical redaction with anti-resurrection state; 0.2.4 predates these capabilities and BR-T18 release conformance remains open |
 | Consumer contract | Machine-readable capabilities and the `needle-v1` profile |
 | Explanation | `why`, policy validation, compare, scoped diagnostics, and readiness/exclusion reporting |
 
@@ -320,11 +320,11 @@ operator must stop; hand-editing SQLite or checkpoint JSON is never a fallback.
 
 | BR-T12 | mutating CLI commands (`close`, `release`, `reopen`, `update`, `claim`, `dep`, `label`, `comments`) and `service::issues` | Accept `--actor` and the `BEAD_ACTOR` environment variable on every mutating command and record it in the audit event instead of the `system` default; additive and profile-neutral | forensic fixtures show the caller actor on `closed`, `released` and `reopened`; old clients unaffected; `needle-v1` capability snapshot updated | transition (independent of BR-T03 to BR-T08) |
 | BR-T13 | ADR-014, ADR-015, `research/specs/secret-rejection-v1.md`, `research/specs/historical-redaction-v1.md`, independent review and fixtures | Freeze secret detection, fingerprints, selectors, fixed marker, acknowledgment, redaction receipt, failure, and anti-resurrection semantics before code | [Accepted exact-hash review](../reviews/r038-specification-acceptance-2026-09-03.md); no live-format committed samples | accepted/current |
-| BR-T14 | `src/scan/`, configuration, doctor, dry-run, mutation service boundaries | Add the offline versioned blocking/advisory scanner and reject detectable secrets before every operator-text mutation | command inventory coverage, provider/placeholder fixtures, redacted diagnostics, scan-cost benchmark | blocked by BR-T13 |
-| BR-T15 | model, public schemas, SQLite migration, checkpoint grammar | Add finding, acknowledgment, redaction receipt/epoch, field selector, and durable anti-resurrection tombstone records | migration, schema, unknown-field, checkpoint round-trip, old-reader, and restore tests | blocked by BR-T13 |
-| BR-T16 | transactional redaction service | Revalidate one fingerprint, replace only selected bytes with the fixed marker, preserve semantic identities, and commit one idempotent receipt | stale target, exact replay, concurrent mutation, crash boundary, unchanged-field, and no-value-output tests | blocked by BR-T14–BR-T15 |
-| BR-T17 | `bead redact`, checkpoint publication, import/merge/reconcile/restore | Expose the maintenance command; publish a sanitized generation set; tombstone dirty roots; prevent known removed content from reappearing | current/previous/forensic scan, publication interruption/resume, anti-resurrection, and recursive-help tests | blocked by BR-T16 |
-| BR-T18 | conformance, recovery rehearsal, packaging, NEEDLE incident remediation, release evidence | Prove zero unacknowledged findings, semantic restore equivalence, safe install, and cleanup of the motivating records without disclosure | exact-release gitleaks report, restored counts/graph/events, Forgejo push acceptance, NEEDLE cross-reference and credential-rotation receipt | blocked by BR-T17 |
+| BR-T14 | `src/scan/`, configuration, doctor, dry-run, mutation service boundaries | Add the offline versioned blocking/advisory scanner and reject detectable secrets before every operator-text mutation | command inventory coverage, provider/placeholder fixtures, redacted diagnostics, scan-cost benchmark | implemented/current; ruleset v3 adds context-bound Garage key-ID assignments |
+| BR-T15 | model, public schemas, SQLite migration, checkpoint grammar | Add finding, acknowledgment, redaction receipt/epoch, field selector, and durable anti-resurrection tombstone records | migration, schema, unknown-field, checkpoint round-trip, old-reader, and restore tests | implemented/current |
+| BR-T16 | transactional redaction service | Revalidate one fingerprint, replace only selected bytes with the fixed marker, preserve semantic identities, and commit one idempotent receipt | stale target, exact replay, concurrent mutation, crash boundary, unchanged-field, and no-value-output tests | implemented/current |
+| BR-T17 | `bead redact`, checkpoint publication, import/merge/reconcile/restore | Expose the maintenance command; publish a sanitized generation set; tombstone dirty roots; prevent known removed content from reappearing | current/previous/forensic scan, publication interruption/resume, anti-resurrection, and recursive-help tests | implemented/current |
+| BR-T18 | conformance, recovery rehearsal, packaging, NEEDLE incident remediation, release evidence | Prove zero unacknowledged findings, semantic restore equivalence, safe install, and cleanup of the motivating records without disclosure | exact-release gitleaks report, restored counts/graph/events, Forgejo push acceptance, NEEDLE cross-reference and credential-rotation receipt | in progress; release gates remain open |
 
 General mutation idempotency remains a separate potential feature. BR-T03–T08
 adopt idempotency only for the attempt-resolution boundary required by the
@@ -3075,8 +3075,12 @@ mutable for ordinary purposes. ADR-014 governs prevention; ADR-015 and the
 through BR-T18 are the current delivery ledger. The requirement was promoted
 from the deferred sensitive-content lint after a real NEEDLE checkpoint push
 was rejected on 2026-09-03. Both normative specifications were independently
-accepted at their exact submitted hashes on 2026-09-03; BR-T14 and BR-T15 are
-therefore unblocked.
+accepted at their exact submitted hashes on 2026-09-03. BR-T14 through BR-T17
+are now implemented on `main`. Ruleset v3 adds a narrowly context-bound Garage
+access-key-ID assignment detector after the motivating remediation proved that
+credential identifiers can persist after a secret value is removed. BR-T18
+remains open until the exact packaged artifact, full Rust gates, and NEEDLE
+remediation evidence all pass together.
 
 ## 13. Release gates
 

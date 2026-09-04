@@ -19,6 +19,14 @@ fn aws_secret_access_key_assignment(namespace: &str) -> String {
     )
 }
 
+fn garage_access_key_id() -> String {
+    [["G", "K"].concat(), "7e4a19c2b6d83f501ac942".to_string()].concat()
+}
+
+fn garage_access_key_id_assignment(namespace: &str) -> String {
+    format!("{namespace}AWS_ACCESS_KEY_ID={}", garage_access_key_id())
+}
+
 fn github_checksum_value() -> String {
     let alphabet = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
     let payload: String = (0..30)
@@ -86,6 +94,39 @@ fn aws_secret_access_key_assignment_preserves_placeholder_downgrade() {
         finding.rule_id == "aws-secret-access-key-assignment"
             && finding.disposition == Disposition::Placeholder
     }));
+}
+
+#[test]
+fn garage_access_key_id_blocks_only_in_assignment_context() {
+    for namespace in ["", "SCCACHE_"] {
+        let assignment = garage_access_key_id_assignment(namespace);
+        let text = format!("runtime setting: {assignment}\n");
+        let report = scan(
+            &ScanConfig::enforce(),
+            "issue:new",
+            &[Field::new("description", &text)],
+        );
+        let finding = report
+            .blocking
+            .iter()
+            .find(|finding| finding.rule_id == "garage-access-key-id-assignment")
+            .expect("the contextual Garage key ID must block");
+        assert_eq!(&text[finding.start..finding.end], assignment);
+        let rendered = format!("{finding:?} {finding}");
+        assert!(!rendered.contains(&assignment));
+        assert!(!rendered.contains(&garage_access_key_id()));
+    }
+
+    let value = garage_access_key_id();
+    let report = scan(
+        &ScanConfig::enforce(),
+        "issue:new",
+        &[Field::new("notes", &value)],
+    );
+    assert!(report
+        .blocking
+        .iter()
+        .all(|finding| finding.rule_id != "garage-access-key-id-assignment"));
 }
 
 #[test]
