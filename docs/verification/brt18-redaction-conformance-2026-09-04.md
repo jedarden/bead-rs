@@ -61,13 +61,32 @@ token-shaped run:
 
 The 165 credential-shaped occurrences resolve to just **22 distinct** values,
 and every one of them repeats — minimum 3 occurrences, maximum 51 — across
-issue descriptions, notes, close reasons and event reasons. Real credentials
-are single-use and never recur across unrelated operator text; repeated
-structural tokens are identifiers. Combined with zero provider prefixes, zero
-blocking findings and zero gitleaks findings:
+issue descriptions, notes, close reasons and event reasons. Repetition alone
+does **not** clear them: an access-key identifier recurs wherever it is named.
 
-**No real credential is present in the NEEDLE checkpoint. There is nothing to
-rotate through OpenBao, and no rotation receipt is owed.**
+Resolving those 22 against provider key shapes gives the actual result:
+
+| Key shape | Distinct values | Redacted? |
+| --- | --- | --- |
+| Garage S3 access key ID (`GK` + 22 lowercase hex) | **1** | **no** — present in the current sanitized generation `7c530031…`, in `previous`, and in `forensic.jsonl` |
+| 40-character secret-key shape | 43 distinct 40-hex runs, all hash-shaped digests | **yes** — the incident's secret was redacted; the shape is absent from live text |
+
+So the **secret** material from the incident is redacted, but a **live
+access key ID survives un-redacted in the sanitized generation**. Because the
+pre-redaction objects (`24c04003…`, `730b6051…`, `f8dc99f0…`) also remain
+reachable in Forgejo's pushed history, **rotation is mandatory, not
+optional.** OpenBao path
+`secret/ardenone-cluster/garage-operator/sccache-s3-credentials` is
+auto-rotating on a ~65-minute cadence (observed `current_version` 124,
+created 2026-09-04T04:58:06Z, which post-dates the 2026-09-03 leak), but that
+only proves the live value is newer than the leak — it does not prove the
+leaked key was disabled at Garage. That explicit confirmation is still owed,
+verified by metadata or downstream status only.
+
+*Correction:* an earlier revision of this document concluded from the
+repetition statistic alone that no credential was present. That inference was
+wrong — repetition distinguishes identifiers from single-use secrets, but an
+access key ID is itself sensitive material and recurs legitimately.
 
 ## 4. Empty-target restore rehearsal
 
@@ -133,13 +152,20 @@ remained at 2195; the only event delta is the merge's own summary event
 
 - The three findings named by incident `needle-27ec0073` are redacted with a
   full receipt/epoch/tombstone set (12 checkpoint records), not merely
-  acknowledged.
+  acknowledged. This covers the **secret key**; the **access key ID** named in
+  §3 is *not* covered and survives in the sanitized generation.
 - `config/gitleaks.toml` carries a narrow classification allowance for the
-  non-secret API digest shape.
+  non-secret API digest shape (now committed, so the committed and working
+  configs hash identically at `c0f4c36e…`).
 - The cleaned checkpoint was committed as `ed719564` and pushed; Forgejo
   accepted it — NEEDLE `HEAD` == `origin/main` at
   `d74848c143ed7f3d9ceb2c94de8a732297c7635b` (a merge retaining that commit).
-- Post-push scan is clean per §2.
+  Push acceptance is therefore proven.
+- However the pre-redaction objects remain **reachable in Forgejo history**,
+  so the incident acceptance clause "the formerly rejected checkpoint commit
+  is not present in local or remote history" is **not** met by the push alone.
+- Post-push gitleaks scan is clean per §2, because the surviving access key ID
+  does not match any rule in that configuration.
 
 ## 7. Rejected-commit unreachability
 
@@ -163,7 +189,7 @@ The rival-dispatched gate run over a verified `git archive` extraction of
 | `cargo fmt --check` | **fail** |
 | `cargo build --release --locked` | pass |
 | `cargo clippy --all-targets --locked -- -D warnings` | **fail** — 14 lib lints |
-| `cargo test --locked` | **fail** — `build_from_archive_checkout_untouched` |
+| `cargo test --locked` | 581 passed; only `build_from_archive_checkout_untouched` fails, and it does so because an archive extraction has no `.git` — an environment artifact, not a semantic regression (one of its two cases was also observed to fail in a real checkout under concurrent build load, i.e. contention-flaky) |
 
 Every file named by those failures (`src/service/attempt.rs`,
 `src/service/doctor.rs`, `src/service/issues.rs`, `src/service/watchdog.rs`,
