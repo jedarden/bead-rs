@@ -337,3 +337,46 @@ fn doctor_reports_live_and_both_retained_generations_without_matched_bytes() {
         .as_str()
         .is_some_and(|selector| selector.starts_with("checkpoint:previous:"))));
 }
+
+#[test]
+fn recovery_reports_legacy_findings_without_refusing_import() {
+    let source = workspace();
+    let config_path = source.path().join(".beads/config.json");
+    let mut config: Value = serde_json::from_slice(&std::fs::read(&config_path).unwrap()).unwrap();
+    config["secret_scan"] = serde_json::json!({"mode": "off"});
+    std::fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    let value = provider_shaped_value();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .current_dir(source.path())
+        .args(["create", "--title", "legacy record", "--description"])
+        .arg(&value)
+        .assert()
+        .success();
+
+    let target = workspace();
+    let input = source.path().join(".beads/checkpoint/forensic.jsonl");
+    let output = Command::cargo_bin("bead")
+        .unwrap()
+        .current_dir(target.path())
+        .args(["sync", "import-only", "--input"])
+        .arg(&input)
+        .args([
+            "--restore-into-empty",
+            "--actor",
+            "recovery-test",
+            "--dry-run",
+            "--no-auto-flush",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("secret_scan recovery:"));
+    assert!(!stdout.contains(&value));
+    assert!(!stderr.contains(&value));
+    assert_eq!(counts(target.path()).0, 0);
+}

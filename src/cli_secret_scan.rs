@@ -81,6 +81,8 @@ impl<'a> CanonicalRequest<'a> {
 /// Recovery inputs are deliberately excluded: the bytes already exist and
 /// the contract requires reporting rather than refusal for recovery paths.
 pub(crate) fn prepare(cli: &crate::cli::Cli) -> Result<Option<PreparedScan>> {
+    report_recovery_findings(&cli.command);
+
     if let Command::Manifest(command) = &cli.command {
         let opts = match command {
             crate::cli::ManifestCommand::DryRun(opts)
@@ -124,6 +126,45 @@ pub(crate) fn prepare(cli: &crate::cli::Cli) -> Result<Option<PreparedScan>> {
         }
     }
     Ok(prepared)
+}
+
+/// Recovery and archaeology consume bytes that already exist. Report their
+/// findings on stderr, but deliberately ignore scan/read errors so this
+/// best-effort diagnostic can never become an additional recovery refusal.
+fn report_recovery_findings(command: &Command) {
+    let mut paths = Vec::new();
+    match command {
+        Command::Restore(opts) => paths.push(std::path::PathBuf::from(&opts.source)),
+        Command::Sync(SyncCommand::ImportOnly(opts)) => {
+            paths.push(std::path::PathBuf::from(&opts.input));
+        }
+        Command::Sync(SyncCommand::Reconcile(_)) => {
+            if let Ok(Some(workspace)) = WorkspaceConfig::discover() {
+                paths.push(workspace.root.join(".beads/checkpoint"));
+            }
+        }
+        Command::Sync(SyncCommand::Diff(opts)) => {
+            paths.push(std::path::PathBuf::from(&opts.from));
+            paths.push(std::path::PathBuf::from(&opts.to));
+        }
+        Command::Sync(SyncCommand::Bisect(opts)) => {
+            paths.extend(opts.checkpoints.iter().map(std::path::PathBuf::from));
+        }
+        Command::Query(opts) => {
+            if let Some(checkpoint) = &opts.checkpoint {
+                paths.push(std::path::PathBuf::from(checkpoint));
+            }
+        }
+        _ => {}
+    }
+
+    for path in paths {
+        if let Ok(report) = crate::service::secret_diagnostics::scan_recovery_artifact(&path) {
+            for finding in report.findings {
+                eprintln!("secret_scan recovery: {}", finding.diagnostic());
+            }
+        }
+    }
 }
 
 fn configured_policy(cli: &crate::cli::Cli, workspace: &WorkspaceConfig) -> Result<ScanConfig> {

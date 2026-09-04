@@ -143,6 +143,34 @@ pub fn run_secret_diagnostics(store: &impl Store) -> Result<SecretDiagnosticsRep
     })
 }
 
+/// Scan caller-supplied recovery or archaeology input without applying the
+/// workspace enforcement mode. Legacy bytes already exist, so this surface is
+/// report-only: callers may render the returned redacted findings but must not
+/// turn them into a recovery refusal.
+pub fn scan_recovery_artifact(path: &Path) -> Result<ScanReport> {
+    let config = ScanConfig::new(Mode::Advisory);
+    let mut reports = Vec::new();
+    if path.is_dir() {
+        let mut found_pointer = false;
+        for generation in ["current", "previous"] {
+            let pointer = path.join(format!("{generation}.json"));
+            if pointer.is_file() {
+                scan_pointer(&pointer, generation, &config, &mut reports)?;
+                found_pointer = true;
+            }
+        }
+        if !found_pointer {
+            let forensic = path.join("forensic.jsonl");
+            if forensic.is_file() {
+                scan_jsonl(&forensic, "recovery", &config, &mut reports)?;
+            }
+        }
+    } else {
+        scan_artifact_file(path, "recovery", &config, &mut reports)?;
+    }
+    Ok(ScanReport::merge(reports))
+}
+
 fn scan_live_rows(
     conn: &rusqlite::Connection,
     config: &ScanConfig,
@@ -258,57 +286,99 @@ fn scan_retained_generations(
         if !pointer_path.exists() {
             continue;
         }
-        let pointer = read_json(&pointer_path, "checkpoint pointer")?;
-        let mode = pointer
-            .get("mode")
-            .and_then(Value::as_str)
-            .ok_or_else(|| Error::integrity(format!("{name} checkpoint pointer has no mode")))?;
-        let root_path = pointer
-            .get("active_root")
-            .and_then(|root| root.get("path"))
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                Error::integrity(format!("{name} checkpoint pointer has no active root path"))
-            })?;
-        let root_path = confined_path(checkpoint_dir, root_path)?;
-        match mode {
-            "monolithic" => scan_jsonl(&root_path, name, config, &mut reports)?,
-            "sharded" => {
-                let manifest = read_json(&root_path, "checkpoint shard manifest")?;
-                for key in [
-                    "issue_shards",
-                    "event_shards",
-                    "receipt_shards",
-                    "attempt_outcome_shards",
-                    "redaction_receipt_shards",
-                ] {
-                    if let Some(shards) = manifest.get(key).and_then(Value::as_array) {
-                        for shard in shards {
-                            let path =
-                                shard.get("path").and_then(Value::as_str).ok_or_else(|| {
-                                    Error::integrity(format!(
-                                        "{name} checkpoint manifest has a shard without a path"
-                                    ))
-                                })?;
-                            scan_jsonl(
-                                &confined_path(checkpoint_dir, path)?,
-                                name,
-                                config,
-                                &mut reports,
-                            )?;
-                        }
-                    }
-                }
-            }
-            _ => {
-                return Err(Error::integrity(format!(
-                    "{name} checkpoint pointer has unsupported mode"
-                )))
-            }
-        }
+        scan_pointer(&pointer_path, name, config, &mut reports)?;
         generations.push(name.to_string());
     }
     Ok((reports, generations))
+}
+
+fn scan_pointer(
+    pointer_path: &Path,
+    generation: &str,
+    config: &ScanConfig,
+    reports: &mut Vec<ScanReport>,
+) -> Result<()> {
+    let pointer = read_json(pointer_path, "checkpoint pointer")?;
+    let mode = pointer
+        .get("mode")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::integrity("checkpoint pointer has no mode"))?;
+    let root_path = pointer
+        .get("active_root")
+        .and_then(|root| root.get("path"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::integrity("checkpoint pointer has no active root path"))?;
+    let checkpoint_dir = pointer_path
+        .parent()
+        .ok_or_else(|| Error::integrity("checkpoint pointer has no parent directory"))?;
+    let root_path = confined_path(checkpoint_dir, root_path)?;
+    match mode {
+        "monolithic" => scan_jsonl(&root_path, generation, config, reports),
+        "sharded" => scan_shard_manifest(&root_path, checkpoint_dir, generation, config, reports),
+        _ => Err(Error::integrity("checkpoint pointer has unsupported mode")),
+    }
+}
+
+fn scan_shard_manifest(
+    manifest_path: &Path,
+    checkpoint_dir: &Path,
+    generation: &str,
+    config: &ScanConfig,
+    reports: &mut Vec<ScanReport>,
+) -> Result<()> {
+    let manifest = read_json(manifest_path, "checkpoint shard manifest")?;
+    for key in [
+        "issue_shards",
+        "event_shards",
+        "receipt_shards",
+        "attempt_outcome_shards",
+        "redaction_receipt_shards",
+    ] {
+        if let Some(shards) = manifest.get(key).and_then(Value::as_array) {
+            for shard in shards {
+                let path = shard
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| Error::integrity("checkpoint manifest shard has no path"))?;
+                scan_jsonl(
+                    &confined_path(checkpoint_dir, path)?,
+                    generation,
+                    config,
+                    reports,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn scan_artifact_file(
+    path: &Path,
+    generation: &str,
+    config: &ScanConfig,
+    reports: &mut Vec<ScanReport>,
+) -> Result<()> {
+    if path.extension().and_then(|extension| extension.to_str()) == Some("jsonl") {
+        return scan_jsonl(path, generation, config, reports);
+    }
+    let document = read_json(path, "recovery artifact")?;
+    if document.get("active_root").is_some() {
+        return scan_pointer(path, generation, config, reports);
+    }
+    if document.get("issue_shards").is_some() || document.get("event_shards").is_some() {
+        let parent = path
+            .parent()
+            .ok_or_else(|| Error::integrity("checkpoint manifest has no parent directory"))?;
+        let checkpoint_dir =
+            if parent.file_name().and_then(|name| name.to_str()) == Some("manifests") {
+                parent.parent().unwrap_or(parent)
+            } else {
+                parent
+            };
+        return scan_shard_manifest(path, checkpoint_dir, generation, config, reports);
+    }
+    scan_json_value(config, "recovery:document", "record", &document, reports);
+    Ok(())
 }
 
 fn read_json(path: &Path, kind: &str) -> Result<Value> {
@@ -519,5 +589,23 @@ mod tests {
         assert!(first.starts_with("live:labels:"));
         assert_eq!(first.rsplit(':').next().unwrap().len(), 64);
         assert!(!first.contains(&private_identity));
+    }
+
+    #[test]
+    fn recovery_artifact_scan_reports_without_returning_matched_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let artifact = directory.path().join("legacy.jsonl");
+        let value = [["AK", "IA"].concat(), "7M4Q9Z2N8C5R3T6V".to_string()].concat();
+        std::fs::write(
+            &artifact,
+            serde_json::to_vec(&serde_json::json!({"description": value.clone()})).unwrap(),
+        )
+        .unwrap();
+
+        let report = scan_recovery_artifact(&artifact).unwrap();
+        assert_eq!(report.blocking.len(), 1);
+        assert!(!serde_json::to_string(&report.findings)
+            .unwrap()
+            .contains(&value));
     }
 }
