@@ -21,6 +21,8 @@ pub mod leases;
 pub mod lifecycle;
 pub mod manifest;
 pub mod query;
+#[allow(dead_code)]
+pub mod redaction;
 pub mod watchdog;
 
 pub mod reconcile;
@@ -99,6 +101,11 @@ pub use query::{
 pub use recurrence::{
     create_template, delete_template, get_materialization_history, get_template, list_templates,
     materialize_next_occurrence,
+};
+#[allow(unused_imports)]
+pub use redaction::{
+    acquire_redaction_locks, redact_finding, redact_finding_holding, RedactionLocks,
+    RedactionOutcome,
 };
 pub use rehearsal::run_recovery_rehearsal;
 pub use schema::{

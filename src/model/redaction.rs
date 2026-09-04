@@ -576,6 +576,7 @@ impl RedactionReceipt {
     /// deliberately excluded: a receipt that is later published, or resumed,
     /// keeps the identity it committed with, which is what lets `--resume`
     /// and an exact replay both find the same row.
+    #[allow(clippy::too_many_arguments)]
     pub fn canonical_identity(
         finding_fingerprint: &str,
         ruleset_version: u32,
@@ -1056,7 +1057,7 @@ fn validate_sha256_hex(value: &str) -> Result<(), RedactionError> {
 }
 
 /// Validate an actor identity.
-fn validate_actor(value: &str) -> Result<(), RedactionError> {
+pub(crate) fn validate_actor(value: &str) -> Result<(), RedactionError> {
     validate_nonempty_bounded(value, "actor", MAX_ACTOR_BYTES)?;
     if value.chars().any(char::is_control) {
         return Err(RedactionError::Usage(
@@ -1074,7 +1075,7 @@ fn validate_actor(value: &str) -> Result<(), RedactionError> {
 /// itself contains a secret is the scanner's judgement (the caller's own
 /// ruleset revalidates it before the mutation is offered); the storage layer
 /// enforces only structure, so it never has to guess at content.
-fn validate_reason(value: &str) -> Result<(), RedactionError> {
+pub(crate) fn validate_reason(value: &str) -> Result<(), RedactionError> {
     validate_nonempty_bounded(value, "reason", MAX_REASON_BYTES)?;
     if value.chars().any(char::is_control) {
         return Err(RedactionError::Usage(
@@ -1589,7 +1590,7 @@ mod tests {
                 extensions: RedactionExtensions::new(),
             })
             .unwrap(),
-            serde_json::to_value(&receipt()).unwrap(),
+            serde_json::to_value(receipt()).unwrap(),
             serde_json::to_value(&RedactionEpoch {
                 schema_ref: SCHEMA_REDACTION_EPOCH.to_string(),
                 epoch_id: "d".repeat(64),

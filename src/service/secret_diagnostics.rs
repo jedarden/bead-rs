@@ -109,6 +109,21 @@ const LIVE_TABLES: &[LiveTable] = &[
     },
 ];
 
+/// Opaque locator for one live finding.
+///
+/// The locator deliberately carries database identity values and redacted
+/// scanner metadata only. The matched field value is re-read under the
+/// redaction transaction and never crosses this boundary.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) struct LiveFindingLocation {
+    pub table: &'static str,
+    pub identity_fields: &'static [&'static str],
+    pub identity_values: Vec<rusqlite::types::Value>,
+    pub field: &'static str,
+    pub finding: Finding,
+}
+
 /// Scan current semantic state and each retained current/previous checkpoint
 /// generation. Workspace enforcement never changes this diagnostic: `off`
 /// and `advisory` are reported as the effective mode, but doctor still scans.
@@ -240,6 +255,127 @@ fn scan_live_rows(
         }
     }
     Ok((reports, fields_scanned))
+}
+
+/// Scan only the supplied live database and return redacted findings.
+///
+/// This is the transaction-facing subset used by historical redaction and
+/// callers that already hold the correct workspace connection. It never
+/// discovers another workspace or scans retained checkpoint files.
+#[allow(dead_code)]
+pub fn scan_live_findings(conn: &rusqlite::Connection) -> Result<Vec<Finding>> {
+    scan_live_rows(conn, &ScanConfig::new(Mode::Advisory))
+        .map(|(reports, _)| ScanReport::merge(reports).findings)
+}
+
+/// Locate one scanner fingerprint in current live state without returning
+/// the matched bytes.
+///
+/// BR-T16 uses this once its IMMEDIATE transaction is open. Identity values
+/// remain typed so the eventual `UPDATE` addresses the exact row even when a
+/// compound identity includes an integer. A duplicate fingerprint is an
+/// integrity failure: the fingerprint commits to selector, field and range,
+/// so two locations cannot legitimately share it.
+#[allow(dead_code)]
+pub(crate) fn find_live_finding(
+    conn: &rusqlite::Connection,
+    fingerprint: &str,
+) -> Result<Option<LiveFindingLocation>> {
+    let config = ScanConfig::new(Mode::Advisory);
+    let mut located = None;
+    for table in LIVE_TABLES {
+        let available = table_columns(conn, table.name)?;
+        if available.is_empty() {
+            continue;
+        }
+        if table
+            .identity_fields
+            .iter()
+            .any(|field| !available.contains(*field))
+        {
+            return Err(Error::integrity(format!(
+                "{} table is missing a stable identity column",
+                table.name
+            )));
+        }
+        let fields: Vec<&'static str> = table
+            .fields
+            .iter()
+            .copied()
+            .filter(|field| available.contains(*field))
+            .collect();
+        if fields.is_empty() {
+            continue;
+        }
+        let mut selections: Vec<String> = table
+            .identity_fields
+            .iter()
+            .map(|field| (*field).to_string())
+            .collect();
+        selections.extend(fields.iter().map(|field| (*field).to_string()));
+        let sql = format!(
+            "SELECT {} FROM {} ORDER BY {}",
+            selections.join(", "),
+            table.name,
+            table.identity_fields.join(", ")
+        );
+        let mut statement = conn.prepare(&sql)?;
+        let rows = statement.query_map([], |row| {
+            let identity_values = (0..table.identity_fields.len())
+                .map(|index| row.get::<_, rusqlite::types::Value>(index))
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let values = (0..fields.len())
+                .map(|index| row.get::<_, Option<String>>(index + table.identity_fields.len()))
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok((identity_values, values))
+        })?;
+        for row in rows {
+            let (identity_values, values) = row?;
+            let selector_values = identity_values
+                .iter()
+                .map(selector_identity_value)
+                .collect::<Result<Vec<_>>>()?;
+            let selector = semantic_selector(table, &selector_values);
+            for (field, value) in fields.iter().zip(values) {
+                let Some(text) = value else {
+                    continue;
+                };
+                let report = scan::scan(&config, &selector, &[Field::new(field, &text)]);
+                for finding in report
+                    .findings
+                    .into_iter()
+                    .filter(|finding| finding.fingerprint == fingerprint)
+                {
+                    if located.is_some() {
+                        return Err(Error::integrity(
+                            "one secret fingerprint resolved to multiple live locations",
+                        ));
+                    }
+                    located = Some(LiveFindingLocation {
+                        table: table.name,
+                        identity_fields: table.identity_fields,
+                        identity_values: identity_values.clone(),
+                        field,
+                        finding,
+                    });
+                }
+            }
+        }
+    }
+    Ok(located)
+}
+
+#[allow(dead_code)]
+fn selector_identity_value(value: &rusqlite::types::Value) -> Result<Option<String>> {
+    match value {
+        rusqlite::types::Value::Null => Ok(None),
+        rusqlite::types::Value::Integer(value) => Ok(Some(value.to_string())),
+        rusqlite::types::Value::Real(value) => Ok(Some(value.to_string())),
+        rusqlite::types::Value::Text(value) => Ok(Some(value.clone())),
+        rusqlite::types::Value::Blob(_) => Err(Error::integrity(
+            "live selector identity cannot be a binary value",
+        )),
+    }
 }
 
 /// A live selector commits to the table's durable primary/origin identity,

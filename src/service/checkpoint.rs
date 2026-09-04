@@ -619,6 +619,12 @@ impl RedactionRecords {
             + self.tombstones.len()
     }
 
+    /// Whether this store contains no historical-redaction records.
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Sort every kind into canonical order, in place.
     fn sort(&mut self) {
         self.findings
