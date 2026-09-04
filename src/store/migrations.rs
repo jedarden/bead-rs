@@ -7,7 +7,7 @@ use rusqlite::{Connection, Result as SqliteResult, Transaction, TransactionBehav
 use sha2::{Digest, Sha256};
 
 /// Current migration version
-pub const CURRENT_VERSION: i64 = 14;
+pub const CURRENT_VERSION: i64 = 15;
 
 /// Whether the store has already reached [`CURRENT_VERSION`].
 ///
@@ -91,7 +91,11 @@ pub fn apply_migrations(conn: &Connection) -> SqliteResult<()> {
         for statement in migration.sql.split(';') {
             let statement = statement.trim();
             if !statement.is_empty() {
-                tx.execute(statement, [])?;
+                if let Err(error) = tx.execute(statement, []) {
+                    if !is_safe_add_column_replay(&tx, version, statement, &error)? {
+                        return Err(error);
+                    }
+                }
             }
         }
 
@@ -108,6 +112,29 @@ pub fn apply_migrations(conn: &Connection) -> SqliteResult<()> {
     }
 
     Ok(())
+}
+
+/// Accept only the narrow additive-migration replay where the exact column is
+/// already present. Other DDL errors remain fatal.
+fn is_safe_add_column_replay(
+    tx: &Transaction<'_>,
+    version: i64,
+    statement: &str,
+    error: &rusqlite::Error,
+) -> SqliteResult<bool> {
+    if version != 15
+        || statement.split_whitespace().collect::<Vec<_>>().join(" ")
+            != "ALTER TABLE attempt_outcomes ADD COLUMN resulting_state TEXT NOT NULL DEFAULT ''"
+        || !error.to_string().contains("duplicate column name")
+    {
+        return Ok(false);
+    }
+
+    tx.query_row(
+        "SELECT COUNT(*) = 1 FROM pragma_table_info('attempt_outcomes') WHERE name = 'resulting_state'",
+        [],
+        |row| row.get(0),
+    )
 }
 
 /// Get a migration by version number
@@ -127,6 +154,7 @@ fn get_migration(version: i64) -> Migration {
         12 => migration_12(),
         13 => migration_13(),
         14 => migration_14(),
+        15 => migration_15(),
         v => panic!("Unknown migration version: {}", v),
     }
 }
@@ -783,6 +811,21 @@ CREATE INDEX IF NOT EXISTS attempt_outcomes_created ON attempt_outcomes (created
 
     Migration {
         sql: sql.to_string(),
+    }
+}
+
+/// Migration 15: persist the authoritative post-resolution issue state.
+///
+/// Older rows receive the empty sentinel and retain the compatibility
+/// fallback used by replay/export. New rows always store the state observed
+/// by the resolving transaction, including states that cannot be inferred
+/// from the action alone (for example `none` on an in-progress issue).
+fn migration_15() -> Migration {
+    Migration {
+        sql: r#"
+ALTER TABLE attempt_outcomes ADD COLUMN resulting_state TEXT NOT NULL DEFAULT '';
+"#
+        .to_string(),
     }
 }
 

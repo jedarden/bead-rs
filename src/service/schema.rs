@@ -229,6 +229,7 @@ fn names(kind: &str) -> &'static [&'static str] {
             "reason",
             "canonical_request_hash",
             "resulting_issue_revision",
+            "resulting_state",
             "resulting_attempt_tier",
             "receipt_id",
             "actor",
@@ -276,6 +277,7 @@ fn names(kind: &str) -> &'static [&'static str] {
             "issue_count",
             "event_count",
             "receipt_count",
+            "attempt_outcome_count",
             "total_record_count",
             "created_at",
         ],
@@ -292,6 +294,8 @@ fn names(kind: &str) -> &'static [&'static str] {
             "issue_shards",
             "event_shards",
             "receipt_shards",
+            "attempt_outcome_count",
+            "attempt_outcome_shards",
         ],
         "field_guide" => &[
             "schema_ref",
@@ -354,6 +358,7 @@ fn property_schema(kind: &str, name: &str) -> Value {
         | ("checkpoint_pointer", "issue_count")
         | ("checkpoint_pointer", "event_count")
         | ("checkpoint_pointer", "receipt_count")
+        | ("checkpoint_pointer", "attempt_outcome_count")
         | ("checkpoint_pointer", "total_record_count") => json!({"type":"integer", "minimum":0}),
         ("checkpoint_pointer", "mode") => json!({"type":"string", "enum":["monolithic","sharded"]}),
         ("checkpoint_pointer", "active_root") => {
@@ -371,7 +376,9 @@ fn property_schema(kind: &str, name: &str) -> Value {
         }
         ("checkpoint_manifest", "issue_shards")
         | ("checkpoint_manifest", "event_shards")
-        | ("checkpoint_manifest", "receipt_shards") => json!({"type":"array"}),
+        | ("checkpoint_manifest", "receipt_shards")
+        | ("checkpoint_manifest", "attempt_outcome_shards") => json!({"type":"array"}),
+        ("checkpoint_manifest", "attempt_outcome_count") => json!({"type":"integer", "minimum":0}),
         ("checkpoint_manifest", "partition_thresholds") => json!({"type":"object"}),
         ("capabilities", "store_layout") => json!({"type":"integer", "minimum":1}),
         ("capabilities", "atomic_claim")
@@ -393,6 +400,7 @@ fn property_schema(kind: &str, name: &str) -> Value {
         ("attempt_outcome", "action") => json!({"type":"string", "enum":["close","release","quarantine","block","none"]}),
         ("attempt_outcome", "reason") => json!({"type":["string","null"], "maxLength":4194304}),
         ("attempt_outcome", "canonical_request_hash") => json!({"type":"string", "minLength":64, "maxLength":64}),
+        ("attempt_outcome", "resulting_state") => json!({"type":"string", "enum":["open","in_progress","deferred","closed"]}),
         ("attempt_outcome", "resulting_issue_revision") => json!({"type":"integer", "minimum":1}),
         ("attempt_outcome", "resulting_attempt_tier") => json!({"type":"integer", "minimum":0, "maximum":3}),
         ("attempt_outcome", "receipt_id") => json!({"type":"string", "minLength":1}),
@@ -467,6 +475,8 @@ fn required_for(kind: &str) -> Vec<String> {
         // validate against the same additive identity (plan section 11)
         "capabilities" => &["auto_flush", "secret_scan"],
         "attempt_outcome" => &["reason", "model", "harness", "harness_version"],
+        "checkpoint_pointer" => &["attempt_outcome_count"],
+        "checkpoint_manifest" => &["attempt_outcome_count", "attempt_outcome_shards"],
         "resolve_receipt" => &[],
         "resolve_request" => &["action", "reason", "if_revision", "fencing_token", "evidence_refs", "model", "harness", "harness_version"],
         _ => &[],

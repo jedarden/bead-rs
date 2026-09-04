@@ -921,6 +921,7 @@ pub struct RestoreDisplacedCounts {
     pub issues: usize,
     pub events: usize,
     pub provenance_receipts: usize,
+    pub attempt_outcomes: usize,
     pub saved_views: usize,
     pub recurrence_templates: usize,
 }
@@ -930,6 +931,7 @@ impl RestoreDisplacedCounts {
         self.issues == 0
             && self.events == 0
             && self.provenance_receipts == 0
+            && self.attempt_outcomes == 0
             && self.saved_views == 0
             && self.recurrence_templates == 0
     }
@@ -1462,14 +1464,18 @@ pub fn verify_restore_source(source: &Path, generation_id: &str) -> Result<Verif
         bail!("Unverified restore source: snapshot_sequence is negative");
     }
     if pointer.total_record_count
-        != pointer.issue_count + pointer.event_count + pointer.receipt_count
+        != pointer.issue_count
+            + pointer.event_count
+            + pointer.receipt_count
+            + pointer.attempt_outcome_count
     {
         bail!(
-            "Unverified restore source: pointer total_record_count {} does not equal issues {} + events {} + receipts {}",
+            "Unverified restore source: pointer total_record_count {} does not equal issues {} + events {} + receipts {} + attempt outcomes {}",
             pointer.total_record_count,
             pointer.issue_count,
             pointer.event_count,
-            pointer.receipt_count
+            pointer.receipt_count,
+            pointer.attempt_outcome_count
         );
     }
     validate_sha256(&pointer.active_root.sha256, "pointer active_root.sha256")?;
@@ -1514,15 +1520,18 @@ pub fn verify_restore_source(source: &Path, generation_id: &str) -> Result<Verif
     if staging.issue_count != pointer.issue_count
         || staging.event_count != pointer.event_count
         || staging.receipt_count != pointer.receipt_count
+        || staging.attempt_outcome_count != pointer.attempt_outcome_count
     {
         bail!(
-            "Unverified restore source: pointer counts (issues={}, events={}, receipts={}) disagree with staged records ({}, {}, {})",
+            "Unverified restore source: pointer counts (issues={}, events={}, receipts={}, attempt outcomes={}) disagree with staged records ({}, {}, {}, {})",
             pointer.issue_count,
             pointer.event_count,
             pointer.receipt_count,
+            pointer.attempt_outcome_count,
             staging.issue_count,
             staging.event_count,
-            staging.receipt_count
+            staging.receipt_count,
+            staging.attempt_outcome_count
         );
     }
     validate_forensic_contents(&staging)?;
@@ -1861,7 +1870,7 @@ fn verify_monolithic_restore_records(root: &Path) -> Result<()> {
             record
                 .get("record_type")
                 .and_then(serde_json::Value::as_str),
-            Some("issue" | "event" | "provenance_receipt")
+            Some("issue" | "event" | "provenance_receipt" | "attempt_outcome")
         ) {
             bail!(
                 "Unverified restore source: {}:{} is not a typed forensic checkpoint record",
@@ -1918,16 +1927,25 @@ fn verify_sharded_restore_closure(
     let manifest_issue_count = required_manifest_usize(&manifest, "issue_count")?;
     let manifest_event_count = required_manifest_usize(&manifest, "event_count")?;
     let manifest_receipt_count = required_manifest_usize(&manifest, "receipt_count")?;
+    // Pre-attempt-outcome manifests omit this field and pair with pointers
+    // whose serde default is zero. A present field must agree exactly.
+    let manifest_attempt_outcome_count = manifest
+        .get("attempt_outcome_count")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(0);
     let manifest_total = required_manifest_usize(&manifest, "total_record_count")?;
     if (
         manifest_issue_count,
         manifest_event_count,
         manifest_receipt_count,
+        manifest_attempt_outcome_count,
         manifest_total,
     ) != (
         pointer.issue_count,
         pointer.event_count,
         pointer.receipt_count,
+        pointer.attempt_outcome_count,
         pointer.total_record_count,
     ) {
         bail!("Unverified restore source: manifest counts disagree with generation pointer");
@@ -2456,7 +2474,7 @@ fn stage_sharded_checkpoint(pointer_path: &Path) -> Result<ForensicStaging> {
     let mut seen_issue_ids = HashSet::new();
     let mut seen_event_identities = HashSet::new();
     let mut seen_receipt_ids = HashSet::new();
-    let seen_attempt_ids: HashSet<String> = HashSet::new();
+    let mut seen_attempt_ids: HashSet<String> = HashSet::new();
 
     // Process issue shards
     if let Some(issue_shards) = manifest.get("issue_shards").and_then(|v| v.as_array()) {
@@ -2543,6 +2561,11 @@ fn stage_sharded_checkpoint(pointer_path: &Path) -> Result<ForensicStaging> {
                 &mut seen_receipt_ids,
             )?;
 
+            for outcome in &shard_data.attempt_outcomes {
+                if !seen_attempt_ids.insert(outcome.attempt_id.clone()) {
+                    bail!("Duplicate attempt ID: {}", outcome.attempt_id);
+                }
+            }
             attempt_outcomes.extend(shard_data.attempt_outcomes);
         }
     }
@@ -3691,6 +3714,7 @@ fn read_restore_target_counts(conn: &rusqlite::Connection) -> Result<RestoreDisp
         issues: count(conn, "issues")?,
         events: count(conn, "events")?,
         provenance_receipts: count(conn, "provenance_receipts")?,
+        attempt_outcomes: count(conn, "attempt_outcomes")?,
         saved_views: count(conn, "saved_views")?,
         recurrence_templates: count(conn, "recurrence_templates")?,
     })
@@ -3713,6 +3737,7 @@ fn clear_native_restore_target(tx: &Transaction<'_>) -> Result<()> {
         "dependencies",
         "labels",
         "issue_extensions",
+        "attempt_outcomes",
         "events",
         "issues",
         "provenance_receipts",
@@ -3746,10 +3771,11 @@ fn execute_restore_into_empty(
     let displaced = read_restore_target_counts(&tx)?;
     if !displaced.is_empty() && !allow_non_empty {
         bail!(
-            "Target database is not empty (issues={}, events={}, provenance_receipts={}, saved_views={}, recurrence_templates={}). Restore refused without mutation; inspect the target and rerun with --allow-non-empty only when replacing that native state is intended.",
+            "Target database is not empty (issues={}, events={}, provenance_receipts={}, attempt_outcomes={}, saved_views={}, recurrence_templates={}). Restore refused without mutation; inspect the target and rerun with --allow-non-empty only when replacing that native state is intended.",
             displaced.issues,
             displaced.events,
             displaced.provenance_receipts,
+            displaced.attempt_outcomes,
             displaced.saved_views,
             displaced.recurrence_templates
         );
@@ -4141,7 +4167,8 @@ fn import_attempt_outcomes(tx: &Transaction, staging: &ForensicStaging) -> Resul
                         evidence_refs_json,
                         COALESCE(model, ''),
                         COALESCE(harness, ''),
-                        COALESCE(harness_version, '')
+                        COALESCE(harness_version, ''),
+                        resulting_state
                  FROM attempt_outcomes WHERE receipt_id = ?1",
                 [&outcome.receipt_id],
                 |row| {
@@ -4161,26 +4188,34 @@ fn import_attempt_outcomes(tx: &Transaction, staging: &ForensicStaging) -> Resul
                         row.get::<_, String>(12)?,
                         row.get::<_, String>(13)?,
                         row.get::<_, String>(14)?,
+                        row.get::<_, String>(15)?,
                     ))
                 },
             )
             .optional()?;
 
         if let Some(existing) = existing {
-            // Verify exact match for idempotent replay
-            // Key fields that must match are:
-            // - attempt_id (UNIQUE constraint)
-            // - issue_id
-            // - outcome
-            // - canonical_request_hash (this is the idempotency key)
-            // - receipt_id (PRIMARY KEY)
+            // Verify every checkpoint-visible field for idempotent replay.
+            // The prior tier is intentionally absent from the portable record
+            // and therefore cannot participate in this comparison.
             if existing.0 != outcome.attempt_id
                 || existing.1 != outcome.issue_id
                 || existing.2 != outcome.outcome
+                || existing.3 != outcome.action
+                || existing.4 != outcome.reason.clone().unwrap_or_default()
                 || existing.5 != outcome.canonical_request_hash
+                || existing.7 != outcome.resulting_attempt_tier
+                || existing.8 != outcome.resulting_issue_revision
+                || existing.9 != outcome.actor
+                || existing.10 != outcome.created_at
+                || existing.11 != evidence_refs_json
+                || existing.12 != outcome.model.clone().unwrap_or_default()
+                || existing.13 != outcome.harness.clone().unwrap_or_default()
+                || existing.14 != outcome.harness_version.clone().unwrap_or_default()
+                || existing.15 != outcome.resulting_state
             {
                 bail!(
-                    "Attempt outcome receipt ID conflict: '{}' has different content (attempt_id, issue_id, outcome, or canonical_request_hash mismatch)",
+                    "Attempt outcome receipt ID conflict: '{}' has different checkpoint-visible content",
                     outcome.receipt_id
                 );
             }
@@ -4195,8 +4230,8 @@ fn import_attempt_outcomes(tx: &Transaction, staging: &ForensicStaging) -> Resul
                 receipt_id, attempt_id, issue_id, outcome, action, reason,
                 canonical_request_hash, prior_attempt_tier, resulting_attempt_tier,
                 resulting_issue_revision, actor, created_at, evidence_refs_json,
-                model, harness, harness_version
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                model, harness, harness_version, resulting_state
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 &outcome.receipt_id,
                 &outcome.attempt_id,
@@ -4214,6 +4249,7 @@ fn import_attempt_outcomes(tx: &Transaction, staging: &ForensicStaging) -> Resul
                 &outcome.model,
                 &outcome.harness,
                 &outcome.harness_version,
+                &outcome.resulting_state,
             ],
         )?;
     }
@@ -6035,6 +6071,7 @@ pub fn publish_forensic_checkpoint_holding(
         issue_count,
         event_count,
         receipt_count,
+        attempt_outcome_count,
         total_record_count,
         added_paths: added_paths_sorted,
         replaced_paths: replaced_paths_sorted,
@@ -6980,6 +7017,7 @@ fn write_current_pointer(pointer_path: &Path, config: &PointerConfig) -> Result<
         "issue_count": config.issue_count,
         "event_count": config.event_count,
         "receipt_count": config.receipt_count,
+        "attempt_outcome_count": config.attempt_outcome_count,
         "total_record_count": config.total_record_count,
         "created_at": format_rfc3339(SystemTime::now())
     });
@@ -7471,7 +7509,7 @@ fn read_all_attempt_outcomes(tx: &Transaction) -> Result<Vec<AttemptOutcomeRecor
         "SELECT receipt_id, attempt_id, issue_id, outcome, action, reason,
                 canonical_request_hash, prior_attempt_tier, resulting_attempt_tier,
                 resulting_issue_revision, actor, created_at, evidence_refs_json,
-                model, harness, harness_version
+                model, harness, harness_version, resulting_state
          FROM attempt_outcomes",
     )?;
 
@@ -7493,6 +7531,7 @@ fn read_all_attempt_outcomes(tx: &Transaction) -> Result<Vec<AttemptOutcomeRecor
             row.get::<_, Option<String>>("model")?,
             row.get::<_, Option<String>>("harness")?,
             row.get::<_, Option<String>>("harness_version")?,
+            row.get::<_, String>("resulting_state")?,
         ))
     })?;
 
@@ -7514,6 +7553,7 @@ fn read_all_attempt_outcomes(tx: &Transaction) -> Result<Vec<AttemptOutcomeRecor
             model,
             harness,
             harness_version,
+            stored_resulting_state,
         ) = row?;
 
         let evidence_refs: Vec<String> =
@@ -7525,12 +7565,15 @@ fn read_all_attempt_outcomes(tx: &Transaction) -> Result<Vec<AttemptOutcomeRecor
                 )
             })?;
 
-        // Derive resulting_state from action
-        // close -> "closed", everything else -> "open"
-        let resulting_state = if action == "close" {
-            "closed".to_string()
+        // Rows written before migration 15 carry the empty sentinel.
+        let resulting_state = if stored_resulting_state.is_empty() {
+            if action == "close" {
+                "closed".to_string()
+            } else {
+                "open".to_string()
+            }
         } else {
-            "open".to_string()
+            stored_resulting_state
         };
 
         let record = AttemptOutcomeRecord {
@@ -7579,6 +7622,7 @@ struct PointerConfig {
     issue_count: usize,
     event_count: usize,
     receipt_count: usize,
+    attempt_outcome_count: usize,
     total_record_count: usize,
     added_paths: Vec<String>,
     replaced_paths: Vec<String>,

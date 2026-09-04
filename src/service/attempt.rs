@@ -82,7 +82,7 @@ pub fn resolve_attempt(
     // mutation, instead of letting the inner validation error surface as an
     // integrity failure.
     if matches!(action, Action::Close)
-        && request.reason.as_deref().map_or(true, |r| r.trim().is_empty())
+        && request.reason.as_deref().is_none_or(|r| r.trim().is_empty())
     {
         return Err(AttemptError::Usage(
             "action 'close' requires a non-empty reason".to_string(),
@@ -145,7 +145,11 @@ pub fn resolve_attempt(
                 issue_id: request.issue_id.clone(),
                 attempt_id: request.attempt_id.clone(),
                 resulting_issue_revision: existing.resulting_issue_revision,
-                resulting_state: derive_resulting_state(&existing.action),
+                resulting_state: if existing.resulting_state.is_empty() {
+                    derive_resulting_state(&existing.action)
+                } else {
+                    existing.resulting_state.clone()
+                },
                 resulting_attempt_tier: existing.resulting_attempt_tier,
                 created_at: existing.created_at,
                 is_replay: true,
@@ -212,6 +216,7 @@ pub fn resolve_attempt(
         prior_tier,
         resulting_tier,
         issue_state.revision + 1,
+        &resulting_state,
     )
     .map_err(|e| AttemptError::Integrity(format!("Failed to insert outcome: {}", e)))?;
 
@@ -352,13 +357,14 @@ struct ExistingAttempt {
     resulting_attempt_tier: i64,
     created_at: String,
     action: String,
+    resulting_state: String,
 }
 
 /// Derive the resulting state of a resolved attempt from its stored action.
 ///
-/// `attempt_outcomes` does not persist the post-action status, so a replayed
-/// receipt reconstructs it from the recorded action, the same derivation the
-/// checkpoint publisher applies when emitting outcome records.
+/// Rows written before migration 15 carry the empty sentinel, so a replayed
+/// receipt reconstructs the old best-effort value from the action. New rows
+/// use the exact state stored by the resolving transaction.
 fn derive_resulting_state(action: &str) -> String {
     if action == "close" {
         "closed".to_string()
@@ -374,7 +380,7 @@ fn get_existing_attempt(
 ) -> std::result::Result<Option<ExistingAttempt>, Error> {
     let mut stmt = tx.prepare_cached(
         "SELECT receipt_id, canonical_request_hash, outcome, resulting_issue_revision,
-                resulting_attempt_tier, created_at, action
+                resulting_attempt_tier, created_at, action, resulting_state
          FROM attempt_outcomes WHERE attempt_id = ?1",
     )?;
 
@@ -388,6 +394,7 @@ fn get_existing_attempt(
                 resulting_attempt_tier: row.get(4)?,
                 created_at: row.get(5)?,
                 action: row.get(6)?,
+                resulting_state: row.get(7)?,
             })
         })
         .optional()?;
@@ -463,7 +470,13 @@ fn apply_action(
             // No action
         }
         Action::Close => {
-            lifecycle::close_issue_in_tx(tx, issue_id, reason.as_deref().unwrap_or(""), None, None)?;
+            lifecycle::close_issue_in_tx(
+                tx,
+                issue_id,
+                reason.as_deref().unwrap_or(""),
+                None,
+                None,
+            )?;
         }
         Action::Release => {
             lifecycle::release_issue_in_tx(tx, issue_id)?;
@@ -508,6 +521,7 @@ fn insert_attempt_outcome(
     prior_tier: i64,
     resulting_tier: i64,
     resulting_revision: i64,
+    resulting_state: &str,
 ) -> Result<()> {
     let evidence_json = serde_json::to_string(&request.evidence_refs).unwrap_or_default();
 
@@ -518,8 +532,8 @@ fn insert_attempt_outcome(
             receipt_id, attempt_id, issue_id, outcome, action, reason,
             canonical_request_hash, prior_attempt_tier, resulting_attempt_tier,
             resulting_issue_revision, actor, created_at, evidence_refs_json,
-            model, harness, harness_version
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            model, harness, harness_version, resulting_state
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
         params![
             receipt_id,
             request.attempt_id.clone(),
@@ -537,6 +551,7 @@ fn insert_attempt_outcome(
             request.model.clone(),
             request.harness.clone(),
             request.harness_version.clone(),
+            resulting_state,
         ],
     )?;
 
