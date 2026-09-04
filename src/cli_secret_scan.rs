@@ -22,6 +22,12 @@ impl PreparedScan {
     pub(crate) fn arm_audit(&self) -> scan::AcknowledgmentAuditGuard {
         scan::arm_acknowledgment_audit(&self.report, &self.actor)
     }
+
+    fn report_dry_run_findings(&self) {
+        for finding in &self.report.findings {
+            eprintln!("secret_scan dry-run: {}", finding.diagnostic());
+        }
+    }
 }
 
 struct CanonicalRequest<'a> {
@@ -86,7 +92,13 @@ pub(crate) fn prepare(cli: &crate::cli::Cli) -> Result<Option<PreparedScan>> {
         };
         let config = configured_policy(cli, &workspace)?;
         let report = crate::service::manifest::scan_manifest(&config, &manifest);
-        return finalize(config, report, "cli");
+        let prepared = finalize(config, report, "cli")?;
+        if matches!(command, crate::cli::ManifestCommand::DryRun(_)) {
+            if let Some(scan) = &prepared {
+                scan.report_dry_run_findings();
+            }
+        }
+        return Ok(prepared);
     }
 
     let Some(request) = canonical_request(&cli.command) else {
@@ -105,7 +117,13 @@ pub(crate) fn prepare(cli: &crate::cli::Cli) -> Result<Option<PreparedScan>> {
     };
     let config = configured_policy(cli, &workspace)?;
     let report = scan::scan(&config, &request.selector, &request.fields);
-    finalize(config, report, request.actor)
+    let prepared = finalize(config, report, request.actor)?;
+    if command_is_dry_run(&cli.command) {
+        if let Some(scan) = &prepared {
+            scan.report_dry_run_findings();
+        }
+    }
+    Ok(prepared)
 }
 
 fn configured_policy(cli: &crate::cli::Cli, workspace: &WorkspaceConfig) -> Result<ScanConfig> {
@@ -282,6 +300,10 @@ fn canonical_request(command: &Command) -> Option<CanonicalRequest<'_>> {
                 .field("actor", &opts.actor)
                 .optional("reason", opts.reason.as_deref()),
         ),
+        Command::AnalyzeExclusion(opts) => opts.attach.as_deref().map(|target| {
+            CanonicalRequest::new(record_selector("issue", target), "cli")
+                .field("attach.issue_id", target)
+        }),
         // Manifest content is parsed and scanned by the manifest service so
         // its complete canonical operation list is covered before its single
         // transaction opens. Import, restore, reconcile, and checkpoint
@@ -299,10 +321,25 @@ fn canonical_request(command: &Command) -> Option<CanonicalRequest<'_>> {
         | Command::Query(_)
         | Command::Changes(_)
         | Command::Why(_)
-        | Command::AnalyzeExclusion(_)
         | Command::Compare(_)
         | Command::Policy(_)
         | Command::Watchdog(_) => None,
+    }
+}
+
+/// Successful R022 and manifest dry-runs surface every non-rejecting finding
+/// as redacted stderr diagnostics. Rejected dry-runs already return the same
+/// `secret_detected` failure as their committing form.
+fn command_is_dry_run(command: &Command) -> bool {
+    match command {
+        Command::Update(opts) => opts.dry_run,
+        Command::Release(opts) => opts.dry_run,
+        Command::Close(opts) => opts.dry_run,
+        Command::Reopen(opts) => opts.dry_run,
+        Command::Dep(DepCommand::Add(opts)) => opts.dry_run,
+        Command::Dep(DepCommand::Remove(opts)) => opts.dry_run,
+        Command::Manifest(crate::cli::ManifestCommand::DryRun(_)) => true,
+        _ => false,
     }
 }
 
@@ -316,68 +353,284 @@ mod tests {
     }
 
     #[test]
-    fn command_inventory_classifies_representative_mutations() {
-        let cases: &[&[&str]] = &[
-            &["bead", "create", "--title", "x"],
-            &["bead", "claim", "--assignee", "x"],
-            &["bead", "update", "x", "--notes", "x"],
-            &["bead", "release", "x"],
-            &["bead", "close", "x", "--reason", "x"],
-            &["bead", "reopen", "x"],
-            &[
-                "bead",
-                "resolve",
-                "x",
-                "--attempt-id",
-                "attempt:x",
-                "--outcome",
-                "cancelled",
-            ],
-            &["bead", "label", "add", "x", "--label", "x"],
-            &["bead", "resource", "add", "x", "--key", "x"],
-            &["bead", "dep", "add", "x", "y"],
-            &[
-                "bead",
-                "ref",
-                "add",
-                "--id",
-                "x",
-                "--namespace",
-                "n",
-                "--key",
-                "k",
-                "--value",
-                "v",
-            ],
-            &[
-                "bead",
-                "data",
-                "set",
-                "--id",
-                "x",
-                "--namespace",
-                "n",
-                "--schema-ref",
-                "s",
-                "--value",
-                "{}",
-            ],
-            &[
-                "bead",
-                "recurrence",
-                "create",
-                "--id",
-                "x",
-                "--title",
-                "x",
-                "--base-title-template",
-                "x {n}",
-            ],
-            &["bead", "sync", "fork", "--actor", "x"],
+    fn command_inventory_covers_every_mutation_variant_and_text_field() {
+        let cases: &[(&[&str], &[&str])] = &[
+            (
+                &[
+                    "bead",
+                    "create",
+                    "--title",
+                    "x",
+                    "--description",
+                    "x",
+                    "--issue-type",
+                    "x",
+                    "--assignee",
+                    "x",
+                    "--label",
+                    "x",
+                    "--label",
+                    "y",
+                    "--resource-key",
+                    "x",
+                    "--resource-key",
+                    "y",
+                    "--unique-ref",
+                    "x:y",
+                    "--status",
+                    "x",
+                    "--notes",
+                    "x",
+                ],
+                &[
+                    "title",
+                    "description",
+                    "issue_type",
+                    "assignee",
+                    "labels[]",
+                    "labels[]",
+                    "resource_keys[]",
+                    "resource_keys[]",
+                    "unique_ref",
+                    "unsupported.status",
+                    "unsupported.notes",
+                ],
+            ),
+            (
+                &["bead", "claim", "--assignee", "x", "--policy", "fifo-v1"],
+                &["assignee", "policy"],
+            ),
+            (
+                &[
+                    "bead",
+                    "update",
+                    "x",
+                    "--status",
+                    "open",
+                    "--assignee",
+                    "x",
+                    "--notes",
+                    "x",
+                    "--title",
+                    "x",
+                    "--description",
+                    "x",
+                    "--issue-type",
+                    "x",
+                    "--label",
+                    "x",
+                ],
+                &[
+                    "id",
+                    "status",
+                    "assignee",
+                    "notes",
+                    "unsupported.title",
+                    "unsupported.description",
+                    "unsupported.issue_type",
+                    "unsupported.label",
+                ],
+            ),
+            (&["bead", "release", "x"], &["id"]),
+            (
+                &["bead", "close", "x", "--reason", "x", "--body", "x"],
+                &["id", "close_reason", "unsupported.body"],
+            ),
+            (&["bead", "reopen", "x"], &["id"]),
+            (
+                &[
+                    "bead",
+                    "resolve",
+                    "x",
+                    "--attempt-id",
+                    "attempt:x",
+                    "--outcome",
+                    "cancelled",
+                    "--action",
+                    "none",
+                    "--reason",
+                    "x",
+                    "--evidence-ref",
+                    "x:y",
+                    "--evidence-ref",
+                    "x:z",
+                    "--actor",
+                    "x",
+                    "--model",
+                    "x",
+                    "--harness",
+                    "x",
+                    "--harness-version",
+                    "x",
+                ],
+                &[
+                    "id",
+                    "attempt_id",
+                    "outcome",
+                    "action",
+                    "reason",
+                    "evidence_refs[]",
+                    "evidence_refs[]",
+                    "actor",
+                    "model",
+                    "harness",
+                    "harness_version",
+                ],
+            ),
+            (
+                &["bead", "label", "add", "x", "--label", "x"],
+                &["id", "label"],
+            ),
+            (
+                &["bead", "label", "remove", "x", "--label", "x"],
+                &["id", "label"],
+            ),
+            (
+                &["bead", "resource", "add", "x", "--key", "x", "--key", "y"],
+                &["id", "resource_keys[]", "resource_keys[]"],
+            ),
+            (
+                &["bead", "resource", "remove", "x", "--key", "x"],
+                &["id", "resource_keys[]"],
+            ),
+            (
+                &[
+                    "bead",
+                    "dep",
+                    "add",
+                    "x",
+                    "y",
+                    "--kind",
+                    "blocks",
+                    "--condition",
+                    "x",
+                ],
+                &["blocked_issue_id", "blocker_issue_id", "kind", "condition"],
+            ),
+            (
+                &["bead", "dep", "remove", "x", "y", "--kind", "blocks"],
+                &["blocked_issue_id", "blocker_issue_id", "kind"],
+            ),
+            (
+                &[
+                    "bead",
+                    "ref",
+                    "add",
+                    "--id",
+                    "x",
+                    "--namespace",
+                    "n",
+                    "--key",
+                    "k",
+                    "--value",
+                    "v",
+                ],
+                &[
+                    "id",
+                    "external_ref.namespace",
+                    "external_ref.key",
+                    "external_ref.value",
+                ],
+            ),
+            (
+                &[
+                    "bead",
+                    "ref",
+                    "remove",
+                    "--id",
+                    "x",
+                    "--namespace",
+                    "n",
+                    "--key",
+                    "k",
+                ],
+                &["id", "external_ref.namespace", "external_ref.key"],
+            ),
+            (
+                &[
+                    "bead",
+                    "data",
+                    "set",
+                    "--id",
+                    "x",
+                    "--namespace",
+                    "n",
+                    "--schema-ref",
+                    "s",
+                    "--value",
+                    "{}",
+                ],
+                &["id", "data.namespace", "data.schema_ref", "data.value"],
+            ),
+            (
+                &["bead", "data", "remove", "--id", "x", "--namespace", "n"],
+                &["id", "data.namespace"],
+            ),
+            (
+                &[
+                    "bead",
+                    "recurrence",
+                    "create",
+                    "--id",
+                    "x",
+                    "--title",
+                    "x",
+                    "--description",
+                    "x",
+                    "--base-title-template",
+                    "x {n}",
+                    "--base-description",
+                    "x",
+                    "--issue-type",
+                    "x",
+                    "--labels",
+                    "x,y",
+                ],
+                &[
+                    "id",
+                    "title",
+                    "description",
+                    "base_title_template",
+                    "base_description",
+                    "issue_type",
+                    "labels",
+                ],
+            ),
+            (&["bead", "recurrence", "delete", "--id", "x"], &["id"]),
+            (
+                &[
+                    "bead",
+                    "recurrence",
+                    "materialize",
+                    "--id",
+                    "x",
+                    "--actor",
+                    "x",
+                ],
+                &["id", "actor"],
+            ),
+            (
+                &["bead", "sync", "fork", "--actor", "x", "--reason", "x"],
+                &["actor", "reason"],
+            ),
+            (
+                &["bead", "analyze-exclusion", "--attach", "x"],
+                &["attach.issue_id"],
+            ),
         ];
-        for args in cases {
+        for (args, expected_fields) in cases {
             let cli = parsed(args);
-            assert!(canonical_request(&cli.command).is_some(), "{args:?}");
+            let request = canonical_request(&cli.command)
+                .unwrap_or_else(|| panic!("mutation was not classified: {args:?}"));
+            assert_eq!(
+                request
+                    .fields
+                    .iter()
+                    .map(|field| field.path)
+                    .collect::<Vec<_>>(),
+                *expected_fields,
+                "{args:?}"
+            );
         }
     }
 

@@ -356,10 +356,11 @@ impl Finding {
             Tier::Advisory => "advisory",
         };
         format!(
-            "{} rule {} ({}) in {} field {} bytes {}..{} fingerprint {}",
+            "{} rule {} ({}) disposition {} in {} field {} bytes {}..{} fingerprint {}",
             tier,
             self.rule_id,
             self.provider,
+            self.disposition.as_str(),
             self.selector,
             self.field_path,
             self.start,

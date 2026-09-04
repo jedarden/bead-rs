@@ -25,6 +25,12 @@ fn provider_shaped_value() -> String {
     value
 }
 
+fn placeholder_shaped_value() -> String {
+    let mut value = ["AK", "IA"].concat();
+    value.push_str(&"A".repeat(16));
+    value
+}
+
 fn counts(root: &Path) -> (i64, i64) {
     let conn = Connection::open(root.join(".beads/beads.db")).unwrap();
     let issues = conn
@@ -153,6 +159,39 @@ fn advisory_and_off_workspace_modes_do_not_reject() {
             .success();
         assert_eq!(counts(workspace.path()).0, 1);
     }
+}
+
+#[test]
+fn successful_dry_run_reports_redacted_nonblocking_findings() {
+    let workspace = workspace();
+    let created = Command::cargo_bin("bead")
+        .unwrap()
+        .current_dir(workspace.path())
+        .args(["create", "--title", "dry-run target", "--no-auto-flush"])
+        .output()
+        .unwrap();
+    assert!(created.status.success());
+    let issue_id = String::from_utf8(created.stdout).unwrap();
+    let value = placeholder_shaped_value();
+    let before = counts(workspace.path());
+
+    let output = Command::cargo_bin("bead")
+        .unwrap()
+        .current_dir(workspace.path())
+        .args(["update", issue_id.trim(), "--notes"])
+        .arg(&value)
+        .args(["--dry-run", "--no-auto-flush"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    assert_eq!(counts(workspace.path()), before);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("secret_scan dry-run:"));
+    assert!(stderr.contains("disposition placeholder"));
+    assert!(!stdout.contains(&value));
+    assert!(!stderr.contains(&value));
 }
 
 #[test]
