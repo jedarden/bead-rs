@@ -771,6 +771,10 @@ fn with_operation_context(index: usize, kind: &str, error: Error) -> Error {
         Error::PostCommitPublicationFailed { source } => {
             Error::PostCommitPublicationFailed { source }
         }
+        Error::RedactionPublicationFailed { receipt_id, source } => {
+            Error::RedactionPublicationFailed { receipt_id, source }
+        }
+        Error::Redaction(error) => Error::Redaction(error),
         Error::Internal(_) => Error::Internal(anyhow::anyhow!(message)),
         Error::Sqlite(_) => Error::Internal(anyhow::anyhow!(message)),
         Error::Json(_) => Error::Internal(anyhow::anyhow!(message)),

@@ -54,6 +54,9 @@ pub struct Capabilities {
     /// Secret rejection and diagnostic capabilities (ADR-014).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secret_scan: Option<SecretScanCapabilities>,
+    /// Audited historical-redaction capability handshake (ADR-015).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub historical_redaction: Option<HistoricalRedactionCapabilities>,
 }
 
 /// Offline secret-scanning capability handshake.
@@ -65,6 +68,17 @@ pub struct SecretScanCapabilities {
     pub blocking: bool,
     pub advisory: bool,
     pub exact_fingerprint_acknowledgment: bool,
+}
+
+/// Exceptional maintenance capability for already-stored sensitive bytes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoricalRedactionCapabilities {
+    pub contract: String,
+    pub doctor_findings: bool,
+    pub atomic_redact: bool,
+    pub anti_resurrection: bool,
+    pub sanitized_generation_set: bool,
+    pub resumable_publication: bool,
 }
 
 /// Priority capabilities
@@ -200,6 +214,7 @@ pub fn generate_capabilities_with_secret_mode(
             "manifest".to_string(),
             "policy".to_string(),
             "query".to_string(),
+            "redact".to_string(),
             "recurrence".to_string(),
             "ref".to_string(),
             "release".to_string(),
@@ -250,6 +265,14 @@ pub fn generate_capabilities_with_secret_mode(
             blocking: true,
             advisory: true,
             exact_fingerprint_acknowledgment: true,
+        }),
+        historical_redaction: Some(HistoricalRedactionCapabilities {
+            contract: "urn:bead-rs:spec:historical-redaction:v1".to_string(),
+            doctor_findings: true,
+            atomic_redact: true,
+            anti_resurrection: true,
+            sanitized_generation_set: true,
+            resumable_publication: true,
         }),
     })
 }

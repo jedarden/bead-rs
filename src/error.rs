@@ -81,6 +81,22 @@ pub enum Error {
         source: anyhow::Error,
     },
 
+    /// Historical redaction committed but its mandatory sanitized checkpoint
+    /// publication did not complete (exit 1). The receipt identity is safe to
+    /// print and is the only input accepted by the resume path.
+    #[error(
+        "historical redaction receipt {receipt_id} committed, but sanitized checkpoint publication failed: {source}. The redaction remains committed; resume with 'bead redact --resume {receipt_id}'"
+    )]
+    RedactionPublicationFailed {
+        receipt_id: String,
+        #[source]
+        source: anyhow::Error,
+    },
+
+    /// Typed historical-redaction validation/not-found/conflict failure.
+    #[error("{0}")]
+    Redaction(#[from] crate::model::redaction::RedactionError),
+
     /// Uncategorized internal failure (exit 1)
     #[error("Internal error: {0}")]
     Internal(#[from] anyhow::Error),
@@ -122,7 +138,9 @@ impl Error {
             // Defined, not inherited from the catch-all: plan 6.2.1 item 5
             // pins this split outcome to exit 1 regardless of what the
             // underlying publication error would have mapped to on its own.
-            Error::PostCommitPublicationFailed { .. } => 1,
+            Error::PostCommitPublicationFailed { .. }
+            | Error::RedactionPublicationFailed { .. } => 1,
+            Error::Redaction(error) => error.exit_code(),
             _ => 1,
         }
     }

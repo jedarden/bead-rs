@@ -51,8 +51,8 @@ pub use checkpoint::{
     acquire_checkpoint_publication_lock, flush_checkpoint, forensic_checkpoint_status,
     fork_workspace_identity, import_checkpoint_with_diagnostics, import_forensic_checkpoint,
     load_checkpoint_config, publish_forensic_checkpoint, publish_forensic_checkpoint_holding,
-    read_covered_event_sequence, read_live_event_sequence, restore_verified_generation,
-    verify_restore_source, CheckpointConfig,
+    publish_redaction_checkpoint_holding, read_covered_event_sequence, read_live_event_sequence,
+    restore_verified_generation, verify_restore_source, CheckpointConfig,
 };
 // The fork report type is public library API (callers of
 // `fork_workspace_identity` name it) but the binary holds it only as a
@@ -104,8 +104,8 @@ pub use recurrence::{
 };
 #[allow(unused_imports)]
 pub use redaction::{
-    acquire_redaction_locks, redact_finding, redact_finding_holding, RedactionLocks,
-    RedactionOutcome,
+    acquire_redaction_locks, load_redaction_receipt, preview_redaction_holding, redact_finding,
+    redact_finding_holding, RedactionLocks, RedactionOutcome, RedactionPreview,
 };
 pub use rehearsal::run_recovery_rehearsal;
 pub use schema::{

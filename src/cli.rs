@@ -2,7 +2,7 @@
 //!
 //! This module uses clap derive to define all command-line interface commands.
 
-use clap::{Parser, Subcommand};
+use clap::{ArgGroup, Parser, Subcommand};
 
 /// Main CLI structure for bead-rs
 #[derive(Parser, Debug)]
@@ -144,6 +144,37 @@ a lifecycle transition in one atomic operation. This implements the
 attempt-outcome-v1 specification with exactly-once semantics."
     )]
     Resolve(ResolveOptions),
+
+    /// Destroy one scanner-selected historical secret and publish a clean generation
+    #[command(
+        name = "redact",
+        about = "Redact one historical secret by scanner fingerprint",
+        long_about = "Destroy exactly one sensitive byte range selected by a current secret-scanner fingerprint.
+
+The command never accepts or prints the matched value. A new redaction requires
+--finding, --actor, and --reason; the service revalidates the fingerprint under
+the maintenance and checkpoint-publication locks, replaces only that range with
+the fixed bead-rs marker, records a nonsecret receipt, and publishes a sanitized
+checkpoint generation set. Publication is mandatory even when workspace
+automatic publication is disabled.
+
+If publication fails after the SQLite redaction commits, no semantic mutation is
+repeated. Resume the recorded receipt with `bead redact --resume RECEIPT_ID`.
+
+EXAMPLES:
+  bead doctor --scope secrets --format json
+  bead redact --finding FINGERPRINT --actor operator --reason \"credential rotation\" --dry-run --json
+  bead redact --finding FINGERPRINT --actor operator --reason \"credential rotation\" --json
+  bead redact --resume RECEIPT_ID --json
+
+EXIT CODES:
+  0  redaction and sanitized publication completed, or dry-run succeeded
+  1  internal failure or redaction committed but publication did not complete
+  2  invalid request, actor, reason, fingerprint, or option combination
+  3  finding or receipt not found
+  4  stale target or semantic conflict"
+    )]
+    Redact(RedactOptions),
 
     Claim(ClaimOptions),
 
@@ -1044,6 +1075,44 @@ pub struct ReopenOptions {
     /// Dry run: show what would happen without making changes
     #[arg(long)]
     pub dry_run: bool,
+}
+
+/// Options for the exceptional historical-redaction operation.
+#[derive(Parser, Debug)]
+#[command(group(
+    ArgGroup::new("redaction_selection")
+        .required(true)
+        .multiple(false)
+        .args(["finding", "resume"])
+))]
+pub struct RedactOptions {
+    /// Fingerprint reported by `bead doctor --scope secrets --format json`
+    #[arg(long, value_name = "FINGERPRINT")]
+    pub finding: Option<String>,
+
+    /// Resume sanitized publication for an already committed receipt
+    #[arg(
+        long,
+        value_name = "RECEIPT_ID",
+        conflicts_with_all = ["finding", "actor", "reason", "dry_run"]
+    )]
+    pub resume: Option<String>,
+
+    /// Identity ordering a new redaction
+    #[arg(long, value_name = "ACTOR", required_unless_present = "resume")]
+    pub actor: Option<String>,
+
+    /// Bounded nonsecret justification for a new redaction
+    #[arg(long, value_name = "REASON", required_unless_present = "resume")]
+    pub reason: Option<String>,
+
+    /// Report the exact selector and effects without changing SQLite or checkpoint files
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Emit the preview or published receipt as JSON
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Options for resolving an attempt

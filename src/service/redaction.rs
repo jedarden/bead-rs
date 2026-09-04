@@ -38,6 +38,41 @@ pub struct RedactionOutcome {
     pub is_replay: bool,
 }
 
+/// Non-mutating plan returned by `bead redact --dry-run`.
+#[derive(Debug, Clone, Serialize)]
+pub struct RedactionPreview {
+    pub finding_fingerprint: String,
+    pub ruleset_version: u32,
+    pub rule_id: String,
+    pub selector: FieldSelector,
+    pub prior_record_hash: String,
+    pub sanitized_record_hash: String,
+    pub affected_issue_revision: Option<i64>,
+    pub replacement_marker: &'static str,
+    pub previous_generation_reset: bool,
+}
+
+/// Load one durable receipt for `bead redact --resume` without exposing any
+/// removed bytes.
+pub fn load_redaction_receipt(
+    conn: &rusqlite::Connection,
+    receipt_id: &str,
+) -> Result<RedactionReceipt, RedactionError> {
+    if receipt_id.len() != 64
+        || !receipt_id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(RedactionError::Usage(
+            "receipt ID must be 64-character lowercase SHA-256 hex".to_string(),
+        ));
+    }
+    read_receipts(conn, "receipt_id", receipt_id)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| RedactionError::NotFound("redaction receipt does not exist".to_string()))
+}
+
 /// Proof that both exceptional-maintenance locks are held in canonical order.
 ///
 /// BR-T17 keeps this guard alive through sanitized checkpoint publication so
@@ -106,6 +141,103 @@ pub fn redact_finding_holding(
         false,
         expected.as_ref(),
     )
+}
+
+/// Revalidate and describe one redaction without committing any change.
+pub fn preview_redaction_holding(
+    store: &mut SqliteStore,
+    _locks: &RedactionLocks,
+    fingerprint: &str,
+    actor: &str,
+    reason: &str,
+) -> Result<RedactionPreview, RedactionError> {
+    validate_request(fingerprint, actor, reason)?;
+    let tx = Transaction::new_unchecked(store.conn(), TransactionBehavior::Immediate)
+        .map_err(|_| integrity("could not open redaction preview transaction"))?;
+    let location = find_live_finding(&tx, fingerprint)
+        .map_err(|_| integrity("could not scan live redaction targets"))?
+        .ok_or_else(|| {
+            RedactionError::NotFound("no current live finding matches that fingerprint".to_string())
+        })?;
+    let target = target_spec(location.table, location.field).ok_or_else(|| {
+        RedactionError::Conflict(format!(
+            "finding addresses unsupported field {}.{}",
+            location.table, location.field
+        ))
+    })?;
+    let current = read_target_text(&tx, &location)?;
+    let finding = scan::scan(
+        &ScanConfig::new(Mode::Advisory),
+        &location.finding.selector,
+        &[Field::new(location.field, &current)],
+    )
+    .findings
+    .into_iter()
+    .find(|finding| finding.fingerprint == fingerprint)
+    .ok_or_else(|| RedactionError::Conflict("finding changed during dry-run".to_string()))?;
+    if current.get(finding.start..finding.end).is_none() {
+        return Err(RedactionError::Conflict(
+            "finding byte range is no longer a UTF-8 boundary".to_string(),
+        ));
+    }
+
+    let (columns, values) = read_target_record(&tx, &location, target.integrity_hash_column)?;
+    let prior_record_hash = hash_target_values(location.table, &columns, &values);
+    let mut sanitized = String::with_capacity(
+        current.len() - (finding.end - finding.start) + REDACTION_MARKER.len(),
+    );
+    sanitized.push_str(&current[..finding.start]);
+    sanitized.push_str(REDACTION_MARKER);
+    sanitized.push_str(&current[finding.end..]);
+    let mut sanitized_values = values;
+    let field_index = columns
+        .iter()
+        .position(|column| column == location.field)
+        .ok_or_else(|| integrity("redaction preview target field disappeared"))?;
+    sanitized_values[field_index] = SqlValue::Text(sanitized);
+    if target.is_issue_row {
+        let revision_index = columns
+            .iter()
+            .position(|column| column == "revision")
+            .ok_or_else(|| integrity("issue redaction preview has no revision"))?;
+        let revision = match &sanitized_values[revision_index] {
+            SqlValue::Integer(revision) => *revision,
+            _ => return Err(integrity("issue redaction preview has invalid revision")),
+        };
+        sanitized_values[revision_index] = SqlValue::Integer(revision + 1);
+    }
+    let sanitized_record_hash = hash_target_values(location.table, &columns, &sanitized_values);
+    let affected_issue_revision = associated_issue_id(&tx, &location, target.issue_id_column)?
+        .map(|issue_id| {
+            tx.query_row(
+                "SELECT revision + 1 FROM issues WHERE id = ?1",
+                [issue_id],
+                |row| row.get(0),
+            )
+            .map_err(|_| integrity("could not preview affected issue revision"))
+        })
+        .transpose()?;
+    let selector = FieldSelector {
+        schema_ref: SCHEMA_REDACTION_FIELD_SELECTOR.to_string(),
+        record_kind: location.table.to_string(),
+        origin_identity: location.finding.selector,
+        field_path: location.field.to_string(),
+        byte_start: finding.start as i64,
+        byte_length: (finding.end - finding.start) as i64,
+        prior_record_hash: prior_record_hash.clone(),
+        extensions: RedactionExtensions::new(),
+    };
+    Ok(RedactionPreview {
+        finding_fingerprint: fingerprint.to_string(),
+        ruleset_version: finding.ruleset_version,
+        rule_id: finding.rule_id,
+        selector,
+        prior_record_hash,
+        sanitized_record_hash,
+        affected_issue_revision,
+        replacement_marker: REDACTION_MARKER,
+        previous_generation_reset: true,
+    })
 }
 
 fn validate_request(fingerprint: &str, actor: &str, reason: &str) -> Result<(), RedactionError> {
@@ -570,6 +702,15 @@ fn hash_target_record(
     location: &LiveFindingLocation,
     excluded_hash_column: Option<&str>,
 ) -> Result<String, RedactionError> {
+    let (columns, values) = read_target_record(tx, location, excluded_hash_column)?;
+    Ok(hash_target_values(location.table, &columns, &values))
+}
+
+fn read_target_record(
+    tx: &Transaction<'_>,
+    location: &LiveFindingLocation,
+    excluded_hash_column: Option<&str>,
+) -> Result<(Vec<String>, Vec<SqlValue>), RedactionError> {
     let mut column_statement = tx
         .prepare(&format!("PRAGMA table_info({})", location.table))
         .map_err(|_| integrity("could not enumerate redaction target columns"))?;
@@ -608,10 +749,14 @@ fn hash_target_record(
             },
         )
         .map_err(|_| integrity("could not hash redaction target"))?;
+    Ok((columns, values))
+}
+
+fn hash_target_values(table: &str, columns: &[String], values: &[SqlValue]) -> String {
     let mut hasher = Sha256::new();
     hash_part(&mut hasher, b"bead-rs-redaction-record-v1");
-    hash_part(&mut hasher, location.table.as_bytes());
-    for (column, value) in columns.iter().zip(&values) {
+    hash_part(&mut hasher, table.as_bytes());
+    for (column, value) in columns.iter().zip(values) {
         hash_part(&mut hasher, column.as_bytes());
         match value {
             SqlValue::Null => hash_part(&mut hasher, b"null"),
@@ -633,7 +778,7 @@ fn hash_target_record(
             }
         }
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    format!("{:x}", hasher.finalize())
 }
 
 fn hash_part(hasher: &mut Sha256, bytes: &[u8]) {
@@ -833,23 +978,41 @@ fn append_audit_event(
 }
 
 fn read_receipt_by_fingerprint(
-    tx: &Transaction<'_>,
+    tx: &rusqlite::Connection,
     fingerprint: &str,
 ) -> Result<Option<RedactionReceipt>, RedactionError> {
-    let mut statement = tx
-        .prepare(
-            "SELECT receipt_id, finding_fingerprint, ruleset_version, rule_id,
-                    record_kind, origin_identity, field_path, byte_start,
-                    byte_length, prior_record_hash, sanitized_record_hash,
-                    actor, reason, redacted_at, affected_issue_revision,
-                    publication_state, resulting_generation_id, epoch_id,
-                    extensions_json, selector_extensions_json
-             FROM redaction_receipts WHERE finding_fingerprint = ?1
-             ORDER BY receipt_id LIMIT 2",
-        )
+    let mut receipts = read_receipts(tx, "finding_fingerprint", fingerprint)?;
+    match receipts.len() {
+        0 => Ok(None),
+        1 => Ok(receipts.pop()),
+        _ => Err(integrity("one finding has multiple redaction receipts")),
+    }
+}
+
+fn read_receipts(
+    conn: &rusqlite::Connection,
+    identity_column: &str,
+    identity: &str,
+) -> Result<Vec<RedactionReceipt>, RedactionError> {
+    debug_assert!(matches!(
+        identity_column,
+        "receipt_id" | "finding_fingerprint"
+    ));
+    let sql = format!(
+        "SELECT receipt_id, finding_fingerprint, ruleset_version, rule_id,
+                record_kind, origin_identity, field_path, byte_start,
+                byte_length, prior_record_hash, sanitized_record_hash,
+                actor, reason, redacted_at, affected_issue_revision,
+                publication_state, resulting_generation_id, epoch_id,
+                extensions_json, selector_extensions_json
+         FROM redaction_receipts WHERE {identity_column} = ?1
+         ORDER BY receipt_id LIMIT 2"
+    );
+    let mut statement = conn
+        .prepare(&sql)
         .map_err(|_| integrity("could not query existing redaction receipt"))?;
     let rows = statement
-        .query_map([fingerprint], |row| {
+        .query_map([identity], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -931,11 +1094,7 @@ fn read_receipt_by_fingerprint(
         receipt.verify_identity()?;
         receipts.push(receipt);
     }
-    match receipts.len() {
-        0 => Ok(None),
-        1 => Ok(receipts.pop()),
-        _ => Err(integrity("one finding has multiple redaction receipts")),
-    }
+    Ok(receipts)
 }
 
 fn encode_extensions(extensions: &RedactionExtensions) -> Result<String, RedactionError> {

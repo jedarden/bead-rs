@@ -69,6 +69,7 @@ const SECTION_5_MUTATING: &[&str] = &[
     "bead release",
     "bead close",
     "bead reopen",
+    "bead redact",
     "bead label add",
     "bead label remove",
     "bead dep add",
@@ -157,6 +158,22 @@ fn registry() -> Vec<RegisteredCommand> {
             class: Mutating,
             reason: "a semantic reopen appends a `reopened` event",
             invoke: |f| vec!["reopen".into(), f.closed.clone()],
+        },
+        RegisteredCommand {
+            path: "bead redact",
+            class: Mutating,
+            reason: "a committed historical redaction appends one `historical_redaction` event",
+            invoke: |f| {
+                vec![
+                    "redact".into(),
+                    "--finding".into(),
+                    f.redaction_fingerprint.clone(),
+                    "--actor".into(),
+                    "contract-probe".into(),
+                    "--reason".into(),
+                    "exercise event contract".into(),
+                ]
+            },
         },
         // ---- label mutations ----
         RegisteredCommand {
@@ -760,7 +777,10 @@ fn registry() -> Vec<RegisteredCommand> {
         },
     ];
 
-    cmds.sort_by(|a, b| a.path.cmp(b.path));
+    // Redaction is intentionally last in the mutating sweep. The restore
+    // probe uses the frozen setup generation, which predates this command's
+    // receipt and therefore must not be allowed to erase it.
+    cmds.sort_by(|a, b| (a.path == "bead redact", a.path).cmp(&(b.path == "bead redact", b.path)));
     cmds
 }
 
@@ -792,6 +812,8 @@ struct Fixture {
     to_close: String,
     /// Closed in setup: target for `reopen`.
     closed: String,
+    /// Opaque scanner identity for the historical-redaction probe.
+    redaction_fingerprint: String,
     /// Recurrence template created in setup: target for `materialize`.
     template: String,
     /// Created and deleted only by the NonMutating phase.
@@ -855,6 +877,7 @@ fn build_fixture() -> Fixture {
     let in_progress = create_issue(&workspace, "release target");
     let to_close = create_issue(&workspace, "close target");
     let closed = create_issue(&workspace, "reopen target");
+    let redact_target = create_issue(&workspace, "redaction target");
 
     bead(&workspace)
         .args(["update", &in_progress, "--status", "in_progress"])
@@ -883,6 +906,39 @@ fn build_fixture() -> Fixture {
         ])
         .assert()
         .success();
+
+    // Historical findings cannot be seeded through public argv because the
+    // rejection boundary correctly blocks them. Model a pre-feature record
+    // directly, advance the forensic event sequence, then retain only the
+    // scanner fingerprint for the command registry.
+    let shaped = ["AK", "IA", "7Q9W2E4R6T8Y1U3I"].concat();
+    let conn = rusqlite::Connection::open(workspace.join(".beads/beads.db")).unwrap();
+    conn.execute(
+        "UPDATE issues
+         SET description = ?1, revision = revision + 1,
+             updated_at = '2026-09-03T00:00:00Z'
+         WHERE id = ?2",
+        rusqlite::params![&shaped, &redact_target],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO events (issue_id, kind, actor, time, detail)
+         VALUES (?1, 'historical_fixture_seed', 'contract-probe',
+                 '2026-09-03T00:00:00Z', '{}')",
+        [&redact_target],
+    )
+    .unwrap();
+    let redaction_fingerprint = bead_rs::service::secret_diagnostics::scan_live_findings(&conn)
+        .unwrap()
+        .into_iter()
+        .find(|finding| {
+            finding.rule_id == "aws-access-key-id"
+                && finding.field_path == "description"
+                && finding.is_blocking_match()
+        })
+        .expect("historical fixture must produce one blocking finding")
+        .fingerprint;
+    drop(conn);
     bead(&workspace)
         .args([
             "data",
@@ -961,6 +1017,7 @@ fn build_fixture() -> Fixture {
         in_progress,
         to_close,
         closed,
+        redaction_fingerprint,
         template: "probe-template".to_string(),
         spare_template: "probe-spare-template".to_string(),
         foreign_checkpoint,

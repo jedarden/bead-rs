@@ -68,8 +68,8 @@
 
 use crate::cli::ImportMode;
 use crate::model::redaction::{
-    FieldSelector, RedactionAcknowledgment, RedactionEpoch, RedactionFinding, RedactionReceipt,
-    ResurrectionTombstone,
+    FieldSelector, PublicationState, RedactionAcknowledgment, RedactionEpoch, RedactionFinding,
+    RedactionReceipt, ResurrectionTombstone,
 };
 use crate::model::Issue;
 use crate::profile::ProfileLossReport;
@@ -403,6 +403,137 @@ fn read_previous_generation(checkpoint_dir: &Path) -> Result<Option<PreviousGene
         root_path,
         manifest,
     }))
+}
+
+/// Collect generation identities the exceptional publisher is about to
+/// discard. Metadata carried by an interrupted earlier reset is folded back
+/// in so resume never forgets the original dirty generations.
+fn read_superseded_generation_ids(checkpoint_dir: &Path) -> Result<Vec<String>> {
+    let mut generations = Vec::new();
+    for name in ["current.json", "previous.json"] {
+        let path = checkpoint_dir.join(name);
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        let Ok(pointer) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        if let Some(generation) = pointer
+            .get("generation_id")
+            .and_then(|value| value.as_str())
+        {
+            generations.push(generation.to_string());
+        }
+        if let Some(prior) = pointer
+            .get("superseded_generations")
+            .and_then(|value| value.as_array())
+        {
+            generations.extend(
+                prior
+                    .iter()
+                    .filter_map(|value| value.as_str().map(str::to_string)),
+            );
+        }
+    }
+    generations.sort();
+    generations.dedup();
+    Ok(generations)
+}
+
+/// Project the successful publication facts into the in-memory corpus. The
+/// database still says `committed` until the pointer pair and tombstones are
+/// durable, avoiding a false Published state on any pre-pointer failure.
+fn project_published_redaction(
+    records: &mut RedactionRecords,
+    request: &RedactionPublicationRequest,
+    generation_id: &str,
+    superseded_generations: &[String],
+    published_at: &str,
+) -> Result<RedactionReceipt> {
+    let epoch = records
+        .epochs
+        .iter_mut()
+        .find(|epoch| epoch.epoch_id == request.epoch_id)
+        .ok_or_else(|| anyhow!("redaction publication epoch does not exist"))?;
+    if !epoch.receipt_ids.contains(&request.receipt_id) {
+        bail!("redaction publication receipt is not part of its epoch");
+    }
+
+    let mut projected_superseded = epoch.superseded_generations.clone();
+    projected_superseded.extend_from_slice(superseded_generations);
+    projected_superseded.sort();
+    projected_superseded.dedup();
+    epoch.publication_state = PublicationState::Published;
+    epoch.resulting_generation_id = Some(generation_id.to_string());
+    epoch.previous_generation_reset = true;
+    epoch.superseded_generations = projected_superseded;
+    epoch.published_at = Some(published_at.to_string());
+    epoch
+        .validate()
+        .map_err(|error| anyhow!("invalid projected redaction epoch: {error}"))?;
+
+    let mut projected_receipt = None;
+    let mut projected_count = 0usize;
+    for receipt in &mut records.receipts {
+        if receipt.epoch_id.as_deref() != Some(request.epoch_id.as_str()) {
+            continue;
+        }
+        if !epoch.receipt_ids.contains(&receipt.receipt_id) {
+            bail!("redaction epoch and receipt set disagree");
+        }
+        receipt.publication_state = PublicationState::Published;
+        receipt.resulting_generation_id = Some(generation_id.to_string());
+        receipt
+            .validate()
+            .and_then(|_| receipt.verify_identity())
+            .map_err(|error| anyhow!("invalid projected redaction receipt: {error}"))?;
+        projected_count += 1;
+        if receipt.receipt_id == request.receipt_id {
+            projected_receipt = Some(receipt.clone());
+        }
+    }
+    if projected_count != epoch.receipt_ids.len() {
+        bail!("redaction epoch has a missing receipt");
+    }
+    projected_receipt.ok_or_else(|| anyhow!("redaction publication receipt does not exist"))
+}
+
+fn mark_redaction_published(
+    tx: &Transaction<'_>,
+    request: &RedactionPublicationRequest,
+    generation_id: &str,
+    superseded_generations: &[String],
+    published_at: &str,
+) -> Result<()> {
+    let superseded_json = serde_json::to_string(superseded_generations)?;
+    let epoch_changed = tx.execute(
+        "UPDATE redaction_epochs
+         SET publication_state = 'published', resulting_generation_id = ?1,
+             previous_generation_reset = 1, superseded_generations_json = ?2,
+             published_at = ?3
+         WHERE epoch_id = ?4",
+        params![
+            generation_id,
+            superseded_json,
+            published_at,
+            &request.epoch_id
+        ],
+    )?;
+    if epoch_changed != 1 {
+        bail!("redaction publication epoch disappeared before commit");
+    }
+    let receipt_changed = tx.execute(
+        "UPDATE redaction_receipts
+         SET publication_state = 'published', resulting_generation_id = ?1
+         WHERE epoch_id = ?2",
+        params![generation_id, &request.epoch_id],
+    )?;
+    if receipt_changed == 0 {
+        bail!("redaction publication receipt disappeared before commit");
+    }
+    Ok(())
 }
 
 /// The fully serialized checkpoint corpus in canonical order (plan 6.2 step 2)
@@ -864,6 +995,25 @@ pub struct ForensicFlushResult {
     pub root_hash: String,
     pub covered_sequence: i64,
     pub changed_paths: Vec<String>,
+}
+
+/// Result of the exceptional sanitized publication tail.
+#[derive(Debug, Clone)]
+pub struct RedactionPublicationResult {
+    pub checkpoint: ForensicFlushResult,
+    pub receipt: RedactionReceipt,
+}
+
+#[derive(Debug, Clone)]
+struct RedactionPublicationRequest {
+    receipt_id: String,
+    epoch_id: String,
+}
+
+#[derive(Debug, Clone)]
+struct PointerRedactionReset {
+    epoch_id: String,
+    superseded_generations: Vec<String>,
 }
 
 /// Checkpoint status for `bead sync status` (plan 6.2)
@@ -4358,6 +4508,8 @@ fn execute_restore_into_empty(
     let replacing = !displaced.is_empty();
 
     if replacing && allow_non_empty {
+        let retained_redaction = read_all_redaction_records(&tx)?;
+        ensure_restore_preserves_redaction_history(&retained_redaction, &staging.redaction)?;
         clear_native_restore_target(&tx)?;
     }
 
@@ -4461,6 +4613,8 @@ fn execute_merge(
     // Preserve durable redaction receipts and anti-resurrection tombstones.
     import_redaction_records(&tx, staging)?;
 
+    reject_live_tombstoned_findings(&tx)?;
+
     // Create merge summary event and receipt
     let activation_sequence = create_merge_summary(&tx, staging, actor)?;
 
@@ -4490,6 +4644,10 @@ fn execute_merge(
 
 /// Activate forensic import in transaction
 fn activate_forensic_import(tx: &Transaction, staging: &ForensicStaging) -> Result<(usize, i64)> {
+    // Recovery precedence is installed first. The transaction remains
+    // invisible until every semantic record has been checked against it.
+    import_redaction_records(tx, staging)?;
+
     // Import issues
     let inserted = import_issues(tx, staging)?;
 
@@ -4506,7 +4664,7 @@ fn activate_forensic_import(tx: &Transaction, staging: &ForensicStaging) -> Resu
     import_events(tx, staging)?;
     import_receipts(tx, staging)?;
     import_attempt_outcomes(tx, staging)?;
-    import_redaction_records(tx, staging)?;
+    reject_live_tombstoned_findings(tx)?;
 
     // Get activation sequence
     let activation_sequence: i64 = tx
@@ -5017,6 +5175,69 @@ fn import_redaction_records(tx: &Transaction, staging: &ForensicStaging) -> Resu
             .all(|record| stored.tombstones.contains(record));
     if !all_present {
         bail!("Redaction record identity conflict: stored content differs from checkpoint");
+    }
+    Ok(())
+}
+
+/// An explicit replacement restore may not erase the destination's durable
+/// anti-resurrection knowledge. Requiring the source to carry every exact
+/// local redaction record keeps receipts, epochs, and tombstones together;
+/// an older checkpoint remains inspectable but cannot replace the sanitized
+/// workspace that knows about it.
+fn ensure_restore_preserves_redaction_history(
+    existing: &RedactionRecords,
+    incoming: &RedactionRecords,
+) -> Result<()> {
+    let preserved = existing
+        .findings
+        .iter()
+        .all(|record| incoming.findings.contains(record))
+        && existing
+            .acknowledgments
+            .iter()
+            .all(|record| incoming.acknowledgments.contains(record))
+        && existing
+            .receipts
+            .iter()
+            .all(|record| incoming.receipts.contains(record))
+        && existing
+            .epochs
+            .iter()
+            .all(|record| incoming.epochs.contains(record))
+        && existing
+            .tombstones
+            .iter()
+            .all(|record| incoming.tombstones.contains(record));
+    if !preserved {
+        bail!(
+            "restore refused: selected generation would discard known historical-redaction state"
+        );
+    }
+    Ok(())
+}
+
+/// Fail the enclosing transaction if recovery made a finding guarded by any
+/// known tombstone live again. Diagnostics name only the safe fingerprint.
+fn reject_live_tombstoned_findings(tx: &Transaction<'_>) -> Result<()> {
+    let mut statement = tx.prepare(
+        "SELECT finding_fingerprint FROM redaction_tombstones ORDER BY finding_fingerprint",
+    )?;
+    let protected = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<HashSet<_>>>()?;
+    if protected.is_empty() {
+        return Ok(());
+    }
+    let findings = crate::service::secret_diagnostics::scan_live_findings(tx)
+        .map_err(|error| anyhow!("could not enforce redaction recovery precedence: {error}"))?;
+    if let Some(finding) = findings
+        .into_iter()
+        .find(|finding| protected.contains(&finding.fingerprint))
+    {
+        bail!(
+            "recovery refused: incoming content matches historical-redaction tombstone {}",
+            finding.fingerprint
+        );
     }
     Ok(())
 }
@@ -6598,11 +6819,55 @@ pub fn publish_forensic_checkpoint(
 /// process would self-deadlock), while every other entry point takes the
 /// lock through [`publish_forensic_checkpoint`] and cannot forget it.
 pub fn publish_forensic_checkpoint_holding(
-    _publication_lock: &CheckpointPublicationLock,
+    publication_lock: &CheckpointPublicationLock,
     store: &mut SqliteStore,
     config: &CheckpointConfig,
     checkpoint_base: &Path,
 ) -> Result<ForensicFlushResult> {
+    publish_forensic_checkpoint_inner(publication_lock, store, config, checkpoint_base, None)
+        .map(|(checkpoint, _)| checkpoint)
+}
+
+/// Publish a redaction epoch without retaining any pre-redaction generation.
+///
+/// The caller must keep both [`crate::service::redaction::RedactionLocks`]
+/// alive. Its publication-lock member is passed here as proof that ordinary
+/// publishers cannot interleave the reset.
+pub fn publish_redaction_checkpoint_holding(
+    publication_lock: &CheckpointPublicationLock,
+    store: &mut SqliteStore,
+    config: &CheckpointConfig,
+    checkpoint_base: &Path,
+    receipt: &RedactionReceipt,
+) -> Result<RedactionPublicationResult> {
+    let epoch_id = receipt
+        .epoch_id
+        .as_deref()
+        .ok_or_else(|| anyhow!("redaction receipt has no publication epoch"))?;
+    let (checkpoint, published_receipt) = publish_forensic_checkpoint_inner(
+        publication_lock,
+        store,
+        config,
+        checkpoint_base,
+        Some(RedactionPublicationRequest {
+            receipt_id: receipt.receipt_id.clone(),
+            epoch_id: epoch_id.to_string(),
+        }),
+    )?;
+    Ok(RedactionPublicationResult {
+        checkpoint,
+        receipt: published_receipt
+            .ok_or_else(|| anyhow!("redaction publication produced no receipt"))?,
+    })
+}
+
+fn publish_forensic_checkpoint_inner(
+    _publication_lock: &CheckpointPublicationLock,
+    store: &mut SqliteStore,
+    config: &CheckpointConfig,
+    checkpoint_base: &Path,
+    redaction_request: Option<RedactionPublicationRequest>,
+) -> Result<(ForensicFlushResult, Option<RedactionReceipt>)> {
     let conn = store.conn();
 
     // Begin read transaction to capture snapshot
@@ -6676,6 +6941,53 @@ pub fn publish_forensic_checkpoint_holding(
     std::fs::create_dir_all(&checkpoint_dir)?;
     std::fs::create_dir_all(checkpoint_dir.join("manifests"))?;
     std::fs::create_dir_all(checkpoint_dir.join("objects"))?;
+    let redaction_scratch = if redaction_request.is_some() {
+        cleanup_stale_redaction_scratch(checkpoint_base)?;
+        Some(
+            tempfile::Builder::new()
+                .prefix(".redaction-publish-")
+                .suffix(".tmp")
+                .tempdir_in(checkpoint_base)?,
+        )
+    } else {
+        None
+    };
+    let scratch_dir = redaction_scratch.as_ref().map(|dir| dir.path());
+
+    // Read the outgoing generation before publishing anything. A redaction
+    // publication records every retained identity it deliberately resets and
+    // projects the eventual Published state into the serialized snapshot;
+    // SQLite is updated only after the new pointer pair is durable.
+    let previous = read_previous_generation(&checkpoint_dir)?;
+    let mut superseded_generations = if redaction_request.is_some() {
+        read_superseded_generation_ids(&checkpoint_dir)?
+    } else {
+        Vec::new()
+    };
+    if let Some(request) = &redaction_request {
+        if let Some(epoch) = sorted_redaction
+            .epochs
+            .iter()
+            .find(|epoch| epoch.epoch_id == request.epoch_id)
+        {
+            superseded_generations.extend(epoch.superseded_generations.iter().cloned());
+            superseded_generations.sort();
+            superseded_generations.dedup();
+        }
+    }
+    let published_at = format_rfc3339(SystemTime::now());
+    let published_receipt = redaction_request
+        .as_ref()
+        .map(|request| {
+            project_published_redaction(
+                &mut sorted_redaction,
+                request,
+                &generation_id,
+                &superseded_generations,
+                &published_at,
+            )
+        })
+        .transpose()?;
 
     // Serialize every record line once (plan 6.2 step 2): mode selection
     // counts bytes from the same lines the publisher writes.
@@ -6693,7 +7005,6 @@ pub fn publish_forensic_checkpoint_holding(
     // 6.2 step 3): an explicit `.beads/config.json` mode forces output,
     // otherwise the would-be monolith's size against the threshold table
     // decides.
-    let previous = read_previous_generation(&checkpoint_dir)?;
     let thresholds =
         resolve_checkpoint_thresholds(config, previous.as_ref().and_then(|p| p.manifest.as_ref()));
     let stats = corpus_monolith_stats(&corpus);
@@ -6714,6 +7025,7 @@ pub fn publish_forensic_checkpoint_holding(
             &checkpoint_dir,
             &generation_id,
             &mut changed_paths,
+            scratch_dir,
         )?,
         CheckpointMode::Sharded => {
             let sharded_config = ShardedConfig {
@@ -6730,12 +7042,21 @@ pub fn publish_forensic_checkpoint_holding(
                     config: sharded_config,
                     thresholds,
                     previous_manifest: previous.as_ref().and_then(|p| p.manifest.as_ref()),
+                    scratch_dir,
                 },
                 &checkpoint_dir,
                 &mut changed_paths,
             )?
         }
     };
+
+    if redaction_request.is_some() && mode == CheckpointMode::Sharded {
+        // Sharded generations do not ordinarily maintain the compatibility
+        // view. A redaction cannot leave a stale monolithic view containing
+        // the removed bytes, so rewrite it from the same sanitized corpus.
+        publish_forensic_view(&corpus, &checkpoint_dir, scratch_dir)?;
+        changed_paths.push("forensic.jsonl".to_string());
+    }
 
     // Update checkpoint pointers in a write transaction
     let root_hash = publication.root_hash;
@@ -6747,7 +7068,12 @@ pub fn publish_forensic_checkpoint_holding(
     let current_pointer_path = checkpoint_dir.join("current.json");
     let previous_pointer_path = checkpoint_dir.join("previous.json");
 
-    let previous_files = if current_pointer_path.exists() {
+    let previous_files = if redaction_request.is_some() {
+        // The pre-redaction generation is intentionally not retained. The
+        // sanitized current pointer is copied to previous.json only after it
+        // is durable below.
+        HashSet::new()
+    } else if current_pointer_path.exists() {
         // Use atomic rename with temp file pattern
         let previous_temp = previous_pointer_path.with_extension("tmp");
         std::fs::copy(&current_pointer_path, &previous_temp)?;
@@ -6813,13 +7139,15 @@ pub fn publish_forensic_checkpoint_holding(
     // generation's changed-path set carries a tombstone for it (plan 6.1.1).
     // Everything else the outgoing generation referenced stays retained by
     // previous.json for one more generation, per the rule above.
-    if let Some(previous) = &previous {
-        if let (Some(previous_mode), Some(root_path)) = (&previous.mode, &previous.root_path) {
-            if *previous_mode != mode
-                && is_generation_object_path(root_path)
-                && !deleted_paths_sorted.contains(root_path)
-            {
-                deleted_paths_sorted.push(root_path.clone());
+    if redaction_request.is_none() {
+        if let Some(previous) = &previous {
+            if let (Some(previous_mode), Some(root_path)) = (&previous.mode, &previous.root_path) {
+                if *previous_mode != mode
+                    && is_generation_object_path(root_path)
+                    && !deleted_paths_sorted.contains(root_path)
+                {
+                    deleted_paths_sorted.push(root_path.clone());
+                }
             }
         }
     }
@@ -6849,9 +7177,23 @@ pub fn publish_forensic_checkpoint_holding(
         added_paths: added_paths_sorted,
         replaced_paths: replaced_paths_sorted,
         deleted_paths: deleted_paths_sorted.clone(),
+        redaction_reset: redaction_request
+            .as_ref()
+            .map(|request| PointerRedactionReset {
+                epoch_id: request.epoch_id.clone(),
+                superseded_generations: superseded_generations.clone(),
+            }),
     };
-    write_current_pointer(&current_pointer_path, &pointer_config)?;
+    write_current_pointer(&current_pointer_path, &pointer_config, scratch_dir)?;
     changed_paths.push("current.json".to_string());
+
+    if redaction_request.is_some() {
+        // Both retained pointers now select the new sanitized root. Writing
+        // current first ensures there is always at least one authoritative
+        // clean pointer before the dirty previous pointer is replaced.
+        write_current_pointer(&previous_pointer_path, &pointer_config, scratch_dir)?;
+        changed_paths.push("previous.json".to_string());
+    }
 
     // Apply only the pointer-declared tombstones, after the pointer is
     // durable and before checkpoint state is recorded (plan 6.2 step 6).
@@ -6879,11 +7221,21 @@ pub fn publish_forensic_checkpoint_holding(
     };
     update_forensic_checkpoint_state(&tx, &state_config)?;
 
+    if let Some(request) = &redaction_request {
+        mark_redaction_published(
+            &tx,
+            request,
+            &generation_id,
+            &superseded_generations,
+            &published_at,
+        )?;
+    }
+
     tx.commit()?;
 
-    Ok(ForensicFlushResult {
+    let checkpoint = ForensicFlushResult {
         mode,
-        generation_id,
+        generation_id: generation_id.clone(),
         issue_count,
         event_count,
         receipt_count,
@@ -6891,7 +7243,8 @@ pub fn publish_forensic_checkpoint_holding(
         root_hash,
         covered_sequence: current_sequence,
         changed_paths,
-    })
+    };
+    Ok((checkpoint, published_receipt))
 }
 
 /// Report forensic checkpoint status for `bead sync status` (plan 6.2)
@@ -7158,14 +7511,19 @@ fn publish_monolithic_checkpoint(
     checkpoint_dir: &Path,
     generation_id: &str,
     changed_paths: &mut Vec<String>,
+    scratch_dir: Option<&Path>,
 ) -> Result<PublicationOutput> {
     let objects_dir = checkpoint_dir.join("objects");
     // Temp file is generation-scoped (unique scratch name); the final object
     // is content-addressed below, per plan 6.1.1 / 6.2.1 P1.
-    let temp_path = objects_dir.join(format!("{}.tmp", generation_id));
+    let temp_path = publication_temp_path(
+        scratch_dir,
+        &objects_dir.join(format!("{}.tmp", generation_id)),
+        "monolithic.tmp",
+    );
 
     // Create temporary file
-    let temp_file = File::create(&temp_path)?;
+    let temp_file = create_publication_temp(&temp_path, scratch_dir.is_some())?;
     let mut writer = BufWriter::new(temp_file);
 
     // Write the pre-serialized record lines in canonical order
@@ -7211,9 +7569,14 @@ fn publish_monolithic_checkpoint(
 
     // Update nonauthoritative forensic.jsonl view via atomic rename
     let view_path = checkpoint_dir.join("forensic.jsonl");
-    let view_temp = view_path.with_extension("tmp");
-    std::fs::copy(&final_path, &view_temp)?;
-    let view_file = File::open(&view_temp)?;
+    let view_temp = publication_temp_path(
+        scratch_dir,
+        &view_path.with_extension("tmp"),
+        "forensic-view.tmp",
+    );
+    let mut source = File::open(&final_path)?;
+    let mut view_file = create_publication_temp(&view_temp, scratch_dir.is_some())?;
+    std::io::copy(&mut source, &mut view_file)?;
     view_file.sync_all()?;
     drop(view_file);
     std::fs::rename(&view_temp, &view_path)?;
@@ -7232,6 +7595,35 @@ fn publish_monolithic_checkpoint(
         root_path: root_path.clone(),
         referenced_paths: vec![root_path, "forensic.jsonl".to_string()],
     })
+}
+
+fn publish_forensic_view(
+    corpus: &SerializedCorpus,
+    checkpoint_dir: &Path,
+    scratch_dir: Option<&Path>,
+) -> Result<()> {
+    let view_path = checkpoint_dir.join("forensic.jsonl");
+    let view_temp = publication_temp_path(
+        scratch_dir,
+        &view_path.with_extension("tmp"),
+        "sharded-forensic-view.tmp",
+    );
+    let mut file = create_publication_temp(&view_temp, scratch_dir.is_some())?;
+    for line in corpus
+        .issue_lines
+        .iter()
+        .chain(corpus.event_lines.iter())
+        .chain(corpus.receipt_lines.iter())
+        .chain(corpus.attempt_outcome_lines.iter())
+        .chain(corpus.redaction_lines.iter())
+    {
+        file.write_all(line)?;
+        file.write_all(b"\n")?;
+    }
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(&view_temp, &view_path)?;
+    sync_dir(checkpoint_dir)
 }
 
 /// Maximum hex-prefix depth of an issue shard partition (a shard key is a
@@ -7376,6 +7768,60 @@ fn sync_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Remove abandoned redaction-publication scratch directories from an
+/// earlier interrupted attempt. Only immediate, real directories with the
+/// exact private scratch naming convention are eligible; symlinks and other
+/// entries are deliberately left alone.
+fn cleanup_stale_redaction_scratch(checkpoint_base: &Path) -> Result<()> {
+    let mut removed = false;
+    for entry in std::fs::read_dir(checkpoint_base)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with(".redaction-publish-") || !name.ends_with(".tmp") {
+            continue;
+        }
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() && !file_type.is_symlink() {
+            std::fs::remove_dir_all(entry.path())?;
+            removed = true;
+        }
+    }
+    if removed {
+        sync_dir(checkpoint_base)?;
+    }
+    Ok(())
+}
+
+fn publication_temp_path(
+    scratch_dir: Option<&Path>,
+    ordinary_path: &Path,
+    scratch_tag: &str,
+) -> PathBuf {
+    scratch_dir
+        .map(|dir| dir.join(scratch_tag))
+        .unwrap_or_else(|| ordinary_path.to_path_buf())
+}
+
+/// Create a publication temp file. Redaction temps are unique files inside a
+/// mode-0700 scratch directory and are themselves mode 0600 on Unix so
+/// removed secret bytes are never staged in a Git-trackable checkpoint path.
+fn create_publication_temp(path: &Path, private: bool) -> Result<File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true);
+    if private {
+        options.create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+    } else {
+        options.create(true).truncate(true);
+    }
+    Ok(options.open(path)?)
+}
+
 /// Write a content-addressed generation object, reusing an identical object
 /// already on disk without rewriting it (plan 6.1.1, 6.2 step 4)
 ///
@@ -7390,13 +7836,18 @@ fn write_content_object(
     scratch_tag: &str,
     body: &[u8],
     changed_paths: &mut Vec<String>,
+    scratch_dir: Option<&Path>,
 ) -> Result<(String, String)> {
     let hash = format!("{:x}", Sha256::digest(body));
     let rel = format!("objects/{}.jsonl", hash);
     let final_path = objects_dir.join(format!("{}.jsonl", hash));
     if !final_path.exists() {
-        let temp_path = objects_dir.join(format!("{}.tmp", scratch_tag));
-        let mut file = File::create(&temp_path)?;
+        let temp_path = publication_temp_path(
+            scratch_dir,
+            &objects_dir.join(format!("{}.tmp", scratch_tag)),
+            &format!("{scratch_tag}.tmp"),
+        );
+        let mut file = create_publication_temp(&temp_path, scratch_dir.is_some())?;
         file.write_all(body)?;
         file.sync_all()?;
         drop(file);
@@ -7417,6 +7868,7 @@ struct ShardedPublishInputs<'a> {
     thresholds: CheckpointThresholds,
     /// The outgoing generation's manifest, for plan/threshold retention
     previous_manifest: Option<&'a serde_json::Value>,
+    scratch_dir: Option<&'a Path>,
 }
 
 /// Publish sharded forensic checkpoint (plan 6.1.1)
@@ -7448,6 +7900,7 @@ fn publish_sharded_checkpoint(
         config,
         thresholds,
         previous_manifest,
+        scratch_dir,
     } = inputs;
     let objects_dir = checkpoint_dir.join("objects");
     let mut referenced_paths: Vec<String> = Vec::new();
@@ -7532,6 +7985,7 @@ fn publish_sharded_checkpoint(
             &format!("issue-{}-{}", config.generation_id, prefix),
             &body,
             changed_paths,
+            scratch_dir,
         )?;
         referenced_paths.push(rel.clone());
         issue_shard_metadata.push(serde_json::json!({
@@ -7567,6 +8021,7 @@ fn publish_sharded_checkpoint(
             &format!("event-{}-{}", config.generation_id, group_index),
             &body,
             changed_paths,
+            scratch_dir,
         )?;
         referenced_paths.push(rel.clone());
 
@@ -7626,6 +8081,7 @@ fn publish_sharded_checkpoint(
             &format!("receipt-{}-{}", config.generation_id, group_index),
             &body,
             changed_paths,
+            scratch_dir,
         )?;
         referenced_paths.push(rel.clone());
         receipt_shard_metadata.push(serde_json::json!({
@@ -7661,6 +8117,7 @@ fn publish_sharded_checkpoint(
             &format!("attempt-outcome-{}-{}", config.generation_id, group_index),
             &body,
             changed_paths,
+            scratch_dir,
         )?;
         referenced_paths.push(rel.clone());
         attempt_outcome_shard_metadata.push(serde_json::json!({
@@ -7692,6 +8149,7 @@ fn publish_sharded_checkpoint(
             &format!("redaction-{}-{}", config.generation_id, group_index),
             &body,
             changed_paths,
+            scratch_dir,
         )?;
         referenced_paths.push(rel.clone());
         redaction_shard_metadata.push(serde_json::json!({
@@ -7746,11 +8204,15 @@ fn publish_sharded_checkpoint(
     let manifest_hash = format!("{:x}", Sha256::digest(&manifest_json));
     let manifest_rel = format!("manifests/{}.json", manifest_hash);
     let manifest_path = checkpoint_dir.join(&manifest_rel);
-    let temp_manifest_path = manifest_path.with_extension("tmp");
-    std::fs::write(&temp_manifest_path, &manifest_json)?;
+    let temp_manifest_path = publication_temp_path(
+        scratch_dir,
+        &manifest_path.with_extension("tmp"),
+        "manifest.tmp",
+    );
+    let mut temp_file = create_publication_temp(&temp_manifest_path, scratch_dir.is_some())?;
+    temp_file.write_all(&manifest_json)?;
 
     // Sync temp file, atomically rename, sync parent directory
-    let temp_file = File::open(&temp_manifest_path)?;
     temp_file.sync_all()?;
     drop(temp_file);
     std::fs::rename(&temp_manifest_path, &manifest_path)?;
@@ -7807,8 +8269,12 @@ fn build_enriched_issue_object<'a>(
 }
 
 /// Write current.json pointer
-fn write_current_pointer(pointer_path: &Path, config: &PointerConfig) -> Result<()> {
-    let pointer = serde_json::json!({
+fn write_current_pointer(
+    pointer_path: &Path,
+    config: &PointerConfig,
+    scratch_dir: Option<&Path>,
+) -> Result<()> {
+    let mut pointer = serde_json::json!({
         "schema_version": 1,
         "generation_id": config.generation_id,
         "mode": config.mode.as_str(),
@@ -7829,12 +8295,39 @@ fn write_current_pointer(pointer_path: &Path, config: &PointerConfig) -> Result<
         "total_record_count": config.total_record_count,
         "created_at": format_rfc3339(SystemTime::now())
     });
+    if let Some(reset) = &config.redaction_reset {
+        let object = pointer
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("checkpoint pointer is not an object"))?;
+        object.insert(
+            "redaction_epoch_id".to_string(),
+            serde_json::Value::String(reset.epoch_id.clone()),
+        );
+        object.insert(
+            "previous_generation_reset".to_string(),
+            serde_json::Value::Bool(true),
+        );
+        object.insert(
+            "superseded_generations".to_string(),
+            serde_json::to_value(&reset.superseded_generations)?,
+        );
+    }
 
-    let temp_path = pointer_path.with_extension("tmp");
-    std::fs::write(&temp_path, serde_json::to_vec_pretty(&pointer)?)?;
+    let scratch_tag =
+        if pointer_path.file_name().and_then(|name| name.to_str()) == Some("previous.json") {
+            "previous-pointer.tmp"
+        } else {
+            "current-pointer.tmp"
+        };
+    let temp_path = publication_temp_path(
+        scratch_dir,
+        &pointer_path.with_extension("tmp"),
+        scratch_tag,
+    );
+    let mut temp_file = create_publication_temp(&temp_path, scratch_dir.is_some())?;
+    temp_file.write_all(&serde_json::to_vec_pretty(&pointer)?)?;
 
     // Sync temp file to storage
-    let temp_file = File::open(&temp_path)?;
     temp_file.sync_all()?;
     drop(temp_file);
 
@@ -8767,6 +9260,7 @@ struct PointerConfig {
     added_paths: Vec<String>,
     replaced_paths: Vec<String>,
     deleted_paths: Vec<String>,
+    redaction_reset: Option<PointerRedactionReset>,
 }
 
 /// Configuration for forensic checkpoint state update

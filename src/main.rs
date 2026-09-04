@@ -296,10 +296,20 @@ fn execute_command(cli: Cli) -> Result<()> {
     // mutates nothing never reaches the publish step. The flag is read
     // before `cli` moves into dispatch.
     let no_auto_flush = cli.no_auto_flush;
+    let redaction_command = matches!(&cli.command, Command::Redact(_));
+    if redaction_command && no_auto_flush {
+        return Err(Error::cli_usage(
+            "--no-auto-flush cannot be used with redact; sanitized publication is mandatory",
+        ));
+    }
     let restore_without_probe = matches!(&cli.command, Command::Restore(_));
     let init_without_probe = matches!(&cli.command, Command::Init(_));
     let prepared_scan = cli_secret_scan::prepare(&cli)?;
-    let probe = publication_probe(no_auto_flush);
+    let probe = if redaction_command {
+        None
+    } else {
+        publication_probe(no_auto_flush)
+    };
     // Arm only after the publication probe opens its read connection: the
     // acknowledgment bridge belongs on the command's mutation connection,
     // where its audit event commits or rolls back with semantic state.
@@ -334,6 +344,7 @@ fn dispatch_command(cli: Cli) -> Result<bool> {
         Command::Close(opts) => cmd_close(opts).map(|_| false),
         Command::Reopen(opts) => cmd_reopen(opts).map(|_| false),
         Command::Resolve(opts) => cmd_resolve(opts).map(|_| false),
+        Command::Redact(opts) => cmd_redact(opts).map(|_| false),
         Command::Label(opts) => cmd_label(opts).map(|_| false),
         Command::Resource(opts) => cmd_resource(opts).map(|_| false),
         Command::Dep(opts) => cmd_dep(opts).map(|_| false),
@@ -353,6 +364,137 @@ fn dispatch_command(cli: Cli) -> Result<bool> {
         Command::Policy(opts) => cmd_policy(opts).map(|_| false),
         Command::Watchdog(opts) => cmd_watchdog(opts).map(|_| false),
     }
+}
+
+fn cmd_redact(opts: cli::RedactOptions) -> Result<()> {
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+    let checkpoint_base = config.root.join(".beads");
+    let checkpoint_config = service::load_checkpoint_config(&checkpoint_base)?;
+    let conn = store::open_configured_connection(&config.database_path())?;
+    let mut store = store::SqliteStore::from_conn(conn);
+    let locks = service::acquire_redaction_locks(&config.root)?;
+
+    if let Some(receipt_id) = opts.resume.as_deref() {
+        let receipt = service::load_redaction_receipt(store.conn(), receipt_id)?;
+        let receipt =
+            if receipt.publication_state == crate::model::redaction::PublicationState::Published {
+                receipt
+            } else {
+                publish_redaction_or_split(
+                    &mut store,
+                    &locks,
+                    &checkpoint_config,
+                    &checkpoint_base,
+                    &receipt,
+                )?
+            };
+        print_redaction_receipt(&receipt, opts.json)?;
+        return Ok(());
+    }
+
+    let fingerprint = opts
+        .finding
+        .as_deref()
+        .ok_or_else(|| Error::cli_usage("--finding or --resume is required"))?;
+    let actor = opts
+        .actor
+        .as_deref()
+        .ok_or_else(|| Error::cli_usage("--actor is required with --finding"))?;
+    let reason = opts
+        .reason
+        .as_deref()
+        .ok_or_else(|| Error::cli_usage("--reason is required with --finding"))?;
+
+    if opts.dry_run {
+        let preview =
+            service::preview_redaction_holding(&mut store, &locks, fingerprint, actor, reason)?;
+        if opts.json {
+            println!("{}", serde_json::to_string_pretty(&preview)?);
+        } else {
+            println!("Finding: {}", preview.finding_fingerprint);
+            println!("Rule: {}", preview.rule_id);
+            println!(
+                "Selector: {} {}",
+                preview.selector.origin_identity, preview.selector.field_path
+            );
+            println!(
+                "Range: {}+{}",
+                preview.selector.byte_start, preview.selector.byte_length
+            );
+            println!("Prior record hash: {}", preview.prior_record_hash);
+            println!("Sanitized record hash: {}", preview.sanitized_record_hash);
+            println!("Previous generation reset: true");
+        }
+        return Ok(());
+    }
+
+    let outcome = service::redact_finding_holding(&mut store, &locks, fingerprint, actor, reason)?;
+    let receipt = if outcome.receipt.publication_state
+        == crate::model::redaction::PublicationState::Published
+    {
+        outcome.receipt
+    } else {
+        publish_redaction_or_split(
+            &mut store,
+            &locks,
+            &checkpoint_config,
+            &checkpoint_base,
+            &outcome.receipt,
+        )?
+    };
+    print_redaction_receipt(&receipt, opts.json)
+}
+
+fn publish_redaction_or_split(
+    store: &mut store::SqliteStore,
+    locks: &service::RedactionLocks,
+    checkpoint_config: &service::CheckpointConfig,
+    checkpoint_base: &std::path::Path,
+    receipt: &crate::model::redaction::RedactionReceipt,
+) -> Result<crate::model::redaction::RedactionReceipt> {
+    service::publish_redaction_checkpoint_holding(
+        locks.checkpoint_publication_lock(),
+        store,
+        checkpoint_config,
+        checkpoint_base,
+        receipt,
+    )
+    .map(|result| {
+        debug_assert_eq!(
+            result.receipt.resulting_generation_id.as_deref(),
+            Some(result.checkpoint.generation_id.as_str())
+        );
+        result.receipt
+    })
+    .map_err(|source| Error::RedactionPublicationFailed {
+        receipt_id: receipt.receipt_id.clone(),
+        source,
+    })
+}
+
+fn print_redaction_receipt(
+    receipt: &crate::model::redaction::RedactionReceipt,
+    json: bool,
+) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(receipt)?);
+    } else {
+        println!("Receipt: {}", receipt.receipt_id);
+        println!("Finding: {}", receipt.finding_fingerprint);
+        println!("Rule: {}", receipt.rule_id);
+        println!(
+            "Selector: {} {}",
+            receipt.selector.origin_identity, receipt.selector.field_path
+        );
+        println!("Prior record hash: {}", receipt.prior_record_hash);
+        println!("Sanitized record hash: {}", receipt.sanitized_record_hash);
+        println!("Publication state: {}", receipt.publication_state.as_str());
+        if let Some(generation) = &receipt.resulting_generation_id {
+            println!("Generation: {generation}");
+        }
+    }
+    Ok(())
 }
 
 fn cmd_restore(opts: cli::RestoreOptions) -> Result<()> {

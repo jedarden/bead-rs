@@ -468,7 +468,7 @@ fn scan_shard_manifest(
         "event_shards",
         "receipt_shards",
         "attempt_outcome_shards",
-        "redaction_receipt_shards",
+        "redaction_shards",
     ] {
         if let Some(shards) = manifest.get(key).and_then(Value::as_array) {
             for shard in shards {

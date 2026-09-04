@@ -277,6 +277,7 @@ fn names(kind: &str) -> &'static [&'static str] {
             // is absent until the compiled automatic-flush default flips on
             "auto_flush",
             "secret_scan",
+            "historical_redaction",
         ],
         "attempt_outcome" => &[
             "$schema",
@@ -522,7 +523,9 @@ fn property_schema(kind: &str, name: &str) -> Value {
         | ("capabilities", "schemas")
         | ("capabilities", "commands") => json!({"type":"array"}),
         ("capabilities", "priorities") => json!({"type":"object"}),
-        ("capabilities", "secret_scan") => json!({"type":"object"}),
+        ("capabilities", "secret_scan") | ("capabilities", "historical_redaction") => {
+            json!({"type":"object"})
+        }
         ("field_guide", "guide_version") => json!({"const":1}),
         ("attempt_outcome", "attempt_id") => {
             json!({"type":"string", "minLength":1, "maxLength":255})
@@ -683,7 +686,7 @@ fn required_for(kind: &str) -> Vec<String> {
         // Optional while the R026 gate keeps the compiled default off, so a
         // document without it validates; present-when-enabled documents
         // validate against the same additive identity (plan section 11)
-        "capabilities" => &["auto_flush", "secret_scan"],
+        "capabilities" => &["auto_flush", "secret_scan", "historical_redaction"],
         "attempt_outcome" => &["reason", "model", "harness", "harness_version"],
         "resolve_receipt" => &[],
         "resolve_request" => &[

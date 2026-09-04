@@ -357,6 +357,7 @@ fn canonical_request(command: &Command) -> Option<CanonicalRequest<'_>> {
         | Command::List(_)
         | Command::Show(_)
         | Command::Doctor(_)
+        | Command::Redact(_)
         | Command::Capabilities(_)
         | Command::Schema(_)
         | Command::Query(_)
