@@ -340,7 +340,7 @@ fn auto_flush_advertisement_ignores_workspace_state() {
     Command::cargo_bin("bead")
         .unwrap()
         .current_dir(workspace.path())
-        .args(["init", "--prefix", "handshake"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "handshake"])
         .assert()
         .success();
 
@@ -393,7 +393,7 @@ fn auto_flush_advertisement_matches_binary_behavior() {
 
     let workspace = tempfile::tempdir().unwrap();
     for args in [
-        vec!["init", "--prefix", "advertise"],
+        vec!["init", "--skip-foreign-workspace", "--prefix", "advertise"],
         vec!["create", "--title", "handshake behavior probe"],
     ] {
         Command::cargo_bin("bead")

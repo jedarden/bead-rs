@@ -96,7 +96,10 @@ fn status(workspace: &Path) -> Value {
 fn workspace_with_auto_flush(prefix: &str) -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().expect("workspace tempdir");
     let workspace = dir.path().to_path_buf();
-    let output = run(&workspace, &["init", "--prefix", prefix]);
+    let output = run(
+        &workspace,
+        &["init", "--skip-foreign-workspace", "--prefix", prefix],
+    );
     assert!(output.status.success(), "init failed");
     set_auto_flush(&workspace, true);
     (dir, workspace)

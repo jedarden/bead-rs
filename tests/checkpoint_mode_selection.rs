@@ -47,7 +47,12 @@ fn stderr_of(output: &Output) -> String {
 
 fn init_workspace(dir: &Path) {
     fs::create_dir_all(dir).unwrap();
-    run_ok(dir, &["init"]);
+    // Test runners may place their temporary directory below an unrelated
+    // ancestor `.beads` store.  Initializing this deliberately isolated test
+    // workspace is exactly the opt-in case for the discovery override; all
+    // subsequent commands still discover the local bead-rs workspace
+    // normally.
+    run_ok(dir, &["init", "--skip-foreign-workspace"]);
 }
 
 /// Merge a `checkpoint` section into the workspace's `.beads/config.json`
