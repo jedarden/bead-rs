@@ -343,8 +343,9 @@ pub struct Finding {
 }
 
 impl Finding {
-    /// Whether this finding rejects a mutation under the given mode.
-    fn is_rejecting(&self) -> bool {
+    /// Whether this is a confirmed blocking-tier match before workspace mode
+    /// or exact-fingerprint acknowledgment is applied.
+    pub fn is_blocking_match(&self) -> bool {
         self.tier == Tier::Blocking && self.disposition == Disposition::Confirmed
     }
 
@@ -819,9 +820,8 @@ pub fn scan(config: &ScanConfig, selector: &str, fields: &[Field<'_>]) -> ScanRe
         return report;
     }
     for field in fields {
-        for mut finding in scan_field(selector, field) {
-            if finding.is_rejecting() && config.is_acknowledged(&finding.fingerprint) {
-                finding.tier = Tier::Advisory;
+        for finding in scan_field(selector, field) {
+            if finding.is_blocking_match() && config.is_acknowledged(&finding.fingerprint) {
                 report.acknowledged.push(finding.clone());
             }
             report.findings.push(finding);
@@ -837,7 +837,9 @@ pub fn scan(config: &ScanConfig, selector: &str, fields: &[Field<'_>]) -> ScanRe
     report.blocking = report
         .findings
         .iter()
-        .filter(|f| f.is_rejecting())
+        .filter(|finding| {
+            finding.is_blocking_match() && !config.is_acknowledged(&finding.fingerprint)
+        })
         .cloned()
         .collect();
     report

@@ -92,6 +92,8 @@ fn exact_fingerprint_acknowledgment_admits_only_that_finding() {
 
     assert!(admitted.is_admitted());
     assert_eq!(admitted.acknowledged.len(), 1);
+    assert_eq!(admitted.findings[0].tier, Tier::Blocking);
+    assert!(admitted.findings[0].is_blocking_match());
 
     let changed_selector = scan(
         &config,

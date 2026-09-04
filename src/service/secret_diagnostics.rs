@@ -115,7 +115,7 @@ pub fn run_secret_diagnostics(store: &impl Store) -> Result<SecretDiagnosticsRep
     let blocking_findings = report
         .findings
         .iter()
-        .filter(|finding| finding.tier == scan::Tier::Blocking)
+        .filter(|finding| finding.is_blocking_match())
         .count();
 
     Ok(SecretDiagnosticsReport {
