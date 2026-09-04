@@ -37,6 +37,11 @@
 //! will fail the comparison. The failure output shows both snapshots, so
 //! check `git log` / `git reflog` timestamps for concurrent activity before
 //! blaming the script.
+//!
+//! A packaged or `git archive` source tree has no local `.git` marker. In
+//! that environment these VCS-state assertions are inapplicable and skip
+//! explicitly; package verification exercises the script build separately.
+//! If the marker exists, every Git discovery failure still fails the test.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -68,6 +73,20 @@ fn require_script() -> Option<PathBuf> {
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn require_vcs_checkout(root: &Path) -> bool {
+    if root.join(".git").exists() {
+        return true;
+    }
+    let msg = format!(
+        "skipping checkout-state assertion: {} has no local .git marker \
+         (expected for cargo package and git-archive verification)",
+        root.display()
+    );
+    println!("{msg}");
+    eprintln!("{msg}");
+    false
 }
 
 fn scratch_base() -> PathBuf {
@@ -204,6 +223,9 @@ fn archive_build_leaves_shared_checkout_untouched() {
         return;
     };
     let root = repo_root();
+    if !require_vcs_checkout(&root) {
+        return;
+    }
     let sha = git(&root, &["rev-parse", "HEAD"]);
     let before = snapshot(&root);
     let scratch_before = dir_entries(&scratch_base());
@@ -253,6 +275,9 @@ fn failed_archive_build_retains_scratch_dir() {
         return;
     };
     let root = repo_root();
+    if !require_vcs_checkout(&root) {
+        return;
+    }
     let sha = git(&root, &["rev-parse", "HEAD"]);
     let before = snapshot(&root);
     let scratch_before = dir_entries(&scratch_base());
