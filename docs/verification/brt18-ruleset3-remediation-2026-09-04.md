@@ -114,3 +114,14 @@ name the applicable historical-redaction tombstones when one event has been
 redacted more than once. Follow-up bead `beadrs-b162fc90` owns a focused
 regression test and merge-classification fix and blocks BR-T18. BR-T18 remains
 open until that work and the full exact-release Rust gates pass.
+
+## Subsequent archive-test correction
+
+Commit `f4f4df901f09b3231e7c274744ed3a9346f3cf13` makes the checkout-state
+regression test recognize a source tree with no local `.git` marker as an
+explicit package/archive context. The real-checkout test still runs both the
+successful archive build and injected-failure path and passed 2/2 in 99.08
+seconds. The exact Git-archive extraction also passed 2/2, with both
+checkout-state assertions explicitly skipped because that source form has no
+VCS state to compare. This removes the archive-environment test failure; it
+does not clear the independent formatting and Clippy failures above.
