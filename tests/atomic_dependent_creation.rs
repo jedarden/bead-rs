@@ -95,6 +95,23 @@ fn claim_id(workspace: &Path) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The claim epoch the issue's current claim minted, read back from the
+/// projection the credential gate documents. A claimed issue's own mutations
+/// require this as `--fencing-token`, so a test that claims an issue in order
+/// to mutate it has to present what the claim minted.
+fn claim_epoch(workspace: &Path, id: &str) -> i64 {
+    let output = run(workspace, &["show", id, "--json"]);
+    assert!(
+        output.status.success(),
+        "show failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let shown: Value = serde_json::from_slice(&output.stdout).unwrap();
+    shown.as_array().unwrap()[0]["claim_epoch"]
+        .as_i64()
+        .unwrap_or_else(|| panic!("{id} has no claim epoch projection"))
+}
+
 fn create_issue(workspace: &Path, args: &[&str]) -> String {
     let output = run(workspace, args);
     assert!(
@@ -217,8 +234,21 @@ fn dependent_create_is_never_claimable_before_its_blocker_closes() {
         "the dependent became claimable while its blocker was still open"
     );
 
-    // Closing the blocker is what releases the dependent.
-    let closed = run(workspace.path(), &["close", &blocker, "--reason", "done"]);
+    // Closing the blocker is what releases the dependent. The blocker was
+    // claimed above, so the close is a claimant-owned mutation and presents
+    // the credential that claim minted.
+    let epoch = claim_epoch(workspace.path(), &blocker);
+    let closed = run(
+        workspace.path(),
+        &[
+            "close",
+            &blocker,
+            "--reason",
+            "done",
+            "--fencing-token",
+            &epoch.to_string(),
+        ],
+    );
     assert!(
         closed.status.success(),
         "close failed: {}",
