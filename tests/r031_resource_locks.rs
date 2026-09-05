@@ -73,14 +73,34 @@ fn conflicting_ready_work_is_skipped_and_why_reports_reason() {
     let second: serde_json::Value = serde_json::from_slice(&second.stdout).unwrap();
     assert_eq!(second["bead_id"].as_str(), Some(free.as_str()));
 
-    let release = run(temp.path(), &["release", &holder]);
+    // Each hand-back presents the epoch its own claim issued: release and
+    // close are claimant-owned mutations, fenced by the same credential.
+    let release = run(
+        temp.path(),
+        &[
+            "release",
+            &holder,
+            "--fencing-token",
+            &first["claim_epoch"].as_i64().unwrap().to_string(),
+        ],
+    );
     assert!(release.status.success());
     let third = run(temp.path(), &["claim", "--assignee", "worker-3", "--json"]);
     assert!(third.status.success());
     let third: serde_json::Value = serde_json::from_slice(&third.stdout).unwrap();
     assert_eq!(third["bead_id"].as_str(), Some(holder.as_str()));
 
-    let close = run(temp.path(), &["close", &holder, "--reason", "done"]);
+    let close = run(
+        temp.path(),
+        &[
+            "close",
+            &holder,
+            "--reason",
+            "done",
+            "--fencing-token",
+            &third["claim_epoch"].as_i64().unwrap().to_string(),
+        ],
+    );
     assert!(close.status.success());
     let fourth = run(temp.path(), &["claim", "--assignee", "worker-4", "--json"]);
     assert!(fourth.status.success());
@@ -109,7 +129,18 @@ fn resource_commands_normalize_and_close_releases_keys() {
 
     let claimed = run(temp.path(), &["claim", "--assignee", "worker", "--json"]);
     assert!(claimed.status.success());
-    let closed = run(temp.path(), &["close", &issue, "--reason", "done"]);
+    let claimed: serde_json::Value = serde_json::from_slice(&claimed.stdout).unwrap();
+    let closed = run(
+        temp.path(),
+        &[
+            "close",
+            &issue,
+            "--reason",
+            "done",
+            "--fencing-token",
+            &claimed["claim_epoch"].as_i64().unwrap().to_string(),
+        ],
+    );
     assert!(closed.status.success());
 
     let other = create(temp.path(), "reuse", &["--resource-key", "a"]);

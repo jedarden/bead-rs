@@ -50,19 +50,34 @@ fn populated_workspace() -> tempfile::TempDir {
     // a single event cannot expose an identity collision, which is the defect
     // these tests exist to catch.
     for _ in 0..2 {
-        Command::cargo_bin("bead")
+        // The claim's epoch is the credential the closing mutation must
+        // present, so the fixture reads it back from the claim's --json
+        // projection rather than assuming a value.
+        let claim_output = Command::cargo_bin("bead")
             .unwrap()
-            .args(["claim", "--assignee", "fixture"])
+            .args(["claim", "--assignee", "fixture", "--json"])
             .current_dir(path)
             .env("HOME", path.to_str().unwrap())
             .assert()
-            .success();
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let claim: serde_json::Value = serde_json::from_slice(&claim_output).unwrap();
+        let epoch = claim["claim_epoch"].as_i64().unwrap().to_string();
 
         let claimed = in_progress_id(path).expect("claim should leave an issue in progress");
 
         Command::cargo_bin("bead")
             .unwrap()
-            .args(["close", &claimed, "--reason", "fixture"])
+            .args([
+                "close",
+                &claimed,
+                "--reason",
+                "fixture",
+                "--fencing-token",
+                &epoch,
+            ])
             .current_dir(path)
             .env("HOME", path.to_str().unwrap())
             .assert()

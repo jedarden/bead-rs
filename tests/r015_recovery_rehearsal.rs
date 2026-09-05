@@ -39,13 +39,20 @@ fn populated_workspace() -> tempfile::TempDir {
 
     // claim + close generates real events, matching how a live workspace
     // actually accumulates history before anyone rehearses recovery on it.
-    Command::cargo_bin("bead")
+    // `close` is a claimant-owned mutation, so the fixture holds the epoch the
+    // claim issued and presents it as the fencing credential.
+    let claim_output = Command::cargo_bin("bead")
         .unwrap()
-        .args(["claim", "--assignee", "fixture"])
+        .args(["claim", "--assignee", "fixture", "--json"])
         .current_dir(path)
         .env("HOME", path.to_str().unwrap())
         .assert()
-        .success();
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let claim: serde_json::Value = serde_json::from_slice(&claim_output).unwrap();
+    let epoch = claim["claim_epoch"].as_i64().unwrap().to_string();
 
     let list_output = Command::cargo_bin("bead")
         .unwrap()
@@ -64,7 +71,14 @@ fn populated_workspace() -> tempfile::TempDir {
 
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["close", &in_progress_id, "--reason", "fixture"])
+        .args([
+            "close",
+            &in_progress_id,
+            "--reason",
+            "fixture",
+            "--fencing-token",
+            &epoch,
+        ])
         .current_dir(path)
         .env("HOME", path.to_str().unwrap())
         .assert()

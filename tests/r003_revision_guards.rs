@@ -9,7 +9,10 @@ use assert_cmd::Command;
 fn create_workspace() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_bead"));
-    cmd.current_dir(dir.path()).arg("init").assert().success();
+    cmd.current_dir(dir.path())
+        .args(["init", "--skip-foreign-workspace"])
+        .assert()
+        .success();
     dir
 }
 
@@ -162,17 +165,22 @@ fn test_revision_increment_on_release() {
         .trim()
         .to_string();
 
-    // Claim the issue (moves to in_progress and assigns)
+    // Claim the issue (moves to in_progress and assigns). The claim's epoch
+    // comes back in the --json projection and is the credential the release
+    // below must present now that release is a claimant-owned mutation.
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_bead"));
-    cmd.current_dir(workspace.path())
-        .args(["claim", "--assignee", "worker-1"])
-        .assert()
-        .success();
+    let claim_result = cmd
+        .current_dir(workspace.path())
+        .args(["claim", "--assignee", "worker-1", "--json"])
+        .output()
+        .unwrap();
+    let claim: serde_json::Value = serde_json::from_slice(&claim_result.stdout).unwrap();
+    let epoch = claim["claim_epoch"].as_i64().unwrap().to_string();
 
-    // Release the issue
+    // Release the issue with the claim's epoch credential
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_bead"));
     cmd.current_dir(workspace.path())
-        .args(["release", &issue_id])
+        .args(["release", &issue_id, "--fencing-token", &epoch])
         .assert()
         .success();
 
@@ -366,15 +374,26 @@ fn test_revision_guard_on_release() {
 
     // Claim the issue (moves to in_progress and assigns)
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_bead"));
-    cmd.current_dir(workspace.path())
-        .args(["claim", "--assignee", "worker"])
-        .assert()
-        .success();
+    let claim_result = cmd
+        .current_dir(workspace.path())
+        .args(["claim", "--assignee", "worker", "--json"])
+        .output()
+        .unwrap();
+    let claim: serde_json::Value = serde_json::from_slice(&claim_result.stdout).unwrap();
+    let epoch = claim["claim_epoch"].as_i64().unwrap().to_string();
 
-    // Release with correct revision guard (revision 2 after claim)
+    // Release with correct revision guard (revision 2 after claim) and the
+    // claim's epoch credential
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_bead"));
     cmd.current_dir(workspace.path())
-        .args(["release", &issue_id, "--if-revision", "2"])
+        .args([
+            "release",
+            &issue_id,
+            "--if-revision",
+            "2",
+            "--fencing-token",
+            &epoch,
+        ])
         .assert()
         .success();
 }
