@@ -181,6 +181,7 @@ mod tests {
             base_status: BaseStatus::Open,
             manual_blocked: Some(false),
             assignee: None,
+            claim_epoch: None,
             created_at: "2026-08-10T00:00:00Z".to_string(),
             updated_at: "2026-08-10T00:00:00Z".to_string(),
             closed_at: None,

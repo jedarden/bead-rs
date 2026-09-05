@@ -32,7 +32,6 @@ use crate::error::{Error, Result};
 use crate::model::attempt::{
     validate_outcome_action_combo, Action, AttemptError, Outcome, ResolveReceipt, ResolveRequest,
 };
-use crate::service::leases::validate_lease_for_mutation;
 use crate::service::lifecycle;
 use crate::service::scheduling::AttemptTier;
 use rand::Rng;
@@ -82,7 +81,10 @@ pub fn resolve_attempt(
     // mutation, instead of letting the inner validation error surface as an
     // integrity failure.
     if matches!(action, Action::Close)
-        && request.reason.as_deref().is_none_or(|r| r.trim().is_empty())
+        && request
+            .reason
+            .as_deref()
+            .is_none_or(|r| r.trim().is_empty())
     {
         return Err(AttemptError::Usage(
             "action 'close' requires a non-empty reason".to_string(),
@@ -105,29 +107,38 @@ pub fn resolve_attempt(
         }
     }
 
-    // Validate fencing token if provided
-    if let Some(ref fencing_token_str) = request.fencing_token {
-        // Parse fencing token as integer
-        let fencing_token = fencing_token_str.parse::<i64>().map_err(|_| {
-            AttemptError::Usage(format!("Invalid fencing token: {}", fencing_token_str))
-        })?;
+    // The claim-epoch credential. `fencing_token` carries the epoch `bead
+    // claim` minted; a present override must carry a reason (omission is
+    // never an override).
+    let fencing_token: Option<i64> = request
+        .fencing_token
+        .as_deref()
+        .map(|s| {
+            s.parse::<i64>()
+                .map_err(|_| AttemptError::Usage(format!("Invalid fencing token: {}", s)))
+        })
+        .transpose()?;
+    if let Some(reason) = request.override_claim.as_deref() {
+        if reason.trim().is_empty() {
+            return Err(AttemptError::Usage(
+                "--override-claim requires a non-empty recovery reason".to_string(),
+            ));
+        }
+    }
 
-        validate_lease_for_mutation(tx, &request.issue_id, &request.actor, Some(fencing_token))
-            .map_err(|e| match e {
-                Error::Conflict(msg) => AttemptError::Conflict(msg),
-                _ => AttemptError::Integrity(format!("Failed to validate lease: {}", e)),
-            })?;
-    } else {
-        // Check if there's an active lease without providing a token
-        // This will fail if there's an active lease, succeed otherwise
-        validate_lease_for_mutation(tx, &request.issue_id, &request.actor, None).map_err(|e| {
-            match e {
-                Error::Conflict(msg) => {
-                    AttemptError::Conflict(format!("Issue has an active lease. {}", msg))
-                }
-                _ => AttemptError::Integrity(format!("Failed to check lease status: {}", e)),
-            }
-        })?;
+    // Claimant credential gate. `close` and `release` re-validate inside
+    // close_issue_in_tx / release_issue_in_tx -- the single audit site that
+    // also appends the `claim_override` event -- so only the actions that
+    // mutate the issue without going through a lifecycle body are gated here.
+    if matches!(action, Action::None | Action::Quarantine | Action::Block) {
+        lifecycle::enforce_claimant_credential(
+            tx,
+            &request.issue_id,
+            issue_state.assignee.as_deref(),
+            fencing_token,
+            request.override_claim.as_deref(),
+        )
+        .map_err(map_credential_error)?;
     }
 
     // Compute canonical request hash
@@ -198,9 +209,15 @@ pub fn resolve_attempt(
         &action,
         &request.issue_id,
         &request.reason,
-        &request.actor,
+        fencing_token,
+        request.override_claim.as_deref(),
     )
-    .map_err(|e| AttemptError::Integrity(format!("Failed to apply action: {}", e)))?;
+    .map_err(|e| match map_credential_error(e) {
+        AttemptError::Integrity(msg) => {
+            AttemptError::Integrity(format!("Failed to apply action: {}", msg))
+        }
+        other => other,
+    })?;
 
     // Update attempt tier and failures
     update_attempt_tier(tx, &request.issue_id, resulting_tier, consecutive_failures)
@@ -255,6 +272,7 @@ pub fn resolve_attempt(
 struct IssueState {
     revision: i64,
     status: String,
+    assignee: Option<String>,
     attempt_tier: i64,
     consecutive_failures: i64,
 }
@@ -270,7 +288,7 @@ struct IssueState {
 /// end-to-end so a regression here cannot go unseen again.
 fn get_issue_state(tx: &Transaction, issue_id: &str) -> std::result::Result<IssueState, Error> {
     let mut stmt = tx.prepare_cached(
-        "SELECT revision, base_status, attempt_tier, consecutive_failures
+        "SELECT revision, base_status, assignee, attempt_tier, consecutive_failures
          FROM issues WHERE id = ?1",
     )?;
 
@@ -279,8 +297,9 @@ fn get_issue_state(tx: &Transaction, issue_id: &str) -> std::result::Result<Issu
             Ok(IssueState {
                 revision: row.get(0)?,
                 status: row.get(1)?,
-                attempt_tier: row.get(2)?,
-                consecutive_failures: row.get(3)?,
+                assignee: row.get(2)?,
+                attempt_tier: row.get(3)?,
+                consecutive_failures: row.get(4)?,
             })
         })
         .optional()?
@@ -317,6 +336,10 @@ fn compute_canonical_hash(request: &ResolveRequest, _issue_state: &IssueState) -
 
     let fencing = request.fencing_token.as_deref().unwrap_or("");
     hasher.update(fencing.as_bytes());
+    hasher.update([0x00]);
+
+    let override_reason = request.override_claim.as_deref().unwrap_or("");
+    hasher.update(override_reason.as_bytes());
     hasher.update([0x00]);
 
     // Sort evidence refs for deterministic ordering
@@ -362,9 +385,10 @@ struct ExistingAttempt {
 
 /// Derive the resulting state of a resolved attempt from its stored action.
 ///
-/// Rows written before migration 15 carry the empty sentinel, so a replayed
-/// receipt reconstructs the old best-effort value from the action. New rows
-/// use the exact state stored by the resolving transaction.
+/// Rows written before `attempt_outcomes` grew a `resulting_state` column carry
+/// the migration default (''), so a replayed receipt reconstructs the value
+/// from the recorded action — the same derivation the checkpoint publisher
+/// applies when emitting outcome records.
 fn derive_resulting_state(action: &str) -> String {
     if action == "close" {
         "closed".to_string()
@@ -407,6 +431,28 @@ fn generate_receipt_id() -> String {
     let mut rng = rand::thread_rng();
     let random_bytes: [u8; 16] = std::array::from_fn(|_| rng.r#gen());
     format!("ao-{}", hex::encode(random_bytes))
+}
+
+/// Map a store/lifecycle error from the claimant-credential gate (or the
+/// gated close/release bodies) onto the resolver's taxonomy. Any
+/// conflict-family error -- including a stale or missing claim-epoch
+/// credential -- is a resolver Conflict (exit 4); a missing issue is
+/// NotFound; a usage rejection (e.g. an empty `--override-claim` reason) is
+/// Usage; everything else is integrity.
+fn map_credential_error(e: Error) -> AttemptError {
+    match e {
+        Error::Conflict(msg) | Error::LeaseExpired(msg) | Error::LeaseConflict(msg) => {
+            AttemptError::Conflict(msg)
+        }
+        Error::ClaimRefused { code, message } => {
+            AttemptError::Conflict(format!("{}: {}", code, message))
+        }
+        Error::Validation(v) => AttemptError::Conflict(v.to_string()),
+        Error::Workspace(msg) => AttemptError::NotFound(msg),
+        Error::CliUsage(msg) => AttemptError::Usage(msg),
+        Error::Model(m) => AttemptError::Usage(m.to_string()),
+        other => AttemptError::Integrity(other.to_string()),
+    }
 }
 
 /// Abbreviate a hash for display
@@ -463,7 +509,8 @@ fn apply_action(
     action: &Action,
     issue_id: &str,
     reason: &Option<String>,
-    _actor: &str,
+    fencing_token: Option<i64>,
+    override_claim: Option<&str>,
 ) -> std::result::Result<(), Error> {
     match action {
         Action::None => {
@@ -475,11 +522,12 @@ fn apply_action(
                 issue_id,
                 reason.as_deref().unwrap_or(""),
                 None,
-                None,
+                fencing_token,
+                override_claim,
             )?;
         }
         Action::Release => {
-            lifecycle::release_issue_in_tx(tx, issue_id)?;
+            lifecycle::release_issue_in_tx(tx, issue_id, fencing_token, override_claim)?;
         }
         Action::Quarantine => {
             // Quarantine: set tier=3 and optionally retry_after
@@ -615,6 +663,7 @@ mod tests {
             reason: Some("All tests passed".to_string()),
             if_revision: Some(42),
             fencing_token: None,
+            override_claim: None,
             evidence_refs: vec!["s3:logs/abc.tar.gz".to_string()],
             actor: "needle-worker-alpha".to_string(),
             model: Some("claude-opus-5".to_string()),
@@ -625,6 +674,7 @@ mod tests {
         let issue_state = IssueState {
             revision: 42,
             status: "in_progress".to_string(),
+            assignee: None,
             attempt_tier: 0,
             consecutive_failures: 0,
         };

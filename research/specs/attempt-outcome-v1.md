@@ -129,6 +129,10 @@ Actions determine the issue's resulting base lifecycle state. v1 defines:
 Actions MUST be legal lifecycle transitions. Invalid transitions are conflicts
 (exit 4). The validation occurs BEFORE the outcome is committed.
 
+The `close` action requires a non-empty normalized `reason`, which is stored as
+the issue's `close_reason`. A missing or blank reason is a usage error (exit 2)
+before any mutation. Other actions retain the request field's empty default.
+
 `quarantine` sets `attempt_tier` to 3 and optionally sets `retry_after` to a
 claim sequence number. A quarantined issue is not eligible for automatic claim.
 

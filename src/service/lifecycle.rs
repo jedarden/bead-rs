@@ -5,8 +5,10 @@
 
 use crate::error::{Error, Result};
 use crate::model::{BaseStatus, Issue};
+use crate::service::leases::{
+    current_claim_epoch, validate_claim_epoch_for_mutation, validate_lease_for_mutation,
+};
 use crate::service::resource_locks::{release_issue_locks, sync_issue_locks};
-use crate::service::validate_lease_for_mutation;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::json;
 
@@ -45,8 +47,98 @@ fn ensure_revision_row_affected(changed: usize, expected_revision: i64) -> Resul
     Ok(())
 }
 
+/// Enforce the claim-epoch credential on a mutation of a claimed issue.
+///
+/// This is the single gate every claimant-owned lifecycle mutation
+/// (update, release, close, reopen) and every claimant-owned attempt resolve
+/// runs, inside the caller's IMMEDIATE transaction and before any row is
+/// written:
+///
+/// - Unowned issue (`assignee` is NULL) -> nothing is fenced, allow. This is
+///   also the recovery path: once release/reopen clears the holder, anyone may
+///   mutate, and the next claim mints the next epoch.
+/// - `--override-claim <reason>` present -> the mutation proceeds and a
+///   distinct `claim_override` event is appended in the same transaction, so
+///   the bypass is auditable in the change feed. An empty reason is rejected:
+///   the override is reason-bearing by contract. Omission of the flag is never
+///   an override.
+/// - Otherwise both fencing dimensions must pass: lease expiry first (so an
+///   expired lease is reported as an expiry), then the claim-epoch credential
+///   (so a missing or stale credential is reported as a credential conflict).
+///
+/// The event carries the epoch being overridden, the credential the caller
+/// presented (if any), and the reason.
+fn validate_claimant_credential(
+    tx: &Transaction,
+    id: &str,
+    issue: &Issue,
+    fencing_token: Option<i64>,
+    override_claim: Option<&str>,
+) -> Result<()> {
+    enforce_claimant_credential(
+        tx,
+        id,
+        issue.assignee.as_deref(),
+        fencing_token,
+        override_claim,
+    )
+}
+
+/// Transaction-facing form of [`validate_claimant_credential`] for callers
+/// outside this module -- the attempt resolver and the resource-lock
+/// mutation path -- that hold the issue's assignee rather than a whole
+/// `Issue` row. Same gate, same audited override, same IMMEDIATE-transaction
+/// requirement.
+pub fn enforce_claimant_credential(
+    tx: &Transaction,
+    id: &str,
+    assignee: Option<&str>,
+    fencing_token: Option<i64>,
+    override_claim: Option<&str>,
+) -> Result<()> {
+    let Some(current_assignee) = assignee else {
+        return Ok(());
+    };
+
+    if let Some(reason) = override_claim {
+        let trimmed = reason.trim();
+        if trimmed.is_empty() {
+            return Err(Error::validation(
+                "--override-claim requires a non-empty recovery reason",
+            ));
+        }
+
+        // Only a live claim epoch is something to override; on an unowned or
+        // legacy (pre-fencing) issue the flag is accepted but audits nothing.
+        let epoch = current_claim_epoch(tx, id)?;
+        if epoch > 0 {
+            let now = time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_else(|_| "unknown".to_string());
+            append_event(
+                tx,
+                Some(id),
+                "claim_override",
+                &json!({
+                    "prior_assignee": current_assignee,
+                    "claim_epoch": epoch,
+                    "presented_fencing_token": fencing_token,
+                    "reason": trimmed,
+                    "actor": "operator",
+                }),
+                &now,
+            )?;
+        }
+        return Ok(());
+    }
+
+    validate_lease_for_mutation(tx, id, current_assignee, fencing_token)?;
+    validate_claim_epoch_for_mutation(tx, id, fencing_token)
+}
+
 /// Update an issue
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 pub fn update_issue(
     conn: &Connection,
     id: &str,
@@ -56,6 +148,32 @@ pub fn update_issue(
     notes: Option<&str>,
     if_revision: Option<i64>,
     fencing_token: Option<i64>,
+) -> Result<String> {
+    update_issue_with_override(
+        conn,
+        id,
+        status,
+        assignee,
+        clear_assignee,
+        notes,
+        if_revision,
+        fencing_token,
+        None,
+    )
+}
+
+/// Update an issue, optionally using an audited claim-recovery override.
+#[allow(clippy::too_many_arguments)]
+pub fn update_issue_with_override(
+    conn: &Connection,
+    id: &str,
+    status: Option<&str>,
+    assignee: Option<&str>,
+    clear_assignee: bool,
+    notes: Option<&str>,
+    if_revision: Option<i64>,
+    fencing_token: Option<i64>,
+    override_claim: Option<&str>,
 ) -> Result<String> {
     // Process in a write transaction taken before the read, so the revision
     // precondition and lease are validated against the snapshot the UPDATE
@@ -71,6 +189,7 @@ pub fn update_issue(
         notes,
         if_revision,
         fencing_token,
+        override_claim,
     )?;
 
     tx.commit()?;
@@ -92,6 +211,7 @@ pub fn update_issue_in_tx(
     notes: Option<&str>,
     if_revision: Option<i64>,
     fencing_token: Option<i64>,
+    override_claim: Option<&str>,
 ) -> Result<String> {
     // Validate that assignee and clear_assignee are not both specified
     if assignee.is_some() && clear_assignee {
@@ -114,10 +234,9 @@ pub fn update_issue_in_tx(
         }
     }
 
-    // Validate lease if issue has an active lease
-    if let Some(current_assignee) = &issue.assignee {
-        validate_lease_for_mutation(tx, id, current_assignee, fencing_token)?;
-    }
+    // Enforce the claim-epoch credential (or apply the audited override) while
+    // the issue is claimed
+    validate_claimant_credential(tx, id, &issue, fencing_token, override_claim)?;
 
     // Validate assignee value if present
     if let Some(assignee_value) = assignee {
@@ -137,11 +256,23 @@ pub fn update_issue_in_tx(
 }
 
 /// Release an issue
+#[allow(dead_code)]
 pub fn release_issue(
     conn: &Connection,
     id: &str,
     if_revision: Option<i64>,
     fencing_token: Option<i64>,
+) -> Result<String> {
+    release_issue_with_override(conn, id, if_revision, fencing_token, None)
+}
+
+/// Release an issue, optionally using an audited claim-recovery override.
+pub fn release_issue_with_override(
+    conn: &Connection,
+    id: &str,
+    if_revision: Option<i64>,
+    fencing_token: Option<i64>,
+    override_claim: Option<&str>,
 ) -> Result<String> {
     // Process in a write transaction taken before the read, so the revision
     // precondition and lease are validated against the snapshot the UPDATE
@@ -162,10 +293,9 @@ pub fn release_issue(
         }
     }
 
-    // Validate lease if issue has an active lease
-    if let Some(current_assignee) = &issue.assignee {
-        validate_lease_for_mutation(&tx, id, current_assignee, fencing_token)?;
-    }
+    // Enforce the claim-epoch credential (or apply the audited override) while
+    // the issue is claimed
+    validate_claimant_credential(&tx, id, &issue, fencing_token, override_claim)?;
 
     let result = release_issue_impl(&mut tx, &issue)?;
 
@@ -174,6 +304,7 @@ pub fn release_issue(
 }
 
 /// Close an issue
+#[allow(dead_code)]
 pub fn close_issue(
     conn: &Connection,
     id: &str,
@@ -181,12 +312,31 @@ pub fn close_issue(
     if_revision: Option<i64>,
     fencing_token: Option<i64>,
 ) -> Result<String> {
+    close_issue_with_override(conn, id, reason, if_revision, fencing_token, None)
+}
+
+/// Close an issue, optionally using an audited claim-recovery override.
+pub fn close_issue_with_override(
+    conn: &Connection,
+    id: &str,
+    reason: &str,
+    if_revision: Option<i64>,
+    fencing_token: Option<i64>,
+    override_claim: Option<&str>,
+) -> Result<String> {
     // Process in a write transaction taken before the read, so the revision
     // precondition and lease are validated against the snapshot the UPDATE
     // lands on (see begin_lifecycle_transaction)
     let mut tx = begin_lifecycle_transaction(conn)?;
 
-    let result = close_issue_in_tx(&mut tx, id, reason, if_revision, fencing_token)?;
+    let result = close_issue_in_tx(
+        &mut tx,
+        id,
+        reason,
+        if_revision,
+        fencing_token,
+        override_claim,
+    )?;
 
     tx.commit()?;
     Ok(result)
@@ -202,6 +352,7 @@ pub fn close_issue_in_tx(
     reason: &str,
     if_revision: Option<i64>,
     fencing_token: Option<i64>,
+    override_claim: Option<&str>,
 ) -> Result<String> {
     // Validate reason
     if reason.trim().is_empty() {
@@ -222,31 +373,52 @@ pub fn close_issue_in_tx(
         }
     }
 
-    // Validate lease if issue has an active lease
-    if let Some(current_assignee) = &issue.assignee {
-        validate_lease_for_mutation(tx, id, current_assignee, fencing_token)?;
-    }
+    // Enforce the claim-epoch credential (or apply the audited override) while
+    // the issue is claimed
+    validate_claimant_credential(tx, id, &issue, fencing_token, override_claim)?;
 
     close_issue_impl(tx, &issue, reason)
 }
 
 /// Run one `bead release` against a caller-owned transaction (R033).
 ///
-/// The attempt resolver already owns the IMMEDIATE transaction and validates
-/// its revision and lease before applying an action. Reusing this body avoids
-/// opening a nested transaction while keeping release and its audit event in
-/// the resolver's atomic commit.
-pub fn release_issue_in_tx(tx: &mut Transaction, id: &str) -> Result<String> {
+/// As with `close_issue_in_tx`, this is the command body between begin and
+/// commit, so a caller that is already inside a write transaction (the
+/// attempt resolver) can apply the transition without opening a nested one.
+pub fn release_issue_in_tx(
+    tx: &mut Transaction,
+    id: &str,
+    fencing_token: Option<i64>,
+    override_claim: Option<&str>,
+) -> Result<String> {
+    // Get current issue state
     let issue = get_issue_for_update(tx, id)?.ok_or_else(|| Error::not_found(id))?;
+
+    // Enforce the claim-epoch credential (or apply the audited override) while
+    // the issue is claimed
+    validate_claimant_credential(tx, id, &issue, fencing_token, override_claim)?;
+
     release_issue_impl(tx, &issue)
 }
 
 /// Reopen an issue
+#[allow(dead_code)]
 pub fn reopen_issue(
     conn: &Connection,
     id: &str,
     if_revision: Option<i64>,
     fencing_token: Option<i64>,
+) -> Result<String> {
+    reopen_issue_with_override(conn, id, if_revision, fencing_token, None)
+}
+
+/// Reopen an issue, optionally using an audited claim-recovery override.
+pub fn reopen_issue_with_override(
+    conn: &Connection,
+    id: &str,
+    if_revision: Option<i64>,
+    fencing_token: Option<i64>,
+    override_claim: Option<&str>,
 ) -> Result<String> {
     // Process in a write transaction taken before the read, so the revision
     // precondition and lease are validated against the snapshot the UPDATE
@@ -267,10 +439,9 @@ pub fn reopen_issue(
         }
     }
 
-    // Validate lease if issue has an active lease
-    if let Some(current_assignee) = &issue.assignee {
-        validate_lease_for_mutation(&tx, id, current_assignee, fencing_token)?;
-    }
+    // Enforce the claim-epoch credential (or apply the audited override) while
+    // the issue is claimed
+    validate_claimant_credential(&tx, id, &issue, fencing_token, override_claim)?;
 
     let result = reopen_issue_impl(&mut tx, &issue)?;
 
@@ -608,7 +779,7 @@ fn get_issue_for_update(conn: &Connection, id: &str) -> Result<Option<Issue>> {
     let mut stmt = conn.prepare_cached(
         "SELECT id, title, description, priority, base_status, assignee, issue_type,
          created_at, updated_at, closed_at, close_reason, manual_blocked, source_repo,
-         profile, schema_ref, notes, revision
+         profile, schema_ref, notes, revision, NULLIF(claim_epoch, 0)
          FROM issues WHERE id = ?",
     )?;
 
@@ -632,6 +803,7 @@ fn get_issue_for_update(conn: &Connection, id: &str) -> Result<Option<Issue>> {
                 schema_ref: row.get(14)?,
                 notes: row.get(15)?,
                 revision: row.get(16)?,
+                claim_epoch: row.get(17)?,
                 data: None,
                 extensions: Default::default(),
             })
@@ -643,7 +815,7 @@ fn get_issue_for_update(conn: &Connection, id: &str) -> Result<Option<Issue>> {
 
 /// Append an audit event
 fn append_event(
-    tx: &mut Transaction,
+    tx: &Transaction,
     issue_id: Option<&str>,
     kind: &str,
     detail: &serde_json::Value,

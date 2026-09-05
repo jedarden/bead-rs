@@ -20,7 +20,11 @@ fn default_binary_has_auto_flush_capability() {
 
     let caps = harness.get_default_capabilities().unwrap();
     let auto_flush = caps.get("auto_flush").and_then(|v| v.as_bool());
-    assert_eq!(auto_flush, Some(true), "auto_flush should be true by default");
+    assert_eq!(
+        auto_flush,
+        Some(true),
+        "auto_flush should be true by default"
+    );
 }
 
 #[test]
@@ -175,7 +179,9 @@ fn all_core_commands_are_present() {
 #[serial]
 fn native_v1_profile_capabilities() {
     let harness = BinaryHarness::new().unwrap();
-    let caps = harness.get_capabilities(&["capabilities", "--profile", "native-v1"]).unwrap();
+    let caps = harness
+        .get_capabilities(&["capabilities", "--profile", "native-v1"])
+        .unwrap();
 
     assert_eq!(caps["contract"], "native-v1");
     assert_eq!(caps["implementation"], "bead-rs");
@@ -203,7 +209,9 @@ fn native_v1_profile_capabilities() {
 #[serial]
 fn needle_v1_profile_capabilities() {
     let harness = BinaryHarness::new().unwrap();
-    let caps = harness.get_capabilities(&["capabilities", "--profile", "needle-v1"]).unwrap();
+    let caps = harness
+        .get_capabilities(&["capabilities", "--profile", "needle-v1"])
+        .unwrap();
 
     assert_eq!(caps["contract"], "needle-v1");
     assert_eq!(caps["implementation"], "bead-rs");
@@ -360,9 +368,6 @@ fn verify_default_expected_capabilities() {
     let failures = harness.verify_capabilities(&expected).unwrap();
 
     if !failures.is_empty() {
-        panic!(
-            "Capability verification failed:\n{}",
-            failures.join("\n")
-        );
+        panic!("Capability verification failed:\n{}", failures.join("\n"));
     }
 }

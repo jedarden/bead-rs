@@ -114,7 +114,10 @@ fn build_variant(features: &[String]) -> anyhow::Result<PathBuf> {
 }
 
 /// Execute capabilities command for a specific binary
-fn get_binary_capabilities(binary_path: &Path, workspace_dir: &Path) -> anyhow::Result<serde_json::Value> {
+fn get_binary_capabilities(
+    binary_path: &Path,
+    workspace_dir: &Path,
+) -> anyhow::Result<serde_json::Value> {
     let output = Command::new(binary_path)
         .current_dir(workspace_dir)
         .args(["capabilities"])
@@ -185,11 +188,14 @@ fn integration_test_default_build_capabilities() {
         .output()
         .expect("Failed to init workspace");
 
-    assert!(init_output.status.success(), "Failed to initialize workspace");
+    assert!(
+        init_output.status.success(),
+        "Failed to initialize workspace"
+    );
 
     // Get capabilities
-    let caps = get_binary_capabilities(&binary_path, workspace_dir)
-        .expect("Failed to get capabilities");
+    let caps =
+        get_binary_capabilities(&binary_path, workspace_dir).expect("Failed to get capabilities");
 
     // Verify expected capabilities
     let expected = &config.expected_capabilities;
@@ -221,7 +227,11 @@ fn integration_test_default_build_capabilities() {
                 .get("attempt_outcome")
                 .and_then(|v| v.get("supported"))
                 .and_then(|v| v.as_bool());
-            assert_eq!(supported, Some(true), "attempt_outcome.supported should be true");
+            assert_eq!(
+                supported,
+                Some(true),
+                "attempt_outcome.supported should be true"
+            );
         }
     }
 
@@ -236,8 +246,8 @@ fn integration_test_attempt_resolution_build_capabilities() {
     let config = VariantTestConfig::with_attempt_resolution();
 
     // Build the variant
-    let binary_path = build_variant(&config.features)
-        .expect("Failed to build attempt-resolution variant");
+    let binary_path =
+        build_variant(&config.features).expect("Failed to build attempt-resolution variant");
 
     // Create a temporary workspace
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
@@ -250,11 +260,14 @@ fn integration_test_attempt_resolution_build_capabilities() {
         .output()
         .expect("Failed to init workspace");
 
-    assert!(init_output.status.success(), "Failed to initialize workspace");
+    assert!(
+        init_output.status.success(),
+        "Failed to initialize workspace"
+    );
 
     // Get capabilities
-    let caps = get_binary_capabilities(&binary_path, workspace_dir)
-        .expect("Failed to get capabilities");
+    let caps =
+        get_binary_capabilities(&binary_path, workspace_dir).expect("Failed to get capabilities");
 
     // Verify attempt_outcome is present and supported
     assert!(
@@ -285,18 +298,21 @@ fn integration_test_compare_binary_variants() {
     let ar_config = VariantTestConfig::with_attempt_resolution();
 
     // Build both variants
-    let default_binary = build_variant(&default_config.features)
-        .expect("Failed to build default variant");
+    let default_binary =
+        build_variant(&default_config.features).expect("Failed to build default variant");
 
-    let ar_binary = build_variant(&ar_config.features)
-        .expect("Failed to build attempt-resolution variant");
+    let ar_binary =
+        build_variant(&ar_config.features).expect("Failed to build attempt-resolution variant");
 
     // Create temporary workspaces for each variant
     let default_temp = TempDir::new().expect("Failed to create temp dir");
     let ar_temp = TempDir::new().expect("Failed to create temp dir");
 
     // Initialize both workspaces
-    for (binary, temp_dir) in [&default_binary, &ar_binary].iter().zip([&default_temp, &ar_temp].iter()) {
+    for (binary, temp_dir) in [&default_binary, &ar_binary]
+        .iter()
+        .zip([&default_temp, &ar_temp].iter())
+    {
         let output = Command::new(binary)
             .current_dir(temp_dir.path())
             .args(["init", "--prefix", "test"])
@@ -356,7 +372,7 @@ fn integration_test_command_availability_across_variants() {
 
         // Build the variant
         let binary_path = build_variant(&config.features)
-            .expect(&format!("Failed to build variant: {}", config.name));
+            .unwrap_or_else(|e| panic!("Failed to build variant: {}: {e}", config.name));
 
         // Create temporary workspace
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
@@ -369,7 +385,10 @@ fn integration_test_command_availability_across_variants() {
             .output()
             .expect("Failed to init workspace");
 
-        assert!(init_output.status.success(), "Failed to initialize workspace");
+        assert!(
+            init_output.status.success(),
+            "Failed to initialize workspace"
+        );
 
         // Get capabilities
         let caps = get_binary_capabilities(&binary_path, workspace_dir)
@@ -383,7 +402,9 @@ fn integration_test_command_availability_across_variants() {
 
         for expected_command in &config.expected_capabilities.expected_commands {
             assert!(
-                commands.iter().any(|cmd| cmd.as_str() == Some(expected_command.as_str())),
+                commands
+                    .iter()
+                    .any(|cmd| cmd.as_str() == Some(expected_command.as_str())),
                 "Command '{}' should be present in {} build",
                 expected_command,
                 config.name
@@ -393,14 +414,19 @@ fn integration_test_command_availability_across_variants() {
         // Verify missing commands are actually missing
         for missing_command in &config.expected_capabilities.missing_commands {
             assert!(
-                !commands.iter().any(|cmd| cmd.as_str() == Some(missing_command.as_str())),
+                !commands
+                    .iter()
+                    .any(|cmd| cmd.as_str() == Some(missing_command.as_str())),
                 "Command '{}' should be missing in {} build",
                 missing_command,
                 config.name
             );
         }
 
-        eprintln!("Command availability validated for variant: {}", config.name);
+        eprintln!(
+            "Command availability validated for variant: {}",
+            config.name
+        );
     }
 
     eprintln!("Command availability tests completed successfully");
@@ -420,7 +446,9 @@ fn integration_test_capability_framework_integration() {
     harness.init_workspace().expect("Failed to init workspace");
 
     // Test basic capability detection
-    let caps = harness.get_default_capabilities().expect("Failed to get capabilities");
+    let caps = harness
+        .get_default_capabilities()
+        .expect("Failed to get capabilities");
 
     assert!(
         caps.get("contract").is_some(),

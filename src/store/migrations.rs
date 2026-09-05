@@ -7,7 +7,7 @@ use rusqlite::{Connection, Result as SqliteResult, Transaction, TransactionBehav
 use sha2::{Digest, Sha256};
 
 /// Current migration version
-pub const CURRENT_VERSION: i64 = 16;
+pub const CURRENT_VERSION: i64 = 17;
 
 /// Whether the store has already reached [`CURRENT_VERSION`].
 ///
@@ -114,27 +114,44 @@ pub fn apply_migrations(conn: &Connection) -> SqliteResult<()> {
     Ok(())
 }
 
-/// Accept only the narrow additive-migration replay where the exact column is
-/// already present. Other DDL errors remain fatal.
+/// Return true only for a known additive migration whose column is already
+/// present. This permits recovery from the narrow crash boundary where SQLite
+/// committed the schema change but the migration ledger row was not retained,
+/// without treating arbitrary migration failures as success.
 fn is_safe_add_column_replay(
     tx: &Transaction<'_>,
     version: i64,
     statement: &str,
     error: &rusqlite::Error,
 ) -> SqliteResult<bool> {
-    if version != 15
-        || statement.split_whitespace().collect::<Vec<_>>().join(" ")
-            != "ALTER TABLE attempt_outcomes ADD COLUMN resulting_state TEXT NOT NULL DEFAULT ''"
+    let expected = match version {
+        15 => ("attempt_outcomes", "resulting_state"),
+        17 => ("issues", "claim_epoch"),
+        _ => return Ok(false),
+    };
+
+    let normalized = statement.split_whitespace().collect::<Vec<_>>().join(" ");
+    let expected_statement = format!("ALTER TABLE {} ADD COLUMN {} ", expected.0, expected.1);
+    if !normalized.starts_with(&expected_statement)
         || !error.to_string().contains("duplicate column name")
     {
         return Ok(false);
     }
 
-    tx.query_row(
-        "SELECT COUNT(*) = 1 FROM pragma_table_info('attempt_outcomes') WHERE name = 'resulting_state'",
-        [],
-        |row| row.get(0),
-    )
+    let present = match expected.0 {
+        "attempt_outcomes" => tx.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('attempt_outcomes') WHERE name = ?1",
+            [expected.1],
+            |row| row.get::<_, i64>(0),
+        )?,
+        "issues" => tx.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('issues') WHERE name = ?1",
+            [expected.1],
+            |row| row.get::<_, i64>(0),
+        )?,
+        _ => 0,
+    };
+    Ok(present == 1)
 }
 
 /// Get a migration by version number
@@ -156,6 +173,7 @@ fn get_migration(version: i64) -> Migration {
         14 => migration_14(),
         15 => migration_15(),
         16 => migration_16(),
+        17 => migration_17(),
         v => panic!("Unknown migration version: {}", v),
     }
 }
@@ -815,27 +833,68 @@ CREATE INDEX IF NOT EXISTS attempt_outcomes_created ON attempt_outcomes (created
     }
 }
 
-/// Migration 15: persist the authoritative post-resolution issue state.
+/// Migration 15: Attempt outcome resulting state (attempt-outcome-v1 contract)
 ///
-/// Older rows receive the empty sentinel and retain the compatibility
-/// fallback used by replay/export. New rows always store the state observed
-/// by the resolving transaction, including states that cannot be inferred
-/// from the action alone (for example `none` on an in-progress issue).
+/// `attempt_outcomes` never stored the receipt's `resulting_state`, so a
+/// replayed resolution could not return the original receipt verbatim and the
+/// checkpoint publisher had to derive the field from the action
+/// (close -> "closed", everything else -> "open"). Store it explicitly.
 fn migration_15() -> Migration {
-    Migration {
-        sql: r#"
+    let sql = r#"
 ALTER TABLE attempt_outcomes ADD COLUMN resulting_state TEXT NOT NULL DEFAULT '';
-"#
-        .to_string(),
+"#;
+
+    Migration {
+        sql: sql.to_string(),
     }
 }
 
-/// Migration 16: audited historical-redaction storage (ADR-015, BR-T15).
+/// Migration 17: claim-epoch fencing credential
 ///
-/// The typed v1 columns store selectors, hashes, and audit metadata, never the
-/// removed bytes. Bounded JSON extension columns preserve unknown fields as
-/// required by the native checkpoint contract; those fields remain opaque,
-/// scanner-visible recovery input and gain no v1 semantics.
+/// Every claim -- leased or not -- mints a monotonically increasing
+/// `claim_epoch` on the issue row. It is the durable ownership credential a
+/// claimant presents (`--fencing-token`) to mutate the issue, so a process
+/// from an older claim cannot mutate a newer claim after release and
+/// reassignment.
+///
+/// The column is seeded from the per-issue fencing-token high-water mark so
+/// the epoch sequence continues the historical lease sequence without reusing
+/// a number: existing lease rows keep `fencing_token <= claim_epoch`, and the
+/// first post-migration claim takes `MAX + 1`. Issues never leased start at 0
+/// and are fenced from their first post-migration claim.
+fn migration_17() -> Migration {
+    let sql = r#"
+ALTER TABLE issues ADD COLUMN claim_epoch INTEGER NOT NULL DEFAULT 0;
+
+UPDATE issues
+SET claim_epoch = COALESCE(
+    (SELECT MAX(fencing_token) FROM leases WHERE leases.issue_id = issues.id),
+    0
+);
+"#;
+
+    Migration {
+        sql: sql.to_string(),
+    }
+}
+
+/// Migration 16: audited historical-redaction storage (ADR-015, BR-T15)
+///
+/// Five additive tables hold the durable records the `historical-redaction-v1`
+/// contract defines: scanner findings, advisory acknowledgments, committed
+/// redaction receipts, publication epochs, and anti-resurrection tombstones.
+///
+/// Every selector is flattened into columns rather than stored as JSON so the
+/// recovery-precedence key -- (record_kind, origin_identity, field_path,
+/// prior_record_hash) -- is a real index the import path can probe. The typed
+/// v1 columns name where bytes were and what rule matched, never the bytes.
+/// Bounded JSON extension columns preserve unknown fields as required by the
+/// native checkpoint contract; those fields remain opaque, scanner-visible
+/// recovery input and gain no v1 semantics.
+///
+/// All five are pure additions: no existing table is altered, so a store can
+/// roll back to the previous binary and keep working, and an older reader
+/// simply never learns these tables exist.
 fn migration_16() -> Migration {
     let sql = r#"
 CREATE TABLE IF NOT EXISTS redaction_findings (

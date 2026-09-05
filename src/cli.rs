@@ -1154,7 +1154,7 @@ exactly-once semantics for attempt resolution under concurrent access and
 crash recovery.
 
 EXAMPLES:
-  bead resolve bead-123abc456789def --attempt-id urn:needle:attempt:abc123 --outcome verified_success --action close
+  bead resolve bead-123abc456789def --attempt-id urn:needle:attempt:abc123 --outcome verified_success --action close --reason \"All checks passed\"
   bead resolve bead-123abc456789def --attempt-id urn:needle:attempt:abc123 --outcome work_failure --action quarantine --reason \"Tests failing\"
   bead resolve bead-123abc456789def --attempt-id urn:needle:attempt:abc123 --outcome infrastructure_failure --action release
 
@@ -1205,7 +1205,10 @@ pub struct ResolveOptions {
     pub action: Option<String>,
 
     /// Human-readable reason for the action
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Action reason; required and non-empty for --action close"
+    )]
     pub reason: Option<String>,
 
     /// Expected revision for optimistic concurrency control

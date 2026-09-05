@@ -6,9 +6,9 @@ mod error;
 mod model;
 #[allow(dead_code)]
 mod profile;
-mod service;
 #[allow(dead_code, unused_imports)]
 mod scan;
+mod service;
 mod store;
 
 use crate::cli::{Cli, Command};
@@ -305,7 +305,13 @@ fn execute_command(cli: Cli) -> Result<()> {
     let restore_without_probe = matches!(&cli.command, Command::Restore(_));
     let init_without_probe = matches!(&cli.command, Command::Init(_));
     let prepared_scan = cli_secret_scan::prepare(&cli)?;
-    let probe = if redaction_command {
+    // `init` owns schema upgrade reporting and snapshots the pre-migration
+    // version itself. The ordinary publication probe opens through the
+    // auto-migrating connection helper, which would perform that upgrade
+    // before dispatch and make `init` falsely report an already-current
+    // schema. Init has dedicated publication handling below for the only
+    // case that needs it: a newly created workspace.
+    let probe = if redaction_command || init_without_probe {
         None
     } else {
         publication_probe(no_auto_flush)
@@ -641,8 +647,25 @@ fn cmd_init(opts: cli::InitOptions) -> Result<bool> {
             // deterministic" as the help text already promises.
             let db_path = existing_config.root.join(".beads/beads.db");
             if db_path.exists() {
+                // `SqliteStore::with_path` applies pending migrations while
+                // opening, so capture the prior version through a read-only
+                // connection before constructing the store. Otherwise the
+                // diagnostic always compares the post-migration version to
+                // itself and falsely reports "up to date" after an upgrade.
+                let before_conn = rusqlite::Connection::open_with_flags(
+                    &db_path,
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                )?;
+                let before = before_conn
+                    .query_row(
+                        "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(0);
+                drop(before_conn);
+
                 let mut store = store::SqliteStore::with_path(&db_path)?;
-                let before = store.schema_version()?;
                 store.apply_migrations()?;
                 let after = store.schema_version()?;
                 if after > before {
@@ -729,6 +752,7 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
         let claim = ClaimResult {
             bead_id: enhanced.bead_id.clone(),
             assignee: enhanced.assignee.clone(),
+            claim_epoch: enhanced.claim_epoch,
         };
         (enhanced, claim)
     } else {
@@ -747,6 +771,7 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
         let enhanced = service::EnhancedClaimResult {
             bead_id: claim.bead_id.clone(),
             assignee: claim.assignee.clone(),
+            claim_epoch: claim.claim_epoch,
             lease: None, // Intelligent policies don't include lease info in basic result
         };
         (enhanced, claim)
@@ -1351,6 +1376,7 @@ fn cmd_resolve(opts: cli::ResolveOptions) -> Result<()> {
         reason: opts.reason.clone(),
         if_revision: opts.if_revision,
         fencing_token: opts.fencing_token.clone(),
+        override_claim: None,
         evidence_refs: opts.evidence_ref.clone(),
         actor: opts.actor.clone(),
         model: opts.model.clone(),
@@ -1433,6 +1459,7 @@ fn cmd_resource_add(opts: cli::ResourceAddOptions) -> Result<()> {
         &opts.id,
         &opts.keys,
         opts.fencing_token,
+        None,
         "cli",
     )?;
     tx.commit()?;
@@ -1448,6 +1475,7 @@ fn cmd_resource_remove(opts: cli::ResourceRemoveOptions) -> Result<()> {
         &opts.id,
         &opts.keys,
         opts.fencing_token,
+        None,
         "cli",
     )?;
     tx.commit()?;
@@ -2691,8 +2719,8 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
                             eprintln!("  Priority: {}", bead.priority);
 
                             let mut reasons = Vec::new();
-                            if bead.assignee.is_some() {
-                                reasons.push(format!("assignee: {}", bead.assignee.as_ref().unwrap()));
+                            if let Some(assignee) = &bead.assignee {
+                                reasons.push(format!("assignee: {}", assignee));
                             }
                             if bead.manual_blocked {
                                 reasons.push("manually blocked".to_string());
@@ -3009,6 +3037,9 @@ fn to_needle_json(
     // Add comments array (may be empty)
     if let Some(obj) = json_obj.as_object_mut() {
         obj.insert("comments".to_string(), serde_json::json!(comments));
+        if let Some(claim_epoch) = issue.claim_epoch {
+            obj.insert("claim_epoch".to_string(), serde_json::json!(claim_epoch));
+        }
         if let Some(resource_keys) = issue.extensions.get("resource_keys") {
             obj.insert("resource_keys".to_string(), resource_keys.clone());
         }
@@ -3996,7 +4027,10 @@ fn print_human_readable_why(why: &service::WhyExplanation) {
     if let Some(attempt_info) = &why.attempt_info {
         println!("\n=== Attempt Information ===");
         println!("Current Tier: {}", attempt_info.current_tier);
-        println!("Consecutive Failures: {}", attempt_info.consecutive_failures);
+        println!(
+            "Consecutive Failures: {}",
+            attempt_info.consecutive_failures
+        );
         println!("Tier Description: {}", attempt_info.tier_description);
 
         if let Some(last_attempt) = &attempt_info.last_attempt {
@@ -4013,7 +4047,10 @@ fn print_human_readable_why(why: &service::WhyExplanation) {
         }
 
         if !attempt_info.attempt_history.is_empty() {
-            println!("\nAttempt History (most recent {}):", attempt_info.attempt_history.len());
+            println!(
+                "\nAttempt History (most recent {}):",
+                attempt_info.attempt_history.len()
+            );
             for (i, entry) in attempt_info.attempt_history.iter().enumerate() {
                 println!("  {}. {}", i + 1, entry.attempt_id);
                 println!("     Outcome: {}", entry.outcome);
@@ -4483,7 +4520,8 @@ fn cmd_watchdog(opts: cli::WatchdogOptions) -> Result<()> {
     };
 
     // Create watchdog configuration
-    let watchdog_config = service::config_from_options(&opts.threshold, opts.force, &config.root)?;
+    let watchdog_config =
+        service::config_from_options(&opts.threshold, opts.dry_run, opts.force, &config.root)?;
 
     // Open database connection
     let db_path = config.database_path();

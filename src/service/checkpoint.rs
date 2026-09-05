@@ -934,7 +934,7 @@ pub struct ForkReceipt {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttemptOutcomeRecord {
     /// Schema reference
-    #[serde(rename = "$schema")]
+    #[serde(rename = "$schema", alias = "schema_ref")]
     pub schema_ref: String,
     /// Attempt ID
     pub attempt_id: String,
@@ -4693,8 +4693,8 @@ fn import_issues(tx: &Transaction, staging: &ForensicStaging) -> Result<usize> {
             "INSERT INTO issues (
                 id, title, description, notes, priority, issue_type, base_status,
                 manual_blocked, assignee, created_at, updated_at, closed_at,
-                close_reason, source_repo, profile, schema_ref, revision
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                close_reason, source_repo, profile, schema_ref, revision, claim_epoch
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 &issue.id,
                 &issue.title,
@@ -4713,6 +4713,7 @@ fn import_issues(tx: &Transaction, staging: &ForensicStaging) -> Result<usize> {
                 &issue.profile,
                 &issue.schema_ref,
                 &issue.revision.unwrap_or(1),
+                &issue.claim_epoch.unwrap_or(0),
             ],
         )?;
 
@@ -5425,8 +5426,8 @@ fn reconcile_and_merge(
                     "INSERT INTO issues (
                         id, title, description, notes, priority, issue_type, base_status,
                         manual_blocked, assignee, created_at, updated_at, closed_at,
-                        close_reason, source_repo, profile, schema_ref, revision
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                        close_reason, source_repo, profile, schema_ref, revision, claim_epoch
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
                     params![
                         &issue.id,
                         &issue.title,
@@ -5445,6 +5446,7 @@ fn reconcile_and_merge(
                         &issue.profile,
                         &issue.schema_ref,
                         &issue.revision.unwrap_or(1),
+                        &issue.claim_epoch.unwrap_or(0),
                     ],
                 )?;
 
@@ -5495,8 +5497,9 @@ fn reconcile_and_merge(
                             issue_type = ?5, base_status = ?6, manual_blocked = ?7,
                             assignee = ?8, updated_at = ?9, closed_at = ?10,
                             close_reason = ?11, source_repo = ?12, profile = ?13,
-                            schema_ref = ?14, revision = ?15
-                         WHERE id = ?16",
+                            schema_ref = ?14, revision = ?15,
+                            claim_epoch = MAX(claim_epoch, ?16)
+                         WHERE id = ?17",
                         params![
                             &issue.title,
                             &issue.description,
@@ -5513,6 +5516,7 @@ fn reconcile_and_merge(
                             &issue.profile,
                             &issue.schema_ref,
                             &resulting_revision,
+                            &issue.claim_epoch.unwrap_or(0),
                             &id,
                         ],
                     )?;
@@ -6491,8 +6495,8 @@ fn activate_import(store: &mut SqliteStore, staging: &ImportStaging) -> Result<(
             "INSERT INTO issues (
                 id, title, description, notes, priority, issue_type, base_status,
                 manual_blocked, assignee, created_at, updated_at, closed_at, close_reason,
-                source_repo, profile, schema_ref, revision
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                source_repo, profile, schema_ref, revision, claim_epoch
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 &issue.id,
                 &issue.title,
@@ -6515,6 +6519,7 @@ fn activate_import(store: &mut SqliteStore, staging: &ImportStaging) -> Result<(
                 &issue.profile,
                 &issue.schema_ref,
                 &issue.revision.unwrap_or(1),
+                &issue.claim_epoch.unwrap_or(0),
             ],
         )?;
 
@@ -9399,7 +9404,8 @@ fn read_all_issues(tx: &Transaction) -> Result<Vec<Issue>> {
     let mut issue_stmt = tx.prepare(
         "SELECT id, title, description, notes, priority, issue_type, base_status,
                 manual_blocked, assignee, created_at, updated_at, closed_at, close_reason,
-                source_repo, profile, schema_ref, revision
+                source_repo, profile, schema_ref, revision,
+                NULLIF(claim_epoch, 0) AS claim_epoch
          FROM issues",
     )?;
 
@@ -9422,6 +9428,7 @@ fn read_all_issues(tx: &Transaction) -> Result<Vec<Issue>> {
             row.get::<_, Option<String>>("profile")?,
             row.get::<_, Option<String>>("schema_ref")?,
             row.get::<_, i64>("revision")?,
+            row.get::<_, Option<i64>>("claim_epoch")?,
         ))
     })?;
 
@@ -9444,6 +9451,7 @@ fn read_all_issues(tx: &Transaction) -> Result<Vec<Issue>> {
             profile,
             schema_ref,
             revision,
+            claim_epoch,
         ) = row?;
 
         // Load extensions for this issue
@@ -9565,6 +9573,7 @@ fn read_all_issues(tx: &Transaction) -> Result<Vec<Issue>> {
                 .map_err(|e| anyhow::anyhow!("Invalid base_status: {}", e))?,
             manual_blocked: Some(manual_blocked != 0),
             assignee,
+            claim_epoch,
             created_at,
             updated_at,
             closed_at,

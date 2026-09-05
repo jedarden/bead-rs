@@ -187,6 +187,7 @@ fn create_base_issue(id: String, title: String, priority: i64) -> Issue {
         base_status: BaseStatus::Open,
         manual_blocked: None,
         assignee: None,
+        claim_epoch: None,
         issue_type: Some("task".to_string()),
         created_at: now.clone(),
         updated_at: now,

@@ -126,12 +126,17 @@ fn needle_v1_claim_command() {
     let issue_id = std::str::from_utf8(&result).unwrap().trim();
 
     // Test claim command as subprocess with JSON output
-    Command::cargo_bin("bead")
+    let claim_output = Command::cargo_bin("bead")
         .unwrap()
         .args(["claim", "--assignee", "needle-worker", "--json"])
         .assert()
         .success()
-        .stdout(predicates::str::contains(issue_id));
+        .stdout(predicates::str::contains(issue_id))
+        .get_output()
+        .stdout
+        .clone();
+    let claim: serde_json::Value = serde_json::from_slice(&claim_output).unwrap();
+    let claim_epoch = claim["claim_epoch"].as_i64().unwrap();
 
     // Verify the issue is now assigned
     Command::cargo_bin("bead")
@@ -139,7 +144,11 @@ fn needle_v1_claim_command() {
         .args(["show", issue_id, "--json"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("needle-worker"));
+        .stdout(predicates::str::contains("needle-worker"))
+        .stdout(predicates::str::contains(format!(
+            "\"claim_epoch\":{}",
+            claim_epoch
+        )));
 
     workspace.cleanup();
 }
@@ -199,23 +208,35 @@ fn needle_v1_lifecycle_commands() {
     let issue_id = std::str::from_utf8(&result).unwrap().trim();
 
     // Claim the issue
-    Command::cargo_bin("bead")
+    let claim_output = Command::cargo_bin("bead")
         .unwrap()
-        .args(["claim", "--assignee", "worker"])
+        .args(["claim", "--assignee", "worker", "--json"])
         .assert()
-        .success();
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let claim: serde_json::Value = serde_json::from_slice(&claim_output).unwrap();
+    let epoch = claim["claim_epoch"].as_i64().unwrap().to_string();
 
     // Test update command as subprocess
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["update", issue_id, "--notes", "Test notes"])
+        .args([
+            "update",
+            issue_id,
+            "--notes",
+            "Test notes",
+            "--fencing-token",
+            &epoch,
+        ])
         .assert()
         .success();
 
     // Test release command as subprocess
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["release", issue_id])
+        .args(["release", issue_id, "--fencing-token", &epoch])
         .assert()
         .success();
 

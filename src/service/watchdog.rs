@@ -17,14 +17,16 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Watchdog configuration
 #[derive(Debug, Clone)]
 pub struct WatchdogConfig {
     /// Maximum age of an in_progress bead before it's considered stale
     pub threshold: Duration,
-    /// Whether to actually release beads (false = dry-run)
+    /// Whether to report releases without applying them
+    pub dry_run: bool,
+    /// Whether to release stale claims even when no lease has expired
     pub force: bool,
     /// Path to the watchdog releases log
     pub log_path: PathBuf,
@@ -163,7 +165,7 @@ fn log_action(log_path: &PathBuf, action: &ReleasedBead) -> Result<()> {
 /// Get all in_progress beads
 fn get_in_progress_beads(conn: &Connection) -> Result<Vec<IssueRow>> {
     let mut stmt = conn.prepare(
-        "SELECT id, title, assignee, updated_at, base_status
+        "SELECT id, assignee, updated_at
          FROM issues
          WHERE base_status = ?",
     )?;
@@ -172,10 +174,8 @@ fn get_in_progress_beads(conn: &Connection) -> Result<Vec<IssueRow>> {
         .query_map([BaseStatus::InProgress.to_string()], |row| {
             Ok(IssueRow {
                 id: row.get(0)?,
-                title: row.get(1)?,
-                assignee: row.get(2)?,
-                updated_at: row.get(3)?,
-                base_status: row.get(4)?,
+                assignee: row.get(1)?,
+                updated_at: row.get(2)?,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()
@@ -188,10 +188,8 @@ fn get_in_progress_beads(conn: &Connection) -> Result<Vec<IssueRow>> {
 #[derive(Debug, Clone)]
 struct IssueRow {
     id: String,
-    title: String,
     assignee: Option<String>,
     updated_at: String,
-    base_status: String,
 }
 
 /// Run watchdog scan
@@ -238,9 +236,26 @@ pub fn run_watchdog(conn: &Connection, config: WatchdogConfig) -> Result<Watchdo
 
             if lease_expired || config.force {
                 // Lease expired or force mode - release the bead
-                if !config.force {
-                    // Release only if not in dry-run mode
-                    match crate::service::lifecycle::release_issue(conn, &issue.id, None, None) {
+                if !config.dry_run {
+                    // The watchdog is an
+                    // automated recovery actor: it holds no claim-epoch
+                    // credential, so the release rides the audited
+                    // --override-claim path (distinct `claim_override` event)
+                    // instead of bypassing the fence.
+                    match crate::service::lifecycle::release_issue_with_override(
+                        conn,
+                        &issue.id,
+                        None,
+                        None,
+                        Some(if lease_expired {
+                            format!(
+                                "watchdog auto-release: lease expired for assignee '{assignee}'"
+                            )
+                        } else {
+                            "watchdog force release: stale in-progress claim".to_string()
+                        })
+                        .as_deref(),
+                    ) {
                         Ok(_) => {
                             let released = ReleasedBead {
                                 id: issue.id.clone(),
@@ -285,8 +300,9 @@ pub fn run_watchdog(conn: &Connection, config: WatchdogConfig) -> Result<Watchdo
 /// Create watchdog config from CLI options
 pub fn config_from_options(
     threshold_str: &str,
+    dry_run: bool,
     force: bool,
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
 ) -> Result<WatchdogConfig> {
     let threshold = parse_duration(threshold_str)?;
     let log_path = workspace_root
@@ -295,6 +311,7 @@ pub fn config_from_options(
 
     Ok(WatchdogConfig {
         threshold,
+        dry_run,
         force,
         log_path,
     })

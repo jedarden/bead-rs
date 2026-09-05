@@ -520,6 +520,10 @@ fn execute_operation_in_tx(
                 update.notes.as_deref(),
                 update.if_revision,
                 None,
+                // A manifest op is not claimant recovery: a target held at a
+                // live claim epoch is refused like any other credential-less
+                // mutation rather than silently overridden.
+                None,
             )
             .map_err(context)?;
             state_change_result(index, "update", &id, before.as_ref(), tx).map_err(context)?
@@ -532,6 +536,7 @@ fn execute_operation_in_tx(
                 &id,
                 &close.reason,
                 close.if_revision,
+                None,
                 None,
             )
             .map_err(context)?;

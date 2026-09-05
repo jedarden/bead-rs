@@ -92,8 +92,18 @@ pub use issues::list_issues;
 pub use issues::{add_comment, analyze_exclusion, ExclusionAnalysis};
 #[allow(unused_imports)]
 pub use issues::{create_issue, create_issue_with_unique_ref, CreateOutcome};
-pub use leases::{validate_lease_for_mutation, LeaseClaimResult};
-pub use lifecycle::{close_issue, release_issue, reopen_issue, update_issue};
+#[allow(unused_imports)]
+pub use leases::{
+    current_claim_epoch, validate_claim_epoch_for_mutation, validate_lease_for_mutation,
+    LeaseClaimResult,
+};
+#[allow(unused_imports)]
+pub use lifecycle::enforce_claimant_credential;
+#[allow(unused_imports)]
+pub use lifecycle::{
+    close_issue, close_issue_with_override, release_issue, release_issue_with_override,
+    reopen_issue, reopen_issue_with_override, update_issue, update_issue_with_override,
+};
 pub use manifest::{load_manifest, manifest_commit, manifest_dry_run, ManifestReport};
 pub use query::{
     delete_view, execute_query, get_view, list_views, parse_query, project_issue, save_view, Query,

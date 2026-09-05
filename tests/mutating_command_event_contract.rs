@@ -175,6 +175,41 @@ fn registry() -> Vec<RegisteredCommand> {
                 ]
             },
         },
+        RegisteredCommand {
+            path: "bead resolve",
+            class: Mutating,
+            reason: "attempt resolution records its receipt and lifecycle event in one transaction",
+            invoke: |f| {
+                vec![
+                    "resolve".into(),
+                    f.resolve_target.clone(),
+                    "--attempt-id".into(),
+                    "urn:needle:attempt:event-contract".into(),
+                    "--outcome".into(),
+                    "verified_success".into(),
+                    "--action".into(),
+                    "close".into(),
+                    "--reason".into(),
+                    "contract probe complete".into(),
+                    "--actor".into(),
+                    "contract-probe".into(),
+                ]
+            },
+        },
+        RegisteredCommand {
+            path: "bead watchdog",
+            class: Mutating,
+            reason: "a forced stale-claim recovery appends audited override and release events",
+            invoke: |_| {
+                vec![
+                    "watchdog".into(),
+                    "--threshold".into(),
+                    "1m".into(),
+                    "--force".into(),
+                    "--json".into(),
+                ]
+            },
+        },
         // ---- label mutations ----
         RegisteredCommand {
             path: "bead label add",
@@ -491,6 +526,12 @@ fn registry() -> Vec<RegisteredCommand> {
                     "10".into(),
                 ]
             },
+        },
+        RegisteredCommand {
+            path: "bead analyze-exclusion",
+            class: NonMutating,
+            reason: "read-only explanation of why open issues are absent from the ready frontier",
+            invoke: |_| vec!["analyze-exclusion".into(), "--json".into()],
         },
         RegisteredCommand {
             path: "bead show",
@@ -812,6 +853,8 @@ struct Fixture {
     to_close: String,
     /// Closed in setup: target for `reopen`.
     closed: String,
+    /// Open issue resolved through the attempt-outcome transaction.
+    resolve_target: String,
     /// Opaque scanner identity for the historical-redaction probe.
     redaction_fingerprint: String,
     /// Recurrence template created in setup: target for `materialize`.
@@ -877,6 +920,8 @@ fn build_fixture() -> Fixture {
     let in_progress = create_issue(&workspace, "release target");
     let to_close = create_issue(&workspace, "close target");
     let closed = create_issue(&workspace, "reopen target");
+    let resolve_target = create_issue(&workspace, "resolve target");
+    let watchdog_target = create_issue(&workspace, "watchdog target");
     let redact_target = create_issue(&workspace, "redaction target");
 
     bead(&workspace)
@@ -885,6 +930,17 @@ fn build_fixture() -> Fixture {
         .success();
     bead(&workspace)
         .args(["close", &closed, "--reason", "fixture setup"])
+        .assert()
+        .success();
+    bead(&workspace)
+        .args([
+            "update",
+            &watchdog_target,
+            "--status",
+            "in_progress",
+            "--assignee",
+            "watchdog-contract-probe",
+        ])
         .assert()
         .success();
     bead(&workspace)
@@ -926,6 +982,11 @@ fn build_fixture() -> Fixture {
          VALUES (?1, 'historical_fixture_seed', 'contract-probe',
                  '2026-09-03T00:00:00Z', '{}')",
         [&redact_target],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE issues SET updated_at = '2020-01-01T00:00:00Z' WHERE id = ?1",
+        [&watchdog_target],
     )
     .unwrap();
     let redaction_fingerprint = bead_rs::service::secret_diagnostics::scan_live_findings(&conn)
@@ -1017,6 +1078,7 @@ fn build_fixture() -> Fixture {
         in_progress,
         to_close,
         closed,
+        resolve_target,
         redaction_fingerprint,
         template: "probe-template".to_string(),
         spare_template: "probe-spare-template".to_string(),

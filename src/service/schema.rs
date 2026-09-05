@@ -221,6 +221,7 @@ fn names(kind: &str) -> &'static [&'static str] {
             "base_status",
             "manual_blocked",
             "assignee",
+            "claim_epoch",
             "issue_type",
             "created_at",
             "updated_at",
@@ -456,6 +457,7 @@ fn property_schema(kind: &str, name: &str) -> Value {
             json!({"type":"string", "enum":["open","in_progress","deferred","closed"], "default":"open"})
         }
         ("issue", "manual_blocked") => json!({"type":["boolean","null"], "default":false}),
+        ("issue", "claim_epoch") => json!({"type":["integer","null"], "minimum":1}),
         ("issue", "assignee")
         | ("issue", "issue_type")
         | ("issue", "close_reason")
@@ -670,6 +672,7 @@ fn required_for(kind: &str) -> Vec<String> {
             "notes",
             "manual_blocked",
             "assignee",
+            "claim_epoch",
             "issue_type",
             "closed_at",
             "close_reason",

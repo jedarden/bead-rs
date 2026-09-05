@@ -16,7 +16,6 @@
 //! See: attempt-outcome-v1 specification
 
 use assert_cmd::Command;
-use predicates::prelude::*;
 use serde_json::json;
 use std::fs;
 use std::path::Path;

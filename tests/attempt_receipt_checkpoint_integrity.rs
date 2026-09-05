@@ -198,7 +198,11 @@ fn public_schemas_describe_attempt_state_and_checkpoint_counts() {
             .current_dir(ws.path())
             .output()
             .expect("schema show");
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         let schema: Value = serde_json::from_slice(&output.stdout).expect("schema json");
         for property in expected_properties {
             assert!(

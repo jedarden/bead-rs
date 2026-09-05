@@ -544,8 +544,11 @@ fn one_mutation_republishes_one_shard_and_the_event_tail() {
             "exactly one changed issue shard and one event tail object must be written, got {:?}",
             run.added
         );
+        // A claim epoch adds a small fixed field to the changed issue and its
+        // claim event. Keep the bound comfortably sublinear without making
+        // the smallest corpus hinge on a few dozen serialized bytes.
         assert!(
-            run.added_bytes * 16 <= run.corpus_bytes,
+            run.added_bytes * 15 <= run.corpus_bytes,
             "written bytes ({}) must stay within one shard's share of the corpus ({})",
             run.added_bytes,
             run.corpus_bytes

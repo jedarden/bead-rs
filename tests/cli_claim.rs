@@ -393,11 +393,13 @@ fn test_single_claim_allows_claim_again_after_release() {
         .code(4)
         .stderr(predicates::str::contains("assignee_has_active_claim"));
 
-    // After releasing the held issue, the same assignee can claim again
+    // After releasing the held issue (which takes the claim's epoch
+    // credential), the same assignee can claim again
+    let epoch = claimed["claim_epoch"].as_i64().unwrap().to_string();
     Command::cargo_bin("bead")
         .unwrap()
         .current_dir(dir.path())
-        .args(["release", &first])
+        .args(["release", &first, "--fencing-token", &epoch])
         .assert()
         .success();
 
@@ -423,11 +425,20 @@ fn test_single_claim_allows_claim_again_after_close() {
         .failure()
         .code(4);
 
-    // After closing the held issue, the same assignee can claim again
+    // After closing the held issue (which takes the claim's epoch
+    // credential), the same assignee can claim again
+    let epoch = claimed["claim_epoch"].as_i64().unwrap().to_string();
     Command::cargo_bin("bead")
         .unwrap()
         .current_dir(dir.path())
-        .args(["close", &first, "--reason", "work complete"])
+        .args([
+            "close",
+            &first,
+            "--reason",
+            "work complete",
+            "--fencing-token",
+            &epoch,
+        ])
         .assert()
         .success();
 

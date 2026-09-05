@@ -9,26 +9,17 @@ fn test_with_path_applies_pending_migrations() {
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("test.db");
 
-    // Create a connection and manually set it to an old schema version
+    // Start from a structurally valid store, then remove exactly the latest
+    // additive migration. A version row on an otherwise empty database is
+    // not a valid historical schema and can fail for reasons unrelated to
+    // opening/migration behavior.
+    drop(SqliteStore::with_path(&db_path).unwrap());
     let conn = rusqlite::Connection::open(&db_path).unwrap();
-
-    // Manually create an old schema (version 13 instead of CURRENT_VERSION 14)
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS schema_migrations (
-            version INTEGER PRIMARY KEY,
-            applied_at TEXT NOT NULL,
-            checksum TEXT NOT NULL
-        )",
-        [],
+    conn.execute_batch(
+        "ALTER TABLE issues DROP COLUMN claim_epoch;
+         DELETE FROM schema_migrations WHERE version = 17;",
     )
     .unwrap();
-
-    conn.execute(
-        "INSERT INTO schema_migrations (version, applied_at, checksum) VALUES (13, '2024-01-01T00:00:00Z', 'dummy')",
-        [],
-    ).unwrap();
-
-    // Close the connection
     drop(conn);
 
     // Now open with SqliteStore::with_path - should auto-migrate
@@ -39,8 +30,18 @@ fn test_with_path_applies_pending_migrations() {
     assert_eq!(
         version,
         migrations::CURRENT_VERSION,
-        "with_path should auto-migrate from version 13 to CURRENT_VERSION"
+        "with_path should auto-migrate to CURRENT_VERSION"
     );
+
+    let claim_epoch_columns: i64 = store
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('issues') WHERE name = 'claim_epoch'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(claim_epoch_columns, 1);
 }
 
 #[test]

@@ -224,6 +224,18 @@ pub struct Issue {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assignee: Option<String>,
 
+    /// Claim-epoch credential of the current ownership tenure
+    ///
+    /// Minted by every successful claim and left as a high-water mark by
+    /// release, close, and reopen, so a later claim on the same issue always
+    /// takes a strictly greater number. `None` on an issue that has never been
+    /// claimed by a fencing-aware binary; the store's column default is 0 and
+    /// `bead show --json` omits the field rather than projecting a 0 that a
+    /// consumer could mistake for a real credential. Checkpoint-visible: the
+    /// published value is what a rebuilt store resumes the sequence from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claim_epoch: Option<i64>,
+
     /// Issue type (nonempty string, defaults to "task")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub issue_type: Option<String>,
@@ -602,6 +614,7 @@ mod tests {
             base_status: BaseStatus::Open,
             manual_blocked: None,
             assignee: None,
+            claim_epoch: None,
             issue_type: Some("task".to_string()),
             created_at: "2026-08-08T12:00:00Z".to_string(),
             updated_at: "2026-08-08T12:00:00Z".to_string(),
@@ -651,6 +664,7 @@ mod tests {
             base_status: BaseStatus::Open,
             manual_blocked: None,
             assignee: None,
+            claim_epoch: None,
             issue_type: None,
             created_at: "2026-08-08T12:00:00Z".to_string(),
             updated_at: "2026-08-08T12:00:00Z".to_string(),

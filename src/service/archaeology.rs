@@ -279,7 +279,8 @@ fn execute_historical_query(issues: &[Issue], query: &Query) -> Result<Vec<Issue
             close_reason TEXT,
             source_repo TEXT,
             profile TEXT,
-            schema_ref TEXT
+            schema_ref TEXT,
+            claim_epoch INTEGER
         )",
     )?;
 
@@ -288,9 +289,9 @@ fn execute_historical_query(issues: &[Issue], query: &Query) -> Result<Vec<Issue
             "INSERT INTO issues (
                 id, title, priority, base_status, created_at, updated_at,
                 description, notes, assignee, issue_type, manual_blocked,
-                closed_at, close_reason, source_repo, profile, schema_ref
+                closed_at, close_reason, source_repo, profile, schema_ref, claim_epoch
              ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17
              )",
             params![
                 issue.id,
@@ -309,6 +310,7 @@ fn execute_historical_query(issues: &[Issue], query: &Query) -> Result<Vec<Issue
                 issue.source_repo,
                 issue.profile,
                 issue.schema_ref,
+                issue.claim_epoch,
             ],
         )?;
     }

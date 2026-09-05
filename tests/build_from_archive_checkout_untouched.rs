@@ -256,8 +256,7 @@ fn assert_shared_untouched(before: &SharedState, after: &SharedState) {
 fn reported_scratch_dir(log: &str, marker: &str) -> PathBuf {
     let line = log
         .lines()
-        .filter(|l| l.contains(marker))
-        .next_back()
+        .rfind(|l| l.contains(marker))
         .unwrap_or_else(|| panic!("no {marker:?} line in the script output:\n{log}"));
     let path = line
         .split(marker)

@@ -109,10 +109,9 @@ fn pinned_binaries_dir() -> PathBuf {
 /// Resolve a registry role to its on-disk pin, checking the embedded version
 /// and the sha256 of the bytes against the pin's metadata
 fn resolve_variant(role: &'static str) -> Variant {
-    let registry: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(pinned_binaries_dir().join("commits.json")).unwrap(),
-    )
-    .unwrap();
+    let registry: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(pinned_binaries_dir().join("commits.json")).unwrap())
+            .unwrap();
     let name = registry[role]["binary_name"].as_str().unwrap_or_else(|| {
         panic!("pin role '{role}' has no binary_name in pinned-binaries/commits.json")
     });
@@ -125,7 +124,7 @@ fn resolve_variant(role: &'static str) -> Variant {
     .unwrap();
 
     // Byte identity: a silently swapped pin must fail here, not downstream
-    let digest = hex::encode(Sha256::digest(&std::fs::read(&binary).unwrap()));
+    let digest = hex::encode(Sha256::digest(std::fs::read(&binary).unwrap()));
     assert_eq!(
         digest,
         meta["binary_sha256"].as_str().unwrap(),
@@ -190,15 +189,23 @@ fn init_workspace(variant: &Variant, prefix: &str) -> TempDir {
 
 /// Create one P2 task and return its id
 fn create_bead(variant: &Variant, workspace: &Path, title: &str) -> String {
-    String::from_utf8_lossy(&variant.run_ok(&["create", "--title", title], workspace).stdout)
-        .trim()
-        .to_string()
+    String::from_utf8_lossy(
+        &variant
+            .run_ok(&["create", "--title", title], workspace)
+            .stdout,
+    )
+    .trim()
+    .to_string()
 }
 
 /// `sync status --format json` parsed from stdout
 fn status(variant: &Variant, workspace: &Path) -> serde_json::Value {
-    serde_json::from_slice(&variant.run_ok(&["sync", "status", "--format", "json"], workspace).stdout)
-        .unwrap()
+    serde_json::from_slice(
+        &variant
+            .run_ok(&["sync", "status", "--format", "json"], workspace)
+            .stdout,
+    )
+    .unwrap()
 }
 
 /// Ids listed by `bead list`, in listing order
@@ -240,10 +247,8 @@ fn set_checkpoint_config(workspace: &Path, checkpoint: serde_json::Value) {
 
 /// A checkpoint pointer (`current.json` / `previous.json`) parsed
 fn pointer(workspace: &Path, name: &str) -> serde_json::Value {
-    serde_json::from_slice(
-        &std::fs::read(workspace.join(".beads/checkpoint").join(name)).unwrap(),
-    )
-    .unwrap()
+    serde_json::from_slice(&std::fs::read(workspace.join(".beads/checkpoint").join(name)).unwrap())
+        .unwrap()
 }
 
 /// Wait for a child, failing the test rather than hanging forever
@@ -254,7 +259,10 @@ fn wait_with_timeout(mut child: Child, context: &str) -> Output {
             Some(_) => return child.wait_with_output().expect("child reaped"),
             None if Instant::now() > deadline => {
                 let _ = child.kill();
-                panic!("{context} did not finish within {}s", WORKER_TIMEOUT.as_secs());
+                panic!(
+                    "{context} did not finish within {}s",
+                    WORKER_TIMEOUT.as_secs()
+                );
             }
             None => std::thread::sleep(Duration::from_millis(10)),
         }
@@ -272,7 +280,11 @@ struct ReplaySource {
     blocked: String,
 }
 
-fn replay_source(variant: &Variant, tag: &str, checkpoint_config: serde_json::Value) -> ReplaySource {
+fn replay_source(
+    variant: &Variant,
+    tag: &str,
+    checkpoint_config: serde_json::Value,
+) -> ReplaySource {
     let dir = init_workspace(variant, tag);
     let workspace = dir.path().to_path_buf();
     if !checkpoint_config.is_null() {
@@ -439,10 +451,7 @@ fn lease_takeover_invalidates_the_previous_holder_fencing_token() {
         let stale = stale_token.to_string();
         let forged = (stale_token + 97).to_string();
 
-        for (actor, token) in [
-            ("stale holder", &stale),
-            ("forged high token", &forged),
-        ] {
+        for (actor, token) in [("stale holder", &stale), ("forged high token", &forged)] {
             for verb in ["update", "release"] {
                 let mut args = vec![verb.to_string(), id.clone()];
                 if verb == "update" {
@@ -547,7 +556,11 @@ fn parallel_replays_of_one_checkpoint_are_deterministic_across_targets() {
             sequential.path(),
         );
 
-        for target in targets.iter().map(|d| d.path()).chain(std::iter::once(sequential.path())) {
+        for target in targets
+            .iter()
+            .map(|d| d.path())
+            .chain(std::iter::once(sequential.path()))
+        {
             assert_replayed_like_source(variant, &source, target);
         }
     }
@@ -623,7 +636,8 @@ fn concurrent_replays_into_one_target_admit_one_winner_and_exact_once_state() {
             "the restored target must cover its own replayed sequence"
         );
         assert_eq!(
-            report["ready_to_commit"], serde_json::Value::Bool(true),
+            report["ready_to_commit"],
+            serde_json::Value::Bool(true),
             "the replayed checkpoint must be ready to commit"
         );
     }
@@ -656,7 +670,12 @@ fn replay_is_idempotent_and_stable_across_hops() {
                 "sync",
                 "import-only",
                 "--input",
-                source.checkpoint.join("forensic.jsonl").display().to_string().as_str(),
+                source
+                    .checkpoint
+                    .join("forensic.jsonl")
+                    .display()
+                    .to_string()
+                    .as_str(),
                 "--merge",
                 "--actor",
                 "replayer-again",
@@ -679,7 +698,12 @@ fn replay_is_idempotent_and_stable_across_hops() {
                 "sync",
                 "import-only",
                 "--input",
-                first.path().join(".beads/checkpoint").display().to_string().as_str(),
+                first
+                    .path()
+                    .join(".beads/checkpoint")
+                    .display()
+                    .to_string()
+                    .as_str(),
                 "--restore-into-empty",
                 "--actor",
                 "replayer-hop2",
@@ -748,10 +772,7 @@ fn checkpoints_replay_across_variants_in_both_directions() {
 fn suppressed_publication_falls_behind_then_explicit_flush_recovers() {
     for variant in variants() {
         let ws = init_workspace(variant, "suppress");
-        set_checkpoint_config(
-            ws.path(),
-            serde_json::json!({ "auto_flush": false }),
-        );
+        set_checkpoint_config(ws.path(), serde_json::json!({ "auto_flush": false }));
 
         let mut ids = Vec::new();
         for i in 0..3 {
@@ -760,7 +781,8 @@ fn suppressed_publication_falls_behind_then_explicit_flush_recovers() {
 
         let report = status(variant, ws.path());
         assert_eq!(
-            report["dirty"], serde_json::Value::Bool(true),
+            report["dirty"],
+            serde_json::Value::Bool(true),
             "suppressed publication must leave the checkpoint visibly dirty"
         );
         assert!(
@@ -770,7 +792,8 @@ fn suppressed_publication_falls_behind_then_explicit_flush_recovers() {
             report
         );
         assert_eq!(
-            report["ready_to_commit"], serde_json::Value::Bool(false),
+            report["ready_to_commit"],
+            serde_json::Value::Bool(false),
             "a lagging checkpoint must not be ready to commit"
         );
 
@@ -829,7 +852,10 @@ fn publication_failure_splits_without_rollback_then_recovers() {
         std::fs::rename(&checkpoint_dir, &parked).unwrap();
         std::fs::write(&checkpoint_dir, b"not a directory").unwrap();
 
-        let output = variant.run(&["create", "--title", "committed through failure"], ws.path());
+        let output = variant.run(
+            &["create", "--title", "committed through failure"],
+            ws.path(),
+        );
 
         std::fs::remove_file(&checkpoint_dir).unwrap();
         std::fs::rename(&parked, &checkpoint_dir).unwrap();
@@ -872,7 +898,8 @@ fn publication_failure_splits_without_rollback_then_recovers() {
             "the named remedy must recover coverage"
         );
         assert_eq!(
-            report["ready_to_commit"], serde_json::Value::Bool(true),
+            report["ready_to_commit"],
+            serde_json::Value::Bool(true),
             "recovery must leave the checkpoint ready to commit"
         );
     }
@@ -894,7 +921,8 @@ fn corrupted_pointer_is_reported_and_republish_recovers() {
 
         let report = status(variant, ws.path());
         assert_eq!(
-            report["root_verified"], serde_json::Value::Bool(false),
+            report["root_verified"],
+            serde_json::Value::Bool(false),
             "a corrupted pointer must not report as verified"
         );
         assert!(
@@ -906,12 +934,14 @@ fn corrupted_pointer_is_reported_and_republish_recovers() {
         variant.run_ok(&["sync", "flush-only"], ws.path());
         let report = status(variant, ws.path());
         assert_eq!(
-            report["root_verified"], serde_json::Value::Bool(true),
+            report["root_verified"],
+            serde_json::Value::Bool(true),
             "republishing must rebuild a verifying checkpoint"
         );
         assert_eq!(report["covered_sequence"], report["live_sequence"]);
         assert_eq!(
-            report["ready_to_commit"], serde_json::Value::Bool(true),
+            report["ready_to_commit"],
+            serde_json::Value::Bool(true),
             "recovery must leave the checkpoint ready to commit"
         );
         assert!(list_ids(variant, ws.path()).contains(&id));
@@ -934,11 +964,10 @@ fn damaged_current_generation_refuses_restore_while_previous_recovers() {
         variant.run_ok(&["sync", "flush-only"], ws.path());
         assert_ne!(first, second);
 
-        let generation: String =
-            pointer(ws.path(), "current.json")["generation_id"]
-                .as_str()
-                .unwrap()
-                .to_string();
+        let generation: String = pointer(ws.path(), "current.json")["generation_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let root: String = pointer(ws.path(), "current.json")["active_root"]["path"]
             .as_str()
             .unwrap()
@@ -947,11 +976,13 @@ fn damaged_current_generation_refuses_restore_while_previous_recovers() {
 
         let report = status(variant, ws.path());
         assert_eq!(
-            report["root_verified"], serde_json::Value::Bool(false),
+            report["root_verified"],
+            serde_json::Value::Bool(false),
             "a missing root object must not report as verified"
         );
         assert_eq!(
-            report["ready_to_commit"], serde_json::Value::Bool(false),
+            report["ready_to_commit"],
+            serde_json::Value::Bool(false),
             "a checkpoint whose root is gone must not be ready to commit"
         );
         let reasons = report["not_ready_reasons"].as_array().unwrap();
@@ -985,7 +1016,9 @@ fn damaged_current_generation_refuses_restore_while_previous_recovers() {
             "restoring an unverifiable generation must be an integrity refusal"
         );
         assert!(
-            variant.stderr(&refused).contains("Unverified restore source"),
+            variant
+                .stderr(&refused)
+                .contains("Unverified restore source"),
             "the refusal must name the unverified source, got {:?}",
             variant.stderr(&refused)
         );
@@ -995,11 +1028,10 @@ fn damaged_current_generation_refuses_restore_while_previous_recovers() {
         );
 
         // The retained previous generation still recovers.
-        let previous: String =
-            pointer(ws.path(), "previous.json")["generation_id"]
-                .as_str()
-                .unwrap()
-                .to_string();
+        let previous: String = pointer(ws.path(), "previous.json")["generation_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let target = init_workspace(variant, "damage-p");
         let restored = variant.run_ok(
             &[
@@ -1050,8 +1082,7 @@ fn restore_recovers_sharded_and_monolithic_checkpoints_after_suppression() {
             let mut config = forced;
             config["auto_flush"] = serde_json::Value::Bool(false);
             let source = replay_source(variant, &format!("mode-{mode}"), config);
-            let published: serde_json::Value =
-                pointer(&source.workspace, "current.json");
+            let published: serde_json::Value = pointer(&source.workspace, "current.json");
             assert_eq!(
                 published["mode"], mode,
                 "the forced mode must govern the published generation"

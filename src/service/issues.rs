@@ -10,6 +10,12 @@ use rand::Rng;
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashMap;
 
+/// Fallback-candidate row: (id, title, priority, assignee, manual_blocked)
+type FallbackCandidateRow = (String, String, i64, Option<String>, Option<bool>);
+
+/// Open-bead row: (id, title, priority, assignee, manual_blocked, created_at)
+type OpenBeadRow = (String, String, i64, Option<String>, Option<bool>, String);
+
 /// R011 key used for the external-reference projection of an R032 binding.
 pub const UNIQUE_REF_EXTERNAL_KEY: &str = "unique-ref";
 
@@ -282,7 +288,6 @@ struct StarvationDiagnostic {
     title: String,
     priority: i64,
     assignee: Option<String>,
-    manual_blocked: Option<bool>,
     has_blockers: bool,
     blocker_count: i64,
     has_resource_conflicts: bool,
@@ -317,7 +322,7 @@ fn detect_starvation_candidates(conn: &Connection) -> Result<Option<Vec<Starvati
          ORDER BY priority ASC, created_at ASC, id ASC",
     )?;
 
-    let fallback_candidates: Vec<(String, String, i64, Option<String>, Option<bool>)> = stmt
+    let fallback_candidates: Vec<FallbackCandidateRow> = stmt
         .query_map([], |row| {
             Ok((
                 row.get(0)?,
@@ -344,7 +349,7 @@ fn detect_starvation_candidates(conn: &Connection) -> Result<Option<Vec<Starvati
     let now_string = crate::service::resource_locks::now_string();
     let mut diagnostics = Vec::new();
 
-    for (bead_id, title, priority, assignee, manual_blocked) in &fallback_candidates {
+    for (bead_id, title, priority, assignee, _manual_blocked) in &fallback_candidates {
         // Check for blockers
         let blocker_count: i64 = conn
             .query_row(
@@ -380,7 +385,6 @@ fn detect_starvation_candidates(conn: &Connection) -> Result<Option<Vec<Starvati
             title: title.clone(),
             priority: *priority,
             assignee: assignee.clone(),
-            manual_blocked: *manual_blocked,
             has_blockers: blocker_count > 0,
             blocker_count,
             has_resource_conflicts: conflict_count > 0,
@@ -389,90 +393,6 @@ fn detect_starvation_candidates(conn: &Connection) -> Result<Option<Vec<Starvati
     }
 
     Ok(Some(diagnostics))
-}
-
-/// Log fallback activation to diagnostics file
-fn log_fallback_activation(
-    bead_ids: &[String],
-    diagnostics: &[StarvationDiagnostic],
-) -> Result<()> {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-
-    let diagnostics_dir = ".beads/diagnostics";
-    let log_path = format!("{}/pluck-fallback.log", diagnostics_dir);
-
-    // Create diagnostics directory if it doesn't exist
-    std::fs::create_dir_all(diagnostics_dir).map_err(|e| {
-        Error::Internal(anyhow::anyhow!(
-            "Failed to create diagnostics directory: {}",
-            e
-        ))
-    })?;
-
-    // Append to log file
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open fallback log: {}", e)))?;
-
-    let timestamp = time::OffsetDateTime::now_utc()
-        .format(&time::format_description::well_known::Rfc3339)
-        .unwrap_or_else(|_| "unknown".to_string());
-
-    // Log summary
-    let log_entry = format!(
-        "{} | Fallback triggered | Recovered beads: {}\n",
-        timestamp,
-        bead_ids.join(", ")
-    );
-
-    file.write_all(log_entry.as_bytes())
-        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to write to fallback log: {}", e)))?;
-
-    // Log detailed diagnostics for each bead
-    for diag in diagnostics {
-        let reasons = vec![
-            if diag.assignee.is_some() {
-                Some(format!("assignee: {}", diag.assignee.as_ref().unwrap()))
-            } else {
-                None
-            },
-            if diag.has_blockers {
-                Some(format!("{} unclosed blockers", diag.blocker_count))
-            } else {
-                None
-            },
-            if diag.has_resource_conflicts {
-                Some(format!("{} resource conflicts", diag.conflict_count))
-            } else {
-                None
-            },
-        ]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(", ");
-
-        let detail_entry = format!(
-            "  - {} [{}] priority={} | {}\n",
-            diag.bead_id,
-            diag.title,
-            diag.priority,
-            if reasons.is_empty() {
-                "no apparent blockers".to_string()
-            } else {
-                format!("excluded: {}", reasons)
-            }
-        );
-
-        file.write_all(detail_entry.as_bytes()).map_err(|e| {
-            Error::Internal(anyhow::anyhow!("Failed to write diagnostic details: {}", e))
-        })?;
-    }
-
-    Ok(())
 }
 
 /// Log starvation diagnostic to a specific path (recommendation-only)
@@ -526,11 +446,9 @@ fn log_starvation_diagnostic_to_path(
     // Log detailed diagnostics for each bead
     for diag in diagnostics {
         let reasons = vec![
-            if diag.assignee.is_some() {
-                Some(format!("assignee: {}", diag.assignee.as_ref().unwrap()))
-            } else {
-                None
-            },
+            diag.assignee
+                .as_ref()
+                .map(|assignee| format!("assignee: {}", assignee)),
             if diag.has_blockers {
                 Some(format!("{} unclosed blockers", diag.blocker_count))
             } else {
@@ -753,7 +671,7 @@ fn write_pluck_diagnostics(
          LIMIT ?1",
     )?;
 
-    let beads: Vec<(String, String, i64, Option<String>, Option<bool>)> = stmt
+    let beads: Vec<FallbackCandidateRow> = stmt
         .query_map([limit], |row| {
             Ok((
                 row.get(0)?, // id
@@ -895,7 +813,7 @@ fn show_exclusion_reasons(conn: &Connection, limit: &i64) -> Result<()> {
          LIMIT ?1",
     )?;
 
-    let beads: Vec<(String, String, i64, Option<String>, Option<bool>, String)> = stmt
+    let beads: Vec<OpenBeadRow> = stmt
         .query_map([limit], |row| {
             Ok((
                 row.get(0)?, // id
@@ -920,8 +838,8 @@ fn show_exclusion_reasons(conn: &Connection, limit: &i64) -> Result<()> {
         let mut reasons = Vec::new();
 
         // Check assignee
-        if assignee.is_some() {
-            reasons.push(format!("has assignee: {}", assignee.as_ref().unwrap()));
+        if let Some(assignee) = &assignee {
+            reasons.push(format!("has assignee: {}", assignee));
         }
 
         // Check manual block
@@ -1065,7 +983,7 @@ pub fn list_issues(
     let mut query = String::from(
         "SELECT id, title, description, priority, base_status, assignee, issue_type,
          created_at, updated_at, closed_at, close_reason, manual_blocked, source_repo,
-         profile, schema_ref, notes, revision
+         profile, schema_ref, notes, revision, NULLIF(claim_epoch, 0)
          FROM issues WHERE 1=1",
     );
 
@@ -1250,6 +1168,7 @@ pub fn list_issues(
                 schema_ref: row.get(14)?,
                 notes: row.get(15)?,
                 revision: row.get(16)?,
+                claim_epoch: row.get(17)?,
                 data: None,                 // Will be loaded separately if needed
                 extensions: HashMap::new(), // Will be loaded separately if needed
             })
@@ -1299,7 +1218,7 @@ pub fn get_issue_by_id(conn: &Connection, id: &str) -> Result<Option<Issue>> {
     let mut stmt = conn.prepare_cached(
         "SELECT id, title, description, priority, base_status, assignee, issue_type,
          created_at, updated_at, closed_at, close_reason, manual_blocked, source_repo,
-         profile, schema_ref, notes, revision
+         profile, schema_ref, notes, revision, NULLIF(claim_epoch, 0)
          FROM issues WHERE id = ?",
     )?;
 
@@ -1323,6 +1242,7 @@ pub fn get_issue_by_id(conn: &Connection, id: &str) -> Result<Option<Issue>> {
                 schema_ref: row.get(14)?,
                 notes: row.get(15)?,
                 revision: row.get(16)?,
+                claim_epoch: row.get(17)?,
                 data: None,
                 extensions: HashMap::new(),
             })
@@ -1430,7 +1350,7 @@ pub fn analyze_exclusion(
          LIMIT ?1",
     )?;
 
-    let beads: Vec<(String, String, i64, Option<String>, Option<bool>, String)> = stmt
+    let beads: Vec<OpenBeadRow> = stmt
         .query_map([limit], |row| {
             Ok((
                 row.get(0)?, // id
@@ -1453,8 +1373,8 @@ pub fn analyze_exclusion(
         let mut is_ready = true;
 
         // Check assignee
-        if assignee.is_some() {
-            reasons.push(format!("has assignee: {}", assignee.as_ref().unwrap()));
+        if let Some(assignee) = &assignee {
+            reasons.push(format!("has assignee: {}", assignee));
             *exclusion_summary
                 .entry("has assignee".to_string())
                 .or_insert(0) += 1;
