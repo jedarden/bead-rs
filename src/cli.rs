@@ -493,7 +493,25 @@ RESOURCE KEYS:
   --resource-key declares a normalized, case-sensitive key used only for
   scheduling exclusion inside this native workspace. It is not a distributed
   lock. Claims acquire every declared key atomically; release, close, and
-  expired leases return keys. Use `bead resource add|remove|list` after create."
+  expired leases return keys. Use `bead resource add|remove|list` after create.
+
+PLANNING DEPENDENT WORK:
+  A bare `bead create` is claimable the instant it commits. If the new issue
+  is meant to wait on other work, declare that in the same transaction --
+  never in a second command. `--depends-on BLOCKER` validates and attaches a
+  `blocks` edge inside the create transaction itself, so a missing blocker,
+  a self-edge, or a cycle rolls the whole create back and the issue never
+  becomes visible without its graph. Repeat the flag for several blockers.
+
+  For a whole planned graph (beads that reference each other, labels,
+  resource keys, staging assignments), use one manifest instead:
+
+    bead manifest commit --input plan.json
+
+  `bead manifest dry-run` reports the same delta without mutating anything.
+  Composing `create` and `dep` as two separate commands re-opens the window
+  this flag exists to close: a worker can claim the new bead in the seconds
+  between them."
 )]
 pub struct CreateOptions {
     /// Issue title (required)
@@ -523,6 +541,15 @@ pub struct CreateOptions {
     /// Workspace-local resource key (can be specified multiple times)
     #[arg(long = "resource-key")]
     pub resource_keys: Vec<String>,
+
+    /// Existing issue that must close before this one is claimable (can be
+    /// specified multiple times). Validated and attached inside the create
+    /// transaction: a blocker that does not exist, a self-edge, or a cycle
+    /// aborts the create, leaving no issue and no edge. Applied only when a
+    /// new issue is created -- a --unique-ref replay of an existing bead
+    /// never mutates that bead's graph.
+    #[arg(long = "depends-on", value_name = "BLOCKER")]
+    pub depends_on: Vec<String>,
 
     /// Idempotency binding in NAMESPACE:KEY form
     #[arg(long = "unique-ref")]
@@ -856,6 +883,14 @@ pub struct UpdateOptions {
     #[arg(long)]
     pub dry_run: bool,
 
+    /// Reason-bearing operator recovery override for a claimed issue.
+    /// Proceeds past the claim-epoch fence and appends a distinct
+    /// `claim_override` audit event; required for manual recovery without
+    /// the current `--fencing-token` credential. An empty reason is
+    /// rejected: omitting the flag is never an override.
+    #[arg(long = "override-claim", value_name = "REASON")]
+    pub override_claim: Option<String>,
+
     // Hidden flags for R037 near-miss detection
     /// Near-miss trap: title is immutable after create; this update flag
     /// does not exist. Set the title at creation time.
@@ -938,6 +973,14 @@ pub struct ReleaseOptions {
     /// Dry run: show what would happen without making changes
     #[arg(long)]
     pub dry_run: bool,
+
+    /// Reason-bearing operator recovery override for a claimed issue.
+    /// Proceeds past the claim-epoch fence and appends a distinct
+    /// `claim_override` audit event; required for manual recovery without
+    /// the current `--fencing-token` credential. An empty reason is
+    /// rejected: omitting the flag is never an override.
+    #[arg(long = "override-claim", value_name = "REASON")]
+    pub override_claim: Option<String>,
 }
 
 /// Options for closing an issue
@@ -1005,6 +1048,14 @@ pub struct CloseOptions {
     /// Dry run: show what would happen without making changes
     #[arg(long)]
     pub dry_run: bool,
+
+    /// Reason-bearing operator recovery override for a claimed issue.
+    /// Proceeds past the claim-epoch fence and appends a distinct
+    /// `claim_override` audit event; required for manual recovery without
+    /// the current `--fencing-token` credential. An empty reason is
+    /// rejected: omitting the flag is never an override.
+    #[arg(long = "override-claim", value_name = "REASON")]
+    pub override_claim: Option<String>,
 
     // Hidden flag for R037 near-miss detection (--body should be --reason)
     /// Near-miss trap: close takes --reason, not --body. Pass the closing
@@ -1075,6 +1126,14 @@ pub struct ReopenOptions {
     /// Dry run: show what would happen without making changes
     #[arg(long)]
     pub dry_run: bool,
+
+    /// Reason-bearing operator recovery override for a claimed issue.
+    /// Proceeds past the claim-epoch fence and appends a distinct
+    /// `claim_override` audit event; required for manual recovery without
+    /// the current `--fencing-token` credential. An empty reason is
+    /// rejected: omitting the flag is never an override.
+    #[arg(long = "override-claim", value_name = "REASON")]
+    pub override_claim: Option<String>,
 }
 
 /// Options for the exceptional historical-redaction operation.
@@ -1188,6 +1247,13 @@ pub struct ResolveOptions {
     /// Fencing token for lease validation
     #[arg(long)]
     pub fencing_token: Option<String>,
+    /// Reason-bearing operator recovery override for a claimed issue.
+    /// Proceeds past the claim-epoch fence and appends a distinct
+    /// `claim_override` audit event; required for manual recovery without
+    /// the current `--fencing-token` credential. An empty reason is
+    /// rejected: omitting the flag is never an override.
+    #[arg(long = "override-claim", value_name = "REASON")]
+    pub override_claim: Option<String>,
 
     /// Evidence references (NAMESPACE:VALUE format)
     #[arg(long)]
@@ -1732,10 +1798,22 @@ pub struct ResourceAddOptions {
     /// Fencing token for a leased in-progress issue
     #[arg(long)]
     pub fencing_token: Option<i64>,
+
+    /// Reason-bearing operator recovery override for a claimed issue.
+    #[arg(long = "override-claim", value_name = "REASON")]
+    pub override_claim: Option<String>,
 }
 
 #[derive(Parser, Debug)]
 pub struct ResourceRemoveOptions {
+    /// Reason-bearing operator recovery override for a claimed issue.
+    /// Proceeds past the claim-epoch fence and appends a distinct
+    /// `claim_override` audit event; required for manual recovery without
+    /// the current `--fencing-token` credential. An empty reason is
+    /// rejected: omitting the flag is never an override.
+    #[arg(long = "override-claim", value_name = "REASON")]
+    pub override_claim: Option<String>,
+
     /// Issue ID
     pub id: String,
     /// Resource key; repeat for multiple keys
@@ -2539,7 +2617,22 @@ Publication failures after the commit are the standard split outcome: the
 manifest stays committed, exit 1, and 'bead sync flush-only' is the remedy.
 
   bead manifest commit --input plan.json
-  bead manifest commit --input plan.json --format json   # result map with real IDs"
+  bead manifest commit --input plan.json --format json   # result map with real IDs
+
+PLANNING DEPENDENT WORK:
+  This is the required path for materializing a planned graph. Compose the
+  creates, their `dep_add` edges, and their resource keys in one manifest
+  and commit it once -- `$name` local references let a `dep_add` name a
+  bead the same manifest created. Because the graph and the beads are one
+  transaction, no bead in the plan is ever claimable before the edges that
+  gate it exist.
+
+  Splitting the same plan across `bead create` and `bead dep` invocations
+  leaves each bead claimable in the seconds before its edge lands; a worker
+  can claim a bead whose dependency has not been inserted yet, which is
+  exactly the dispatch race that costs a planner its conformance slot. Use
+  `bead create --depends-on` for the single-dependent case and a manifest
+  for everything wider."
     )]
     Commit(ManifestOpOptions),
 }

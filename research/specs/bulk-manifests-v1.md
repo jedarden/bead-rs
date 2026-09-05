@@ -140,6 +140,43 @@ position with the command's not-found error (exit 3).
 Local references are the only indirection in v1. They are not variables:
 nothing else can hold one, and they cannot be redefined.
 
+## Planning dependent graphs
+
+A bead that is meant to wait on other work must never be visible on the
+ready frontier before the edges that gate it exist. A `create` command
+followed by a separate `bead dep add` does not satisfy this: the create
+commits and publishes a generation, and any worker claiming in the seconds
+between the two commands wins a bead whose dependency has not landed. That
+intermediate state is durable — the claim is a real claim-epoch issuance
+recorded in the audit trail — so it cannot be undone by adding the edge
+afterwards.
+
+Planners therefore have two atomic paths, and both are properties of the
+store rather than habits:
+
+- **`bead create --depends-on BLOCKER`** (repeatable) for the single-bead
+  case. The `blocks` edges are validated and attached inside the create
+  transaction, so a missing blocker (exit 3), a self-edge (exit 4), or a
+  cycle (exit 4) rolls the create back and no issue or edge is minted.
+- **One `bead manifest commit`** for anything wider. Compose the creates,
+  their `dep_add` edges, and their resource keys in a single document;
+  local references let an edge name a bead the same manifest created.
+
+Both paths publish at most one generation, and both guarantee that the
+first committed state of every bead in the plan already carries its graph
+and its resource keys.
+
+**Replay safety requires a unique reference on every create.** A create
+without `unique_ref` mints a fresh bead on every replay, so a manifest
+containing any bare create is not idempotent at all — re-running it
+duplicates beads and re-points edges at the duplicates. Give every create
+in a plan that may be replayed a `unique_ref`, and the replayed manifest
+reports every operation as a no-op and publishes no generation.
+
+`bead manifest dry-run` accepts both forms and is the planning-time check:
+it reports the same delta and the same failures a commit would, without
+mutating anything.
+
 ## Validation order
 
 1. **Document validation** — read the file, parse JSON, check
