@@ -22,7 +22,9 @@
 //!   against the pre-commit snapshot and clobber B's change on commit.
 
 use assert_cmd::Command;
-use bead_rs::service::{close_issue, get_issue_by_id, release_issue, reopen_issue, update_issue};
+use bead_rs::service::{
+    close_issue, current_claim_epoch, get_issue_by_id, release_issue, reopen_issue, update_issue,
+};
 use bead_rs::store::open_configured_connection;
 use bead_rs::Error;
 use rusqlite::{Transaction, TransactionBehavior};
@@ -87,7 +89,12 @@ fn revision_on(conn: &rusqlite::Connection, id: &str) -> i64 {
 }
 
 /// Commit a competing mutation on `conn`, advancing the revision by one.
+/// The issue it races may be claimed, so the write carries the claim-epoch
+/// credential that claim was issued, read on this same connection -- this is
+/// the competing worker's own view (see tests/claim_epoch.rs). On an
+/// unclaimed issue the epoch is 0 and the gate lets the write through.
 fn concurrent_change(conn: &rusqlite::Connection, id: &str) {
+    let credential = current_claim_epoch(conn, id).unwrap_or(0);
     update_issue(
         conn,
         id,
@@ -96,7 +103,7 @@ fn concurrent_change(conn: &rusqlite::Connection, id: &str) {
         false,
         Some("concurrent worker change"),
         None,
-        None,
+        Some(credential),
     )
     .unwrap_or_else(|e| panic!("concurrent worker change failed: {e}"));
 }

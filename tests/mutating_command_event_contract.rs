@@ -459,13 +459,19 @@ fn registry() -> Vec<RegisteredCommand> {
             reason: "declaring keys appends a `resource_keys_added` audit event in the \
                      declaring transaction",
             invoke: |f| {
-                vec![
+                let mut args = vec![
                     "resource".into(),
                     "add".into(),
                     f.update_target.clone(),
                     "--key".into(),
                     "probe:gpu0".into(),
-                ]
+                ];
+                // The sweep's earlier `bead claim` may hold this issue; a
+                // claimed issue only mutates for its own credential.
+                if let Some(credential) = held_credential(&f.workspace, &f.update_target) {
+                    args.extend(["--fencing-token".into(), credential]);
+                }
+                args
             },
         },
         RegisteredCommand {
@@ -480,13 +486,17 @@ fn registry() -> Vec<RegisteredCommand> {
             reason: "removing keys appends a `resource_keys_removed` audit event in the \
                      removing transaction",
             invoke: |f| {
-                vec![
+                let mut args = vec![
                     "resource".into(),
                     "remove".into(),
                     f.update_target.clone(),
                     "--key".into(),
                     "probe:gpu0".into(),
-                ]
+                ];
+                if let Some(credential) = held_credential(&f.workspace, &f.update_target) {
+                    args.extend(["--fencing-token".into(), credential]);
+                }
+                args
             },
         },
         // ---- workspace identity and remote reconciliation ----
@@ -883,6 +893,25 @@ fn create_issue(workspace: &Path, title: &str) -> String {
         .stdout
         .clone();
     String::from_utf8(output).unwrap().trim().to_string()
+}
+
+/// The claim-epoch credential `issue` currently holds, if any. The sweep runs
+/// every mutating command against one shared fixture in registry order, so a
+/// command can be handed an issue an earlier command claimed -- and a claimed
+/// issue only mutates for the credential its claim issued (see
+/// tests/claim_epoch.rs). `None` for an unclaimed issue, where no credential
+/// exists to present.
+fn held_credential(workspace: &Path, issue: &str) -> Option<String> {
+    let output = bead(workspace)
+        .args(["show", issue, "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let shown: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    let epoch = shown[0]["claim_epoch"].as_i64()?;
+    (epoch > 0).then(|| epoch.to_string())
 }
 
 fn copy_tree(from: &Path, to: &Path) {

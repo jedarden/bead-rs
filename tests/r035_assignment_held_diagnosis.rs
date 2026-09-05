@@ -29,6 +29,16 @@ fn create_issue(dir: &Path, title: &str) -> String {
         .to_string()
 }
 
+/// The claim-epoch credential the issue's current claim was issued, read back
+/// from the `show --json` projection. Assigning an issue mints an epoch, and
+/// clearing that assignment is a claimant-owned mutation that must present it
+/// (see tests/claim_epoch.rs).
+fn held_credential(dir: &Path, id: &str) -> String {
+    let output = run(dir, &["show", id, "--json"]);
+    let shown: Value = serde_json::from_slice(&output.stdout).unwrap();
+    shown[0]["claim_epoch"].as_i64().unwrap().to_string()
+}
+
 #[test]
 #[serial]
 fn r035_conformance_healthy_to_warning_to_cleared() {
@@ -112,8 +122,19 @@ fn r035_conformance_healthy_to_warning_to_cleared() {
         "Doctor should report has_warnings=true"
     );
 
-    // Step 3: Clear the assignee - should return to healthy
-    run(workspace, &["update", &id, "--clear-assignee"]);
+    // Step 3: Clear the assignee - should return to healthy. Assigning minted
+    // a claim epoch, so clearing it carries that credential.
+    let credential = held_credential(workspace, &id);
+    run(
+        workspace,
+        &[
+            "update",
+            &id,
+            "--clear-assignee",
+            "--fencing-token",
+            &credential,
+        ],
+    );
 
     let output = run(workspace, &["doctor", "--json"]);
     let doctor_json: Value = serde_json::from_slice(&output.stdout).unwrap();

@@ -336,10 +336,26 @@ fn test_doctor_reports_open_issue_held_by_assignee() {
         .stderr(predicates::str::contains(id))
         .stderr(predicates::str::contains("not an active claim"));
 
-    // Clearing the assignee returns it to the frontier and silences the warning.
+    // Clearing the assignee returns it to the frontier and silences the
+    // warning. Assigning minted a claim epoch, so clearing it is a
+    // claimant-owned mutation and carries the credential that assignment
+    // issued (see tests/claim_epoch.rs).
+    let assigned = Command::cargo_bin("bead")
+        .unwrap()
+        .args(["show", id, "--json"])
+        .output()
+        .unwrap();
+    let assigned: serde_json::Value = serde_json::from_slice(&assigned.stdout).unwrap();
+    let credential = assigned[0]["claim_epoch"].as_i64().unwrap().to_string();
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["update", id, "--clear-assignee"])
+        .args([
+            "update",
+            id,
+            "--clear-assignee",
+            "--fencing-token",
+            &credential,
+        ])
         .assert()
         .success();
 
