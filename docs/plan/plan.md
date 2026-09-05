@@ -1,8 +1,8 @@
 # bead-rs Current Product and Software Factory Plan
 
-Plan revision: 13
+Plan revision: 14
 
-As of: 2026-09-04
+As of: 2026-09-05
 
 Status owner: bead-rs maintainers
 
@@ -10,7 +10,13 @@ Status: 0.2.4 is the latest tagged release; the checkout declares 0.2.6.
 Attempt resolution, secret rejection, and historical-redaction recovery are
 implemented on `main`, including the ruleset-v3 Garage credential-identifier
 extension. Exact-source release conformance remains open on the explicit gate
-defects recorded in sections 1.2, 6, and 7.
+defects recorded in sections 1.2, 6, and 7. Revision 14 makes the durable
+claim-epoch transition and its NEEDLE consumer canary explicit as BR-T23
+through BR-T27 rather than leaving that release-blocking work implicit in
+other beads. BR-T28 captures the dispatch race discovered while materializing
+that graph and makes the existing transactional manifest path the required
+planner workflow: dependent work must not become claimable before its
+dependency and resource declarations commit.
 
 ## 0. How to read this plan
 
@@ -344,6 +350,12 @@ operator must stop; hand-editing SQLite or checkpoint JSON is never a fallback.
 | BR-T20 | command/event contract, attempt outcomes, watchdog, exclusion comments | Classify every visible command and require each semantic path to advance audit state transactionally | real-effect contract probes cover resolve, watchdog release, and exclusion attachment; read-only modes remain unchanged | blocked on BR-T19 and claim-epoch overlap (`beadrs-d0cd90d1`) |
 | BR-T21 | workspace discovery and doctor | Make probing observational so diagnostics never initialize or migrate a store | missing database remains absent; store discovery and R036 suites pass | implemented in `36432b2` (`beadrs-e498fb31`) |
 | BR-T22 | init and migration API | Capture and report the schema transition owned by explicit init without disabling migrate-on-open for normal commands | pending/current migration tests pass and older rows survive | blocked on claim-epoch overlap (`beadrs-5c27b273`) |
+| BR-T23 | claim model, SQLite migration, claim response and checkpoint grammar | Mint a durable monotonically advancing credential for every leased or ordinary claim epoch and return its exact projection to the claimant | migration/restore round trip, no-duplicate issuance under contention, and old-checkpoint compatibility | transition; `beadrs-bd985270`, umbrella `beadrs-8c343a7c` |
+| BR-T24 | claimant-owned lifecycle mutations and operator override | Require the exact current claim-epoch credential for claimant mutation; make any operator override explicit, reason-bearing, and separately audited | stale, missing, mismatched, replayed and override transaction tests with no false audit event | blocked by BR-T23; `beadrs-9d740f26`, `beadrs-dc8df464` |
+| BR-T25 | lease expiry, recovery and stale-worker fencing | Add atomic compare-and-reap and guarantee that an older process cannot mutate after release, expiry, reassignment or recovery | deterministic two-worker and crash-boundary tests; valid current lease is never reaped | blocked by BR-T24; `beadrs-3be4bf40`, `beadrs-0d0cb036` |
+| BR-T26 | ADR-017, `needle-v1` specification, schemas, recursive help, capabilities and concurrency fixtures | Freeze and advertise the claim-epoch contract, then prove every command and profile obeys it without weakening older profile behavior | accepted ADR/spec review, capability snapshots, installed-binary help and twenty-claimant concurrency fixture | transition chain through `beadrs-eec200d1`, `beadrs-24a3a27b` |
+| BR-T27 | exact-source packaging and NEEDLE consumer conformance | Build one pinned artifact and run the old/new consumer matrix plus duplicate-worker replay before release | source/binary hashes, archive-build proof, restore rehearsal, NEEDLE canary and rollback receipt agree | blocked by BR-T23–BR-T26; `beadrs-41b9130e` |
+| BR-T28 | existing manifest transaction, planner guidance, dependency graph and resource declarations | Make manifest-based atomic materialization the required/default planner path; retain assigned-staging only for shapes the manifest cannot express | concurrent claimer observes zero wins before graph commit; create resource keys are present at first visibility; cycle, missing-ID and replay failures leave no partial issue or edge | transition; `beadrs-57c668be` |
 
 General mutation idempotency remains a separate potential feature. BR-T03–T08
 adopt idempotency only for the attempt-resolution boundary required by the

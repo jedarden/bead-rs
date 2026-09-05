@@ -47,6 +47,16 @@ carefully as its correctness.
   checking out commits inside this shared checkout; the script is the only
   sanctioned way to build one (see [BUILD_PROCEDURE.md](BUILD_PROCEDURE.md)).
 
+## Planning Safety
+
+- Do not expose a newly created dependent bead to the ready frontier before
+  its blockers and resource keys exist. Use `bead manifest` to create the
+  issue, resource keys, labels, and blocking relationships in one transaction.
+  A rapid sequence of independent `create` and `dep add` commands is racy: a
+  worker can claim the issue between transactions. If a future graph shape
+  cannot be expressed by the manifest, create it assigned to a planning
+  identity, complete and verify the graph, then clear the assignee.
+
 ## Verification
 
 Run at minimum:
