@@ -14,11 +14,13 @@
 //!
 //! The epoch is returned to the claimant by `bead claim` and projected by
 //! `bead show --json` and the checkpoint, so an automated consumer can retain
-//! it without a second lookup. Issuing it is the whole contract for now: no
-//! mutation requires it yet. Lease rows stay append-only claim-epoch history:
-//! they carry the per-issue high-water mark and the expiry of the timed
-//! claims, and a row from an older epoch never fences the epoch that
-//! superseded it.
+//! it without a second lookup. It is also load-bearing: every claimant-owned
+//! mutation of an owned issue (update, release, close, reopen, resource-lock
+//! change, atomic attempt resolve) must present the exact current epoch, and a
+//! missing or stale one conflicts with exit 4 without writing anything. Lease
+//! rows stay append-only claim-epoch history: they carry the per-issue
+//! high-water mark and the expiry of the timed claims, and a row from an older
+//! epoch never fences the epoch that superseded it.
 
 use crate::error::Result;
 use rusqlite::{Connection, OptionalExtension, Transaction};
@@ -370,14 +372,29 @@ pub fn validate_lease_for_mutation(
 ///
 /// - `Some(epoch)` matching the issue's current epoch -> allow.
 /// - Any other token -> conflict, exit 4.
-/// - No credential at all -> allow. The credential is not load-bearing yet:
-///   this child issues and projects it, and a caller that has never heard of
-///   it must keep working unchanged. Requiring it on every mutation is the
-///   enforcement step and changes only this arm.
-/// - `claim_epoch == 0` -> a legacy claim that predates fencing (assigned by an
-///   older binary or restored from an old checkpoint). Nothing to match, so
-///   the mutation is allowed; the next claim, renewal, or assignment mints an
-///   epoch and fences from then on.
+/// - No credential at all -> conflict, exit 4. A credential that may be
+///   omitted is not a fence: the spaxel duplicate dispatch happened exactly
+///   because an older holder could keep mutating by simply not presenting
+///   the credential it no longer had. Callers obtain the epoch from
+///   `bead claim` or the `claim_epoch` projection on `bead show --json`, and
+///   the caller runs this check inside the mutation's own IMMEDIATE
+///   transaction, so a refusal leaves no partial write behind.
+/// - `claim_epoch == 0` -> a legacy claim that predates fencing (assigned by
+///   an older binary or restored from an old checkpoint). Nothing to match,
+///   so the mutation is allowed; the next claim, renewal, or assignment mints
+///   an epoch and fences from then on.
+///
+/// Only reaches the match arms for an *owned* issue: the caller
+/// ([`crate::service::lifecycle::enforce_claimant_credential`]) returns early
+/// when the issue has no assignee, so an unclaimed issue is never asked for a
+/// credential.
+///
+/// The two refusal arms are deliberately the same `LeaseConflict` and not
+/// distinguishable by the caller: "you presented nothing" and "you presented a
+/// superseded epoch" are one conflict condition, exit 4. A distinct code for
+/// the missing-credential case would let a caller probe whether an issue is
+/// claimed without ever holding the credential, which is the enumeration this
+/// fence exists to prevent.
 ///
 /// # Arguments
 /// * `conn` - Database connection
@@ -404,15 +421,11 @@ pub fn validate_claim_epoch_for_mutation(
             "Claim-epoch credential mismatch: issue {issue_id} is claimed at claim epoch {epoch}, \
              not {presented}; a stale credential cannot mutate it"
         ))),
-        // Issuance and visibility only, for now. A caller that has never heard
-        // of the credential -- which is every caller that predates this
-        // feature -- must keep mutating exactly as it did before, so an
-        // omitted credential is accepted. What this gate buys already is
-        // verification of the credential a caller *does* present: a consumer
-        // that retains claim_epoch and passes it back is fenced against a
-        // claim that moved underneath it. Making omission itself a conflict is
-        // the enforcement step, and it lands as a change to this one arm.
-        None => Ok(()),
+        None => Err(crate::Error::LeaseConflict(format!(
+            "Claim-epoch credential required: issue {issue_id} is claimed at claim epoch {epoch}; \
+             pass --fencing-token {epoch} (the current epoch is projected by \
+             `bead show {issue_id} --json`)"
+        ))),
     }
 }
 

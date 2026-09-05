@@ -523,6 +523,20 @@ fn update_issue_impl(
         sql_parts.push("assignee = ?");
         params.push(new_assignee.to_string());
         needs_update = true;
+
+        // A change of holder is a new ownership tenure, so it mints the next
+        // claim epoch even though this path is not `bead claim`. Without the
+        // bump the reassignee inherits the previous holder's epoch, and that
+        // holder's still-matching credential would open the new claim -- the
+        // release-and-reassign hole this fence exists to close. The same
+        // statement that takes the assignment also mints the epoch, so both
+        // land or neither does under the revision guard below. The new holder
+        // reads the epoch back from `bead show --json`; `update` returns only
+        // the issue id. A legacy claim whose epoch is still 0 starts fencing
+        // from 1 here, so assignment fences exactly as a fresh claim does.
+        if issue.assignee.as_deref() != Some(new_assignee) {
+            sql_parts.push("claim_epoch = claim_epoch + 1");
+        }
     } else if clear_assignee {
         // clear-assignee only works on open assigned issues
         match issue.base_status {
@@ -630,6 +644,14 @@ fn release_issue_impl(tx: &mut Transaction, issue: &Issue) -> Result<String> {
             // Semantic release: transition to open and clear assignee.
             // Conditional on the validated revision -- see
             // ensure_revision_row_affected.
+            //
+            // Deliberately no claim_epoch bump here. Release leaves the issue
+            // unowned, so nothing is fenced until someone owns it again, and
+            // any re-assignment -- including back to this same holder -- takes
+            // the `issue.assignee != new_assignee` arm in `update_issue_impl`
+            // and mints the next epoch. Bumping here as well would burn an
+            // epoch on every watchdog release and make the credential a
+            // single-use token rather than an ownership tenure.
             let expected_revision = issue.revision.unwrap_or(1);
             {
                 let mut stmt = tx.prepare_cached(
