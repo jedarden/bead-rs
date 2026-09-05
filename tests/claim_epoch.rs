@@ -323,11 +323,38 @@ fn the_current_claimant_can_perform_every_claimant_mutation() {
         .unwrap();
     let credential = epoch.to_string();
 
-    // The mutations that keep the claim: each lands and the claim survives.
-    // `close` and `release` change the claim's standing and `reopen` is only
-    // reachable once it is closed, so those three run below, in order.
+    // The update leg, pinned hardest: the current credential lands it, and the
+    // claim survives as the same tenure -- same assignee, same epoch, exactly
+    // one revision bump. The claim-keeping mutations below do not move the
+    // revision at all, so the bump is the update's own.
+    let update_args = claimant_mutations(&id)
+        .into_iter()
+        .find(|(label, _)| *label == "update")
+        .map(|(_, args)| args)
+        .expect("update is part of the claimant surface");
+    let revision_before = held_state(workspace.path(), &id).2;
+    run(workspace.path(), with_credential(update_args, &credential));
+    let updated = held_state(workspace.path(), &id);
+    assert_eq!(
+        updated.1, "worker-one",
+        "update with the current credential must keep the claim"
+    );
+    assert_eq!(
+        updated.2,
+        revision_before + 1,
+        "update with the current credential must bump the revision exactly once"
+    );
+    assert_eq!(
+        shown_issue(workspace.path(), &id)["claim_epoch"].as_i64(),
+        Some(epoch),
+        "update with the current credential must leave the epoch standing"
+    );
+
+    // The remaining mutations that keep the claim: each lands and the claim
+    // survives. `close` and `release` change the claim's standing and `reopen`
+    // is only reachable once it is closed, so those three run below, in order.
     for (label, args) in claimant_mutations(&id) {
-        if matches!(label, "close" | "release" | "reopen") {
+        if matches!(label, "close" | "release" | "reopen" | "update") {
             continue;
         }
         run(workspace.path(), with_credential(args, &credential));
@@ -629,14 +656,31 @@ fn a_leased_claim_is_fenced_by_the_same_credential() {
         );
     }
 
-    // The lease's own holder still lands them. `update` and `close` keep the
-    // claim; `reopen` hands it back, so the fourth mutation is proved on a
-    // fresh lease.
+    // The lease's own holder still lands them, and landing `update` is exactly
+    // one revision bump on an unchanged epoch: the lease narrows who may
+    // mutate, not what a landed mutation does. The sweeps above are asserted to
+    // have moved nothing, so `held` is still the pre-bump state. `update` and
+    // `close` keep the claim; `reopen` hands it back, so the fourth mutation is
+    // proved on a fresh lease.
     run(
         workspace.path(),
         with_credential(lifecycle_mutation(&id, "update"), &current),
     );
-    assert_eq!(held_state(workspace.path(), &id).1, "worker-two");
+    let updated = held_state(workspace.path(), &id);
+    assert_eq!(
+        updated.1, "worker-two",
+        "the lease's own holder keeps the claim across an update"
+    );
+    assert_eq!(
+        updated.2,
+        held.2 + 1,
+        "the holder's own update must bump the revision exactly once"
+    );
+    assert_eq!(
+        shown_issue(workspace.path(), &id)["claim_epoch"].as_i64(),
+        Some(current.parse::<i64>().unwrap()),
+        "the holder's own update must leave the leased epoch standing"
+    );
 
     run(
         workspace.path(),
