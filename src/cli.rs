@@ -883,14 +883,6 @@ pub struct UpdateOptions {
     #[arg(long)]
     pub dry_run: bool,
 
-    /// Reason-bearing operator recovery override for a claimed issue.
-    /// Proceeds past the claim-epoch fence and appends a distinct
-    /// `claim_override` audit event; required for manual recovery without
-    /// the current `--fencing-token` credential. An empty reason is
-    /// rejected: omitting the flag is never an override.
-    #[arg(long = "override-claim", value_name = "REASON")]
-    pub override_claim: Option<String>,
-
     // Hidden flags for R037 near-miss detection
     /// Near-miss trap: title is immutable after create; this update flag
     /// does not exist. Set the title at creation time.
@@ -973,14 +965,6 @@ pub struct ReleaseOptions {
     /// Dry run: show what would happen without making changes
     #[arg(long)]
     pub dry_run: bool,
-
-    /// Reason-bearing operator recovery override for a claimed issue.
-    /// Proceeds past the claim-epoch fence and appends a distinct
-    /// `claim_override` audit event; required for manual recovery without
-    /// the current `--fencing-token` credential. An empty reason is
-    /// rejected: omitting the flag is never an override.
-    #[arg(long = "override-claim", value_name = "REASON")]
-    pub override_claim: Option<String>,
 }
 
 /// Options for closing an issue
@@ -1048,14 +1032,6 @@ pub struct CloseOptions {
     /// Dry run: show what would happen without making changes
     #[arg(long)]
     pub dry_run: bool,
-
-    /// Reason-bearing operator recovery override for a claimed issue.
-    /// Proceeds past the claim-epoch fence and appends a distinct
-    /// `claim_override` audit event; required for manual recovery without
-    /// the current `--fencing-token` credential. An empty reason is
-    /// rejected: omitting the flag is never an override.
-    #[arg(long = "override-claim", value_name = "REASON")]
-    pub override_claim: Option<String>,
 
     // Hidden flag for R037 near-miss detection (--body should be --reason)
     /// Near-miss trap: close takes --reason, not --body. Pass the closing
@@ -1126,14 +1102,6 @@ pub struct ReopenOptions {
     /// Dry run: show what would happen without making changes
     #[arg(long)]
     pub dry_run: bool,
-
-    /// Reason-bearing operator recovery override for a claimed issue.
-    /// Proceeds past the claim-epoch fence and appends a distinct
-    /// `claim_override` audit event; required for manual recovery without
-    /// the current `--fencing-token` credential. An empty reason is
-    /// rejected: omitting the flag is never an override.
-    #[arg(long = "override-claim", value_name = "REASON")]
-    pub override_claim: Option<String>,
 }
 
 /// Options for the exceptional historical-redaction operation.
@@ -1247,13 +1215,6 @@ pub struct ResolveOptions {
     /// Fencing token for lease validation
     #[arg(long)]
     pub fencing_token: Option<String>,
-    /// Reason-bearing operator recovery override for a claimed issue.
-    /// Proceeds past the claim-epoch fence and appends a distinct
-    /// `claim_override` audit event; required for manual recovery without
-    /// the current `--fencing-token` credential. An empty reason is
-    /// rejected: omitting the flag is never an override.
-    #[arg(long = "override-claim", value_name = "REASON")]
-    pub override_claim: Option<String>,
 
     /// Evidence references (NAMESPACE:VALUE format)
     #[arg(long)]
@@ -1798,22 +1759,10 @@ pub struct ResourceAddOptions {
     /// Fencing token for a leased in-progress issue
     #[arg(long)]
     pub fencing_token: Option<i64>,
-
-    /// Reason-bearing operator recovery override for a claimed issue.
-    #[arg(long = "override-claim", value_name = "REASON")]
-    pub override_claim: Option<String>,
 }
 
 #[derive(Parser, Debug)]
 pub struct ResourceRemoveOptions {
-    /// Reason-bearing operator recovery override for a claimed issue.
-    /// Proceeds past the claim-epoch fence and appends a distinct
-    /// `claim_override` audit event; required for manual recovery without
-    /// the current `--fencing-token` credential. An empty reason is
-    /// rejected: omitting the flag is never an override.
-    #[arg(long = "override-claim", value_name = "REASON")]
-    pub override_claim: Option<String>,
-
     /// Issue ID
     pub id: String,
     /// Resource key; repeat for multiple keys
@@ -2617,22 +2566,7 @@ Publication failures after the commit are the standard split outcome: the
 manifest stays committed, exit 1, and 'bead sync flush-only' is the remedy.
 
   bead manifest commit --input plan.json
-  bead manifest commit --input plan.json --format json   # result map with real IDs
-
-PLANNING DEPENDENT WORK:
-  This is the required path for materializing a planned graph. Compose the
-  creates, their `dep_add` edges, and their resource keys in one manifest
-  and commit it once -- `$name` local references let a `dep_add` name a
-  bead the same manifest created. Because the graph and the beads are one
-  transaction, no bead in the plan is ever claimable before the edges that
-  gate it exist.
-
-  Splitting the same plan across `bead create` and `bead dep` invocations
-  leaves each bead claimable in the seconds before its edge lands; a worker
-  can claim a bead whose dependency has not been inserted yet, which is
-  exactly the dispatch race that costs a planner its conformance slot. Use
-  `bead create --depends-on` for the single-dependent case and a manifest
-  for everything wider."
+  bead manifest commit --input plan.json --format json   # result map with real IDs"
     )]
     Commit(ManifestOpOptions),
 }

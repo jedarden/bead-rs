@@ -6,9 +6,9 @@ mod error;
 mod model;
 #[allow(dead_code)]
 mod profile;
+mod service;
 #[allow(dead_code, unused_imports)]
 mod scan;
-mod service;
 mod store;
 
 use crate::cli::{Cli, Command};
@@ -729,7 +729,6 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
         let claim = ClaimResult {
             bead_id: enhanced.bead_id.clone(),
             assignee: enhanced.assignee.clone(),
-            claim_epoch: enhanced.claim_epoch,
         };
         (enhanced, claim)
     } else {
@@ -748,7 +747,6 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
         let enhanced = service::EnhancedClaimResult {
             bead_id: claim.bead_id.clone(),
             assignee: claim.assignee.clone(),
-            claim_epoch: claim.claim_epoch,
             lease: None, // Intelligent policies don't include lease info in basic result
         };
         (enhanced, claim)
@@ -797,12 +795,6 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
         if let Some(bead_id) = &claim_result.bead_id {
             println!("Claimed: {}", bead_id);
             println!("Assignee: {}", claim_result.assignee);
-            // The claim-epoch credential. A consumer mutating the claimed
-            // issue later presents this back, so it has to survive the
-            // plain-text path too -- not just --json.
-            if let Some(epoch) = claim_result.claim_epoch {
-                println!("Claim epoch: {}", epoch);
-            }
         } else {
             println!("No eligible work found.");
         }
@@ -1115,10 +1107,6 @@ fn cmd_show(opts: cli::ShowOptions) -> Result<()> {
             println!("Assignee: {}", assignee);
         }
 
-        if let Some(claim_epoch) = issue.claim_epoch {
-            println!("Claim epoch: {}", claim_epoch);
-        }
-
         if let Some(issue_type) = &issue.issue_type {
             println!("Type: {}", issue_type);
         }
@@ -1192,7 +1180,7 @@ fn cmd_update(opts: cli::UpdateOptions) -> Result<()> {
     }
 
     // Update the issue
-    let id = service::update_issue_with_override(
+    let id = service::update_issue(
         &conn,
         &opts.id,
         opts.status.as_deref(),
@@ -1201,7 +1189,6 @@ fn cmd_update(opts: cli::UpdateOptions) -> Result<()> {
         opts.notes.as_deref(),
         opts.if_revision,
         opts.fencing_token,
-        opts.override_claim.as_deref(),
     )?;
 
     // Print only the ID on success
@@ -1231,13 +1218,7 @@ fn cmd_release(opts: cli::ReleaseOptions) -> Result<()> {
     }
 
     // Release the issue
-    let id = service::release_issue_with_override(
-        &conn,
-        &opts.id,
-        opts.if_revision,
-        opts.fencing_token,
-        opts.override_claim.as_deref(),
-    )?;
+    let id = service::release_issue(&conn, &opts.id, opts.if_revision, opts.fencing_token)?;
 
     // Print only the ID on success
     println!("{}", id);
@@ -1292,13 +1273,12 @@ fn cmd_close(opts: cli::CloseOptions) -> Result<()> {
     }
 
     // Close the issue
-    let id = service::close_issue_with_override(
+    let id = service::close_issue(
         &conn,
         &opts.id,
         &reason,
         opts.if_revision,
         opts.fencing_token,
-        opts.override_claim.as_deref(),
     )?;
 
     // Print only the ID on success
@@ -1328,13 +1308,7 @@ fn cmd_reopen(opts: cli::ReopenOptions) -> Result<()> {
     }
 
     // Reopen the issue
-    let id = service::reopen_issue_with_override(
-        &conn,
-        &opts.id,
-        opts.if_revision,
-        opts.fencing_token,
-        opts.override_claim.as_deref(),
-    )?;
+    let id = service::reopen_issue(&conn, &opts.id, opts.if_revision, opts.fencing_token)?;
 
     // Print the ID on success
     println!("{}", id);
@@ -1377,7 +1351,6 @@ fn cmd_resolve(opts: cli::ResolveOptions) -> Result<()> {
         reason: opts.reason.clone(),
         if_revision: opts.if_revision,
         fencing_token: opts.fencing_token.clone(),
-        override_claim: opts.override_claim.clone(),
         evidence_refs: opts.evidence_ref.clone(),
         actor: opts.actor.clone(),
         model: opts.model.clone(),
@@ -1385,13 +1358,8 @@ fn cmd_resolve(opts: cli::ResolveOptions) -> Result<()> {
         harness_version: opts.harness_version.clone(),
     };
 
-    // Execute resolution in an IMMEDIATE transaction: the write lock is taken
-    // up front so the claim-epoch credential, the revision precondition and
-    // the receipt insert are all validated against the snapshot the mutation
-    // lands on -- the same begin-before-read contract the lifecycle commands
-    // use (R033). A deferred transaction here would let a concurrent claim
-    // mint the next epoch between the credential check and the UPDATE.
-    let mut tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
+    // Execute resolution in transaction
+    let mut tx = conn.unchecked_transaction()?;
     let result = service::resolve_attempt(&mut tx, &workspace_uuid, request);
 
     // Handle errors with proper exit codes
@@ -1465,7 +1433,6 @@ fn cmd_resource_add(opts: cli::ResourceAddOptions) -> Result<()> {
         &opts.id,
         &opts.keys,
         opts.fencing_token,
-        opts.override_claim.as_deref(),
         "cli",
     )?;
     tx.commit()?;
@@ -1481,7 +1448,6 @@ fn cmd_resource_remove(opts: cli::ResourceRemoveOptions) -> Result<()> {
         &opts.id,
         &opts.keys,
         opts.fencing_token,
-        opts.override_claim.as_deref(),
         "cli",
     )?;
     tx.commit()?;
@@ -2725,8 +2691,8 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
                             eprintln!("  Priority: {}", bead.priority);
 
                             let mut reasons = Vec::new();
-                            if let Some(assignee) = &bead.assignee {
-                                reasons.push(format!("assignee: {}", assignee));
+                            if bead.assignee.is_some() {
+                                reasons.push(format!("assignee: {}", bead.assignee.as_ref().unwrap()));
                             }
                             if bead.manual_blocked {
                                 reasons.push("manually blocked".to_string());
@@ -3043,15 +3009,6 @@ fn to_needle_json(
     // Add comments array (may be empty)
     if let Some(obj) = json_obj.as_object_mut() {
         obj.insert("comments".to_string(), serde_json::json!(comments));
-        // Project the claim-epoch credential alongside the assignee it
-        // belongs to, so a consumer can retain it from `bead show --json`
-        // without a second ambiguous lookup. Absent on an issue that has
-        // never been claimed by a fencing-aware binary -- same field-omission
-        // rule the model uses, so no consumer sees a 0 and mistakes it for a
-        // real credential.
-        if let Some(claim_epoch) = issue.claim_epoch {
-            obj.insert("claim_epoch".to_string(), serde_json::json!(claim_epoch));
-        }
         if let Some(resource_keys) = issue.extensions.get("resource_keys") {
             obj.insert("resource_keys".to_string(), resource_keys.clone());
         }
@@ -4039,10 +3996,7 @@ fn print_human_readable_why(why: &service::WhyExplanation) {
     if let Some(attempt_info) = &why.attempt_info {
         println!("\n=== Attempt Information ===");
         println!("Current Tier: {}", attempt_info.current_tier);
-        println!(
-            "Consecutive Failures: {}",
-            attempt_info.consecutive_failures
-        );
+        println!("Consecutive Failures: {}", attempt_info.consecutive_failures);
         println!("Tier Description: {}", attempt_info.tier_description);
 
         if let Some(last_attempt) = &attempt_info.last_attempt {
@@ -4059,10 +4013,7 @@ fn print_human_readable_why(why: &service::WhyExplanation) {
         }
 
         if !attempt_info.attempt_history.is_empty() {
-            println!(
-                "\nAttempt History (most recent {}):",
-                attempt_info.attempt_history.len()
-            );
+            println!("\nAttempt History (most recent {}):", attempt_info.attempt_history.len());
             for (i, entry) in attempt_info.attempt_history.iter().enumerate() {
                 println!("  {}. {}", i + 1, entry.attempt_id);
                 println!("     Outcome: {}", entry.outcome);
