@@ -84,6 +84,12 @@ fn held_state(workspace: &Path, id: &str) -> (String, String, i64) {
 /// Events the checkpoint has published for `id` -- the audit surface a
 /// rejected mutation must not advance.
 fn published_event_count(workspace: &Path, id: &str) -> usize {
+    published_events(workspace, id).len()
+}
+
+/// Those events in publication order, for the assertions that need what an
+/// event says rather than merely that it exists (or doesn't).
+fn published_events(workspace: &Path, id: &str) -> Vec<Value> {
     let forensic = std::fs::read_to_string(
         workspace
             .join(".beads")
@@ -95,7 +101,8 @@ fn published_event_count(workspace: &Path, id: &str) -> usize {
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
         .filter(|record| record["record_type"] == "event" && record["event"]["issue_id"] == *id)
-        .count()
+        .map(|record| record["event"].clone())
+        .collect()
 }
 
 /// Run `bead` and hand back the raw result, for the cases where a non-zero
@@ -366,6 +373,81 @@ fn the_current_claimant_can_perform_every_claimant_mutation() {
         ["release", &id, "--fencing-token", &next_epoch.to_string()],
     );
     assert_eq!(shown_issue(workspace.path(), &id)["assignee"], Value::Null);
+}
+
+/// The credential that authorizes a close is recorded on the `closed` event
+/// itself, in the same transaction that closes: a reader of the change feed
+/// can tell which epoch admitted the close rather than inferring it from the
+/// claim the issue happened to still carry afterwards. An unclaimed close has
+/// no credential to record, and says so with nulls rather than by dropping
+/// the fields.
+#[test]
+fn the_closed_event_carries_the_credential_that_authorized_it() {
+    let workspace = tempfile::tempdir().unwrap();
+    run(workspace.path(), ["init", "--prefix", "epoch"]);
+    let id =
+        String::from_utf8(run(workspace.path(), ["create", "--title", "audited close"]).stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+
+    let epoch = claim(workspace.path(), "worker-one", false)["claim_epoch"]
+        .as_i64()
+        .unwrap();
+
+    run(
+        workspace.path(),
+        with_credential(lifecycle_mutation(&id, "close"), &epoch.to_string()),
+    );
+
+    let closed = published_events(workspace.path(), &id)
+        .into_iter()
+        .find(|event| event["kind"] == "closed")
+        .expect("a close appends a closed event");
+
+    assert_eq!(
+        closed["detail"]["claim_epoch"].as_i64(),
+        Some(epoch),
+        "the closed event names the epoch that fenced it"
+    );
+    assert_eq!(
+        closed["detail"]["presented_fencing_token"].as_i64(),
+        Some(epoch),
+        "the closed event names the credential the claimant presented"
+    );
+    assert_eq!(
+        closed["detail"]["reason"].as_str(),
+        Some("probed"),
+        "the reason is recorded alongside the credential"
+    );
+
+    // Closing does not retire the claim, so the epoch the event named is
+    // still the one the issue carries -- the event is not describing a
+    // tenure the row has already forgotten.
+    assert_eq!(shown_issue(workspace.path(), &id)["claim_epoch"], epoch);
+
+    // The unclaimed close has no credential behind it, and the event says so
+    // rather than leaving the reader to distinguish a null from an omitted
+    // key.
+    let unclaimed =
+        String::from_utf8(run(workspace.path(), ["create", "--title", "unaudited close"]).stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+    run(
+        workspace.path(),
+        ["close", &unclaimed, "--reason", "no claim"],
+    );
+
+    let unclaimed_closed = published_events(workspace.path(), &unclaimed)
+        .into_iter()
+        .find(|event| event["kind"] == "closed")
+        .expect("an unclaimed close still appends a closed event");
+    assert_eq!(unclaimed_closed["detail"]["claim_epoch"], Value::Null);
+    assert_eq!(
+        unclaimed_closed["detail"]["presented_fencing_token"],
+        Value::Null
+    );
 }
 
 /// A credential from a superseded epoch is as good as none: after the claim

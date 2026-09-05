@@ -377,7 +377,7 @@ pub fn close_issue_in_tx(
     // the issue is claimed
     validate_claimant_credential(tx, id, &issue, fencing_token, override_claim)?;
 
-    close_issue_impl(tx, &issue, reason)
+    close_issue_impl(tx, &issue, reason, fencing_token)
 }
 
 /// Run one `bead release` against a caller-owned transaction (R033).
@@ -695,7 +695,20 @@ fn release_issue_impl(tx: &mut Transaction, issue: &Issue) -> Result<String> {
 }
 
 /// Implementation of close issue within a transaction
-fn close_issue_impl(tx: &mut Transaction, issue: &Issue, reason: &str) -> Result<String> {
+///
+/// `presented_credential` is the claim-epoch credential the caller named (the
+/// same value the gate above just validated). It is recorded on the `closed`
+/// event -- alongside the epoch it was checked against, read back inside this
+/// transaction -- so the audit trail names the credential that authorized the
+/// close rather than leaving the reader to infer it from the claim the issue
+/// happened to still carry afterwards. Both are null when no claim fenced the
+/// close.
+fn close_issue_impl(
+    tx: &mut Transaction,
+    issue: &Issue,
+    reason: &str,
+    presented_credential: Option<i64>,
+) -> Result<String> {
     let now = time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "unknown".to_string());
@@ -719,6 +732,15 @@ fn close_issue_impl(tx: &mut Transaction, issue: &Issue, reason: &str) -> Result
             // ensure_revision_row_affected.
             let normalized_reason = reason.trim();
             let expected_revision = issue.revision.unwrap_or(1);
+
+            // The epoch the credential was checked against, read inside the
+            // transaction the close commits in. A claim survives a close (only
+            // reopen hands it back), so this is the epoch the event names --
+            // but it is read before the UPDATE rather than assumed from
+            // `issue`, which is the snapshot the guard validated rather than
+            // necessarily the row.
+            let claim_epoch = current_claim_epoch(tx, &issue.id)?;
+
             {
                 let mut stmt = tx.prepare_cached(
                     "UPDATE issues SET base_status = 'closed', closed_at = ?, close_reason = ?,
@@ -731,14 +753,20 @@ fn close_issue_impl(tx: &mut Transaction, issue: &Issue, reason: &str) -> Result
 
             release_issue_locks(tx, &issue.id)?;
 
-            // Append closed event
+            // Append closed event, carrying the claim credential that
+            // authorized it. Same field vocabulary as the `claim_override`
+            // event: the epoch that fenced the mutation plus the token the
+            // caller presented. An override close presents no token of its
+            // own, which is exactly the gap the second field records.
             append_event(
                 tx,
                 Some(&issue.id),
                 "closed",
                 &json!({
                     "prior_base_status": format!("{}", issue.base_status),
-                    "reason": normalized_reason
+                    "reason": normalized_reason,
+                    "claim_epoch": (claim_epoch > 0).then_some(claim_epoch),
+                    "presented_fencing_token": presented_credential,
                 }),
                 &now,
             )?;
