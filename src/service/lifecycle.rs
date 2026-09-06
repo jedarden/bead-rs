@@ -525,9 +525,12 @@ fn close_issue_impl(tx: &mut Transaction, issue: &Issue, reason: &str) -> Result
             //   - Run within the same transaction for consistency
             //
             // To integrate: replace the comment below with the actual verify call
-            // e.g., verify::before_close(tx, issue, reason)?
+            // e.g., verify::run_verify_before_close(&VerifyContext::new(issue.id.clone(), config))?
             //
-            // TODO: Integrate verify wrapper call here (see bead pdftract-7ecf1d3a)
+            // TODO: Call run_verify_before_close() here (integration bead
+            // pdftract-652ef4a7; injection point from pdftract-7ecf1d3a). Keep it
+            // AFTER the existence/revision/lease checks above and BEFORE the UPDATE
+            // below, so a close doomed by a stale precondition never runs verification.
 
             // Semantic close. Conditional on the validated revision -- see
             // ensure_revision_row_affected.
