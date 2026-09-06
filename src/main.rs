@@ -1386,8 +1386,23 @@ fn cmd_resolve(opts: cli::ResolveOptions) -> Result<()> {
         harness_version: opts.harness_version.clone(),
     };
 
-    // Execute resolution in transaction
-    let mut tx = conn.unchecked_transaction()?;
+    // Execute resolution in a transaction taken IMMEDIATE -- before
+    // `resolve_attempt` reads the issue row -- so the claim-epoch credential
+    // the resolver validates and the resolution that credential authorizes
+    // (receipt, tier, lifecycle action, audit event) are one atomic unit on
+    // one serialized state. A deferred transaction would not give that: it
+    // takes its read snapshot at the first SELECT and only reaches for the
+    // write lock at the first INSERT, so a claim transition that commits in
+    // between separates the credential check from the resolution it
+    // authorizes. Under WAL -- this store's journal mode -- that separation
+    // surfaces as SQLITE_BUSY_SNAPSHOT rather than as silent skew, and
+    // `busy_timeout` cannot absorb it, because the transaction has to be
+    // restarted from its read rather than merely waited on. The caller would
+    // see a transient-looking error where the fence is defined to report a
+    // clean claim-epoch conflict. Taking the write lock at BEGIN makes a
+    // concurrent claim wait instead. The lifecycle mutations open their
+    // transactions the same way.
+    let mut tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
     let result = service::resolve_attempt(&mut tx, &workspace_uuid, request);
 
     // Handle errors with proper exit codes
@@ -1416,7 +1431,9 @@ fn cmd_resolve(opts: cli::ResolveOptions) -> Result<()> {
             Ok(())
         }
         Err(e) => {
-            // Rollback the transaction
+            // Dropping the uncommitted transaction rolls back everything the
+            // refused resolve touched, so a refused resolve exits with the
+            // store exactly as the resolver found it.
             drop(tx);
 
             // Map attempt errors to proper exit codes
