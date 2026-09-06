@@ -631,7 +631,8 @@ fn doctor_distinguishes_remote_advanced_from_integrity_failure() {
     let tampered_output = bead(&tampered.origin)
         .args(["doctor", "--json"])
         .assert()
-        .success()
+        .failure()
+        .code(5)
         .get_output()
         .clone();
     let tampered_report: Value = serde_json::from_slice(&tampered_output.stdout).unwrap();
@@ -649,7 +650,10 @@ fn doctor_distinguishes_remote_advanced_from_integrity_failure() {
         "{}",
         tampered_freshness["message"]
     );
-    assert!(tampered_freshness["details"]["state"].is_null());
+    assert_eq!(
+        tampered_freshness["details"]["state"],
+        "covered-ahead-integrity-failure"
+    );
 }
 
 #[test]
@@ -657,11 +661,12 @@ fn divergence_stays_fail_closed_across_reconcile_flush_and_doctor() {
     // A local mutation committed while remote-advanced leaves a live event
     // the pulled checkpoint lacks: same-store divergence with no common
     // extension. Everything refuses, and nothing is merged or published.
-    let pair = remote_advanced_pair(1);
+    let pair = lagging_pair(1);
     run(
         &pair.origin,
         &["--no-auto-flush", "create", "--title", "divergent"],
     );
+    pull_checkpoint(&pair.clone, &pair.origin);
     assert_eq!(
         relationship(&pair.origin),
         "covered-ahead-integrity-failure"
@@ -690,7 +695,8 @@ fn divergence_stays_fail_closed_across_reconcile_flush_and_doctor() {
     let doctor_output = bead(&pair.origin)
         .args(["doctor"])
         .assert()
-        .success()
+        .failure()
+        .code(5)
         .get_output()
         .clone();
     let text = String::from_utf8(doctor_output.stderr).unwrap();
@@ -702,6 +708,22 @@ fn divergence_stays_fail_closed_across_reconcile_flush_and_doctor() {
         !text.contains("remote-advanced"),
         "divergence must not be diagnosed as the benign state: {text}"
     );
+    let output = bead(&pair.origin)
+        .args(["doctor", "--scope", "backup", "--json"])
+        .assert()
+        .failure()
+        .code(5)
+        .get_output()
+        .clone();
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["has_errors"], true);
+    assert!(report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|check| check["name"] == "checkpoint_freshness"
+            && check["status"] == "error"
+            && check["details"]["reason_code"] == "checkpoint_integrity_failure"));
 }
 
 #[test]

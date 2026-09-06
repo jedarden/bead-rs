@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod cli;
+mod cli_checkpoint_guard;
 mod cli_secret_scan;
 mod error;
 mod model;
@@ -51,6 +52,7 @@ struct PublicationProbe {
     checkpoint_config: anyhow::Result<service::CheckpointConfig>,
     /// Live event sequence before dispatch
     sequence_before: i64,
+    explicit_recovery: bool,
 }
 
 /// Resolve whether this invocation publishes a checkpoint generation after
@@ -97,6 +99,7 @@ fn publication_probe(no_auto_flush: bool) -> Option<PublicationProbe> {
         config,
         checkpoint_config,
         sequence_before,
+        explicit_recovery: false,
     })
 }
 
@@ -129,14 +132,12 @@ fn open_checkpoint_connection(db_path: &std::path::Path) -> Option<rusqlite::Con
 /// to this sequence or beyond -- the state a lost publication race leaves
 /// behind -- is treated as success, not something to publish over.
 ///
-/// That coverage check runs twice: once as a lock-free fast path, once as
-/// the authoritative decision under the checkpoint publication lock
-/// (item 4), because a concurrent publisher may replace the pointer
-/// between the two. The lock serializes publication -- object writes,
-/// pointer replacement, tombstone application -- independently of the
-/// SQLite write path, so a worker that loses the race waits for the
-/// winner, rereads the pointer it published, sees a sequence at or beyond
-/// its own, and returns success without publishing over it.
+/// The history and coverage checks run under the publication lock. A numeric
+/// sequence alone is not proof: an unrelated pulled checkpoint can carry a
+/// higher sequence while omitting this mutation. The operation guard validates
+/// before commit; this second check reports any post-commit conflict without
+/// rolling back committed work. Concurrent publishers reread the winning
+/// generation under the lock and skip only a verified covering publication.
 ///
 /// Item 5 lives at this function's edge: the command already returned
 /// `Ok`, so every failure from the publication tail is a split outcome --
@@ -175,19 +176,14 @@ fn publish_committed_state(probe: &PublicationProbe) -> anyhow::Result<()> {
         .map_err(|source| anyhow::anyhow!(source.to_string()))?;
 
     let checkpoint_base = probe.config.root.join(".beads");
-    if service::read_covered_event_sequence(&checkpoint_base)
-        .is_some_and(|covered| covered >= sequence_after)
-    {
-        // The durable checkpoint already covers the live event sequence;
-        // publishing again would mint a generation with nothing new to
-        // carry (plan 6.2.1 item 3).
-        return Ok(());
-    }
 
     // Serialize with every other publisher (plan 6.2.1 item 4). Past this
     // point the pointer stays stable until this publication finishes.
     let publication_lock =
         service::acquire_checkpoint_publication_lock(&checkpoint_base.join("checkpoint"))?;
+    if !probe.explicit_recovery {
+        service::reconcile::require_writable(&conn, &checkpoint_base)?;
+    }
 
     // The authoritative lost-race decision, under the lock: reread both
     // the live sequence and the pointer another publisher may have just
@@ -195,8 +191,9 @@ fn publish_committed_state(probe: &PublicationProbe) -> anyhow::Result<()> {
     // invocation's own committed sequence too, so this worker's generation
     // has nothing to carry -- success, exit 0, nothing published over.
     if let Some(sequence_now) = service::read_live_event_sequence(&conn) {
-        if service::read_covered_event_sequence(&checkpoint_base)
-            .is_some_and(|covered| covered >= sequence_now)
+        if !probe.explicit_recovery
+            && service::read_covered_event_sequence(&checkpoint_base)
+                .is_some_and(|covered| covered >= sequence_now)
         {
             return Ok(());
         }
@@ -291,6 +288,7 @@ fn execute_command(cli: Cli) -> Result<()> {
     // workspace, so `publication_probe` and every command's `discover` see
     // the same walk. Read before `cli` moves into dispatch.
     store::set_skip_foreign_workspaces(cli.skip_foreign_workspace);
+    let operation_guard = cli_checkpoint_guard::acquire(&cli.command)?;
 
     // Arm post-commit publication before dispatch; a command that fails or
     // mutates nothing never reaches the publish step. The flag is read
@@ -311,17 +309,21 @@ fn execute_command(cli: Cli) -> Result<()> {
     // before dispatch and make `init` falsely report an already-current
     // schema. Init has dedicated publication handling below for the only
     // case that needs it: a newly created workspace.
-    let probe = if redaction_command || init_without_probe {
+    let mut probe = if redaction_command || init_without_probe {
         None
     } else {
         publication_probe(no_auto_flush)
     };
+    if let Some(probe) = &mut probe {
+        probe.explicit_recovery = cli_checkpoint_guard::is_recovery(&cli.command);
+    }
     // Arm only after the publication probe opens its read connection: the
     // acknowledgment bridge belongs on the command's mutation connection,
     // where its audit event commits or rolls back with semantic state.
     let _acknowledgment_audit = prepared_scan.as_ref().map(|scan| scan.arm_audit());
 
     let result = dispatch_command(cli);
+    drop(operation_guard);
 
     if let Ok(created_new_workspace) = &result {
         if let Some(probe) = probe.as_ref() {
@@ -2036,9 +2038,6 @@ fn cmd_sync_flush_only(opts: cli::SyncFlushOptions) -> Result<()> {
         }
         if report.relationship
             == service::reconcile::SyncRelationship::CoveredAheadIntegrityFailure.as_str()
-            && report
-                .covered_sequence
-                .is_some_and(|covered| covered > report.live_sequence)
         {
             return Err(Error::integrity(format!(
                 "flush-only refused: covered-ahead integrity failure - {}",

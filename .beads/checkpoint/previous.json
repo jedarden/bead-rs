@@ -1,19 +1,19 @@
 {
   "active_root": {
-    "path": "objects/deb5000aab2510fce405746edd0cfa25cc15ac54832772310d5d0a5903c6b331.jsonl",
-    "sha256": "deb5000aab2510fce405746edd0cfa25cc15ac54832772310d5d0a5903c6b331"
+    "path": "objects/3f5ad619e7c8bf667643d2e5f3a4765fb96e22867e4fdf11a2f0c9fbd798b042.jsonl",
+    "sha256": "3f5ad619e7c8bf667643d2e5f3a4765fb96e22867e4fdf11a2f0c9fbd798b042"
   },
   "added_paths": [
-    "objects/deb5000aab2510fce405746edd0cfa25cc15ac54832772310d5d0a5903c6b331.jsonl"
+    "objects/3f5ad619e7c8bf667643d2e5f3a4765fb96e22867e4fdf11a2f0c9fbd798b042.jsonl"
   ],
   "attempt_outcome_count": 0,
-  "created_at": "2026-09-05T17:09:50.342943037Z",
+  "created_at": "2026-09-06T02:21:26.773119487Z",
   "deleted_paths": [
-    "objects/a73c4038e84441ff2bee12a981fd4559c497a9cf7cc2e1f2d8b66a3423c35e3f.jsonl"
+    "objects/6e624632c4596cc59f8f4926cf232c6c7080fd6091e7a27084267e6edb9bc9a4.jsonl"
   ],
-  "event_count": 5948,
-  "generation_id": "gen-b5f0f030af90fc1e3b54804aabe8581f",
-  "issue_count": 375,
+  "event_count": 6137,
+  "generation_id": "gen-bcfc4d060b8d34db04f16d159cea776a",
+  "issue_count": 381,
   "mode": "monolithic",
   "receipt_count": 0,
   "redaction_record_count": 0,
@@ -22,7 +22,7 @@
     "forensic.jsonl"
   ],
   "schema_version": 1,
-  "snapshot_sequence": 6182,
+  "snapshot_sequence": 6371,
   "store_uuid": "1c4f5d56-dcff-cbc5-ddf9-c536653c45f4",
-  "total_record_count": 6323
+  "total_record_count": 6518
 }

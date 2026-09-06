@@ -143,8 +143,8 @@ fn snapshot_checkpoint(workspace: &Path) -> std::collections::BTreeMap<String, V
 
 /// Rewrite the pointer's `snapshot_sequence`, preserving every other
 /// field: the same authoritative value `read_covered_event_sequence` and
-/// `sync --status` read, so a forged value is indistinguishable from one a
-/// real publisher recorded.
+/// `sync status` reads. The guard must validate history rather than accepting
+/// a numeric claim of coverage as proof that a publication already happened.
 fn forge_covered_sequence(workspace: &Path, covered: i64) {
     let pointer_path = workspace.join(".beads/checkpoint/current.json");
     let mut pointer: Value =
@@ -630,7 +630,7 @@ fn publication_failure_reports_the_split_without_rolling_back() {
     run(workspace, &["init", "--prefix", "split"]);
     set_auto_flush(workspace, true);
     create_issue(workspace, "before failure");
-    let checkpoint_dir = workspace.join(".beads/checkpoint");
+    let checkpoint_dir = workspace.join(".beads/checkpoint/objects");
 
     // Make publication fail by replacing the checkpoint directory it must
     // write into with a regular file, so every attempt to create a file
@@ -646,7 +646,7 @@ fn publication_failure_reports_the_split_without_rolling_back() {
     // The real directory is moved aside rather than deleted: the assertions
     // below require the checkpoint written before the failure, so that the
     // split is observable as covered_sequence < live_sequence.
-    let parked = workspace.join(".beads/checkpoint.parked");
+    let parked = workspace.join(".beads/checkpoint/objects.parked");
     fs::rename(&checkpoint_dir, &parked).unwrap();
     fs::write(&checkpoint_dir, b"not a directory").unwrap();
 
@@ -972,15 +972,10 @@ fn no_auto_flush_flag_wins_over_the_configuration_key() {
     );
 }
 
-/// A mutation whose sequence the checkpoint already covers publishes
-/// nothing (plan 6.2.1 item 3). The pointer is forged to the exact
-/// sequence the mutation is about to reach -- the residue of a lost
-/// publication race, where a concurrent publisher already carried the
-/// checkpoint to this sequence: the plan requires that be treated as
-/// success, not something to publish over. Advancing the sequence alone
-/// must not force a generation when there is nothing new to carry.
+/// A forged covering sequence must not authorize a mutation or silently
+/// suppress publication. Refusal preserves both SQLite and checkpoint bytes.
 #[test]
-fn mutation_when_the_checkpoint_covers_the_live_sequence_publishes_nothing() {
+fn forged_higher_sequence_cannot_silently_cover_a_new_mutation() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     run(workspace, &["init", "--prefix", "raced"]);
@@ -995,17 +990,17 @@ fn mutation_when_the_checkpoint_covers_the_live_sequence_publishes_nothing() {
     let before = snapshot_checkpoint(workspace);
     let before_generation = generation_id(workspace);
 
-    run(
-        workspace,
-        &["update", &issue, "--notes", "committed silently"],
-    );
+    bead(workspace)
+        .args(["update", &issue, "--notes", "must not commit"])
+        .assert()
+        .failure()
+        .code(4);
 
     let after = status(workspace);
     assert_eq!(
         after["live_sequence"].as_i64().unwrap(),
-        live + 1,
-        "the mutation must still commit -- skipping publication is never \
-         skipping the mutation itself"
+        live,
+        "a higher sequence does not authorize a mutation into an unverified history"
     );
     assert_eq!(
         after["covered_sequence"].as_i64().unwrap(),
@@ -1015,12 +1010,12 @@ fn mutation_when_the_checkpoint_covers_the_live_sequence_publishes_nothing() {
     assert_eq!(
         generation_id(workspace),
         before_generation,
-        "a mutation the checkpoint already covered minted a new generation"
+        "a refused mutation minted a new generation"
     );
     assert_eq!(
         snapshot_checkpoint(workspace),
         before,
-        "a mutation the checkpoint already covered changed the checkpoint \
+        "a refused mutation changed the checkpoint \
          set -- no generation and no object may be created"
     );
 }

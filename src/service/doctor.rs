@@ -308,7 +308,12 @@ pub fn run_diagnostics_with_scopes(
                 });
             }
             Err(e) => {
-                has_warnings = true;
+                let integrity_failure = matches!(&e, Error::Integrity(_));
+                if integrity_failure {
+                    has_errors = true;
+                } else {
+                    has_warnings = true;
+                }
                 // R027: a remote-advanced checkpoint is an actionable
                 // diagnostic, so the details carry the stable state marker
                 // and the remedy alongside the message text. Match on the
@@ -321,7 +326,14 @@ pub fn run_diagnostics_with_scopes(
                     Error::Workspace(message)
                         if message.starts_with(crate::service::reconcile::REMOTE_ADVANCED_MARKER)
                 );
-                let details = if is_remote_advanced {
+                let details = if integrity_failure {
+                    serde_json::json!({
+                        "state": "covered-ahead-integrity-failure",
+                        "reason_code": "checkpoint_integrity_failure",
+                        "error": e.to_string(),
+                        "remedy": "Pause workspace writers and preserve both histories for explicit verified recovery; do not overwrite the checkpoint"
+                    })
+                } else if is_remote_advanced {
                     serde_json::json!({
                         "state": crate::service::reconcile::REMOTE_ADVANCED_MARKER,
                         "remedy": crate::service::reconcile::REMOTE_ADVANCED_REMEDY,
@@ -334,8 +346,20 @@ pub fn run_diagnostics_with_scopes(
                 };
                 checks.push(DiagnosticCheck {
                     name: "checkpoint_freshness".to_string(),
-                    status: DiagnosticStatus::Warning,
-                    message: format!("Checkpoint freshness warning: {}", e),
+                    status: if integrity_failure {
+                        DiagnosticStatus::Error
+                    } else {
+                        DiagnosticStatus::Warning
+                    },
+                    message: format!(
+                        "Checkpoint freshness {}: {}",
+                        if integrity_failure {
+                            "error"
+                        } else {
+                            "warning"
+                        },
+                        e
+                    ),
                     scope: Some("backup".to_string()),
                     details: Some(details),
                 });

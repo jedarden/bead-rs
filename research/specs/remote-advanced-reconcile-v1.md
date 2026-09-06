@@ -105,10 +105,10 @@ covered-ahead state fail-closed:
 Qualifier 4 is the entire corruption boundary. A live event missing from the
 checkpoint, or sharing an identity with different content, is same-store
 divergence: two histories for one store UUID with no common extension. It
-MUST NOT be merged, published over, or diagnosed as benign. (Re-origining a
-diverged clone is R028 `sync fork`, out of scope here; until it exists the
-only remedies are manual forensics and verified restore from a retained
-generation.)
+MUST NOT be merged, published over, or diagnosed as benign. R028 `sync fork`
+requires a clean checkpoint and preserves existing event identities; it
+cannot repair contradictory histories. Recovery requires manual forensics
+and a verified retained generation with reviewed semantic replay.
 
 The recorded generation ID differing from the pointer's generation ID is
 **expected** in the remote-advanced state and is not a fault: the database
@@ -191,12 +191,36 @@ automation destroys the evidence an operator or verified restore needs.
 Exporting an issue-only copy with `--output` is unaffected; it writes
 outside the checkpoint set and publishes nothing.
 
-Mutating before reconciling is operator error and stays undetected by
-design: a local mutation committed while remote-advanced advances the live
-sequence under a pointer that already claims that sequence, and the next
-classification then reports `covered-ahead-integrity-failure` (or `aligned`
-with a disagreeing pointer) rather than silently succeeding. The workflow is
-pull, reconcile, then work.
+Ordinary CLI mutations MUST check checkpoint history before committing.
+Remote-advanced refuses with exit 4 and the reconcile remedy; incompatible
+history refuses with exit 5. Neither suppression of automatic publication
+nor a dry-run authorizes a write past this guard. Read-only inspection and
+explicit verified restore/import/reconcile remain available under their own
+validation contracts. Doctor repair and watchdog writes are ordinary writes.
+
+Sequence comparison alone is insufficient. When the checkpoint is not ahead,
+every checkpoint event must occur identically in the live stream. Equal or
+lower sequence numbers with a conflicting event fail closed too, using the
+existing `covered-ahead-integrity-failure` marker for compatibility. For a
+locally recorded generation, its recorded generation, sequence and root hash
+authenticate the previously published prefix; a newly delivered
+generation requires full staging and event comparison. Incomplete local
+publication housekeeping remains repairable by explicit flush, but a new
+or conflicting generation is never overwritten as housekeeping.
+
+CLI writers serialize validation and mutation through a workspace operation
+lock, releasing it before post-commit publication takes its independent
+publication lock. Publication checks the history again under that lock; a
+change after commit is reported as a post-commit publication failure.
+Read-only commands do not acquire the operation lock. Checkpoint transport must obey
+the same exclusion boundary; an external process replacing files without
+participating in it cannot be made atomic by an advisory lock. Guard checks
+and post-commit publication use the same history relation. A checkpoint's
+higher sequence alone never means a mutation has been published.
+
+These locks and claims coordinate one workspace on one host. Independent
+replicas require one active queue authority; neither Git transport nor
+forked identities provides a distributed claim lock.
 
 ## Reporting
 
@@ -239,10 +263,13 @@ pull, reconcile, then work.
    distinct actionable diagnostic with the reconcile remedy, and
    `covered-ahead-integrity-failure` as an integrity failure naming the
    qualifier; the two outputs differ.
-8. **Divergence stays fail-closed.** A local mutation committed while
-   remote-advanced yields a live event the pulled checkpoint lacks (or a
-   content conflict at a shared identity); reconcile and flush-only both
-   refuse, and doctor reports the integrity failure.
+8. **Divergence stays fail-closed.** Independently advance two copies before
+   transporting their checkpoints. A conflicting shared identity causes
+   ordinary writes, reconcile and flush-only to refuse without mutation;
+   doctor reports an error and exits 5. Verified remote advancement also
+   refuses ordinary writes until reconciliation, including with auto-flush
+   suppressed. Equal or lower checkpoint sequence numbers cannot hide a
+   conflicting history.
 
 ## Relationship to existing commands
 

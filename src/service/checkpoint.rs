@@ -4283,6 +4283,11 @@ pub fn fork_workspace_identity(
         ],
     )?;
 
+    // Freeze existing derived identities while the parent UUID is still the
+    // derivation basis. Otherwise NULL-origin native events would be exported
+    // under the new UUID, rewriting the already-published audit prefix.
+    canonicalize_local_event_identities(&tx)?;
+
     // Update workspace UUID
     tx.execute(
         "UPDATE workspace SET uuid = ?1 WHERE id = 1",

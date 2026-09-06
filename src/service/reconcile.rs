@@ -97,9 +97,9 @@ impl RelationshipVerdict {
 /// Classify the sync relationship between the live store and the durable
 /// checkpoint under `checkpoint_base` (the `.beads` directory).
 ///
-/// Only the `covered > live` branch pays for staging and full event
-/// enumeration; `behind`, `aligned`, and `absent` resolve from the pointer
-/// and one aggregate alone.
+/// A recorded local generation authenticates the existing prefix. A newly
+/// delivered generation requires content comparison even when its sequence
+/// is equal to or below the live sequence.
 pub fn classify(conn: &Connection, checkpoint_base: &Path) -> Result<RelationshipVerdict> {
     let pointer_path = checkpoint_base.join("checkpoint").join("current.json");
     if !pointer_path.exists() {
@@ -129,29 +129,70 @@ pub fn classify(conn: &Connection, checkpoint_base: &Path) -> Result<Relationshi
         })
         .unwrap_or(0);
 
-    if covered < live {
-        return Ok(RelationshipVerdict::of(SyncRelationship::Behind));
-    }
-    if covered == live {
-        return Ok(RelationshipVerdict::of(SyncRelationship::Aligned));
+    let relationship = match covered.cmp(&live) {
+        std::cmp::Ordering::Less => SyncRelationship::Behind,
+        std::cmp::Ordering::Equal => SyncRelationship::Aligned,
+        std::cmp::Ordering::Greater => SyncRelationship::RemoteAdvanced,
+    };
+    if covered <= live && is_recorded_generation(conn, &pointer) {
+        return Ok(RelationshipVerdict::of(relationship));
     }
 
-    // covered > live: every qualifier must hold for remote-advanced.
-    Ok(classify_covered_ahead(
+    Ok(classify_checkpoint_history(
         conn,
         checkpoint_base,
         &pointer,
         live,
+        relationship,
     ))
+}
+
+/// Local housekeeping may be republished from SQLite only when this exact
+/// generation, sequence and root hash were recorded by its own publisher.
+fn is_recorded_generation(conn: &Connection, pointer: &serde_json::Value) -> bool {
+    let recorded: rusqlite::Result<(Option<String>, Option<String>, i64)> = conn.query_row(
+        "SELECT current_generation_id, current_root_sha256, covered_event_sequence
+         FROM checkpoint_state WHERE id = 1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    );
+    recorded.is_ok_and(|(generation, hash, covered)| {
+        generation.is_some()
+            && hash.is_some()
+            && generation.as_deref() == pointer["generation_id"].as_str()
+            && hash.as_deref() == pointer["active_root"]["sha256"].as_str()
+            && Some(covered) == pointer["snapshot_sequence"].as_i64()
+    })
+}
+
+/// Refuse ordinary writes before any transaction commits. Callers hold the
+/// workspace operation lock through validation and mutation.
+pub fn require_writable(conn: &Connection, checkpoint_base: &Path) -> Result<()> {
+    let verdict = classify(conn, checkpoint_base)?;
+    match verdict.relationship {
+        SyncRelationship::Absent | SyncRelationship::Behind | SyncRelationship::Aligned => Ok(()),
+        SyncRelationship::RemoteAdvanced => Err(Error::conflict(format!(
+            "checkpoint_remote_advanced: {}",
+            REMOTE_ADVANCED_REMEDY
+        ))),
+        SyncRelationship::CoveredAheadIntegrityFailure => Err(Error::integrity(format!(
+            "checkpoint_integrity_failure: covered-ahead integrity failure - {}",
+            verdict
+                .failed_qualifier
+                .as_deref()
+                .unwrap_or("incompatible checkpoint history")
+        ))),
+    }
 }
 
 /// Evaluate the five remote-advanced qualifiers in specification order,
 /// returning the first failure as `covered-ahead-integrity-failure`.
-fn classify_covered_ahead(
+fn classify_checkpoint_history(
     conn: &Connection,
     checkpoint_base: &Path,
     pointer: &serde_json::Value,
     live: i64,
+    relationship: SyncRelationship,
 ) -> RelationshipVerdict {
     // Qualifier 1: verified pointer.
     if let Some(failure) = verify_pointer_shape(pointer) {
@@ -226,7 +267,7 @@ fn classify_covered_ahead(
     let workspace_uuid: String = conn
         .query_row("SELECT uuid FROM workspace", [], |row| row.get(0))
         .unwrap_or_default();
-    if staging.store_uuid != workspace_uuid {
+    if relationship == SyncRelationship::RemoteAdvanced && staging.store_uuid != workspace_uuid {
         return RelationshipVerdict::failing(format!(
             "same origin: checkpoint store UUID {} does not match the workspace UUID {} \
              (a foreign checkpoint is `sync import-only --merge` input, never a reconcile)",
@@ -235,7 +276,12 @@ fn classify_covered_ahead(
     }
 
     // Qualifier 4: event-stream superset under derived wire identities.
-    if let Some(failure) = verify_superset(conn, &staging) {
+    let failure = if relationship == SyncRelationship::RemoteAdvanced {
+        verify_superset(conn, &staging)
+    } else {
+        verify_checkpoint_prefix(conn, &staging)
+    };
+    if let Some(failure) = failure {
         return RelationshipVerdict::failing(failure);
     }
 
@@ -257,7 +303,40 @@ fn classify_covered_ahead(
         }
     }
 
-    RelationshipVerdict::of(SyncRelationship::RemoteAdvanced)
+    RelationshipVerdict::of(relationship)
+}
+
+fn verify_checkpoint_prefix(conn: &Connection, staging: &ForensicStaging) -> Option<String> {
+    let live = match checkpoint::read_all_events(conn) {
+        Ok(events) => events,
+        Err(error) => return Some(format!("event-stream prefix: {error}")),
+    };
+    let identities: HashMap<_, _> = live
+        .iter()
+        .map(|event| {
+            (
+                (
+                    event.origin_store_uuid.as_str(),
+                    event.origin_event_sequence,
+                ),
+                event,
+            )
+        })
+        .collect();
+    for event in &staging.events {
+        let identity = (
+            event.origin_store_uuid.as_str(),
+            event.origin_event_sequence,
+        );
+        match identities.get(&identity) {
+            Some(live) if public_content_matches(live, event) => {},
+            _ => return Some(format!(
+                "event-stream prefix: checkpoint event identity ({}, {}) is absent or has different content in the live store",
+                identity.0, identity.1
+            )),
+        }
+    }
+    None
 }
 
 /// Pointer-shape half of qualifier 1: parses, declares a supported mode, a
@@ -366,6 +445,8 @@ pub fn reconcile_checkpoint(
     actor: &str,
     dry_run: bool,
 ) -> Result<crate::service::checkpoint::FullImportResult> {
+    let _publication =
+        checkpoint::acquire_checkpoint_publication_lock(&checkpoint_base.join("checkpoint"))?;
     let verdict = {
         let conn = store.conn();
         classify(conn, checkpoint_base)?
