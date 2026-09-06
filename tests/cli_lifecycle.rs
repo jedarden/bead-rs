@@ -30,6 +30,21 @@ fn create_issue(workspace: &std::path::Path, title: &str) -> String {
     issue_id.trim().to_string()
 }
 
+/// The claim-epoch credential the issue's current claim was issued, read back
+/// from the `show --json` projection. Assigning an issue mints an epoch, and
+/// every claimant-owned mutation on it must present that epoch (see
+/// tests/claim_epoch.rs).
+fn held_credential(workspace: &std::path::Path, issue_id: &str) -> String {
+    let output = Command::cargo_bin("bead")
+        .unwrap()
+        .args(["show", issue_id, "--json"])
+        .current_dir(workspace)
+        .assert()
+        .success();
+    let shown: serde_json::Value = serde_json::from_slice(&output.get_output().stdout).unwrap();
+    shown[0]["claim_epoch"].as_i64().unwrap().to_string()
+}
+
 #[test]
 fn test_update_status() {
     let workspace = setup_workspace();
@@ -130,9 +145,16 @@ fn test_update_clear_assignee_on_open() {
         .success();
 
     // Clear assignee (should succeed for open issue)
+    let credential = held_credential(workspace.path(), &issue_id);
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["update", &issue_id, "--clear-assignee"])
+        .args([
+            "update",
+            &issue_id,
+            "--clear-assignee",
+            "--fencing-token",
+            &credential,
+        ])
         .current_dir(workspace.path())
         .assert()
         .success();
@@ -181,10 +203,19 @@ fn test_update_clear_assignee_conflicts_on_in_progress() {
         .assert()
         .success();
 
-    // Try to clear assignee on in_progress issue (should conflict)
+    // Try to clear assignee on in_progress issue (should conflict). The
+    // credential is presented so the refusal is the status rule, not the
+    // credential gate.
+    let credential = held_credential(workspace.path(), &issue_id);
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["update", &issue_id, "--clear-assignee"])
+        .args([
+            "update",
+            &issue_id,
+            "--clear-assignee",
+            "--fencing-token",
+            &credential,
+        ])
         .current_dir(workspace.path())
         .assert()
         .failure()
@@ -256,9 +287,10 @@ fn test_release_in_progress() {
         .success();
 
     // Release the issue
+    let credential = held_credential(workspace.path(), &issue_id);
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["release", &issue_id])
+        .args(["release", &issue_id, "--fencing-token", &credential])
         .current_dir(workspace.path())
         .assert()
         .success()
@@ -302,10 +334,12 @@ fn test_release_open_assigned_conflicts() {
         .assert()
         .success();
 
-    // Try to release open assigned issue (should conflict)
+    // Try to release open assigned issue (should conflict). The credential is
+    // presented so the refusal is the status rule, not the credential gate.
+    let credential = held_credential(workspace.path(), &issue_id);
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["release", &issue_id])
+        .args(["release", &issue_id, "--fencing-token", &credential])
         .current_dir(workspace.path())
         .assert()
         .failure()
@@ -380,9 +414,17 @@ fn test_close_in_progress_issue() {
         .success();
 
     // Close the issue
+    let credential = held_credential(workspace.path(), &issue_id);
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["close", &issue_id, "--reason", "Cancelled"])
+        .args([
+            "close",
+            &issue_id,
+            "--reason",
+            "Cancelled",
+            "--fencing-token",
+            &credential,
+        ])
         .current_dir(workspace.path())
         .assert()
         .success();
@@ -527,17 +569,26 @@ fn test_reopen_clears_assignee() {
         .assert()
         .success();
 
+    let credential = held_credential(workspace.path(), &issue_id);
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["close", &issue_id, "--reason", "Completed"])
+        .args([
+            "close",
+            &issue_id,
+            "--reason",
+            "Completed",
+            "--fencing-token",
+            &credential,
+        ])
         .current_dir(workspace.path())
         .assert()
         .success();
 
-    // Reopen the issue
+    // Reopen the issue. Closing kept the claim, so this is still a
+    // claimant-owned mutation carrying the same credential.
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["reopen", &issue_id])
+        .args(["reopen", &issue_id, "--fencing-token", &credential])
         .current_dir(workspace.path())
         .assert()
         .success();
@@ -586,10 +637,12 @@ fn test_reopen_in_progress_conflicts() {
         .assert()
         .success();
 
-    // Try to reopen in_progress issue (should conflict)
+    // Try to reopen in_progress issue (should conflict). The credential is
+    // presented so the refusal is the status rule, not the credential gate.
+    let credential = held_credential(workspace.path(), &issue_id);
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["reopen", &issue_id])
+        .args(["reopen", &issue_id, "--fencing-token", &credential])
         .current_dir(workspace.path())
         .assert()
         .failure()
@@ -723,9 +776,10 @@ fn test_complete_lifecycle_workflow() {
         .success();
 
     // Release
+    let credential = held_credential(workspace.path(), &issue_id);
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["release", &issue_id])
+        .args(["release", &issue_id, "--fencing-token", &credential])
         .current_dir(workspace.path())
         .assert()
         .success();
@@ -745,10 +799,19 @@ fn test_complete_lifecycle_workflow() {
         .assert()
         .success();
 
-    // Close
+    // Close. The second claim minted its own epoch, so read the credential
+    // again rather than reusing the first one.
+    let credential = held_credential(workspace.path(), &issue_id);
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["close", &issue_id, "--reason", "Completed"])
+        .args([
+            "close",
+            &issue_id,
+            "--reason",
+            "Completed",
+            "--fencing-token",
+            &credential,
+        ])
         .current_dir(workspace.path())
         .assert()
         .success();
@@ -756,7 +819,7 @@ fn test_complete_lifecycle_workflow() {
     // Reopen
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["reopen", &issue_id])
+        .args(["reopen", &issue_id, "--fencing-token", &credential])
         .current_dir(workspace.path())
         .assert()
         .success();
@@ -884,9 +947,17 @@ fn test_reopen_makes_bead_visible_in_ready_frontier() {
         .assert()
         .success();
 
+    let credential = held_credential(workspace.path(), &issue_id);
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["close", &issue_id, "--reason", "Completed"])
+        .args([
+            "close",
+            &issue_id,
+            "--reason",
+            "Completed",
+            "--fencing-token",
+            &credential,
+        ])
         .current_dir(workspace.path())
         .assert()
         .success();
@@ -900,10 +971,11 @@ fn test_reopen_makes_bead_visible_in_ready_frontier() {
         .success()
         .stdout(predicate::str::contains(issue_id.clone()).not());
 
-    // Reopen the issue
+    // Reopen the issue. Closing kept the claim, so the credential still
+    // admits it.
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["reopen", &issue_id])
+        .args(["reopen", &issue_id, "--fencing-token", &credential])
         .current_dir(workspace.path())
         .assert()
         .success();

@@ -14,3 +14,12 @@ __pycache__/
 
 # NEEDLE execution traces are local diagnostics.
 **/.beads/traces/
+
+# Bead runtime churn: live JSONL logs, claim diagnostics, and dispatch
+# bookkeeping re-dirty the tree on every mutation/dispatch. bead-rs's own
+# init template (src/store/sqlite.rs) ignores exactly these; the durable
+# record is .beads/checkpoint/, which stays tracked.
+.beads/events.jsonl
+.beads/heartbeats.jsonl
+.beads/diagnostics/
+.needle-predispatch-sha

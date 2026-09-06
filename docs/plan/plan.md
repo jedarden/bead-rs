@@ -1,14 +1,22 @@
 # bead-rs Current Product and Software Factory Plan
 
-Plan revision: 10
+Plan revision: 14
 
-As of: 2026-09-01
+As of: 2026-09-05
 
 Status owner: bead-rs maintainers
 
-Status: 0.2.4 is the latest tagged release; current-state governance
-reconciliation and software-factory transition are accepted, implementation
-pending where marked
+Status: 0.2.4 is the latest tagged release; the checkout declares 0.2.6.
+Attempt resolution, secret rejection, and historical-redaction recovery are
+implemented on `main`, including the ruleset-v3 Garage credential-identifier
+extension. Exact-source release conformance remains open on the explicit gate
+defects recorded in sections 1.2, 6, and 7. Revision 14 makes the durable
+claim-epoch transition and its NEEDLE consumer canary explicit as BR-T23
+through BR-T27 rather than leaving that release-blocking work implicit in
+other beads. BR-T28 captures the dispatch race discovered while materializing
+that graph and makes the existing transactional manifest path the required
+planner workflow: dependent work must not become claimable before its
+dependency and resource declarations commit.
 
 ## 0. How to read this plan
 
@@ -35,6 +43,10 @@ This revision accepts:
 - [ADR-010: Store attempt facts, not learning or orchestration policy](../adr/010-store-attempt-facts-not-learning-policy.md)
 - [ADR-011: Resolve an attempt and its lifecycle transition atomically](../adr/011-atomic-idempotent-attempt-resolution.md)
 - [ADR-012: Roll out attempt resolution through versioned capabilities](../adr/012-capability-gated-attempt-contract-rollout.md)
+- [ADR-014: Hard-reject mutations that would publish a detectable secret](../adr/014-hard-reject-secret-bearing-mutations.md)
+- [ADR-015: Audited historical redaction over hand-edited recovery artifacts](../adr/015-audited-historical-redaction.md)
+- [ADR-016: Keep workspace probes observational](../adr/016-observational-workspace-probes.md)
+- [R038 specification acceptance for the exact submitted hashes](../reviews/r038-specification-acceptance-2026-09-03.md)
 
 ## 1. Product boundary and current reality
 
@@ -44,10 +56,12 @@ successful semantic mutations publish the Git-trackable checkpoint by default.
 The installed binary is `bead`, and `native-v1` plus `needle-v1` expose public
 process contracts.
 
-The latest tagged package is 0.2.4, edition 2024, MSRV 1.85. The repository has
-continued to receive diagnostic and starvation-recovery work after that tag;
-those checkout artifacts are not release evidence until their specifications,
-capabilities, tests, tag, and release report agree.
+The latest tagged package is 0.2.4, edition 2024, MSRV 1.85. The current
+checkout declares package version 0.2.6 and the installed fleet binary reports
+0.2.6, but no matching tag is present in this checkout. The repository has
+continued to receive diagnostic, attempt-resolution, and starvation-recovery
+work after the tag; those checkout artifacts are not release evidence until
+their specifications, capabilities, tests, tag, and release report agree.
 
 ### 1.1 Shipped capability baseline
 
@@ -58,15 +72,17 @@ capabilities, tests, tag, and release report agree.
 | Scheduling | FIFO plus aging, impact, rotation, balanced, attempt tiers, retry/quarantine state, and readiness explanations |
 | Structured extension | Public schema catalog, schema-bound bead data, namespaced references, unique-reference creation, safe queries, change feed, recurrence, and atomic bulk manifests |
 | Recovery | Read-only-by-default doctor, explicit verified restore, monolithic/sharded checkpoints, generation pointers, archaeology/reconcile support, and checkpoint auto-flush |
+| Sensitive-content safety | Current `main` rejects high-confidence findings before mutation, reports advisory findings without values, and provides fingerprint-selected audited historical redaction with anti-resurrection state; 0.2.4 predates these capabilities and BR-T18 release conformance remains open |
 | Consumer contract | Machine-readable capabilities and the `needle-v1` profile |
 | Explanation | `why`, policy validation, compare, scoped diagnostics, and readiness/exclusion reporting |
 
-The current implementation already contains the primitives NEEDLE needs for
-safe task state: atomic claim, revision, lease/fencing, close/release/reopen,
-failure-aware scheduling, audit events, and durable checkpoint publication.
-It does not expose a first-class portable attempt receipt or one atomic
-operation that records an attempt outcome, updates failure state, and performs
-the lifecycle transition.
+The current implementation contains the primitives NEEDLE needs for safe task
+state: atomic claim, revision, lease/fencing, close/release/reopen,
+failure-aware scheduling, audit events, durable checkpoint publication, and a
+first-class portable attempt receipt. `bead resolve` atomically records an
+attempt outcome, updates failure state, and performs the requested lifecycle
+transition. That path is implemented but is not release-backed until BR-T10
+and BR-T11 complete against one exact source commit and pinned binary.
 
 ### 1.2 Governance and artifact mismatches
 
@@ -80,9 +96,10 @@ the lifecycle transition.
 - Several specifications that the historical status calls missing now exist,
   including checkpoint-set, native field-guide, resource-lock, bulk-manifest,
   and verified-restore contracts.
-- The current checkout and root help include post-release diagnostic and
-  watchdog/recovery commands that the capabilities command inventory does not
-  fully enumerate.
+- The current checkout exposes `resolve`, `watchdog`, and `analyze-exclusion`,
+  but the exhaustive command/event contract does not classify them. Resolve
+  and watchdog have semantic mutation paths; `analyze-exclusion --attach`
+  writes a checkpoint-carried comment without a same-transaction audit event.
 - Some post-release starvation recovery uses OS-process or fallback heuristics
   and separate log artifacts. Those paths require normative review against
   leases, fencing, atomic mutation, audit, and the boundary in ADR-010; their
@@ -90,6 +107,21 @@ the lifecycle transition.
 - Claim service layers accept some harness/model metadata internally, but the
   public CLI does not yet supply a durable attempt identity across claim and
   outcome.
+- The installed 0.2.6 development binary now advertises secret ruleset v3 and
+  historical redaction, but no tagged release carries that contract. The
+  motivating NEEDLE records have been redacted and their exposed credential
+  rotated; immutable Git history still requires rotation as containment.
+- Many integration suites create workspaces below the host temporary root and
+  assume no unrelated ancestor `.beads` exists. They pass under a neutral
+  temporary root but fail under the shared `/home/coding` layout. A shared
+  fixture must opt into `--skip-foreign-workspace` only for deliberate test
+  initialization; production discovery remains fail-closed.
+- `bead init` auto-migrates through `SqliteStore::with_path` before capturing
+  its prior schema version, so its pending-migration report is unreachable.
+  Exact-source `schema_upgrade_on_init` exposes the mismatch.
+- Workspace probing was itself mutating because it used the auto-migrating
+  connection path. ADR-016 and commit `36432b2` make probing observational;
+  exact-source store discovery and all nine R036 tests pass.
 
 ## 2. Current design principles
 
@@ -111,14 +143,22 @@ the lifecycle transition.
    failure never invents or repeats the semantic mutation.
 7. **Clean-room provenance is a release property.** New behavior begins with
    an independently reviewable normative contract and fixtures.
-8. **Historical evidence is immutable.** New requirements receive new release
-   evidence rather than expanding an old completion sentinel retroactively.
+8. **Historical evidence is immutable except for verified erasure.** New
+   requirements receive new release evidence rather than expanding an old
+   completion sentinel retroactively. Detectable sensitive bytes may be
+   destroyed only through the typed redaction operation in section 5.1; record
+   identity and a nonsecret redaction receipt remain immutable.
+9. **Secret removal is not ordinary editing.** No general event editor, issue
+   purge, database patch, checkpoint rewrite, or broad scanner exemption is
+   introduced as a side effect of redaction.
 
 ## 3. Software-factory extension boundary
 
-The combined factory requires exactly one new bead-rs concept: a portable,
-immutable attempt outcome that can be committed atomically with the issue's
-failure tier and lifecycle transition.
+The combined factory requires two new bead-rs concepts: a portable, immutable
+attempt outcome that can be committed atomically with the issue's failure tier
+and lifecycle transition, and an exceptional audited redaction operation that
+can remove sensitive bytes already accepted by an older store without becoming
+a general history editor.
 
 ### 3.1 What bead-rs stores
 
@@ -144,6 +184,23 @@ NEEDLE supplies the semantic classification after applying its verifier and
 policy. bead-rs validates the request's schema and concurrency conditions and
 commits the factual result. Evidence references are opaque identifiers;
 bead-rs does not fetch or judge them.
+
+### 3.3 Historical-redaction boundary
+
+Secret prevention and historical repair are different contracts. ADR-014
+rejects newly supplied detectable secrets before a semantic transaction.
+Historical redaction handles bytes already present in SQLite, issue snapshots,
+audit events, comments, structured data, receipts, or retained checkpoint
+generations. The operation is native maintenance/recovery behavior; NEEDLE may
+request or monitor it but cannot implement it by editing bead-rs artifacts.
+
+Redaction preserves semantic identity and removes content. It retains issue and
+event IDs, ordering, lifecycle state, dependencies, revisions, and attempt
+facts; replaces only the exact fingerprinted field or byte range with a fixed
+nonsecret marker; and appends a receipt containing actor, reason, rule,
+selector, prior-content fingerprint, and resulting checkpoint identity. It
+never stores the removed value in the receipt, diagnostic, command line, or
+temporary report.
 
 ## 4. Portable attempt-outcome contract
 
@@ -218,27 +275,104 @@ The transition must preserve:
 If additive changes cannot satisfy those guarantees, publish a new contract
 profile rather than silently changing `native-v1` or `needle-v1`.
 
+### 5.1 Exceptional historical redaction
+
+The normative `historical-redaction-v1` and `secret-rejection-v1` contracts were
+accepted at their exact submitted hashes in the R038 review record. They define
+a two-step, output-redacted flow:
+
+1. `bead doctor --scope secrets --format json` scans every operator-supplied
+   text field plus the current and retained recovery generations and returns
+   only rule IDs, stable finding fingerprints, record selectors, field paths,
+   ranges, and severity. It never returns matched bytes.
+2. `bead redact --finding FINGERPRINT --actor ACTOR --reason REASON` acquires
+   the workspace maintenance and checkpoint-publication locks, revalidates the
+   finding against current state, and performs one idempotent redaction epoch.
+   The finding fingerprint selects the bytes; the bytes themselves are never
+   accepted on argv or stdout. A fixed typed redaction marker replaces them.
+
+Redaction is deliberately destructive and therefore narrower than ordinary
+mutation:
+
+- only scanner-produced findings against supported text fields are eligible;
+- issue/event identities, origin sequence, status, graph, and unrelated bytes
+  cannot change;
+- SQLite changes and the nonsecret redaction receipt commit atomically;
+- publication creates a sanitized generation set without retaining a
+  secret-bearing `previous.json` root and tombstones every superseded dirty
+  object only after the sanitized pointer is durable;
+- interruption before the SQLite commit changes nothing; interruption after
+  it leaves a resumable committed-but-unpublished redaction epoch;
+- identical replay returns the original receipt; a stale or changed target
+  conflicts without mutation;
+- import, merge, reconcile, and restore give a known redaction receipt
+  precedence over older matching content so a stale checkpoint cannot
+  resurrect removed bytes; and
+- diagnostics, receipts, events, temporary files, tracing, and errors contain
+  fingerprints and selectors only, never matched content.
+
+False positives use a separate audited acknowledgment from ADR-014. An
+acknowledgment is scoped to one finding fingerprint and rule. There is no
+checkpoint-directory, field-class, or scanner-wide exemption. Recovery input
+that predates a redaction may be inspected and reported, but it cannot replace
+a sanitized live workspace without explicitly applying every known redaction
+receipt.
+
+`bead capabilities` advertises `secret_scan` and
+`historical_redaction = { contract, doctor_findings, atomic_redact,
+anti_resurrection, sanitized_generation_set }`. Capability absence means an
+operator must stop; hand-editing SQLite or checkpoint JSON is never a fallback.
+
 ## 6. Artifact-by-artifact transition ledger
 
 | ID | Artifact(s) | Change | Acceptance evidence | Status |
 | --- | --- | --- | --- | --- |
 | BR-T01 | `docs/plan/plan.md`, ADR README, Marathon status docs | Re-baseline 0.2.4 reality; distinguish frozen Marathon evidence from later releases | Internal link/status audit; no retroactive ledger edits | current for plan/ADRs; status-doc reconciliation pending |
-| BR-T02 | post-0.2.4 exclusion/starvation/watchdog code and help | Inventory behavior; retain read-only explanation; remove, disable, or normatively redesign heuristic mutation outside lease/fencing rules | Spec trace, atomic/audit tests, capability inventory parity | transition |
-| BR-T03 | `research/specs/attempt-outcome-v1.md` plus independent fixtures/review | Define portable receipt, canonical hashing, outcomes/actions, conflicts, events, and checkpoint form | Recorded independent approval and fixture hashes | transition |
-| BR-T04 | model and public schema catalog | Add versioned attempt outcome request/receipt types and bounded metadata | schema validation and compatibility fixtures | blocked by BR-T03 |
-| BR-T05 | SQLite migration and checkpoint import/export | Add immutable attempt identity/receipt storage and lossless checkpoint representation | migration, round-trip, unknown-field, restore, and corruption tests | blocked by BR-T03–BR-T04 |
-| BR-T06 | service transaction | Atomically dedupe receipt, update attempt tier, apply lifecycle, audit, and return state | concurrent replay, hash conflict, stale revision/fencing, crash-boundary tests | blocked by BR-T04–BR-T05 |
-| BR-T07 | `bead resolve` CLI and optional claim correlation | Expose machine-readable request/receipt without leaking orchestrator policy | recursive help, JSON contract, exit-code, and installed-binary tests | blocked by BR-T06 |
-| BR-T08 | capabilities and `needle-v1` contract | Advertise exact atomic-attempt semantics and schema references; reconcile complete command inventory | capability snapshots and old/new profile fixtures | blocked by BR-T03, BR-T07 |
-| BR-T09 | audit/change feed/why/doctor | Surface receipt and resulting state; diagnose inconsistent legacy sequences without inventing facts | explanation and non-destructive diagnostic tests | blocked by BR-T05–BR-T07 |
-| BR-T10 | release evidence and governance status | Produce current feature/capability matrix tied to tag, commit, spec and test hashes | noninteractive verifier passes; status documents agree | transition |
-| BR-T11 | NEEDLE consumer conformance | Test atomic path, unknown-result replay, and older-backend fallback | pinned NEEDLE + old/new bead-rs integration matrix | blocked by BR-T07–BR-T10 |
+| BR-T02 | post-0.2.4 exclusion/starvation/watchdog code and help | Inventory behavior; retain read-only explanation; remove, disable, or normatively redesign heuristic mutation outside lease/fencing rules | Spec trace, atomic/audit tests, capability inventory parity | implemented; exhaustive event-contract gate remains in BR-T20 |
+| BR-T03 | `research/specs/attempt-outcome-v1.md` plus independent fixtures/review | Define portable receipt, canonical hashing, outcomes/actions, conflicts, events, and checkpoint form | Recorded independent approval and fixture hashes | accepted/current |
+| BR-T04 | model and public schema catalog | Add versioned attempt outcome request/receipt types and bounded metadata | schema validation and compatibility fixtures | implemented/current |
+| BR-T05 | SQLite migration and checkpoint import/export | Add immutable attempt identity/receipt storage and lossless checkpoint representation | migration, round-trip, unknown-field, restore, and corruption tests | implemented/current |
+| BR-T06 | service transaction | Atomically dedupe receipt, update attempt tier, apply lifecycle, audit, and return state | concurrent replay, hash conflict, stale revision/fencing, crash-boundary tests | implemented/current |
+| BR-T07 | `bead resolve` CLI and optional claim correlation | Expose machine-readable request/receipt without leaking orchestrator policy | recursive help, JSON contract, exit-code, and installed-binary tests | implemented/current |
+| BR-T08 | capabilities and `needle-v1` contract | Advertise exact atomic-attempt semantics and schema references; reconcile complete command inventory | capability snapshots and old/new profile fixtures | implemented; exact release matrix remains open |
+| BR-T09 | audit/change feed/why/doctor | Surface receipt and resulting state; diagnose inconsistent legacy sequences without inventing facts | explanation and non-destructive diagnostic tests | implemented/current |
+| BR-T10 | release evidence and governance status | Produce current feature/capability matrix tied to tag, commit, spec and test hashes | noninteractive verifier passes; status documents agree | in progress (`beadrs-15fcfce1`) |
+| BR-T11 | NEEDLE consumer conformance | Test atomic path, unknown-result replay, and older-backend fallback | pinned NEEDLE + old/new bead-rs integration matrix | blocked by BR-T10 (`beadrs-eb52656d`) |
 
 | BR-T12 | mutating CLI commands (`close`, `release`, `reopen`, `update`, `claim`, `dep`, `label`, `comments`) and `service::issues` | Accept `--actor` and the `BEAD_ACTOR` environment variable on every mutating command and record it in the audit event instead of the `system` default; additive and profile-neutral | forensic fixtures show the caller actor on `closed`, `released` and `reopened`; old clients unaffected; `needle-v1` capability snapshot updated | transition (independent of BR-T03 to BR-T08) |
+| BR-T13 | ADR-014, ADR-015, `research/specs/secret-rejection-v1.md`, `research/specs/historical-redaction-v1.md`, independent review and fixtures | Freeze secret detection, fingerprints, selectors, fixed marker, acknowledgment, redaction receipt, failure, and anti-resurrection semantics before code | [Accepted exact-hash review](../reviews/r038-specification-acceptance-2026-09-03.md); no live-format committed samples | accepted/current |
+| BR-T14 | `src/scan/`, configuration, doctor, dry-run, mutation service boundaries | Add the offline versioned blocking/advisory scanner and reject detectable secrets before every operator-text mutation | command inventory coverage, provider/placeholder fixtures, redacted diagnostics, scan-cost benchmark | implemented/current; ruleset v3 adds context-bound Garage key-ID assignments |
+| BR-T15 | model, public schemas, SQLite migration, checkpoint grammar | Add finding, acknowledgment, redaction receipt/epoch, field selector, and durable anti-resurrection tombstone records | migration, schema, unknown-field, checkpoint round-trip, old-reader, and restore tests | implemented/current |
+| BR-T16 | transactional redaction service | Revalidate one fingerprint, replace only selected bytes with the fixed marker, preserve semantic identities, and commit one idempotent receipt | stale target, exact replay, concurrent mutation, crash boundary, unchanged-field, and no-value-output tests | implemented/current |
+| BR-T17 | `bead redact`, checkpoint publication, import/merge/reconcile/restore | Expose the maintenance command; publish a sanitized generation set; tombstone dirty roots; prevent known removed content from reappearing | current/previous/forensic scan, publication interruption/resume, anti-resurrection, and recursive-help tests | implemented/current |
+| BR-T18 | conformance, recovery rehearsal, packaging, NEEDLE incident remediation, release evidence | Prove zero unacknowledged findings, semantic restore equivalence, safe install, and cleanup of the motivating records without disclosure | exact-release gitleaks report, restored counts/graph/events, Forgejo push acceptance, NEEDLE cross-reference and credential-rotation receipt | in progress; release gates remain open |
+| BR-T19 | integration-test workspace fixtures | Centralize deliberate workspace initialization so tests remain hermetic beneath an unrelated ancestor store without weakening production discovery | affected suites pass with both the host default and a neutral temporary root | partial in `9f02c7a`; blocked on claim-epoch overlap (`beadrs-94fd9fc2`) |
+| BR-T20 | command/event contract, attempt outcomes, watchdog, exclusion comments | Classify every visible command and require each semantic path to advance audit state transactionally | real-effect contract probes cover resolve, watchdog release, and exclusion attachment; read-only modes remain unchanged | blocked on BR-T19 and claim-epoch overlap (`beadrs-d0cd90d1`) |
+| BR-T21 | workspace discovery and doctor | Make probing observational so diagnostics never initialize or migrate a store | missing database remains absent; store discovery and R036 suites pass | implemented in `36432b2` (`beadrs-e498fb31`) |
+| BR-T22 | init and migration API | Capture and report the schema transition owned by explicit init without disabling migrate-on-open for normal commands | pending/current migration tests pass and older rows survive | blocked on claim-epoch overlap (`beadrs-5c27b273`) |
+| BR-T23 | claim model, SQLite migration, claim response and checkpoint grammar | Mint a durable monotonically advancing credential for every leased or ordinary claim epoch and return its exact projection to the claimant | migration/restore round trip, no-duplicate issuance under contention, and old-checkpoint compatibility | transition; `beadrs-bd985270`, umbrella `beadrs-8c343a7c` |
+| BR-T24 | claimant-owned lifecycle mutations and operator override | Require the exact current claim-epoch credential for claimant mutation; make any operator override explicit, reason-bearing, and separately audited | stale, missing, mismatched, replayed and override transaction tests with no false audit event | blocked by BR-T23; `beadrs-9d740f26`, `beadrs-dc8df464` |
+| BR-T25 | lease expiry, recovery and stale-worker fencing | Add atomic compare-and-reap and guarantee that an older process cannot mutate after release, expiry, reassignment or recovery | deterministic two-worker and crash-boundary tests; valid current lease is never reaped | blocked by BR-T24; `beadrs-3be4bf40`, `beadrs-0d0cb036` |
+| BR-T26 | ADR-017, `needle-v1` specification, schemas, recursive help, capabilities and concurrency fixtures | Freeze and advertise the claim-epoch contract, then prove every command and profile obeys it without weakening older profile behavior | accepted ADR/spec review, capability snapshots, installed-binary help and twenty-claimant concurrency fixture | transition chain through `beadrs-eec200d1`, `beadrs-24a3a27b` |
+| BR-T27 | exact-source packaging and NEEDLE consumer conformance | Build one pinned artifact and run the old/new consumer matrix plus duplicate-worker replay before release | source/binary hashes, archive-build proof, restore rehearsal, NEEDLE canary and rollback receipt agree | blocked by BR-T23–BR-T26; `beadrs-41b9130e` |
+| BR-T28 | existing manifest transaction, planner guidance, dependency graph and resource declarations | Make manifest-based atomic materialization the required/default planner path; retain assigned-staging only for shapes the manifest cannot express | concurrent claimer observes zero wins before graph commit; create resource keys are present at first visibility; cycle, missing-ID and replay failures leave no partial issue or edge | transition; `beadrs-57c668be` |
 
 General mutation idempotency remains a separate potential feature. BR-T03–T08
 adopt idempotency only for the attempt-resolution boundary required by the
 combined factory.
+
+BR-T13–T18 are R038. They are security/recovery work, not learning policy and
+not a relaxation of the immutable-event model. The motivating NEEDLE incident
+is tracked as `needle-27ec0073`; cross-repository references provide
+traceability, while dependency truth remains inside each native workspace.
+
+**Binary builds never mutate the shared checkout (added 2026-09-02).** The pinned-binary
+work (BR-T10 evidence, beadrs-8eb168ca and children) built older commits by stashing, resetting
+and checking out inside the single shared NEEDLE checkout; 17 stash entries and several
+reset/checkout moves on 2026-09-01/02 erased another worker's uncommitted hour of work
+(beadrs-e167fde8). The sanctioned way is `scripts/build-from-archive.sh <sha>`: extract with
+`git archive` into a scratch directory, build there, copy the binary and metadata out, remove
+the directory on success. Bead: beadrs-5a0dc962.
 
 **Attribution (added 2026-09-01, revision 10).** `service::issues` already
 accepts an optional actor and defaults to `system` (`src/service/issues.rs`);
@@ -269,7 +403,30 @@ The attempt-outcome capability is releasable only when:
 9. complete fmt, Clippy, tests, packaging, installed-binary, restore, and
    NEEDLE conformance gates pass against the exact release commit;
 10. the release evidence report contains exact commit, binary, specification,
-    fixture, and report hashes.
+    fixture, and report hashes;
+11. the secret scanner covers every operator-text mutation and never prints a
+    matched value, with no blanket bypass or workspace-supplied blocking rule;
+12. redaction removes the selected bytes from SQLite, `current.json`,
+    `previous.json`, the forensic view, every referenced object, and any
+    operation-owned temporary while preserving unrelated semantic state;
+13. restore and merge of pre-redaction input cannot resurrect a finding known
+    to the destination, and a clean empty-target restore remains semantically
+    equivalent after applying redaction receipts; and
+14. a redacted exact-release artifact passes the same repository gitleaks
+    configuration and a guarded Forgejo push without an allowlist broader than
+    one independently classified false-positive fingerprint.
+
+Current exact-source gate snapshot (2026-09-04): the redaction unit,
+transaction, publication, recovery, installed-binary, package, and NEEDLE
+remediation checks recorded in
+[`brt18-ruleset3-remediation-2026-09-04.md`](../verification/brt18-ruleset3-remediation-2026-09-04.md)
+pass. A neutral-temporary-root integration sweep passes every suite after
+`schema_upgrade_on_init`; the two independent failures are the exhaustive
+command/event registry (BR-T20) and pending-migration reporting (BR-T22).
+Under the shared host temporary root, additional suites fail because they do
+not yet use the BR-T19 fixture. Complete fmt and Clippy remain required against
+one clean exact source commit; unrelated shared-checkout work is not release
+evidence.
 
 ## 8. Combined-factory success measures
 
@@ -283,7 +440,12 @@ bead-rs reports facts useful to, but does not optimize, the learning system:
 - checkpoint publication state and recovery;
 - atomic versus caller-reconciled resolution capability;
 - share of lifecycle events whose actor is a caller identity rather than
-  `system` (BR-T12).
+  `system` (BR-T12);
+- rejected blocking-tier findings by rule and field, never by matched value;
+- acknowledged false positives and completed redaction epochs by fingerprint;
+- time from historical finding to rotation, sanitized generation, and
+  accepted checkpoint publication; and
+- attempted resurrection conflicts from stale recovery input.
 
 NEEDLE owns verified-closure yield, lesson effectiveness, recurrence,
 experiments, cost, and policy rollback. bead-rs must not change scheduling or
@@ -2940,6 +3102,29 @@ becomes accepted and no semantics change; this generalizes the standard
 `update --clear-assignee`. Conformance scenarios must assert the remedy text so
 the affordance cannot regress to a parser default. Accepted in ADR-007.
 
+### R038 — Secret rejection and audited historical redaction
+
+Reject high-confidence provider-formatted credentials before any
+operator-supplied text mutation commits, report lower-confidence findings
+without values, and expose one exceptional fingerprint-selected redaction
+operation for sensitive bytes already stored by older versions. Redaction
+preserves semantic identity, emits a nonsecret receipt, publishes a sanitized
+generation set that retains no dirty previous root, and prevents a known
+finding from being resurrected by import, merge, reconcile, or restore.
+
+R038 is not a general edit/delete command and does not make audit events
+mutable for ordinary purposes. ADR-014 governs prevention; ADR-015 and the
+`historical-redaction-v1` specification govern destructive repair. BR-T13
+through BR-T18 are the current delivery ledger. The requirement was promoted
+from the deferred sensitive-content lint after a real NEEDLE checkpoint push
+was rejected on 2026-09-03. Both normative specifications were independently
+accepted at their exact submitted hashes on 2026-09-03. BR-T14 through BR-T17
+are now implemented on `main`. Ruleset v3 adds a narrowly context-bound Garage
+access-key-ID assignment detector after the motivating remediation proved that
+credential identifiers can persist after a secret value is removed. BR-T18
+remains open until the exact packaged artifact, full Rust gates, and NEEDLE
+remediation evidence all pass together.
+
 ## 13. Release gates
 
 ### Bootstrap and handoff gates
@@ -3086,13 +3271,14 @@ The following candidates remain intentionally deferred in
 - general mutation idempotency keys outside the attempt-resolution boundary
   adopted by current sections 3–7;
 - worker capability declarations;
-- sensitive-content linting for backup-bound fields;
 - portable execution-outcome envelopes moved into the current plan as the
   independently specified, atomic attempt-resolution contract;
 - a caller-owned stdio session protocol (and MCP hosting atop it).
 
 Atomic resource locks and atomic bulk transaction manifests left this list on
-2026-08-15 when they were adopted as R031 and R033.
+2026-08-15 when they were adopted as R031 and R033. Sensitive-content linting
+left it on 2026-09-03 when prevention plus historical repair were adopted as
+R038.
 
 Workers are not required to predict or declare files before claiming or
 starting a bead. `bead-rs` does not gate edits on an accepted read/write set,

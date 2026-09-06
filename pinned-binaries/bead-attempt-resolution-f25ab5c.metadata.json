@@ -42,5 +42,8 @@
     "The attempt-resolution cargo feature is an empty marker feature: no #[cfg(feature)] gates exist in src/, src/service/attempt.rs compiles unconditionally, and `bead capabilities` advertises attempt_outcome regardless of the flag. A binary built with and without the flag is functionally identical.",
     "The '-dirty' marker in the version string comes from tracked .beads/* checkpoint files modified by the bead CLI's post-claim auto-flush; compiled tracked source (src/, Cargo.toml, Cargo.lock, build.rs) is exactly HEAD (verified via `git status --porcelain` on those paths).",
     "sha256 is NOT reproducible across rebuilds: build.rs re-embeds BEAD_BUILD_TIMESTAMP whenever .git/index changes, so two rebuilds of identical source hash differently. Pin the staged binary bytes; do not rebuild and expect this hash."
-  ]
+  ],
+  "restored_lineage_twin_sha": "b0d7840f6c96cd45e16ea05b7babdb42ef0d2654",
+  "restored_lineage_twin_short": "b0d7840",
+  "restored_lineage_note": "git_commit_sha above is built-from provenance: it names a commit of the force-pushed-away lineage that no longer exists in any clone (verified 2026-09-03). restored_lineage_twin_sha is its content twin (same subject, author date, tree content) and is the rebuild target via scripts/build-from-archive.sh. The recorded binary_sha256 is hash-only, not rebuild-verifiable, until SOURCE_DATE_EPOCH determinism lands (beadrs-dc295092 / beadrs-baba38b8). Re-pinned by beadrs-e030cc56, 2026-09-03. Twin re-verified 2026-09-03 by beadrs-ed36ef53 (close-out doc reconciliation): twin commit resolves with the recorded subject, git_commit_sha is confirmed unresolvable here, and binary_sha256 matches the pinned bytes on disk."
 }

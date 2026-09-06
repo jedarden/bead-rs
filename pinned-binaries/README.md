@@ -2,6 +2,61 @@
 
 This directory contains pinned binaries of bead-rs for compatibility testing and feature development.
 
+## Pin inventory (this directory is the pin location)
+
+`pinned-binaries/` at the repo root (`/home/coding/bead-rs/pinned-binaries/`) is the pin location of record. Exactly four binaries are pinned here, each with a `*.metadata.json` recording its hash, size, and provenance:
+
+| Pin | Source commit | Metadata file |
+|-----|---------------|---------------|
+| `bead-pre-feature` | `af023ad` (release 0.2.4) | `bead-pre-feature.metadata.json` |
+| `bead-pre-attempt-resolution` | `946a727` | `bead-pre-attempt-resolution.metadata.json` |
+| `bead-attempt-resolution-e115609` | `e115609` | `bead-attempt-resolution-e115609.metadata.json` |
+| `bead-attempt-resolution-f25ab5c` | `f25ab5c` (HEAD pin) | `bead-attempt-resolution-f25ab5c.metadata.json` |
+
+**Naming scheme:** `<name>-<shaslice>`, where `<shaslice>` is the first 7 hex characters of the source commit (`bead-attempt-resolution-f25ab5c` → `f25ab5c`). The two baseline pins predate this convention and keep role-only names; their source commit is recorded in their metadata files and in `COMMITS.md`.
+
+**Rebuilding from this table:** the `Source commit` column is built-from provenance, not a rebuild input — all four of those commits are lost-lineage objects (force-pushed away 2026-09-02) and do not resolve here (verified 2026-09-03). To rebuild a pin, use the restored-lineage twin recorded as `restored_lineage_twin_sha` in the pin's `*.metadata.json` (also listed as the rebuild target in `COMMITS.md`) through the sanctioned archive path: `scripts/build-from-archive.sh <twin-sha>` (see `../BUILD_PROCEDURE.md`, "Build Rule").
+
+**Everything else in this directory is documentation or metadata, not a pin:** `README.md`, `COMMITS.md`, `BINARY_VERIFICATION.md`, `commits.json` (machine-readable commit/binary registry), and `bead-metadata.json` / `bead-release-metadata.json` (provenance records for the working debug and release builds in `/home/coding/target/`, not pins). This table is maintained against `ls pinned-binaries/` — a binary not in the table is not a pin, and a pin missing from the table means this section is stale.
+
+## bead-pre-feature
+
+**Purpose:** Earliest baseline, built before the attempt-resolution work began (the feature does not exist in this tree)
+
+**Build Date:** 2026-09-01 (embedded build timestamp `2026-09-01T19:14:12Z`)
+
+**Git Commit:** `af023ad47740cf5458f52398e70937b2cc1c18df` (release 0.2.4)
+
+**Binary Version:** `bead 0.2.4 (af023ad 2026-09-01T19:14:12Z)`
+
+**SHA256 Hash:** `7e0e73defebb75fc987ddf8b6fb959f47c73ccbbcd7e066e2af302a6a43db6b5`
+
+**Binary Size:** 6.5M (6,788,016 bytes)
+
+**Metadata File:** `bead-pre-feature.metadata.json` — commit attribution here was reconstructed from the binary's own embedded version string (verified 2026-09-02, beadrs-b6441e82); earlier docs wrongly attributed this binary to `181f181`.
+
+### Build Procedure
+
+```bash
+# From git state at commit af023ad47740cf5458f52398e70937b2cc1c18df
+cd /home/coding/bead-rs
+cargo build --release
+```
+
+**Feature Flag Used:** default features (`attempt-resolution` did not yet exist in Cargo.toml)
+
+**Rationale:** this is the "before any of the feature work" comparison point. A rebuild will not reproduce the pinned hash (build.rs embeds the build timestamp); verify by hash comparison against the pinned bytes.
+
+### Verification
+
+```bash
+sha256sum pinned-binaries/bead-pre-feature
+# Should output: 7e0e73defebb75fc987ddf8b6fb959f47c73ccbbcd7e066e2af302a6a43db6b5
+
+./pinned-binaries/bead-pre-feature --version
+# Should output: bead 0.2.4 (af023ad 2026-09-01T19:14:12Z)
+```
+
 ## bead-pre-attempt-resolution
 
 **Purpose:** Pre-feature baseline binary for attempt-resolution feature testing
@@ -28,7 +83,7 @@ cargo build --release --no-default-features
 
 **Feature Flag Used:** `--no-default-features`
 
-**Rationale:** This binary was built WITHOUT the `attempt-resolution` feature enabled. It serves as a pre-feature baseline for compatibility testing when the attempt-resolution feature is being developed. Building with `--no-default-features` ensures that no optional features are included, providing a clean baseline for comparison.
+**Rationale:** This binary was built without the `attempt-resolution` cargo flag enabled. It serves as a pre-flag baseline for compatibility testing. Because the flag is an empty marker that gates no code, this binary is functionally identical to a flag-enabled build of the same commit — `bead resolve` works and `capabilities` advertises `attempt_outcome`.
 
 ### Verification
 
@@ -59,7 +114,7 @@ This binary is intended for:
 
 **Commit Message:** `feat(tests): add binary variant integration test suite for capability detection`
 
-**Binary Version:** `bead 0.2.6 (e115609 2026-09-02T07:23:55Z)`
+**Binary Version:** `bead 0.2.6 (e115609-dirty 2026-09-02T07:23:55Z)`
 
 **SHA256 Hash:** `68fe8d534721be4ba4147312364d8f0b216b62f3093e85e7c91f0a0db695a645`
 
@@ -73,9 +128,9 @@ cd /home/coding/bead-rs
 cargo build --release
 ```
 
-**Feature Flag Used:** Default features (attempt-resolution included)
+**Feature Flag Used:** default features (plain `cargo build --release`; `default = []` at this commit, so the `attempt-resolution` flag was not explicitly enabled — irrelevant in practice, since the flag gates no code)
 
-**Rationale:** This binary was built WITH the `attempt-resolution` feature enabled by default. It serves as the post-feature baseline for compatibility testing and integration test suites that validate the attempt-resolution functionality.
+**Rationale:** This binary was built at the commit that added the binary-variant integration test suite. It serves as the post-feature baseline for compatibility testing and integration test suites that validate the attempt-resolution functionality.
 
 ### Verification
 
@@ -86,7 +141,7 @@ sha256sum pinned-binaries/bead-attempt-resolution-e115609
 # Should output: 68fe8d534721be4ba4147312364d8f0b216b62f3093e85e7c91f0a0db695a645
 
 ./pinned-binaries/bead-attempt-resolution-e115609 --version
-# Should output: bead 0.2.6 (e115609 2026-09-02T07:23:55Z)
+# Should output: bead 0.2.6 (e115609-dirty 2026-09-02T07:23:55Z)
 ```
 
 ### Usage
@@ -132,6 +187,8 @@ cargo build --release --features attempt-resolution
 
 **On the `-dirty` version marker:** the marker comes from tracked `.beads/*` checkpoint files modified by the bead CLI's post-claim auto-flush at build time. The compiled tracked source (`src/`, `Cargo.toml`, `Cargo.lock`, `build.rs`) was exactly HEAD, verified via `git status --porcelain` on those paths — see build.rs: "untracked files are excluded: they do not alter what was compiled."
 
+**On the pin's SHA of record (informational):** the commit that recorded this pin (63c2ee8) says *"pin HEAD attempt-resolution binary at b0d7840"* in its message, but `b0d7840` is not this pin's SHA. The pin's name, its metadata file (`git_commit_sha: f25ab5c91c09a3408f23b9cdf2f3e95e81abc060`), and the binary's own embedded version string (`bead 0.2.6 (f25ab5c-dirty …)`) all say `f25ab5c` and agree with each other — that recorded agreement, not the pinning commit's message, is the pin's authority. The pinning commit was made on the force-pushed lineage, where this same change is `b0d7840` (it is 63c2ee8's direct parent), while the binary was built on the twin lineage where it is `f25ab5c`; merge b057d2768a859270b2d9e8855f1467bfb3521a84 later restored that lineage to `main`, so `b0d7840` is reachable today as the content-identical twin of `f25ab5c` (the `f25ab5c` object itself no longer exists here or on any origin ref, so tree identity rests on the matching commit message and the metadata record — `git diff b0d7840 f25ab5c` cannot be run). The message's `b0d7840` stays informational history, never authority: reference this pin as `f25ab5c`, and use `b0d7840` only as the rebuild target (`scripts/build-from-archive.sh b0d7840f6c96cd45e16ea05b7babdb42ef0d2654 --features attempt-resolution`, per the metadata's `restored_lineage_twin_sha`).
+
 ### Verification
 
 ```bash
@@ -161,8 +218,8 @@ This binary is intended for:
 
 - Pinned binaries represent specific commit states for reproducible testing
 - Each binary should remain unchanged once pinned to maintain reproducibility
-- Pre-feature binary built without attempt-resolution for baseline comparisons
-- Post-feature binary built with attempt-resolution for integration testing
+- The `attempt-resolution` cargo flag is an empty marker that gates no code: builds made with and without it are functionally identical (see `BINARY_VERIFICATION.md`). The pins differ by **commit**, not by flag.
+- Verify a pin by comparing its sha256 against its `*.metadata.json`. Never verify by rebuilding — `build.rs` re-embeds the build timestamp, so no rebuild reproduces a pinned hash
 
 ---
 
@@ -200,9 +257,9 @@ All pinned binaries are cryptographically distinct:
 
 ### Size Analysis
 
-- **Standard build (pre-feature)**: 6.5M - Baseline without attempt-resolution code
-- **Feature-enabled builds**: 7.0M - ~517KB larger, confirming feature inclusion
+- **Standard build (pre-feature)**: 6.5M - built at release 0.2.4 (commit `af023ad`), before the attempt-resolution work began
+- **Feature-enabled builds**: 7.0M - ~517KB larger than the 0.2.4 baseline
 
-The size difference demonstrates that the `attempt-resolution` feature adds meaningful code and functionality to the binary.
+⚠️ The size difference reflects all development between 0.2.4 and HEAD, **not** the `attempt-resolution` flag itself: the feature is an empty marker (no `#[cfg]` gates, and `bead resolve` is present in `bead-pre-attempt-resolution`/`bead-attempt-resolution-*` regardless of how the flag was set — see BINARY_VERIFICATION.md). The 0.2.4 baseline has no `bead resolve` subcommand at all. Distinctness between the pins is a hash-level fact; it is not evidence of what the flag contributes.
 
 ---

@@ -243,6 +243,13 @@ fn dry_run_reports_the_full_semantic_delta_without_mutation() {
     let workspace = setup("r033dry");
     let existing = create_issue(workspace.path(), "existing work");
 
+    // The close targets the issue this manifest creates, not the one it
+    // claims: `existing` is assigned by the second operation, which mints a
+    // claim epoch, and a credential-less manifest op cannot mutate a claimed
+    // issue any more than `bead close` can (see tests/claim_epoch.rs). A
+    // static manifest could not carry that epoch anyway -- it is minted later
+    // in the same transaction -- so claim-then-close is not expressible here
+    // by design.
     let body = format!(
         r#"{{"manifest_version": 1, "operations": [
             {{"op": "create", "local_id": "a", "title": "manifest work",
@@ -251,7 +258,7 @@ fn dry_run_reports_the_full_semantic_delta_without_mutation() {
              "assignee": "worker-1"}},
             {{"op": "label_add", "id": "{existing}", "label": "ops"}},
             {{"op": "dep_add", "blocked": "$a", "blocker": "{existing}"}},
-            {{"op": "close", "id": "{existing}", "reason": "done"}}
+            {{"op": "close", "id": "$a", "reason": "done"}}
         ]}}"#
     );
     let path = write_manifest(workspace.path(), "plan.json", &body);

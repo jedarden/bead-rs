@@ -1,0 +1,54 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead resolve" 1  "bead resolve " 
+.SH NAME
+bead resolve \- Record an execution attempt outcome atomically
+.SH SYNOPSIS
+\fBbead resolve\fR [\fB\-\-action\fR] [\fB\-\-reason\fR] [\fB\-\-if\-revision\fR] [\fB\-\-fencing\-token\fR] [\fB\-\-evidence\-ref\fR] [\fB\-\-actor\fR] [\fB\-\-model\fR] [\fB\-\-harness\fR] [\fB\-\-harness\-version\fR] [\fB\-\-format\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-attempt\-id\fR> <\fB\-\-outcome\fR> <\fIID\fR> 
+.SH DESCRIPTION
+Resolve an execution attempt by recording its outcome and applying
+a lifecycle transition in one atomic operation. This implements the
+attempt\-outcome\-v1 specification with exactly\-once semantics.
+.SH OPTIONS
+.TP
+\fB\-\-attempt\-id\fR \fI<ATTEMPT_ID>\fR
+Attempt ID (required)
+.TP
+\fB\-\-outcome\fR \fI<OUTCOME>\fR
+Outcome classification (required)
+.TP
+\fB\-\-action\fR \fI<ACTION>\fR
+Lifecycle action to apply
+.TP
+\fB\-\-reason\fR \fI<REASON>\fR
+Human\-readable reason for the action
+.TP
+\fB\-\-if\-revision\fR \fI<IF_REVISION>\fR
+Expected revision for optimistic concurrency control
+.TP
+\fB\-\-fencing\-token\fR \fI<FENCING_TOKEN>\fR
+Fencing token for lease validation
+.TP
+\fB\-\-evidence\-ref\fR \fI<EVIDENCE_REF>\fR
+Evidence references (NAMESPACE:VALUE format)
+.TP
+\fB\-\-actor\fR \fI<ACTOR>\fR [default: unknown]
+Actor identity
+.TP
+\fB\-\-model\fR \fI<MODEL>\fR
+Model identifier for telemetry
+.TP
+\fB\-\-harness\fR \fI<HARNESS>\fR
+Harness name for telemetry
+.TP
+\fB\-\-harness\-version\fR \fI<HARNESS_VERSION>\fR
+Harness version for telemetry
+.TP
+\fB\-\-format\fR \fI<FORMAT>\fR [default: text]
+Output format
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIID\fR>
+Issue ID

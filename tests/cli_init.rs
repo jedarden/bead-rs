@@ -118,9 +118,18 @@ fn test_init_creates_gitignore() {
 
     // Runtime database artifacts should be excluded
     assert!(content.contains("*.db"), "Should exclude *.db files");
-    assert!(content.contains("*.db-shm"), "Should exclude *.db-shm files");
-    assert!(content.contains("*.db-wal"), "Should exclude *.db-wal files");
-    assert!(content.contains("*.db.backup.*"), "Should exclude database backups");
+    assert!(
+        content.contains("*.db-shm"),
+        "Should exclude *.db-shm files"
+    );
+    assert!(
+        content.contains("*.db-wal"),
+        "Should exclude *.db-wal files"
+    );
+    assert!(
+        content.contains("*.db.backup.*"),
+        "Should exclude database backups"
+    );
 
     // Lock files should be excluded
     assert!(content.contains("*.lock"), "Should exclude lock files");
@@ -130,16 +139,34 @@ fn test_init_creates_gitignore() {
     assert!(content.contains("*.temp"), "Should exclude *.temp files");
 
     // Journals should be excluded
-    assert!(content.contains("*.journal"), "Should exclude journal files");
+    assert!(
+        content.contains("*.journal"),
+        "Should exclude journal files"
+    );
 
     // Runtime directories should be excluded
-    assert!(content.contains("traces/"), "Should exclude traces/ directory");
-    assert!(content.contains("diagnostics/"), "Should exclude diagnostics/ directory");
-    assert!(content.contains("receipts/"), "Should exclude receipts/ directory");
+    assert!(
+        content.contains("traces/"),
+        "Should exclude traces/ directory"
+    );
+    assert!(
+        content.contains("diagnostics/"),
+        "Should exclude diagnostics/ directory"
+    );
+    assert!(
+        content.contains("receipts/"),
+        "Should exclude receipts/ directory"
+    );
 
     // Runtime event logs should be excluded
-    assert!(content.contains("events.jsonl"), "Should exclude events.jsonl");
-    assert!(content.contains("heartbeats.jsonl"), "Should exclude heartbeats.jsonl");
+    assert!(
+        content.contains("events.jsonl"),
+        "Should exclude events.jsonl"
+    );
+    assert!(
+        content.contains("heartbeats.jsonl"),
+        "Should exclude heartbeats.jsonl"
+    );
 }
 
 #[test]
@@ -281,12 +308,24 @@ fn test_gitignore_trackable_files_not_excluded() {
     let content = std::fs::read_to_string(&gitignore_path).unwrap();
 
     // Trackable files should NOT be excluded
-    assert!(!content.contains("config.json"), "config.json should be trackable");
-    assert!(!content.contains("checkpoint/"), "checkpoint/ directory should be trackable");
+    assert!(
+        !content.contains("config.json"),
+        "config.json should be trackable"
+    );
+    assert!(
+        !content.contains("checkpoint/"),
+        "checkpoint/ directory should be trackable"
+    );
 
     // Verify trackable files actually exist
-    assert!(root.join(".beads/config.json").exists(), "config.json should exist");
-    assert!(root.join(".beads/checkpoint").exists(), "checkpoint/ directory should exist");
+    assert!(
+        root.join(".beads/config.json").exists(),
+        "config.json should exist"
+    );
+    assert!(
+        root.join(".beads/checkpoint").exists(),
+        "checkpoint/ directory should exist"
+    );
 }
 
 #[test]
@@ -317,7 +356,10 @@ fn test_init_preserves_existing_custom_gitignore() {
 
     // Verify the custom .gitignore was preserved byte-for-byte
     let preserved_content = std::fs::read_to_string(&custom_gitignore).unwrap();
-    assert_eq!(custom_content, preserved_content, "Custom .gitignore should be preserved exactly");
+    assert_eq!(
+        custom_content, preserved_content,
+        "Custom .gitignore should be preserved exactly"
+    );
 }
 
 #[test]
@@ -343,7 +385,10 @@ fn test_init_existing_workspace_no_gitignore() {
     cmd.current_dir(root).arg("init").assert().success();
 
     // Verify .gitignore was NOT recreated
-    assert!(!gitignore_path.exists(), ".gitignore should not be recreated for existing workspace");
+    assert!(
+        !gitignore_path.exists(),
+        ".gitignore should not be recreated for existing workspace"
+    );
 }
 
 #[test]
@@ -374,15 +419,24 @@ fn test_init_fresh_clone_recovery_preserves_gitignore() {
     cmd.current_dir(root).arg("init").assert().success();
 
     // Verify database was recreated
-    assert!(root.join(".beads/beads.db").exists(), "Database should be recreated");
+    assert!(
+        root.join(".beads/beads.db").exists(),
+        "Database should be recreated"
+    );
 
     // Verify .gitignore was preserved (not overwritten)
     let preserved_gitignore = std::fs::read_to_string(&gitignore_path).unwrap();
-    assert_eq!(modified_gitignore, preserved_gitignore, "Modified .gitignore should be preserved during recovery");
+    assert_eq!(
+        modified_gitignore, preserved_gitignore,
+        "Modified .gitignore should be preserved during recovery"
+    );
 
     // Verify config was preserved (not overwritten)
     let preserved_config = std::fs::read_to_string(&config_path).unwrap();
-    assert_eq!(original_config, preserved_config, "config.json should be preserved during recovery");
+    assert_eq!(
+        original_config, preserved_config,
+        "config.json should be preserved during recovery"
+    );
 }
 
 #[test]
@@ -417,9 +471,16 @@ fn test_gitignore_excludes_all_runtime_artifacts() {
     ];
 
     for pattern in &expected_patterns {
-        assert!(content.contains(pattern), "Should exclude pattern: {}", pattern);
+        assert!(
+            content.contains(pattern),
+            "Should exclude pattern: {}",
+            pattern
+        );
     }
 
     // Should have reasonable structure with comments
-    assert!(content.contains("#"), "Should have comments for organization");
+    assert!(
+        content.contains("#"),
+        "Should have comments for organization"
+    );
 }

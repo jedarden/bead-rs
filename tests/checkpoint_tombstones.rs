@@ -18,10 +18,9 @@ use std::fs;
 use std::path::Path;
 
 // R030: workspace discovery stops at the first featureless `.beads` above the
-// working directory, so a test workspace must not live under one. The base is
-// `std::env::temp_dir()` (TMPDIR-aware, like every other test file here)
-// instead of a hardcoded `/tmp`, which a machine may share with unrelated
-// `.beads` debris.
+// working directory. Test runners can place `std::env::temp_dir()` below such
+// an ancestor, so deliberate test-workspace initialization opts into skipping
+// it instead of depending on a particular host temporary-directory layout.
 use std::process::Command;
 
 /// Get the path to the bead binary for testing
@@ -35,6 +34,15 @@ fn run(workspace: &Path, args: &[&str]) -> std::process::Output {
         .current_dir(workspace)
         .output()
         .expect("Failed to run bead")
+}
+
+fn init_workspace(workspace: &Path) {
+    let output = run(workspace, &["init", "--skip-foreign-workspace"]);
+    assert!(
+        output.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn run_flush(workspace: &Path) -> std::process::Output {
@@ -104,7 +112,7 @@ fn tombstones_applied_and_object_set_bounded() {
     fs::create_dir_all(&test_dir).unwrap();
 
     let workspace = Path::new(&test_dir);
-    run(workspace, &["init"]);
+    init_workspace(workspace);
 
     let checkpoint_dir = workspace.join(".beads/checkpoint");
     let mut roots = Vec::new();
@@ -199,7 +207,7 @@ fn stray_objects_are_reclaimed_and_reported() {
     fs::create_dir_all(&test_dir).unwrap();
 
     let workspace = Path::new(&test_dir);
-    run(workspace, &["init"]);
+    init_workspace(workspace);
     run(workspace, &["create", "--title", "First"]);
     assert!(run_flush(workspace).status.success());
 
@@ -260,7 +268,7 @@ fn status_reports_unresolved_tombstones_until_reapplied() {
     fs::create_dir_all(&test_dir).unwrap();
 
     let workspace = Path::new(&test_dir);
-    run(workspace, &["init"]);
+    init_workspace(workspace);
 
     let checkpoint_dir = workspace.join(".beads/checkpoint");
 

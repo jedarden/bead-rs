@@ -196,8 +196,9 @@ fn test_lease_renewal_preserves_historical_rows() {
     assert!(first_claim.status.success());
     let first_result: serde_json::Value = serde_json::from_slice(&first_claim.stdout).unwrap();
     let issue_id = first_result["bead_id"].as_str().unwrap().to_string();
+    let first_epoch = first_result["claim_epoch"].as_i64().unwrap().to_string();
 
-    let release = workspace.run_bead(&["release", &issue_id]);
+    let release = workspace.run_bead(&["release", &issue_id, "--fencing-token", &first_epoch]);
     assert!(
         release.status.success(),
         "release failed: {}",
@@ -346,14 +347,27 @@ fn test_backward_compatibility_non_leased_claims() {
         assert!(result["lease"].is_null());
     }
 
-    // Verify normal operations work without fencing token requirement
+    // Verify normal operations work with the plain claim's epoch credential:
+    // a non-leased claim mints an epoch too (surfaced as claim_epoch), it
+    // just has no lease row behind it
     let issue_id = result["bead_id"].as_str().expect("Failed to get issue ID");
+    let epoch = result["claim_epoch"]
+        .as_i64()
+        .expect("claim_epoch")
+        .to_string();
 
-    let update_output = workspace.run_bead(&["update", issue_id, "--notes", "Normal update works"]);
+    let update_output = workspace.run_bead(&[
+        "update",
+        issue_id,
+        "--notes",
+        "Normal update works",
+        "--fencing-token",
+        &epoch,
+    ]);
     assert!(update_output.status.success());
 
-    // Also verify release works without lease
-    let release_output = workspace.run_bead(&["release", issue_id]);
+    // Also verify release works with the same credential
+    let release_output = workspace.run_bead(&["release", issue_id, "--fencing-token", &epoch]);
     assert!(release_output.status.success());
 }
 
@@ -610,8 +624,10 @@ fn test_plain_reclaim_after_leased_release_is_mutable() {
         .as_str()
         .expect("Failed to get issue ID")
         .to_string();
+    let leased_epoch = leased_result["claim_epoch"].as_i64().unwrap().to_string();
 
-    let release_output = workspace.run_bead(&["release", &issue_id]);
+    let release_output =
+        workspace.run_bead(&["release", &issue_id, "--fencing-token", &leased_epoch]);
     assert!(
         release_output.status.success(),
         "Leased holder must be able to release: {}",
@@ -627,16 +643,32 @@ fn test_plain_reclaim_after_leased_release_is_mutable() {
     assert_eq!(plain_result["bead_id"].as_str(), Some(issue_id.as_str()));
     assert!(plain_result["lease"].is_null());
 
-    // The leftover lease row from w1's epoch must not fence w2: update,
-    // release-style mutations, and close all have to keep working
-    let update_output = workspace.run_bead(&["update", &issue_id, "--notes", "plain epoch works"]);
+    // The leftover lease row from w1's epoch must not fence w2: presenting
+    // the *new* plain epoch credential, update and close all have to keep
+    // working
+    let plain_epoch = plain_result["claim_epoch"].as_i64().unwrap().to_string();
+    let update_output = workspace.run_bead(&[
+        "update",
+        &issue_id,
+        "--notes",
+        "plain epoch works",
+        "--fencing-token",
+        &plain_epoch,
+    ]);
     assert!(
         update_output.status.success(),
         "Plain claimant must be able to update: {}",
         String::from_utf8_lossy(&update_output.stderr)
     );
 
-    let close_output = workspace.run_bead(&["close", &issue_id, "--reason", "done"]);
+    let close_output = workspace.run_bead(&[
+        "close",
+        &issue_id,
+        "--reason",
+        "done",
+        "--fencing-token",
+        &plain_epoch,
+    ]);
     assert!(
         close_output.status.success(),
         "Plain claimant must be able to close despite leftover lease row: {}",

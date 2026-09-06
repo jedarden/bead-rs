@@ -169,8 +169,20 @@ pub struct ResolveRequest {
     pub if_revision: Option<i64>,
 
     /// Fencing token for lease validation (optional)
+    ///
+    /// While the issue is claimed this is the claim-epoch credential `bead
+    /// claim` returned: a missing or stale value conflicts (exit 4).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fencing_token: Option<String>,
+
+    /// Reason-bearing operator recovery override (optional)
+    ///
+    /// Present and non-empty, it lets a resolve proceed past the claim-epoch
+    /// fence and appends a distinct `claim_override` audit event in the same
+    /// transaction. An empty value is a usage error: omission never means
+    /// override.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub override_claim: Option<String>,
 
     /// Evidence references (optional)
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -271,7 +283,7 @@ pub struct ResolveReceipt {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttemptOutcomeRecord {
     /// Schema reference
-    #[serde(rename = "$schema")]
+    #[serde(rename = "$schema", alias = "schema_ref")]
     pub schema_ref: String,
 
     /// Attempt ID
@@ -491,6 +503,7 @@ mod tests {
             reason: Some("All tests passing".to_string()),
             if_revision: None,
             fencing_token: None,
+            override_claim: None,
             evidence_refs: vec!["s3:logs/abc.tar.gz".to_string()],
             actor: "needle-worker-alpha".to_string(),
             model: Some("claude-opus-5".to_string()),
@@ -510,6 +523,7 @@ mod tests {
             reason: None,
             if_revision: None,
             fencing_token: None,
+            override_claim: None,
             evidence_refs: vec![],
             actor: "needle-worker-alpha".to_string(),
             model: None,

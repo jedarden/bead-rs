@@ -126,7 +126,10 @@ fn test_fallback_activates_on_empty_ready_frontier_with_assigned_open_beads() {
 
     // Verify starvation diagnostic log was created (not fallback log)
     let log_path = workspace_path.join(".beads/diagnostics/pluck-starvation-diagnostic.log");
-    assert!(log_path.exists(), "Starvation diagnostic log should be created");
+    assert!(
+        log_path.exists(),
+        "Starvation diagnostic log should be created"
+    );
 
     let log_content = std::fs::read_to_string(&log_path).unwrap();
     assert!(

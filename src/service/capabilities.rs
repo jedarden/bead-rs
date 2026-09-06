@@ -4,6 +4,7 @@
 //! a JSON document describing what this implementation supports.
 
 use crate::error::Result;
+use crate::scan::{Mode, CONTRACT_IDENTITY, RULESET_VERSION};
 use crate::service::checkpoint::AUTO_FLUSH_COMPILED_DEFAULT;
 use serde::{Deserialize, Serialize};
 
@@ -50,6 +51,34 @@ pub struct Capabilities {
     /// Attempt outcome resolution capabilities (ADR-012)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attempt_outcome: Option<AttemptOutcome>,
+    /// Secret rejection and diagnostic capabilities (ADR-014).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_scan: Option<SecretScanCapabilities>,
+    /// Audited historical-redaction capability handshake (ADR-015).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub historical_redaction: Option<HistoricalRedactionCapabilities>,
+}
+
+/// Offline secret-scanning capability handshake.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretScanCapabilities {
+    pub contract_identity: String,
+    pub ruleset_version: u32,
+    pub effective_mode: String,
+    pub blocking: bool,
+    pub advisory: bool,
+    pub exact_fingerprint_acknowledgment: bool,
+}
+
+/// Exceptional maintenance capability for already-stored sensitive bytes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoricalRedactionCapabilities {
+    pub contract: String,
+    pub doctor_findings: bool,
+    pub atomic_redact: bool,
+    pub anti_resurrection: bool,
+    pub sanitized_generation_set: bool,
+    pub resumable_publication: bool,
 }
 
 /// Priority capabilities
@@ -116,6 +145,16 @@ pub struct SchemaEntry {
 
 /// Generate capabilities for the native profile
 pub fn generate_capabilities(profile: &str) -> Result<Capabilities> {
+    generate_capabilities_with_secret_mode(profile, Mode::Enforce)
+}
+
+/// Generate capabilities using the effective policy of a discovered
+/// workspace. Callers without a workspace use [`generate_capabilities`],
+/// which advertises the compiled `enforce` default.
+pub fn generate_capabilities_with_secret_mode(
+    profile: &str,
+    secret_mode: Mode,
+) -> Result<Capabilities> {
     // Validate profile
     if profile != "native-v1" && profile != "needle-v1" {
         return Err(crate::Error::validation(format!(
@@ -175,6 +214,7 @@ pub fn generate_capabilities(profile: &str) -> Result<Capabilities> {
             "manifest".to_string(),
             "policy".to_string(),
             "query".to_string(),
+            "redact".to_string(),
             "recurrence".to_string(),
             "ref".to_string(),
             "release".to_string(),
@@ -217,6 +257,22 @@ pub fn generate_capabilities(profile: &str) -> Result<Capabilities> {
             evidence_refs: true,
             resolve_receipt_schema: "urn:bead-rs:schema:resolve-receipt:native-v1".to_string(),
             resolve_request_schema: "urn:bead-rs:schema:resolve-request:native-v1".to_string(),
+        }),
+        secret_scan: Some(SecretScanCapabilities {
+            contract_identity: CONTRACT_IDENTITY.to_string(),
+            ruleset_version: RULESET_VERSION,
+            effective_mode: secret_mode.as_str().to_string(),
+            blocking: true,
+            advisory: true,
+            exact_fingerprint_acknowledgment: true,
+        }),
+        historical_redaction: Some(HistoricalRedactionCapabilities {
+            contract: "urn:bead-rs:spec:historical-redaction:v1".to_string(),
+            doctor_findings: true,
+            atomic_redact: true,
+            anti_resurrection: true,
+            sanitized_generation_set: true,
+            resumable_publication: true,
         }),
     })
 }

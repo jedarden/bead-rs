@@ -2,7 +2,7 @@
 //!
 //! This module uses clap derive to define all command-line interface commands.
 
-use clap::{Parser, Subcommand};
+use clap::{ArgGroup, Parser, Subcommand};
 
 /// Main CLI structure for bead-rs
 #[derive(Parser, Debug)]
@@ -61,6 +61,13 @@ pub struct Cli {
     /// workspace configuration key
     #[arg(long, global = true)]
     pub no_auto_flush: bool,
+
+    /// Admit only findings whose exact scanner fingerprint matches this
+    /// value. Repeat for multiple findings. Every successful mutation using
+    /// an acknowledgment records a same-transaction audit event; there is no
+    /// blanket bypass flag.
+    #[arg(long = "acknowledge-secret", global = true, value_name = "FINGERPRINT")]
+    pub acknowledge_secret: Vec<String>,
 
     /// Let workspace discovery continue past the first `.beads` directory
     /// when it is not a bead-rs workspace (no `.beads/config.json`), so a
@@ -137,6 +144,37 @@ a lifecycle transition in one atomic operation. This implements the
 attempt-outcome-v1 specification with exactly-once semantics."
     )]
     Resolve(ResolveOptions),
+
+    /// Destroy one scanner-selected historical secret and publish a clean generation
+    #[command(
+        name = "redact",
+        about = "Redact one historical secret by scanner fingerprint",
+        long_about = "Destroy exactly one sensitive byte range selected by a current secret-scanner fingerprint.
+
+The command never accepts or prints the matched value. A new redaction requires
+--finding, --actor, and --reason; the service revalidates the fingerprint under
+the maintenance and checkpoint-publication locks, replaces only that range with
+the fixed bead-rs marker, records a nonsecret receipt, and publishes a sanitized
+checkpoint generation set. Publication is mandatory even when workspace
+automatic publication is disabled.
+
+If publication fails after the SQLite redaction commits, no semantic mutation is
+repeated. Resume the recorded receipt with `bead redact --resume RECEIPT_ID`.
+
+EXAMPLES:
+  bead doctor --scope secrets --format json
+  bead redact --finding FINGERPRINT --actor operator --reason \"credential rotation\" --dry-run --json
+  bead redact --finding FINGERPRINT --actor operator --reason \"credential rotation\" --json
+  bead redact --resume RECEIPT_ID --json
+
+EXIT CODES:
+  0  redaction and sanitized publication completed, or dry-run succeeded
+  1  internal failure or redaction committed but publication did not complete
+  2  invalid request, actor, reason, fingerprint, or option combination
+  3  finding or receipt not found
+  4  stale target or semantic conflict"
+    )]
+    Redact(RedactOptions),
 
     Claim(ClaimOptions),
 
@@ -455,7 +493,25 @@ RESOURCE KEYS:
   --resource-key declares a normalized, case-sensitive key used only for
   scheduling exclusion inside this native workspace. It is not a distributed
   lock. Claims acquire every declared key atomically; release, close, and
-  expired leases return keys. Use `bead resource add|remove|list` after create."
+  expired leases return keys. Use `bead resource add|remove|list` after create.
+
+PLANNING DEPENDENT WORK:
+  A bare `bead create` is claimable the instant it commits. If the new issue
+  is meant to wait on other work, declare that in the same transaction --
+  never in a second command. `--depends-on BLOCKER` validates and attaches a
+  `blocks` edge inside the create transaction itself, so a missing blocker,
+  a self-edge, or a cycle rolls the whole create back and the issue never
+  becomes visible without its graph. Repeat the flag for several blockers.
+
+  For a whole planned graph (beads that reference each other, labels,
+  resource keys, staging assignments), use one manifest instead:
+
+    bead manifest commit --input plan.json
+
+  `bead manifest dry-run` reports the same delta without mutating anything.
+  Composing `create` and `dep` as two separate commands re-opens the window
+  this flag exists to close: a worker can claim the new bead in the seconds
+  between them."
 )]
 pub struct CreateOptions {
     /// Issue title (required)
@@ -485,6 +541,15 @@ pub struct CreateOptions {
     /// Workspace-local resource key (can be specified multiple times)
     #[arg(long = "resource-key")]
     pub resource_keys: Vec<String>,
+
+    /// Existing issue that must close before this one is claimable (can be
+    /// specified multiple times). Validated and attached inside the create
+    /// transaction: a blocker that does not exist, a self-edge, or a cycle
+    /// aborts the create, leaving no issue and no edge. Applied only when a
+    /// new issue is created -- a --unique-ref replay of an existing bead
+    /// never mutates that bead's graph.
+    #[arg(long = "depends-on", value_name = "BLOCKER")]
+    pub depends_on: Vec<String>,
 
     /// Idempotency binding in NAMESPACE:KEY form
     #[arg(long = "unique-ref")]
@@ -1039,6 +1104,44 @@ pub struct ReopenOptions {
     pub dry_run: bool,
 }
 
+/// Options for the exceptional historical-redaction operation.
+#[derive(Parser, Debug)]
+#[command(group(
+    ArgGroup::new("redaction_selection")
+        .required(true)
+        .multiple(false)
+        .args(["finding", "resume"])
+))]
+pub struct RedactOptions {
+    /// Fingerprint reported by `bead doctor --scope secrets --format json`
+    #[arg(long, value_name = "FINGERPRINT")]
+    pub finding: Option<String>,
+
+    /// Resume sanitized publication for an already committed receipt
+    #[arg(
+        long,
+        value_name = "RECEIPT_ID",
+        conflicts_with_all = ["finding", "actor", "reason", "dry_run"]
+    )]
+    pub resume: Option<String>,
+
+    /// Identity ordering a new redaction
+    #[arg(long, value_name = "ACTOR", required_unless_present = "resume")]
+    pub actor: Option<String>,
+
+    /// Bounded nonsecret justification for a new redaction
+    #[arg(long, value_name = "REASON", required_unless_present = "resume")]
+    pub reason: Option<String>,
+
+    /// Report the exact selector and effects without changing SQLite or checkpoint files
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Emit the preview or published receipt as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
 /// Options for resolving an attempt
 #[derive(Parser, Debug)]
 #[command(
@@ -1051,7 +1154,7 @@ exactly-once semantics for attempt resolution under concurrent access and
 crash recovery.
 
 EXAMPLES:
-  bead resolve bead-123abc456789def --attempt-id urn:needle:attempt:abc123 --outcome verified_success --action close
+  bead resolve bead-123abc456789def --attempt-id urn:needle:attempt:abc123 --outcome verified_success --action close --reason \"All checks passed\"
   bead resolve bead-123abc456789def --attempt-id urn:needle:attempt:abc123 --outcome work_failure --action quarantine --reason \"Tests failing\"
   bead resolve bead-123abc456789def --attempt-id urn:needle:attempt:abc123 --outcome infrastructure_failure --action release
 
@@ -1102,7 +1205,10 @@ pub struct ResolveOptions {
     pub action: Option<String>,
 
     /// Human-readable reason for the action
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Action reason; required and non-empty for --action close"
+    )]
     pub reason: Option<String>,
 
     /// Expected revision for optimistic concurrency control
@@ -1898,13 +2004,19 @@ pub struct DoctorOptions {
     #[arg(long, requires = "starvation_recovery")]
     pub force: bool,
 
-    /// Diagnostic scopes: store, backup, schema, dependencies, comments, all (default: all)
+    /// Diagnostic scopes: store, backup, schema, dependencies, comments,
+    /// attempts, secrets, all (default: all)
     #[arg(long, value_delimiter = ',')]
     pub scope: Option<Vec<String>>,
 
     /// Output diagnostics in JSON format
     #[arg(long)]
     pub json: bool,
+
+    /// Output format. `--format json` is equivalent to `--json` and is the
+    /// stable secret-diagnostics contract spelling.
+    #[arg(long, value_parser = ["text", "json"])]
+    pub format: Option<String>,
 }
 
 /// Options for capabilities command

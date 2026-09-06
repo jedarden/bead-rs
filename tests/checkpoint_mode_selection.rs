@@ -47,7 +47,12 @@ fn stderr_of(output: &Output) -> String {
 
 fn init_workspace(dir: &Path) {
     fs::create_dir_all(dir).unwrap();
-    run_ok(dir, &["init"]);
+    // Test runners may place their temporary directory below an unrelated
+    // ancestor `.beads` store.  Initializing this deliberately isolated test
+    // workspace is exactly the opt-in case for the discovery override; all
+    // subsequent commands still discover the local bead-rs workspace
+    // normally.
+    run_ok(dir, &["init", "--skip-foreign-workspace"]);
 }
 
 /// Merge a `checkpoint` section into the workspace's `.beads/config.json`
@@ -539,8 +544,11 @@ fn one_mutation_republishes_one_shard_and_the_event_tail() {
             "exactly one changed issue shard and one event tail object must be written, got {:?}",
             run.added
         );
+        // A claim epoch adds a small fixed field to the changed issue and its
+        // claim event. Keep the bound comfortably sublinear without making
+        // the smallest corpus hinge on a few dozen serialized bytes.
         assert!(
-            run.added_bytes * 16 <= run.corpus_bytes,
+            run.added_bytes * 15 <= run.corpus_bytes,
             "written bytes ({}) must stay within one shard's share of the corpus ({})",
             run.added_bytes,
             run.corpus_bytes

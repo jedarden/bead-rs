@@ -1,10 +1,14 @@
 #![forbid(unsafe_code)]
 
 mod cli;
+mod cli_checkpoint_guard;
+mod cli_secret_scan;
 mod error;
 mod model;
 #[allow(dead_code)]
 mod profile;
+#[allow(dead_code, unused_imports)]
+mod scan;
 mod service;
 mod store;
 
@@ -48,6 +52,7 @@ struct PublicationProbe {
     checkpoint_config: anyhow::Result<service::CheckpointConfig>,
     /// Live event sequence before dispatch
     sequence_before: i64,
+    explicit_recovery: bool,
 }
 
 /// Resolve whether this invocation publishes a checkpoint generation after
@@ -94,6 +99,7 @@ fn publication_probe(no_auto_flush: bool) -> Option<PublicationProbe> {
         config,
         checkpoint_config,
         sequence_before,
+        explicit_recovery: false,
     })
 }
 
@@ -126,14 +132,12 @@ fn open_checkpoint_connection(db_path: &std::path::Path) -> Option<rusqlite::Con
 /// to this sequence or beyond -- the state a lost publication race leaves
 /// behind -- is treated as success, not something to publish over.
 ///
-/// That coverage check runs twice: once as a lock-free fast path, once as
-/// the authoritative decision under the checkpoint publication lock
-/// (item 4), because a concurrent publisher may replace the pointer
-/// between the two. The lock serializes publication -- object writes,
-/// pointer replacement, tombstone application -- independently of the
-/// SQLite write path, so a worker that loses the race waits for the
-/// winner, rereads the pointer it published, sees a sequence at or beyond
-/// its own, and returns success without publishing over it.
+/// The history and coverage checks run under the publication lock. A numeric
+/// sequence alone is not proof: an unrelated pulled checkpoint can carry a
+/// higher sequence while omitting this mutation. The operation guard validates
+/// before commit; this second check reports any post-commit conflict without
+/// rolling back committed work. Concurrent publishers reread the winning
+/// generation under the lock and skip only a verified covering publication.
 ///
 /// Item 5 lives at this function's edge: the command already returned
 /// `Ok`, so every failure from the publication tail is a split outcome --
@@ -172,19 +176,14 @@ fn publish_committed_state(probe: &PublicationProbe) -> anyhow::Result<()> {
         .map_err(|source| anyhow::anyhow!(source.to_string()))?;
 
     let checkpoint_base = probe.config.root.join(".beads");
-    if service::read_covered_event_sequence(&checkpoint_base)
-        .is_some_and(|covered| covered >= sequence_after)
-    {
-        // The durable checkpoint already covers the live event sequence;
-        // publishing again would mint a generation with nothing new to
-        // carry (plan 6.2.1 item 3).
-        return Ok(());
-    }
 
     // Serialize with every other publisher (plan 6.2.1 item 4). Past this
     // point the pointer stays stable until this publication finishes.
     let publication_lock =
         service::acquire_checkpoint_publication_lock(&checkpoint_base.join("checkpoint"))?;
+    if !probe.explicit_recovery {
+        service::reconcile::require_writable(&conn, &checkpoint_base)?;
+    }
 
     // The authoritative lost-race decision, under the lock: reread both
     // the live sequence and the pointer another publisher may have just
@@ -192,8 +191,9 @@ fn publish_committed_state(probe: &PublicationProbe) -> anyhow::Result<()> {
     // invocation's own committed sequence too, so this worker's generation
     // has nothing to carry -- success, exit 0, nothing published over.
     if let Some(sequence_now) = service::read_live_event_sequence(&conn) {
-        if service::read_covered_event_sequence(&checkpoint_base)
-            .is_some_and(|covered| covered >= sequence_now)
+        if !probe.explicit_recovery
+            && service::read_covered_event_sequence(&checkpoint_base)
+                .is_some_and(|covered| covered >= sequence_now)
         {
             return Ok(());
         }
@@ -288,16 +288,42 @@ fn execute_command(cli: Cli) -> Result<()> {
     // workspace, so `publication_probe` and every command's `discover` see
     // the same walk. Read before `cli` moves into dispatch.
     store::set_skip_foreign_workspaces(cli.skip_foreign_workspace);
+    let operation_guard = cli_checkpoint_guard::acquire(&cli.command)?;
 
     // Arm post-commit publication before dispatch; a command that fails or
     // mutates nothing never reaches the publish step. The flag is read
     // before `cli` moves into dispatch.
     let no_auto_flush = cli.no_auto_flush;
+    let redaction_command = matches!(&cli.command, Command::Redact(_));
+    if redaction_command && no_auto_flush {
+        return Err(Error::cli_usage(
+            "--no-auto-flush cannot be used with redact; sanitized publication is mandatory",
+        ));
+    }
     let restore_without_probe = matches!(&cli.command, Command::Restore(_));
     let init_without_probe = matches!(&cli.command, Command::Init(_));
-    let probe = publication_probe(no_auto_flush);
+    let prepared_scan = cli_secret_scan::prepare(&cli)?;
+    // `init` owns schema upgrade reporting and snapshots the pre-migration
+    // version itself. The ordinary publication probe opens through the
+    // auto-migrating connection helper, which would perform that upgrade
+    // before dispatch and make `init` falsely report an already-current
+    // schema. Init has dedicated publication handling below for the only
+    // case that needs it: a newly created workspace.
+    let mut probe = if redaction_command || init_without_probe {
+        None
+    } else {
+        publication_probe(no_auto_flush)
+    };
+    if let Some(probe) = &mut probe {
+        probe.explicit_recovery = cli_checkpoint_guard::is_recovery(&cli.command);
+    }
+    // Arm only after the publication probe opens its read connection: the
+    // acknowledgment bridge belongs on the command's mutation connection,
+    // where its audit event commits or rolls back with semantic state.
+    let _acknowledgment_audit = prepared_scan.as_ref().map(|scan| scan.arm_audit());
 
     let result = dispatch_command(cli);
+    drop(operation_guard);
 
     if let Ok(created_new_workspace) = &result {
         if let Some(probe) = probe.as_ref() {
@@ -326,6 +352,7 @@ fn dispatch_command(cli: Cli) -> Result<bool> {
         Command::Close(opts) => cmd_close(opts).map(|_| false),
         Command::Reopen(opts) => cmd_reopen(opts).map(|_| false),
         Command::Resolve(opts) => cmd_resolve(opts).map(|_| false),
+        Command::Redact(opts) => cmd_redact(opts).map(|_| false),
         Command::Label(opts) => cmd_label(opts).map(|_| false),
         Command::Resource(opts) => cmd_resource(opts).map(|_| false),
         Command::Dep(opts) => cmd_dep(opts).map(|_| false),
@@ -345,6 +372,137 @@ fn dispatch_command(cli: Cli) -> Result<bool> {
         Command::Policy(opts) => cmd_policy(opts).map(|_| false),
         Command::Watchdog(opts) => cmd_watchdog(opts).map(|_| false),
     }
+}
+
+fn cmd_redact(opts: cli::RedactOptions) -> Result<()> {
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+    let checkpoint_base = config.root.join(".beads");
+    let checkpoint_config = service::load_checkpoint_config(&checkpoint_base)?;
+    let conn = store::open_configured_connection(&config.database_path())?;
+    let mut store = store::SqliteStore::from_conn(conn);
+    let locks = service::acquire_redaction_locks(&config.root)?;
+
+    if let Some(receipt_id) = opts.resume.as_deref() {
+        let receipt = service::load_redaction_receipt(store.conn(), receipt_id)?;
+        let receipt =
+            if receipt.publication_state == crate::model::redaction::PublicationState::Published {
+                receipt
+            } else {
+                publish_redaction_or_split(
+                    &mut store,
+                    &locks,
+                    &checkpoint_config,
+                    &checkpoint_base,
+                    &receipt,
+                )?
+            };
+        print_redaction_receipt(&receipt, opts.json)?;
+        return Ok(());
+    }
+
+    let fingerprint = opts
+        .finding
+        .as_deref()
+        .ok_or_else(|| Error::cli_usage("--finding or --resume is required"))?;
+    let actor = opts
+        .actor
+        .as_deref()
+        .ok_or_else(|| Error::cli_usage("--actor is required with --finding"))?;
+    let reason = opts
+        .reason
+        .as_deref()
+        .ok_or_else(|| Error::cli_usage("--reason is required with --finding"))?;
+
+    if opts.dry_run {
+        let preview =
+            service::preview_redaction_holding(&mut store, &locks, fingerprint, actor, reason)?;
+        if opts.json {
+            println!("{}", serde_json::to_string_pretty(&preview)?);
+        } else {
+            println!("Finding: {}", preview.finding_fingerprint);
+            println!("Rule: {}", preview.rule_id);
+            println!(
+                "Selector: {} {}",
+                preview.selector.origin_identity, preview.selector.field_path
+            );
+            println!(
+                "Range: {}+{}",
+                preview.selector.byte_start, preview.selector.byte_length
+            );
+            println!("Prior record hash: {}", preview.prior_record_hash);
+            println!("Sanitized record hash: {}", preview.sanitized_record_hash);
+            println!("Previous generation reset: true");
+        }
+        return Ok(());
+    }
+
+    let outcome = service::redact_finding_holding(&mut store, &locks, fingerprint, actor, reason)?;
+    let receipt = if outcome.receipt.publication_state
+        == crate::model::redaction::PublicationState::Published
+    {
+        outcome.receipt
+    } else {
+        publish_redaction_or_split(
+            &mut store,
+            &locks,
+            &checkpoint_config,
+            &checkpoint_base,
+            &outcome.receipt,
+        )?
+    };
+    print_redaction_receipt(&receipt, opts.json)
+}
+
+fn publish_redaction_or_split(
+    store: &mut store::SqliteStore,
+    locks: &service::RedactionLocks,
+    checkpoint_config: &service::CheckpointConfig,
+    checkpoint_base: &std::path::Path,
+    receipt: &crate::model::redaction::RedactionReceipt,
+) -> Result<crate::model::redaction::RedactionReceipt> {
+    service::publish_redaction_checkpoint_holding(
+        locks.checkpoint_publication_lock(),
+        store,
+        checkpoint_config,
+        checkpoint_base,
+        receipt,
+    )
+    .map(|result| {
+        debug_assert_eq!(
+            result.receipt.resulting_generation_id.as_deref(),
+            Some(result.checkpoint.generation_id.as_str())
+        );
+        result.receipt
+    })
+    .map_err(|source| Error::RedactionPublicationFailed {
+        receipt_id: receipt.receipt_id.clone(),
+        source,
+    })
+}
+
+fn print_redaction_receipt(
+    receipt: &crate::model::redaction::RedactionReceipt,
+    json: bool,
+) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(receipt)?);
+    } else {
+        println!("Receipt: {}", receipt.receipt_id);
+        println!("Finding: {}", receipt.finding_fingerprint);
+        println!("Rule: {}", receipt.rule_id);
+        println!(
+            "Selector: {} {}",
+            receipt.selector.origin_identity, receipt.selector.field_path
+        );
+        println!("Prior record hash: {}", receipt.prior_record_hash);
+        println!("Sanitized record hash: {}", receipt.sanitized_record_hash);
+        println!("Publication state: {}", receipt.publication_state.as_str());
+        if let Some(generation) = &receipt.resulting_generation_id {
+            println!("Generation: {generation}");
+        }
+    }
+    Ok(())
 }
 
 fn cmd_restore(opts: cli::RestoreOptions) -> Result<()> {
@@ -450,10 +608,12 @@ fn cmd_restore(opts: cli::RestoreOptions) -> Result<()> {
         eprintln!("  Non-empty target override: {}", report.non_empty_override);
         if report.non_empty_override {
             eprintln!(
-                "  Displaced native state: {} issues, {} events, {} provenance receipts, {} saved views, {} recurrence templates",
+                "  Displaced native state: {} issues, {} events, {} provenance receipts, {} attempt outcomes, {} redaction records, {} saved views, {} recurrence templates",
                 report.displaced.issues,
                 report.displaced.events,
                 report.displaced.provenance_receipts,
+                report.displaced.attempt_outcomes,
+                report.displaced.redaction_records,
                 report.displaced.saved_views,
                 report.displaced.recurrence_templates
             );
@@ -489,8 +649,25 @@ fn cmd_init(opts: cli::InitOptions) -> Result<bool> {
             // deterministic" as the help text already promises.
             let db_path = existing_config.root.join(".beads/beads.db");
             if db_path.exists() {
+                // `SqliteStore::with_path` applies pending migrations while
+                // opening, so capture the prior version through a read-only
+                // connection before constructing the store. Otherwise the
+                // diagnostic always compares the post-migration version to
+                // itself and falsely reports "up to date" after an upgrade.
+                let before_conn = rusqlite::Connection::open_with_flags(
+                    &db_path,
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                )?;
+                let before = before_conn
+                    .query_row(
+                        "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(0);
+                drop(before_conn);
+
                 let mut store = store::SqliteStore::with_path(&db_path)?;
-                let before = store.schema_version()?;
                 store.apply_migrations()?;
                 let after = store.schema_version()?;
                 if after > before {
@@ -577,6 +754,7 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
         let claim = ClaimResult {
             bead_id: enhanced.bead_id.clone(),
             assignee: enhanced.assignee.clone(),
+            claim_epoch: enhanced.claim_epoch,
         };
         (enhanced, claim)
     } else {
@@ -595,6 +773,7 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
         let enhanced = service::EnhancedClaimResult {
             bead_id: claim.bead_id.clone(),
             assignee: claim.assignee.clone(),
+            claim_epoch: claim.claim_epoch,
             lease: None, // Intelligent policies don't include lease info in basic result
         };
         (enhanced, claim)
@@ -767,6 +946,24 @@ fn cmd_create(opts: cli::CreateOptions) -> Result<()> {
         opts.resource_keys,
         opts.unique_ref.as_deref(),
     )?;
+
+    // Declare the new issue's blocking graph in the same transaction as the
+    // insert. A blocker that does not exist, a self-edge, or a cycle fails
+    // before the commit below, so the rollback leaves neither the issue nor
+    // a partial edge and the issue never appears on the ready frontier
+    // ahead of its dependencies. A --unique-ref replay resolved to an
+    // existing bead instead; replaying never mutates that bead's graph.
+    if matches!(result.outcome, service::CreateOutcome::Created) {
+        for blocker in &opts.depends_on {
+            service::dependencies::add_dependency_in_tx(
+                &tx,
+                &result.issue.id,
+                blocker,
+                "blocks",
+                None,
+            )?;
+        }
+    }
 
     // Commit transaction
     tx.commit()
@@ -1181,6 +1378,7 @@ fn cmd_resolve(opts: cli::ResolveOptions) -> Result<()> {
         reason: opts.reason.clone(),
         if_revision: opts.if_revision,
         fencing_token: opts.fencing_token.clone(),
+        override_claim: None,
         evidence_refs: opts.evidence_ref.clone(),
         actor: opts.actor.clone(),
         model: opts.model.clone(),
@@ -1189,8 +1387,8 @@ fn cmd_resolve(opts: cli::ResolveOptions) -> Result<()> {
     };
 
     // Execute resolution in transaction
-    let tx = conn.unchecked_transaction()?;
-    let result = service::resolve_attempt(&tx, &workspace_uuid, request);
+    let mut tx = conn.unchecked_transaction()?;
+    let result = service::resolve_attempt(&mut tx, &workspace_uuid, request);
 
     // Handle errors with proper exit codes
     match result {
@@ -1263,6 +1461,7 @@ fn cmd_resource_add(opts: cli::ResourceAddOptions) -> Result<()> {
         &opts.id,
         &opts.keys,
         opts.fencing_token,
+        None,
         "cli",
     )?;
     tx.commit()?;
@@ -1278,6 +1477,7 @@ fn cmd_resource_remove(opts: cli::ResourceRemoveOptions) -> Result<()> {
         &opts.id,
         &opts.keys,
         opts.fencing_token,
+        None,
         "cli",
     )?;
     tx.commit()?;
@@ -1838,9 +2038,6 @@ fn cmd_sync_flush_only(opts: cli::SyncFlushOptions) -> Result<()> {
         }
         if report.relationship
             == service::reconcile::SyncRelationship::CoveredAheadIntegrityFailure.as_str()
-            && report
-                .covered_sequence
-                .is_some_and(|covered| covered > report.live_sequence)
         {
             return Err(Error::integrity(format!(
                 "flush-only refused: covered-ahead integrity failure - {}",
@@ -2360,6 +2557,7 @@ fn cmd_sync_import_diagnostics(opts: cli::SyncImportOptions) -> Result<()> {
 }
 
 fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
+    let json_output = opts.json || opts.format.as_deref() == Some("json");
     // Discover workspace. Doctor is the tool an operator reaches for when the
     // workspace is broken, so it must still run — and report — when the
     // database is missing its schema, rather than failing to start.
@@ -2485,7 +2683,7 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
         eprintln!("Running visibility check...");
         let report = service::doctor::run_visibility_check(&store::SqliteStore::new())?;
 
-        if opts.json {
+        if json_output {
             // Output JSON report
             let json_output = serde_json::to_string_pretty(&report).map_err(|e| {
                 Error::Internal(anyhow::anyhow!(
@@ -2520,8 +2718,8 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
                             eprintln!("  Priority: {}", bead.priority);
 
                             let mut reasons = Vec::new();
-                            if bead.assignee.is_some() {
-                                reasons.push(format!("assignee: {}", bead.assignee.as_ref().unwrap()));
+                            if let Some(assignee) = &bead.assignee {
+                                reasons.push(format!("assignee: {}", assignee));
                             }
                             if bead.manual_blocked {
                                 reasons.push("manually blocked".to_string());
@@ -2560,7 +2758,7 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
         eprintln!("Running starvation check...");
         let report = service::doctor::run_starvation_check(&store::SqliteStore::new())?;
 
-        if opts.json {
+        if json_output {
             // Output JSON report
             let json_output = serde_json::to_string_pretty(&report).map_err(|e| {
                 Error::Internal(anyhow::anyhow!(
@@ -2641,7 +2839,7 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
         let mut store_wrapper = store::SqliteStore::new();
         let result = service::doctor::run_starvation_recovery(&mut store_wrapper, opts.force)?;
 
-        if opts.json {
+        if json_output {
             // Output JSON result
             let json_output = serde_json::to_string_pretty(&result).map_err(|e| {
                 Error::Internal(anyhow::anyhow!(
@@ -2742,7 +2940,7 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
             service::run_diagnostics_with_scopes(&store::SqliteStore::new(), &scopes)?
         };
 
-        if opts.json {
+        if json_output {
             // Output stable JSON diagnostics
             let json_output = serde_json::to_string_pretty(&diagnostics).map_err(|e| {
                 Error::Internal(anyhow::anyhow!("Failed to serialize diagnostics: {}", e))
@@ -2838,6 +3036,9 @@ fn to_needle_json(
     // Add comments array (may be empty)
     if let Some(obj) = json_obj.as_object_mut() {
         obj.insert("comments".to_string(), serde_json::json!(comments));
+        if let Some(claim_epoch) = issue.claim_epoch {
+            obj.insert("claim_epoch".to_string(), serde_json::json!(claim_epoch));
+        }
         if let Some(resource_keys) = issue.extensions.get("resource_keys") {
             obj.insert("resource_keys".to_string(), resource_keys.clone());
         }
@@ -2950,8 +3151,21 @@ fn load_comments(
 }
 
 fn cmd_capabilities(opts: cli::CapabilitiesOptions) -> Result<()> {
-    // Generate capabilities
-    let capabilities = service::generate_capabilities(&opts.profile)?;
+    let workspace_root = match store::WorkspaceConfig::probe()? {
+        store::WorkspaceState::Ready(config) => Some(config.root),
+        store::WorkspaceState::Uninitialized { root, .. } => Some(root),
+        store::WorkspaceState::NotFound | store::WorkspaceState::NotBeadRs { .. } => None,
+    };
+    let secret_mode = match workspace_root {
+        Some(root) => scan::ScanConfig::load_from_workspace_root(&root)
+            .map_err(|error| Error::cli_usage(error.to_string()))?
+            .mode(),
+        None => scan::Mode::Enforce,
+    };
+    let mut capabilities = service::generate_capabilities(&opts.profile)?;
+    if let Some(secret_scan) = capabilities.secret_scan.as_mut() {
+        secret_scan.effective_mode = secret_mode.as_str().to_string();
+    }
 
     // Output as JSON
     let output = serde_json::to_string_pretty(&capabilities)
@@ -3812,7 +4026,10 @@ fn print_human_readable_why(why: &service::WhyExplanation) {
     if let Some(attempt_info) = &why.attempt_info {
         println!("\n=== Attempt Information ===");
         println!("Current Tier: {}", attempt_info.current_tier);
-        println!("Consecutive Failures: {}", attempt_info.consecutive_failures);
+        println!(
+            "Consecutive Failures: {}",
+            attempt_info.consecutive_failures
+        );
         println!("Tier Description: {}", attempt_info.tier_description);
 
         if let Some(last_attempt) = &attempt_info.last_attempt {
@@ -3829,7 +4046,10 @@ fn print_human_readable_why(why: &service::WhyExplanation) {
         }
 
         if !attempt_info.attempt_history.is_empty() {
-            println!("\nAttempt History (most recent {}):", attempt_info.attempt_history.len());
+            println!(
+                "\nAttempt History (most recent {}):",
+                attempt_info.attempt_history.len()
+            );
             for (i, entry) in attempt_info.attempt_history.iter().enumerate() {
                 println!("  {}. {}", i + 1, entry.attempt_id);
                 println!("     Outcome: {}", entry.outcome);
@@ -4299,7 +4519,8 @@ fn cmd_watchdog(opts: cli::WatchdogOptions) -> Result<()> {
     };
 
     // Create watchdog configuration
-    let watchdog_config = service::config_from_options(&opts.threshold, opts.force, &config.root)?;
+    let watchdog_config =
+        service::config_from_options(&opts.threshold, opts.dry_run, opts.force, &config.root)?;
 
     // Open database connection
     let db_path = config.database_path();

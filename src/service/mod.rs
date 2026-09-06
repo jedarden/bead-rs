@@ -21,6 +21,8 @@ pub mod leases;
 pub mod lifecycle;
 pub mod manifest;
 pub mod query;
+#[allow(dead_code)]
+pub mod redaction;
 pub mod watchdog;
 
 pub mod reconcile;
@@ -29,6 +31,7 @@ pub mod rehearsal;
 pub mod resource_locks;
 pub mod scheduling;
 pub mod schema;
+pub mod secret_diagnostics;
 pub mod why;
 
 // Archaeology report types are public library API; the binary uses the command
@@ -48,8 +51,8 @@ pub use checkpoint::{
     acquire_checkpoint_publication_lock, flush_checkpoint, forensic_checkpoint_status,
     fork_workspace_identity, import_checkpoint_with_diagnostics, import_forensic_checkpoint,
     load_checkpoint_config, publish_forensic_checkpoint, publish_forensic_checkpoint_holding,
-    read_covered_event_sequence, read_live_event_sequence, restore_verified_generation,
-    verify_restore_source, CheckpointConfig,
+    publish_redaction_checkpoint_holding, read_covered_event_sequence, read_live_event_sequence,
+    restore_verified_generation, verify_restore_source, CheckpointConfig,
 };
 // The fork report type is public library API (callers of
 // `fork_workspace_identity` name it) but the binary holds it only as a
@@ -89,8 +92,18 @@ pub use issues::list_issues;
 pub use issues::{add_comment, analyze_exclusion, ExclusionAnalysis};
 #[allow(unused_imports)]
 pub use issues::{create_issue, create_issue_with_unique_ref, CreateOutcome};
-pub use leases::{validate_lease_for_mutation, LeaseClaimResult};
-pub use lifecycle::{close_issue, release_issue, reopen_issue, update_issue};
+#[allow(unused_imports)]
+pub use leases::{
+    current_claim_epoch, validate_claim_epoch_for_mutation, validate_lease_for_mutation,
+    LeaseClaimResult,
+};
+#[allow(unused_imports)]
+pub use lifecycle::enforce_claimant_credential;
+#[allow(unused_imports)]
+pub use lifecycle::{
+    close_issue, close_issue_with_override, release_issue, release_issue_with_override,
+    reopen_issue, reopen_issue_with_override, update_issue, update_issue_with_override,
+};
 pub use manifest::{load_manifest, manifest_commit, manifest_dry_run, ManifestReport};
 pub use query::{
     delete_view, execute_query, get_view, list_views, parse_query, project_issue, save_view, Query,
@@ -98,6 +111,11 @@ pub use query::{
 pub use recurrence::{
     create_template, delete_template, get_materialization_history, get_template, list_templates,
     materialize_next_occurrence,
+};
+#[allow(unused_imports)]
+pub use redaction::{
+    acquire_redaction_locks, load_redaction_receipt, preview_redaction_holding, redact_finding,
+    redact_finding_holding, RedactionLocks, RedactionOutcome, RedactionPreview,
 };
 pub use rehearsal::run_recovery_rehearsal;
 pub use schema::{

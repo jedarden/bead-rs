@@ -12,5 +12,8 @@
   "rust_version": "1.97.1",
   "binary_size_bytes": 7305144,
   "binary_size_human": "7.0M",
-  "build_command": "cargo build --release"
+  "build_command": "cargo build --release",
+  "restored_lineage_twin_sha": "861cdcbfebeb70a9ebc6a2e33ee98cef97274fec",
+  "restored_lineage_twin_short": "861cdcb",
+  "restored_lineage_note": "git_commit_sha above is built-from provenance: it names a commit of the force-pushed-away lineage that no longer exists in any clone (verified 2026-09-03). restored_lineage_twin_sha is its content twin (same subject, author date, tree content) and is the rebuild target via scripts/build-from-archive.sh. The recorded binary_sha256 is hash-only, not rebuild-verifiable, until SOURCE_DATE_EPOCH determinism lands (beadrs-dc295092 / beadrs-baba38b8). Re-pinned by beadrs-e030cc56, 2026-09-03. Twin re-verified 2026-09-03 by beadrs-ed36ef53 (close-out doc reconciliation): twin commit resolves with the recorded subject, git_commit_sha is confirmed unresolvable here, and binary_sha256 matches the pinned bytes on disk."
 }

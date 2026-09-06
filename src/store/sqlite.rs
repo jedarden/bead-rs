@@ -45,6 +45,7 @@ pub fn open_configured_connection(path: &Path) -> SqliteResult<Connection> {
     // would stay there while newer code assumed the tables its migrations add.
     // `migrate_if_pending` is a read when there is nothing to do.
     migrations::migrate_if_pending(&conn)?;
+    crate::scan::install_acknowledgment_audit_bridge(&conn)?;
 
     Ok(conn)
 }

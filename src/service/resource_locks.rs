@@ -129,6 +129,7 @@ pub fn add_resource_keys(
     issue_id: &str,
     raw_keys: &[String],
     fencing_token: Option<i64>,
+    override_claim: Option<&str>,
 ) -> Result<Vec<String>> {
     let mut keys = get_resource_keys(tx, issue_id)?;
     let additions = normalize_resource_keys(raw_keys.iter().map(String::as_str))?;
@@ -138,7 +139,7 @@ pub fn add_resource_keys(
         }
     }
     let keys = normalize_resource_keys(keys)?;
-    set_resource_keys(tx, issue_id, &keys, fencing_token)?;
+    set_resource_keys(tx, issue_id, &keys, fencing_token, override_claim)?;
     Ok(keys)
 }
 
@@ -148,6 +149,7 @@ pub fn remove_resource_keys(
     issue_id: &str,
     raw_keys: &[String],
     fencing_token: Option<i64>,
+    override_claim: Option<&str>,
 ) -> Result<Vec<String>> {
     let remove = normalize_resource_keys(raw_keys)?;
     let current = get_resource_keys(tx, issue_id)?;
@@ -155,7 +157,7 @@ pub fn remove_resource_keys(
         .into_iter()
         .filter(|key| !remove.contains(key))
         .collect::<Vec<_>>();
-    set_resource_keys(tx, issue_id, &remaining, fencing_token)?;
+    set_resource_keys(tx, issue_id, &remaining, fencing_token, override_claim)?;
     Ok(remaining)
 }
 
@@ -165,10 +167,11 @@ pub fn add_resource_keys_with_event(
     issue_id: &str,
     raw_keys: &[String],
     fencing_token: Option<i64>,
+    override_claim: Option<&str>,
     actor: &str,
 ) -> Result<Vec<String>> {
     let before = get_resource_keys(tx, issue_id)?;
-    let keys = add_resource_keys(tx, issue_id, raw_keys, fencing_token)?;
+    let keys = add_resource_keys(tx, issue_id, raw_keys, fencing_token, override_claim)?;
     if before != keys {
         append_resource_event(tx, issue_id, "resource_keys_added", &keys, actor)?;
     }
@@ -181,10 +184,11 @@ pub fn remove_resource_keys_with_event(
     issue_id: &str,
     raw_keys: &[String],
     fencing_token: Option<i64>,
+    override_claim: Option<&str>,
     actor: &str,
 ) -> Result<Vec<String>> {
     let before = get_resource_keys(tx, issue_id)?;
-    let keys = remove_resource_keys(tx, issue_id, raw_keys, fencing_token)?;
+    let keys = remove_resource_keys(tx, issue_id, raw_keys, fencing_token, override_claim)?;
     if before != keys {
         append_resource_event(tx, issue_id, "resource_keys_removed", &keys, actor)?;
     }
@@ -197,6 +201,7 @@ pub fn set_resource_keys(
     issue_id: &str,
     raw_keys: &[String],
     fencing_token: Option<i64>,
+    override_claim: Option<&str>,
 ) -> Result<()> {
     let keys = normalize_resource_keys(raw_keys.iter().map(String::as_str))?;
     let issue_state: Option<(String, Option<String>)> = tx
@@ -210,9 +215,17 @@ pub fn set_resource_keys(
         return Err(Error::not_found(format!("Issue not found: {}", issue_id)));
     };
 
-    if let Some(assignee) = assignee.as_deref() {
-        crate::service::validate_lease_for_mutation(tx, issue_id, assignee, fencing_token)?;
-    }
+    // Enforce the claim-epoch credential (or apply the audited override)
+    // while the issue is claimed: resource-lock changes are claimant-owned
+    // mutations, so a stale credential conflicts exactly as it does on
+    // update/release/close/reopen.
+    crate::service::lifecycle::enforce_claimant_credential(
+        tx,
+        issue_id,
+        assignee.as_deref(),
+        fencing_token,
+        override_claim,
+    )?;
 
     // Declaration and lock changes share the caller's transaction. A
     // conflicting replacement therefore rolls back both the declaration and

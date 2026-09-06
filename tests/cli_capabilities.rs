@@ -8,6 +8,59 @@ use std::fs;
 use std::path::Path;
 
 #[test]
+fn secret_scan_capability_uses_compiled_default_without_workspace() {
+    let workspace = tempfile::tempdir().unwrap();
+    let output = Command::cargo_bin("bead")
+        .unwrap()
+        .current_dir(workspace.path())
+        .arg("capabilities")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let capabilities: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        capabilities["secret_scan"]["contract_identity"],
+        "urn:bead-rs:spec:secret-rejection:v1"
+    );
+    assert_eq!(capabilities["secret_scan"]["ruleset_version"], 3);
+    assert_eq!(capabilities["secret_scan"]["effective_mode"], "enforce");
+    assert_eq!(capabilities["secret_scan"]["blocking"], true);
+    assert_eq!(capabilities["secret_scan"]["advisory"], true);
+    assert_eq!(
+        capabilities["secret_scan"]["exact_fingerprint_acknowledgment"],
+        true
+    );
+}
+
+#[test]
+fn secret_scan_capability_reports_effective_workspace_mode() {
+    let workspace = tempfile::Builder::new()
+        .prefix("bead-secret-capability-")
+        .tempdir_in("/var/tmp")
+        .unwrap();
+    Command::cargo_bin("bead")
+        .unwrap()
+        .current_dir(workspace.path())
+        .args(["init", "--no-auto-flush"])
+        .assert()
+        .success();
+    let config_path = workspace.path().join(".beads/config.json");
+    let mut config: Value = serde_json::from_slice(&std::fs::read(&config_path).unwrap()).unwrap();
+    config["secret_scan"] = serde_json::json!({"mode": "off"});
+    std::fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+
+    let output = Command::cargo_bin("bead")
+        .unwrap()
+        .current_dir(workspace.path())
+        .arg("capabilities")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let capabilities: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(capabilities["secret_scan"]["effective_mode"], "off");
+}
+
+#[test]
 #[serial]
 fn test_capabilities_no_workspace() {
     let temp = tempfile::tempdir().unwrap();
@@ -287,7 +340,7 @@ fn auto_flush_advertisement_ignores_workspace_state() {
     Command::cargo_bin("bead")
         .unwrap()
         .current_dir(workspace.path())
-        .args(["init", "--prefix", "handshake"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "handshake"])
         .assert()
         .success();
 
@@ -340,7 +393,7 @@ fn auto_flush_advertisement_matches_binary_behavior() {
 
     let workspace = tempfile::tempdir().unwrap();
     for args in [
-        vec!["init", "--prefix", "advertise"],
+        vec!["init", "--skip-foreign-workspace", "--prefix", "advertise"],
         vec!["create", "--title", "handshake behavior probe"],
     ] {
         Command::cargo_bin("bead")

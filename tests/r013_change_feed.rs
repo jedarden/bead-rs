@@ -369,15 +369,23 @@ fn test_change_feed_multiple_mutations() {
     let snapshot1 = get_latest_cursor_json(workspace.path());
     let cursor1 = snapshot1["max_sequence"].as_i64().unwrap();
 
-    // Perform multiple mutations
-    Command::cargo_bin("bead")
+    // Perform multiple mutations. The fence makes the claim's epoch the
+    // credential for each of them, so capture it here and present it on every
+    // later mutation.
+    let claim_output = Command::cargo_bin("bead")
         .unwrap()
         .arg("claim")
         .arg("--assignee")
         .arg("test-worker")
+        .arg("--json")
         .current_dir(workspace.path())
         .assert()
-        .success();
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let claim_result: Value = serde_json::from_slice(&claim_output).unwrap();
+    let epoch = claim_result["claim_epoch"].as_i64().unwrap().to_string();
 
     Command::cargo_bin("bead")
         .unwrap()
@@ -385,6 +393,8 @@ fn test_change_feed_multiple_mutations() {
         .arg(issue_id)
         .arg("--notes")
         .arg("Progress made")
+        .arg("--fencing-token")
+        .arg(&epoch)
         .current_dir(workspace.path())
         .assert()
         .success();
@@ -393,6 +403,8 @@ fn test_change_feed_multiple_mutations() {
         .unwrap()
         .arg("release")
         .arg(issue_id)
+        .arg("--fencing-token")
+        .arg(&epoch)
         .current_dir(workspace.path())
         .assert()
         .success();

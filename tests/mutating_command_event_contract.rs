@@ -69,6 +69,7 @@ const SECTION_5_MUTATING: &[&str] = &[
     "bead release",
     "bead close",
     "bead reopen",
+    "bead redact",
     "bead label add",
     "bead label remove",
     "bead dep add",
@@ -157,6 +158,57 @@ fn registry() -> Vec<RegisteredCommand> {
             class: Mutating,
             reason: "a semantic reopen appends a `reopened` event",
             invoke: |f| vec!["reopen".into(), f.closed.clone()],
+        },
+        RegisteredCommand {
+            path: "bead redact",
+            class: Mutating,
+            reason: "a committed historical redaction appends one `historical_redaction` event",
+            invoke: |f| {
+                vec![
+                    "redact".into(),
+                    "--finding".into(),
+                    f.redaction_fingerprint.clone(),
+                    "--actor".into(),
+                    "contract-probe".into(),
+                    "--reason".into(),
+                    "exercise event contract".into(),
+                ]
+            },
+        },
+        RegisteredCommand {
+            path: "bead resolve",
+            class: Mutating,
+            reason: "attempt resolution records its receipt and lifecycle event in one transaction",
+            invoke: |f| {
+                vec![
+                    "resolve".into(),
+                    f.resolve_target.clone(),
+                    "--attempt-id".into(),
+                    "urn:needle:attempt:event-contract".into(),
+                    "--outcome".into(),
+                    "verified_success".into(),
+                    "--action".into(),
+                    "close".into(),
+                    "--reason".into(),
+                    "contract probe complete".into(),
+                    "--actor".into(),
+                    "contract-probe".into(),
+                ]
+            },
+        },
+        RegisteredCommand {
+            path: "bead watchdog",
+            class: Mutating,
+            reason: "a forced stale-claim recovery appends audited override and release events",
+            invoke: |_| {
+                vec![
+                    "watchdog".into(),
+                    "--threshold".into(),
+                    "1m".into(),
+                    "--force".into(),
+                    "--json".into(),
+                ]
+            },
         },
         // ---- label mutations ----
         RegisteredCommand {
@@ -407,13 +459,19 @@ fn registry() -> Vec<RegisteredCommand> {
             reason: "declaring keys appends a `resource_keys_added` audit event in the \
                      declaring transaction",
             invoke: |f| {
-                vec![
+                let mut args = vec![
                     "resource".into(),
                     "add".into(),
                     f.update_target.clone(),
                     "--key".into(),
                     "probe:gpu0".into(),
-                ]
+                ];
+                // The sweep's earlier `bead claim` may hold this issue; a
+                // claimed issue only mutates for its own credential.
+                if let Some(credential) = held_credential(&f.workspace, &f.update_target) {
+                    args.extend(["--fencing-token".into(), credential]);
+                }
+                args
             },
         },
         RegisteredCommand {
@@ -428,13 +486,17 @@ fn registry() -> Vec<RegisteredCommand> {
             reason: "removing keys appends a `resource_keys_removed` audit event in the \
                      removing transaction",
             invoke: |f| {
-                vec![
+                let mut args = vec![
                     "resource".into(),
                     "remove".into(),
                     f.update_target.clone(),
                     "--key".into(),
                     "probe:gpu0".into(),
-                ]
+                ];
+                if let Some(credential) = held_credential(&f.workspace, &f.update_target) {
+                    args.extend(["--fencing-token".into(), credential]);
+                }
+                args
             },
         },
         // ---- workspace identity and remote reconciliation ----
@@ -474,6 +536,12 @@ fn registry() -> Vec<RegisteredCommand> {
                     "10".into(),
                 ]
             },
+        },
+        RegisteredCommand {
+            path: "bead analyze-exclusion",
+            class: NonMutating,
+            reason: "read-only explanation of why open issues are absent from the ready frontier",
+            invoke: |_| vec!["analyze-exclusion".into(), "--json".into()],
         },
         RegisteredCommand {
             path: "bead show",
@@ -760,7 +828,10 @@ fn registry() -> Vec<RegisteredCommand> {
         },
     ];
 
-    cmds.sort_by(|a, b| a.path.cmp(b.path));
+    // Redaction is intentionally last in the mutating sweep. The restore
+    // probe uses the frozen setup generation, which predates this command's
+    // receipt and therefore must not be allowed to erase it.
+    cmds.sort_by(|a, b| (a.path == "bead redact", a.path).cmp(&(b.path == "bead redact", b.path)));
     cmds
 }
 
@@ -792,6 +863,10 @@ struct Fixture {
     to_close: String,
     /// Closed in setup: target for `reopen`.
     closed: String,
+    /// Open issue resolved through the attempt-outcome transaction.
+    resolve_target: String,
+    /// Opaque scanner identity for the historical-redaction probe.
+    redaction_fingerprint: String,
     /// Recurrence template created in setup: target for `materialize`.
     template: String,
     /// Created and deleted only by the NonMutating phase.
@@ -818,6 +893,25 @@ fn create_issue(workspace: &Path, title: &str) -> String {
         .stdout
         .clone();
     String::from_utf8(output).unwrap().trim().to_string()
+}
+
+/// The claim-epoch credential `issue` currently holds, if any. The sweep runs
+/// every mutating command against one shared fixture in registry order, so a
+/// command can be handed an issue an earlier command claimed -- and a claimed
+/// issue only mutates for the credential its claim issued (see
+/// tests/claim_epoch.rs). `None` for an unclaimed issue, where no credential
+/// exists to present.
+fn held_credential(workspace: &Path, issue: &str) -> Option<String> {
+    let output = bead(workspace)
+        .args(["show", issue, "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let shown: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    let epoch = shown[0]["claim_epoch"].as_i64()?;
+    (epoch > 0).then(|| epoch.to_string())
 }
 
 fn copy_tree(from: &Path, to: &Path) {
@@ -855,6 +949,9 @@ fn build_fixture() -> Fixture {
     let in_progress = create_issue(&workspace, "release target");
     let to_close = create_issue(&workspace, "close target");
     let closed = create_issue(&workspace, "reopen target");
+    let resolve_target = create_issue(&workspace, "resolve target");
+    let watchdog_target = create_issue(&workspace, "watchdog target");
+    let redact_target = create_issue(&workspace, "redaction target");
 
     bead(&workspace)
         .args(["update", &in_progress, "--status", "in_progress"])
@@ -862,6 +959,17 @@ fn build_fixture() -> Fixture {
         .success();
     bead(&workspace)
         .args(["close", &closed, "--reason", "fixture setup"])
+        .assert()
+        .success();
+    bead(&workspace)
+        .args([
+            "update",
+            &watchdog_target,
+            "--status",
+            "in_progress",
+            "--assignee",
+            "watchdog-contract-probe",
+        ])
         .assert()
         .success();
     bead(&workspace)
@@ -883,6 +991,44 @@ fn build_fixture() -> Fixture {
         ])
         .assert()
         .success();
+
+    // Historical findings cannot be seeded through public argv because the
+    // rejection boundary correctly blocks them. Model a pre-feature record
+    // directly, advance the forensic event sequence, then retain only the
+    // scanner fingerprint for the command registry.
+    let shaped = ["AK", "IA", "7Q9W2E4R6T8Y1U3I"].concat();
+    let conn = rusqlite::Connection::open(workspace.join(".beads/beads.db")).unwrap();
+    conn.execute(
+        "UPDATE issues
+         SET description = ?1, revision = revision + 1,
+             updated_at = '2026-09-03T00:00:00Z'
+         WHERE id = ?2",
+        rusqlite::params![&shaped, &redact_target],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO events (issue_id, kind, actor, time, detail)
+         VALUES (?1, 'historical_fixture_seed', 'contract-probe',
+                 '2026-09-03T00:00:00Z', '{}')",
+        [&redact_target],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE issues SET updated_at = '2020-01-01T00:00:00Z' WHERE id = ?1",
+        [&watchdog_target],
+    )
+    .unwrap();
+    let redaction_fingerprint = bead_rs::service::secret_diagnostics::scan_live_findings(&conn)
+        .unwrap()
+        .into_iter()
+        .find(|finding| {
+            finding.rule_id == "aws-access-key-id"
+                && finding.field_path == "description"
+                && finding.is_blocking_match()
+        })
+        .expect("historical fixture must produce one blocking finding")
+        .fingerprint;
+    drop(conn);
     bead(&workspace)
         .args([
             "data",
@@ -961,6 +1107,8 @@ fn build_fixture() -> Fixture {
         in_progress,
         to_close,
         closed,
+        resolve_target,
+        redaction_fingerprint,
         template: "probe-template".to_string(),
         spare_template: "probe-spare-template".to_string(),
         foreign_checkpoint,

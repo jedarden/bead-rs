@@ -363,7 +363,8 @@ pub fn execute_query(conn: &Connection, query: &Query) -> Result<Vec<Issue>> {
     let sql = format!(
         "SELECT id, title, priority, base_status, created_at, updated_at,
                 description, notes, assignee, issue_type, manual_blocked,
-                closed_at, close_reason, source_repo, profile, schema_ref
+                closed_at, close_reason, source_repo, profile, schema_ref,
+                NULLIF(claim_epoch, 0)
          FROM issues
          WHERE {}
          ORDER BY {}
@@ -397,6 +398,7 @@ pub fn execute_query(conn: &Connection, query: &Query) -> Result<Vec<Issue>> {
                 source_repo: row.get(13)?,
                 profile: row.get(14)?,
                 schema_ref: row.get(15)?,
+                claim_epoch: row.get(16)?,
                 data: None,                 // Data loaded separately if needed
                 extensions: HashMap::new(), // Extensions loaded separately if needed
                 revision: None,             // Revision loaded separately if needed

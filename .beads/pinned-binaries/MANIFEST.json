@@ -18,16 +18,17 @@
         "checkpoint_persistence": true,
         "atomic_resolution": true
       },
-      "status": "built_and_pinned"
+      "status": "built_and_pinned",
+      "build_notes": "Reconciled 2026-09-03 (beadrs-da594f4b). The recorded commit 5bb28bf7b853be7ba244adf3ce4c76b8d1bd01e5 was lost with the 2026-09-02 twin-lineage force-push: it resolves in no clone (git cat-file -t fails) and no origin ref contains it. Its restored-lineage content twin is e38430e42d2d915e8035dbaf7bcd59b43e12acbb - same subject ('docs(boundaries): document attempt-resolution feature boundary commits') and author date (2026-09-01T15:45:58-04:00) - and is reachable from origin/main; that twin is the rebuild target (scripts/build-from-archive.sh e38430e42d2d915e8035dbaf7bcd59b43e12acbb --features attempt-resolution). git_commit above stays as built-from provenance, not a rebuild target: the binary's embedded version string is 'bead 0.2.6 (5bb28bf-dirty 2026-09-01T20:16:37Z)'. The binary artifact itself was committed in 266a4e5 (feat(pluck): set up pinned binaries and compatibility framework), an origin/main ancestor. Verified live 2026-09-03: on-disk sha256 matches this entry; capabilities reports attempt_outcome.supported=true with the full outcome and action sets plus resolve_receipt/resolve_request schemas and a live 'resolve' subcommand (resolve --help exits 0). sha256 is hash-only, not rebuild-verifiable (build.rs embeds a wall-clock timestamp) - verify by byte comparison against the committed pin, never by rebuilding."
     },
     "pre_feature": {
       "name": "bead-pre-feature",
-      "path": ".beads/pinned-binaries/bead-pre-feature",
-      "git_commit": "53dade07ff2b9afda87e67459a825ec7e138dafa",
-      "git_tag": "attempt-resolution-pre",
-      "commit_date": "2026-08-31T09:24:28-04:00",
-      "commit_message": "feat(recovery): replace heuristic starvation mutations with recommendation-only diagnostics",
-      "sha256": null,
+      "path": "pinned-binaries/bead-pre-feature",
+      "git_commit": "af023ad47740cf5458f52398e70937b2cc1c18df",
+      "git_tag": null,
+      "commit_date": "2026-08-29T22:45:04-04:00",
+      "commit_message": "chore(beadrs-4fcead71): release 0.2.4 — v0.2.3 tag landed behind a checkpoint commit",
+      "sha256": "7e0e73defebb75fc987ddf8b6fb959f47c73ccbbcd7e066e2af302a6a43db6b5",
       "capabilities": {
         "attempt_outcome": false,
         "resolve_command": false,
@@ -35,13 +36,13 @@
         "checkpoint_persistence": false,
         "atomic_resolution": false
       },
-      "status": "requires_manual_build",
-      "build_notes": "This commit needs minor fixes to compile: replace 'lease_valid_but_stale' with 'alive_but_stale' in src/main.rs (3 occurrences) - these are WatchdogResult field renames from later commits."
+      "status": "built_and_pinned",
+      "build_notes": "Reconciled 2026-09-03 (beadrs-455a56ac). The original target, tag attempt-resolution-pre / commit 53dade07ff2b9afda87e67459a825ec7e138dafa, was lost with the 2026-09-02 twin-lineage force-push: it resolves in no clone and origin serves no such ref, so the documented compile fix (lease_valid_but_stale -> alive_but_stale, 3 occurrences in src/main.rs) has no tree left to apply to. That commit's restored-lineage content twin is 785e4bb8d5505018111f457b4935784470a6edb3 (same subject, author date). Rather than pin a second, divergent binary under this name, this entry points at the canonical pre-feature pin of the reconciled registry (pinned-binaries/commits.json 'pre_feature', pinned-binaries/COMMITS.md): the 0.2.4 baseline built from af023ad, whose content twin is ea4e317e697306275aa1a781497a133f472c0df5. Verified live 2026-09-03: --version reports 'bead 0.2.4 (af023ad 2026-09-01T19:14:12Z)'; sha256 matches pinned-binaries/bead-pre-feature.metadata.json; 'resolve' is an unrecognized subcommand; 'capabilities' output carries no attempt_* keys. sha256 is hash-only, not rebuild-verifiable (build.rs embeds a wall-clock timestamp) - verify by byte comparison against the committed pin, never by rebuilding."
     }
   },
   "test_framework": {
     "path": "tests/pinned_binary_capability.rs",
-    "test_count": 8,
+    "test_count": 10,
     "validates": [
       "capability_detection",
       "resolve_command_availability",
@@ -55,19 +56,20 @@
   },
   "usage": {
     "feature_enabled": {
-      "test_capability": "./bead-feature-enabled capabilities --format json | jq '.attempt_outcome'",
+      "test_capability": "./bead-feature-enabled capabilities | jq '.attempt_outcome' (output is always JSON; --format is accepted by no pin)",
       "test_resolve": "./bead-feature-enabled resolve --help",
       "test_why": "./bead-feature-enabled why bead-123abc"
     },
     "pre_feature": {
-      "build_instructions": "git checkout attempt-resolution-pre && [fix field names] && cargo build --release && cp target/release/bead .beads/pinned-binaries/bead-pre-feature",
-      "test_capability": "./bead-pre-feature capabilities --format json | jq '.attempt_outcome' (should be false/null)",
-      "test_resolve": "./bead-pre-feature resolve --help (should fail with unrecognized command)"
+      "verify": "sha256sum pinned-binaries/bead-pre-feature (must match the pre_feature sha256 above; never rebuild to verify - the hash is not reproducible)",
+      "test_version": "./pinned-binaries/bead-pre-feature --version (reports 'bead 0.2.4 (af023ad 2026-09-01T19:14:12Z)')",
+      "test_capability": "./pinned-binaries/bead-pre-feature capabilities (output carries no attempt_* keys; --format does not exist on 0.2.4)",
+      "test_resolve": "./pinned-binaries/bead-pre-feature resolve --help (fails: unrecognized subcommand 'resolve')"
     }
   },
   "validation": {
     "needle_fallback": "Validated via doctor --starvation-recovery mode",
     "atomic_paths": "Validated via resolve command exit codes and transaction semantics",
-    "capability_contract": "Validated via capabilities --format json schema"
+    "capability_contract": "Validated via the capabilities document schema (output is always JSON on stdout; --format is accepted by no pin)"
   }
 }

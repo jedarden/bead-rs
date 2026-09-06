@@ -5,7 +5,7 @@
 //! duplicate assignments under concurrent access.
 
 use crate::error::{Error, Result};
-use crate::service::leases::{create_lease, renew_lease, DEFAULT_LEASE_TTL};
+use crate::service::leases::{create_lease, mint_claim_epoch, renew_lease, DEFAULT_LEASE_TTL};
 use crate::service::resource_locks::{acquire_issue_locks, release_expired_resource_locks};
 use crate::service::scheduling::{self, SchedulingPolicy};
 use rusqlite::OptionalExtension;
@@ -19,6 +19,12 @@ use time::OffsetDateTime;
 pub struct ClaimResult {
     pub bead_id: Option<String>,
     pub assignee: String,
+    /// Claim-epoch credential minted by this claim
+    ///
+    /// The number the claimant presents as `--fencing-token` to mutate the
+    /// issue for as long as it holds it. `None` when nothing was claimed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claim_epoch: Option<i64>,
 }
 
 /// Decision trace version for compatibility tracking
@@ -193,6 +199,7 @@ pub fn claim_issue(
             return Ok(ClaimResult {
                 bead_id: None,
                 assignee: assignee.to_string(),
+                claim_epoch: None,
             });
         }
     };
@@ -207,12 +214,17 @@ pub fn claim_issue(
         [assignee, &now, &issue_id],
     )?;
 
+    // Mint the claim-epoch credential for this tenure, in the same
+    // transaction as the assignment it credentials
+    let claim_epoch = mint_claim_epoch(tx, &issue_id)?;
+
     acquire_issue_locks(tx, &issue_id, None)?;
 
     // Record the claim audit event
     let event_detail = json!({
         "policy": "fifo-v1",
-        "resulting_base_status": "in_progress"
+        "resulting_base_status": "in_progress",
+        "claim_epoch": claim_epoch
     });
 
     let event_detail_json = serde_json::to_string(&event_detail).map_err(|e| {
@@ -231,6 +243,7 @@ pub fn claim_issue(
     Ok(ClaimResult {
         bead_id: Some(issue_id),
         assignee: assignee.to_string(),
+        claim_epoch: Some(claim_epoch),
     })
 }
 
@@ -239,6 +252,13 @@ pub fn claim_issue(
 pub struct EnhancedClaimResult {
     pub bead_id: Option<String>,
     pub assignee: String,
+    /// Claim-epoch credential minted by this claim
+    ///
+    /// Machine-readable on every successful claim, leased or not: this is the
+    /// number the claimant presents as `--fencing-token` on later mutations.
+    /// For a leased claim it equals `lease.fencing_token`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claim_epoch: Option<i64>,
     pub lease: Option<crate::service::LeaseClaimResult>,
 }
 
@@ -301,6 +321,7 @@ pub fn claim_issue_with_lease(
             return Ok(EnhancedClaimResult {
                 bead_id: None,
                 assignee: assignee.to_string(),
+                claim_epoch: None,
                 lease: None,
             });
         }
@@ -316,9 +337,15 @@ pub fn claim_issue_with_lease(
         [assignee, &now, &issue_id],
     )?;
 
+    // Mint the claim-epoch credential for this tenure, in the same
+    // transaction as the assignment it credentials. A leased claim writes its
+    // lease row with this epoch as the fencing token, so the lease row and the
+    // issue's epoch are one credential.
+    let claim_epoch = mint_claim_epoch(tx, &issue_id)?;
+
     // Create lease if requested
     let lease_info = if let Some(ttl) = lease_ttl_seconds {
-        Some(create_lease(tx, &issue_id, assignee, ttl)?)
+        Some(create_lease(tx, &issue_id, assignee, ttl, claim_epoch)?)
     } else {
         None
     };
@@ -335,12 +362,14 @@ pub fn claim_issue_with_lease(
             "policy": "fifo-v1",
             "resulting_base_status": "in_progress",
             "lease_ttl_seconds": lease_ttl_seconds,
+            "claim_epoch": claim_epoch,
             "with_lease": true
         })
     } else {
         json!({
             "policy": "fifo-v1",
             "resulting_base_status": "in_progress",
+            "claim_epoch": claim_epoch,
             "with_lease": false
         })
     };
@@ -361,6 +390,7 @@ pub fn claim_issue_with_lease(
     Ok(EnhancedClaimResult {
         bead_id: Some(issue_id),
         assignee: assignee.to_string(),
+        claim_epoch: Some(claim_epoch),
         lease: lease_info,
     })
 }
@@ -401,6 +431,7 @@ fn claim_with_renewal(
             return Ok(EnhancedClaimResult {
                 bead_id: None,
                 assignee: assignee.to_string(),
+                claim_epoch: None,
                 lease: None,
             });
         }
@@ -409,14 +440,18 @@ fn claim_with_renewal(
     // Use default TTL if not specified
     let ttl = lease_ttl_seconds.unwrap_or(DEFAULT_LEASE_TTL);
 
-    // Renew the lease
-    let renewed_lease = renew_lease(tx, &issue_id, assignee, ttl)?;
+    // Rotate the tenure onto a freshly minted epoch, then move the lease row
+    // onto it. The renewing holder reads the new credential from the result;
+    // every other copy of the previous credential stops working at commit.
+    let claim_epoch = mint_claim_epoch(tx, &issue_id)?;
+    let renewed_lease = renew_lease(tx, &issue_id, assignee, ttl, claim_epoch)?;
 
     // Record the renewal audit event
     let event_detail = json!({
         "policy": "fifo-v1",
         "action": "lease_renewed",
         "lease_ttl_seconds": ttl,
+        "claim_epoch": claim_epoch,
         "fencing_token": renewed_lease.fencing_token
     });
 
@@ -436,6 +471,7 @@ fn claim_with_renewal(
     Ok(EnhancedClaimResult {
         bead_id: Some(issue_id),
         assignee: assignee.to_string(),
+        claim_epoch: Some(renewed_lease.fencing_token),
         lease: Some(renewed_lease),
     })
 }
@@ -461,6 +497,7 @@ fn claim_with_fencing_token(
                AND i.base_status = 'in_progress'
                AND l.expires_at > ?2
                AND l.fencing_token = ?3
+               AND l.fencing_token = i.claim_epoch
              LIMIT 1",
             [assignee, &now, &expected_token.to_string()],
             |row| Ok((Some(row.get::<_, String>(0)?), Some(row.get::<_, i64>(1)?))),
@@ -473,15 +510,20 @@ fn claim_with_fencing_token(
 
     match (matching_issue, actual_token) {
         (Some(issue_id), Some(token)) if token == expected_token => {
-            // Valid fencing token found - perform claim with new lease
+            // Valid fencing token found - perform claim with new lease. The
+            // presented credential must be the issue's current epoch (the
+            // `l.fencing_token = i.claim_epoch` condition above), so a stale
+            // token can never re-credential itself.
             let ttl = lease_ttl_seconds.unwrap_or(DEFAULT_LEASE_TTL);
-            let new_lease = create_lease(tx, &issue_id, assignee, ttl)?;
+            let claim_epoch = mint_claim_epoch(tx, &issue_id)?;
+            let new_lease = create_lease(tx, &issue_id, assignee, ttl, claim_epoch)?;
 
             // Record the fencing token claim audit event
             let event_detail = json!({
                 "policy": "fifo-v1",
                 "action": "claim_with_fencing_token",
                 "previous_fencing_token": expected_token,
+                "claim_epoch": claim_epoch,
                 "new_fencing_token": new_lease.fencing_token,
                 "lease_ttl_seconds": ttl
             });
@@ -502,6 +544,7 @@ fn claim_with_fencing_token(
             Ok(EnhancedClaimResult {
                 bead_id: Some(issue_id),
                 assignee: assignee.to_string(),
+                claim_epoch: Some(claim_epoch),
                 lease: Some(new_lease),
             })
         }
@@ -990,6 +1033,7 @@ fn intelligent_claim(
         return Ok(ClaimResult {
             bead_id: None,
             assignee: assignee.to_string(),
+            claim_epoch: None,
         });
     }
 
@@ -1006,6 +1050,7 @@ fn intelligent_claim(
             return Ok(ClaimResult {
                 bead_id: None,
                 assignee: assignee.to_string(),
+                claim_epoch: None,
             });
         }
     };
@@ -1026,6 +1071,10 @@ fn intelligent_claim(
         Error::Internal(anyhow::anyhow!("Failed to update issue for claim: {}", e))
     })?;
 
+    // Mint the claim-epoch credential for this tenure, in the same
+    // transaction as the assignment it credentials
+    let claim_epoch = mint_claim_epoch(tx, &issue_id)?;
+
     acquire_issue_locks(tx, &issue_id, None)?;
 
     // Record the claim audit event with policy information
@@ -1033,6 +1082,7 @@ fn intelligent_claim(
         "policy": policy.as_str(),
         "resulting_base_status": "in_progress",
         "workspace_sequence": workspace_sequence,
+        "claim_epoch": claim_epoch,
         "intelligent_scheduling": true
     });
 
@@ -1054,6 +1104,7 @@ fn intelligent_claim(
     Ok(ClaimResult {
         bead_id: Some(issue_id),
         assignee: assignee.to_string(),
+        claim_epoch: Some(claim_epoch),
     })
 }
 
@@ -1134,14 +1185,17 @@ mod tests {
         let result = ClaimResult {
             bead_id: Some("test-1234567890abcdef".to_string()),
             assignee: "worker-1".to_string(),
+            claim_epoch: Some(3),
         };
         let json = serde_json::to_string(&result).unwrap();
         assert!(json.contains("test-1234567890abcdef"));
         assert!(json.contains("worker-1"));
+        assert!(json.contains("claim_epoch"));
 
         let empty = ClaimResult {
             bead_id: None,
             assignee: "worker-1".to_string(),
+            claim_epoch: None,
         };
         let json_empty = serde_json::to_string(&empty).unwrap();
         assert!(json_empty.contains("null"));

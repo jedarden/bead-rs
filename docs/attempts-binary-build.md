@@ -4,7 +4,7 @@ This document describes the reproducible build process for the bead-rs attempts 
 
 ## Overview
 
-The attempts binary is a version of bead-rs built with the `attempt-resolution` feature enabled. This feature provides atomic attempt outcome recording and lifecycle transitions for NEEDLE fleet coordination.
+The attempts binary is a version of bead-rs built with the `attempt-resolution` feature enabled. The functionality it refers to — atomic attempt outcome recording and lifecycle transitions for NEEDLE fleet coordination (`bead resolve`) — is always compiled in; the cargo feature is currently an empty marker that gates no code (see "Interpreting the difference" below and `pinned-binaries/BINARY_VERIFICATION.md`).
 
 ## Feature Flag Configuration
 
@@ -21,44 +21,55 @@ The `attempt-resolution` feature flag is defined in `Cargo.toml` and can be enab
 
 ### Prerequisites
 
-- Rust 1.85+
+- Rust 1.85+ (the pinned binaries were built with rustc/cargo 1.97.1 — recorded as `rustc_version` in each `*.metadata.json`)
 - Cargo
-- Clean git checkout at specific commit
-- Target directory: `/home/coding/target/release/`
+- A commit SHA that resolves in this repo (`git cat-file -t <sha>`) — **never** a checkout of it
+- `scripts/build-from-archive.sh` (see "Build Rule" in [`BUILD_PROCEDURE.md`](../BUILD_PROCEDURE.md))
+
+> **Never build a pinned commit by moving this checkout.** `/home/coding/bead-rs` is a
+> single shared NEEDLE workspace: `git clean -fdx`, `git checkout <sha>`, `git reset`,
+> and `git stash` here rewire or erase every other worker's tree — an earlier revision of
+> this document instructed exactly that, which is how a worker's uncommitted hour was
+> erased on 2026-09-01/02 (beadrs-5a0dc962). The archive script below is the only
+> sanctioned build path.
 
 ### Standard Build (Without Feature)
 
 **Purpose:** Baseline binary without attempt-resolution feature
 
 ```bash
-# From clean git state
 cd /home/coding/bead-rs
-git clean -fdx
-git checkout <commit-sha>
-
-# Build without features
-cargo build --release --no-default-features
-
-# Binary location
-/home/coding/target/release/bead
+scripts/build-from-archive.sh <commit-sha> --name bead-<role>-<shaslice> --out /var/tmp
 ```
+
+The script extracts `<commit-sha>` with `git archive` (read-only against the shared
+checkout) and underneath runs the equivalent of:
+
+```bash
+cargo build --release --locked
+```
+
+**Binary location:** `<out-dir>/<name>` as printed by the script — never
+`/home/coding/target/release/bead`, which is the shared checkout's own build.
 
 ### Feature-Enabled Build (With Attempt-Resolution)
 
 **Purpose:** Production binary with attempt-resolution functionality
 
 ```bash
-# From clean git state
 cd /home/coding/bead-rs
-git clean -fdx
-git checkout <commit-sha>
-
-# Build with feature enabled
-cargo build --release --features attempt-resolution
-
-# Binary location
-/home/coding/target/release/bead
+scripts/build-from-archive.sh <commit-sha> --features attempt-resolution --name bead-attempt-resolution-<shaslice> --out /var/tmp
 ```
+
+Underneath, the script runs:
+
+```bash
+cargo build --release --locked --features attempt-resolution
+```
+
+**Binary location:** `<out-dir>/<name>` as printed by the script. Omit `--out` only when
+the artifact is meant to become a pin in `pinned-binaries/` (the script refuses to
+overwrite an existing pin; see `pinned-binaries/README.md` for the pin inventory rules).
 
 ## Metadata Capture Process
 
@@ -103,23 +114,26 @@ git log -1 --format="%H %s"
 
 | Binary | Size | SHA256 Hash | Build Date | Commit |
 |--------|------|-------------|------------|--------|
-| bead-pre-feature | 6.5M | `7e0e73defebb75fc987ddf8b6fb959f47c73ccbbcd7e066e2af302a6a43db6b5` | 2026-09-02T01:29:00Z | Unknown |
+| bead-pre-feature | 6.5M | `7e0e73defebb75fc987ddf8b6fb959f47c73ccbbcd7e066e2af302a6a43db6b5` | 2026-09-01T19:14:12Z (embedded) | af023ad (release 0.2.4) |
 | bead-pre-attempt-resolution | 7.0M | `d0da42bbf59b721bc64bc3d55610844efe3f1f06e37c2d9494c0b3dda6e29ac6` | 2026-09-02T01:35:01Z | 946a727 |
 | bead-attempt-resolution-e115609 | 7.0M | `68fe8d534721be4ba4147312364d8f0b216b62f3093e85e7c91f0a0db695a645` | 2026-09-02T07:23:55Z | e115609 |
+| bead-attempt-resolution-f25ab5c | 7.0M | `9a8455f25bacf5bc961bd740442fdc1b30a67fb6e38d304c23c97a57cf57b04e` | 2026-09-02T10:52:25Z (embedded) | f25ab5c |
 
 ### Hash Comparison
 
-**Standard Build vs Feature-Enabled Build:**
+**Pre-Feature vs Feature-Enabled Build:**
 - Pre-feature (6.5M): `7e0e73defebb75fc987ddf8b6fb959f47c73ccbbcd7e066e2af302a6a43db6b5`
-- Attempt-resolution enabled (7.0M): `68fe8d534721be4ba4147312364d8f0b216b62f3093e85e7c91f0a0db695a645`
+- Attempt-resolution enabled, HEAD pin (7.0M): `9a8455f25bacf5bc961bd740442fdc1b30a67fb6e38d304c23c97a57cf57b04e`
 
 ✅ **DISTINCT**: Different hashes prove the feature-enabled binary is cryptographically unique
 
 **Size Comparison:**
 - Pre-feature: 6.5M (6,788,016 bytes)
-- Feature-enabled: 7.0M (7,305,144 bytes)
+- Feature-enabled: 7.0M (7,305,184 bytes)
 
-✅ **SIZE DIFFERENCE**: Feature-enabled binary is ~517KB larger
+✅ **SIZE DIFFERENCE**: HEAD binary is ~517KB larger
+
+⚠️ **Interpreting the difference:** `attempt-resolution` is an empty marker feature (see Cargo.toml and BINARY_VERIFICATION.md) — no `#[cfg]` gates anywhere in `src/`, and builds made with and without the flag (`bead-pre-attempt-resolution`, `bead-attempt-resolution-e115609`) both expose `bead resolve`. The pre-feature binary is release 0.2.4, which predates the feature's existence in Cargo.toml *and* the resolve work itself — it has no `bead resolve` subcommand and no `attempt_outcome` capability — so the hash/size delta measures all development between 0.2.4 and HEAD (including the arrival of `resolve`). It confirms the builds are distinct artifacts, not that the flag itself adds code.
 
 ### Verification Commands
 
@@ -154,71 +168,75 @@ pinned-binaries/
 ├── bead-pre-attempt-resolution
 ├── bead-pre-attempt-resolution.metadata.json
 ├── bead-pre-feature
+├── bead-pre-feature.metadata.json
+├── bead-metadata.json
 ├── bead-release-metadata.json
 ├── BINARY_VERIFICATION.md
 ├── COMMITS.md
-└── README.md
+├── README.md
+└── commits.json
 ```
 
 ### Metadata File Format
 
+Field names below follow the newest metadata file, `bead-attempt-resolution-f25ab5c.metadata.json` (older files carry a subset; see the files themselves for each binary's record):
+
 ```json
 {
-  "binary_name": "bead-attempt-resolution-e115609",
-  "commit_sha": "e1156098b01264bb998797047115521261443c13",
-  "commit_message": "feat(tests): add binary variant integration test suite for capability detection",
-  "version": "bead 0.2.6 (e115609 2026-09-02T07:23:55Z)",
-  "sha256": "68fe8d534721be4ba4147312364d8f0b216b62f3093e85e7c91f0a0db695a645",
-  "size_bytes": 7305144,
-  "build_date": "2026-09-02T07:23:55Z",
-  "features": "attempt-resolution",
-  "cargo_command": "cargo build --release",
-  "purpose": "Post-feature binary with attempt-resolution feature enabled for integration testing"
+  "binary_name": "bead-attempt-resolution-f25ab5c",
+  "description": "bead-rs release binary built with --features attempt-resolution at HEAD, pinned byte-exact from the build bead's staging",
+  "embedded_version_string": "bead 0.2.6 (f25ab5c-dirty 2026-09-02T10:52:25Z)",
+  "embedded_build_timestamp": "2026-09-02T10:52:25Z",
+  "git_commit_sha": "f25ab5c91c09a3408f23b9cdf2f3e95e81abc060",
+  "git_commit_short": "f25ab5c",
+  "git_commit_message": "docs(attempts-binary): add comprehensive build process and verification documentation",
+  "binary_sha256": "9a8455f25bacf5bc961bd740442fdc1b30a67fb6e38d304c23c97a57cf57b04e",
+  "binary_size_bytes": 7305184,
+  "binary_size_human": "7.0M",
+  "cargo_package_version": "0.2.6",
+  "build_features": "attempt-resolution",
+  "build_profile": "release",
+  "rustc_version": "1.97.1",
+  "build_command": "cargo build --release --features attempt-resolution"
 }
 ```
 
-## Reproducible Build Recipe
+## Build Recipe
 
-To reproduce the exact feature-enabled binary:
+> **A rebuild does not reproduce a pinned hash.** `build.rs` embeds `BEAD_BUILD_TIMESTAMP` at compile time and re-runs whenever `.git/index` changes, so two builds of identical source are never byte-identical — the committed `build.rs` reads no environment override (`SOURCE_DATE_EPOCH` / `BEAD_COMMIT_SHA` support is tracked as separate work; see `pinned-binaries/BINARY_VERIFICATION.md`, "Reproducibility caveat"). The recipe below therefore **records the provenance of a fresh build** — it does not, and cannot, check a new build against a previously pinned hash. To verify a pinned binary, compare its sha256 against its `*.metadata.json`; never rebuild for that purpose.
 
 ```bash
 #!/bin/bash
 set -e
 
-TARGET_COMMIT="e1156098b01264bb998797047115521261443c13"
+# f25ab5c (the HEAD pin's built-from commit) was force-pushed away; b0d7840 is its
+# restored-lineage content twin and the pin's recorded rebuild target. Any sha that
+# resolves here works the same way: git cat-file -t <sha> must say "commit".
+TARGET_COMMIT="b0d7840f6c96cd45e16ea05b7babdb42ef0d2654"
 FEATURE="attempt-resolution"
 BUILD_DIR="/home/coding/bead-rs"
-OUTPUT_DIR="/home/coding/target/release"
+OUTPUT_DIR="/var/tmp/bead-build-verify"   # outside the repo unless you mean to pin
 
-echo "Building reproducible attempts binary..."
+echo "Building attempts binary from an archive extraction and recording provenance..."
 
-# Clean and checkout
+# The sanctioned path: git-archive extraction into scratch, never a checkout of the
+# shared workspace. The script prints the binary path, version, sha256 and size, and
+# writes a .metadata.json next to the binary.
 cd "$BUILD_DIR"
-git clean -fdx
-git checkout "$TARGET_COMMIT"
+scripts/build-from-archive.sh "$TARGET_COMMIT" \
+	--features "$FEATURE" \
+	--name bead-attempt-resolution-"${TARGET_COMMIT:0:7}" \
+	--out "$OUTPUT_DIR"
 
-# Build with feature
-cargo build --release --features "$FEATURE"
-
-# Verify
-BINARY="$OUTPUT_DIR/bead"
-echo "Binary: $BINARY"
+# Provenance of the new artifact is in $OUTPUT_DIR/*.metadata.json; the highlights:
+BINARY="$OUTPUT_DIR/bead-attempt-resolution-${TARGET_COMMIT:0:7}"
 echo "Version: $($BINARY --version)"
-echo "SHA256: $(sha256sum $BINARY | cut -d' ' -f1)"
-echo "Size: $(ls -lh $BINARY | awk '{print $5}')"
+echo "SHA256: $(sha256sum "$BINARY" | cut -d' ' -f1)"
+echo "Size: $(stat -c %s "$BINARY")"
 
-# Expected hash
-EXPECTED="68fe8d534721be4ba4147312364d8f0b216b62f3093e85e7c91f0a0db695a645"
-ACTUAL=$(sha256sum $BINARY | cut -d' ' -f1)
-
-if [ "$ACTUAL" = "$EXPECTED" ]; then
-    echo "✅ Build verification successful - hashes match"
-else
-    echo "❌ Build verification failed - hashes differ"
-    echo "Expected: $EXPECTED"
-    echo "Actual:   $ACTUAL"
-    exit 1
-fi
+# To pin this build: move it into pinned-binaries/ under the naming scheme
+# (<role>-<shaslice>), together with its .metadata.json, then update the pin
+# inventory table in pinned-binaries/README.md.
 ```
 
 ## Integration Testing
@@ -231,18 +249,36 @@ The feature-enabled binary is used for:
 
 ### Capability Detection
 
-Verify the binary advertises attempt-resolution support:
+Verify the binary advertises attempt-resolution support. Note `capabilities` already emits JSON — there is no `--json` flag:
 
 ```bash
-./pinned-binaries/bead-attempt-resolution-e115609 capabilities --json | jq '.capabilities[] | select(.name == "attempt-resolution")'
+./pinned-binaries/bead-attempt-resolution-e115609 capabilities | jq '.attempt_outcome'
 ```
 
-Expected output:
+Expected output (identical for `bead-pre-attempt-resolution`, `bead-attempt-resolution-e115609`, and `bead-attempt-resolution-f25ab5c`; `bead-pre-feature` has no `attempt_outcome` key at all):
 ```json
 {
-  "name": "attempt-resolution",
-  "version": "1.0",
-  "enabled": true
+  "supported": true,
+  "outcomes": [
+    "verified_success",
+    "work_failure",
+    "infrastructure_failure",
+    "cancelled",
+    "indeterminate"
+  ],
+  "actions": [
+    "close",
+    "release",
+    "quarantine",
+    "block",
+    "none"
+  ],
+  "replay_detection": true,
+  "revision_guard": true,
+  "fencing_token": true,
+  "evidence_refs": true,
+  "resolve_receipt_schema": "urn:bead-rs:schema:resolve-receipt:native-v1",
+  "resolve_request_schema": "urn:bead-rs:schema:resolve-request:native-v1"
 }
 ```
 
@@ -255,25 +291,21 @@ Expected output:
 
 ### Hash Mismatch After Build
 
-**Issue**: Reproduced binary has different hash than pinned version
-**Causes**:
-- Different Rust compiler version
-- Different build timestamp
-- Different dependencies
-- Git checkout at wrong commit
+**Issue**: Reproduced binary has a different hash than the pinned version
+**Expected behavior**: This always happens by default. `build.rs` embeds `BEAD_BUILD_TIMESTAMP` at compile time and re-runs whenever `.git/index` changes, so unpinned builds — even of identical source — are never byte-identical. That is why pinned binaries are copied byte-exact rather than rebuilt. (No rebuild matches a recorded pin's hash, and none is expected to: the committed `build.rs` honors no environment override — `SOURCE_DATE_EPOCH` / `BEAD_COMMIT_SHA` support is tracked as separate work.)
 
-**Solution**: Ensure exact environment match:
+**Solution**: Treat the rebuild as a new artifact:
 ```bash
-# Check Rust version
-rustc --version  # Should be 1.85+
+# Record the new artifact's provenance (see Build Recipe above)
+sha256sum target/release/bead
+./target/release/bead --version
 
-# Check exact commit
-git rev-parse HEAD  # Should match target commit SHA
-
-# Clean build
-git clean -fdx
-cargo build --release --features attempt-resolution
+# Verify a PINNED binary by comparing bytes to its metadata — never by rebuilding
+sha256sum pinned-binaries/bead-attempt-resolution-f25ab5c
+# Must equal binary_sha256 in bead-attempt-resolution-f25ab5c.metadata.json
 ```
+
+If you also need assurance the rebuilt source is functionally equivalent to the pin, compare `git rev-parse HEAD` against the pin's `git_commit_sha` and run the test suite — but expect the hashes to differ.
 
 ### Binary Size Unexpectedly Different
 

@@ -1,0 +1,54 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead analyze-exclusion" 1  "bead analyze-exclusion " 
+.SH NAME
+bead analyze\-exclusion \- Analyze why beads are excluded from the ready frontier
+.SH SYNOPSIS
+\fBbead analyze\-exclusion\fR [\fB\-\-json\fR] [\fB\-\-limit\fR] [\fB\-\-attach\fR] [\fB\-\-show\-sql\fR] [\fB\-\-no\-auto\-flush\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Analyze beads and determine why they are excluded from the ready frontier.
+Runs the exact same filtering logic as \*(Aqbead list \-\-ready\*(Aq and provides detailed
+per\-bead breakdown of which exclusion rules matched and why.
+.PP
+This helps diagnose \*(Aqstarvation\*(Aq situations where open beads exist but the ready
+frontier is empty, indicating that all open beads are excluded by one or more rules.
+.PP
+EXCLUSION RULES (evaluated in order):
+  1. Status filter: must be \*(Aqopen\*(Aq (excludes: in_progress, deferred, closed)
+  2. Assignee filter: must be unassigned (excludes: beads with assignee)
+  3. Manual block: must not be manually blocked (excludes: manual_blocked = 1)
+  4. Dependencies: must have no unclosed blocking dependencies
+  5. Resource locks: must have no conflicts with held locks by other active issues
+.PP
+EXAMPLES:
+  bead analyze\-exclusion                         # Analyze all open beads
+  bead analyze\-exclusion \-\-json                 # Machine\-readable JSON output
+  bead analyze\-exclusion \-\-attach tunnel\-abc123  # Attach analysis as bead comment
+  bead analyze\-exclusion \-\-limit 50              # Analyze first 50 open beads
+.PP
+The command also reports:
+  \- Total open beads vs. ready frontier size
+  \- Per\-rule exclusion counts
+  \- \*(AqOpen but invisible\*(Aq beads (excluded open beads)
+.PP
+This is useful for automated monitoring: run this when \*(Aqbead list \-\-ready\*(Aq returns
+empty but open beads exist, and attach the output to a diagnostic bead.
+.SH OPTIONS
+.TP
+\fB\-\-json\fR
+Output in JSON format
+.TP
+\fB\-\-limit\fR \fI<LIMIT>\fR [default: 100]
+Maximum number of open beads to analyze (0\-999999)
+.TP
+\fB\-\-attach\fR \fI<ATTACH>\fR
+Attach analysis as a comment to the specified bead ID
+.TP
+\fB\-\-show\-sql\fR
+Include SQL query in output
+.TP
+\fB\-\-no\-auto\-flush\fR
+Suppress auto\-checkpoint publication for this invocation
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

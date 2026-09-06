@@ -201,12 +201,22 @@ impl WorkspaceConfig {
 
         let db_path = root.join(".beads/beads.db");
 
-        // Open database and load workspace metadata through the shared
-        // pragma-configured opener, so discovery connections carry the same
-        // configuration as every other connection to the workspace.
-        let conn = open_configured_connection(&db_path).map_err(|e| {
-            crate::Error::Internal(anyhow::anyhow!("Failed to open database: {}", e))
-        })?;
+        // Probing is observational: a fresh clone has the tracked identity
+        // file but no database, and commands such as `doctor` must not create
+        // or migrate one merely to classify that state. Normal command
+        // connections still use `open_configured_connection` after a Ready
+        // classification and apply pending migrations there.
+        if !db_path.exists() {
+            return Ok(WorkspaceState::Uninitialized {
+                root: root.to_path_buf(),
+                db_path,
+            });
+        }
+        let conn = rusqlite::Connection::open_with_flags(
+            &db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .map_err(|e| crate::Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
         // A tracked `.beads/config.json` can exist without a matching
         // `.beads/beads.db` (the db is gitignored on purpose) -- most
@@ -360,7 +370,13 @@ mod tests {
         std::env::set_current_dir(&child).unwrap();
         set_skip_foreign_workspaces(true);
         match WorkspaceConfig::probe().unwrap() {
-            WorkspaceState::Uninitialized { root, .. } => assert_eq!(root, parent),
+            WorkspaceState::Uninitialized { root, db_path } => {
+                assert_eq!(root, parent);
+                assert!(
+                    !db_path.exists(),
+                    "an observational probe must not create the missing database"
+                );
+            }
             other => panic!("expected Uninitialized, got {other:?}"),
         }
     }

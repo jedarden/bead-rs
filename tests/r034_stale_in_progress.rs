@@ -44,14 +44,19 @@ fn create(workspace: &Path, title: &str) -> String {
         .to_string()
 }
 
-fn claim(workspace: &Path, assignee: &str, lease_ttl: Option<&str>) -> String {
+/// Claim the ready frontier and return (issue id, claim epoch). The epoch
+/// doubles as the claim's fencing credential, which the claimant-owned
+/// mutations later in these suites must present.
+fn claim(workspace: &Path, assignee: &str, lease_ttl: Option<&str>) -> (String, String) {
     let mut args = vec!["claim", "--assignee", assignee, "--json"];
     if let Some(ttl) = lease_ttl {
         args.extend(["--lease-ttl", ttl]);
     }
     let output = run(workspace, &args);
     let claim: Value = serde_json::from_slice(&output.stdout).unwrap();
-    claim["bead_id"].as_str().unwrap().to_string()
+    let id = claim["bead_id"].as_str().unwrap().to_string();
+    let epoch = claim["claim_epoch"].as_i64().unwrap().to_string();
+    (id, epoch)
 }
 
 fn set_threshold(workspace: &Path, seconds: u64) {
@@ -106,7 +111,7 @@ fn reports_stale_ordinary_claim_with_versioned_threshold_and_exact_remedy() {
 
     set_threshold(workspace, 60);
     create(workspace, "ordinary stale claim");
-    let issue_id = claim(workspace, "worker", None);
+    let issue_id = claim(workspace, "worker", None).0;
     age_latest_event(workspace, &issue_id, 120);
 
     let check = stale_check(workspace);
@@ -145,11 +150,11 @@ fn excludes_leased_claims_and_recent_ordinary_claims() {
     set_threshold(workspace, 60);
 
     create(workspace, "leased stale claim");
-    let leased_id = claim(workspace, "lease-worker", Some("300"));
+    let leased_id = claim(workspace, "lease-worker", Some("300")).0;
     age_latest_event(workspace, &leased_id, 120);
 
     create(workspace, "recent ordinary claim");
-    let ordinary_id = claim(workspace, "ordinary-worker", None);
+    let ordinary_id = claim(workspace, "ordinary-worker", None).0;
     age_latest_event(workspace, &ordinary_id, 30);
 
     let check = stale_check(workspace);
@@ -167,9 +172,12 @@ fn historical_lease_does_not_hide_a_later_ordinary_claim() {
     set_threshold(workspace, 60);
 
     create(workspace, "reclaimed without a lease");
-    let leased_id = claim(workspace, "lease-worker", Some("300"));
-    run(workspace, &["release", &leased_id]);
-    let ordinary_id = claim(workspace, "ordinary-worker", None);
+    let (leased_id, leased_epoch) = claim(workspace, "lease-worker", Some("300"));
+    run(
+        workspace,
+        &["release", &leased_id, "--fencing-token", &leased_epoch],
+    );
+    let (ordinary_id, _ordinary_epoch) = claim(workspace, "ordinary-worker", None);
     assert_eq!(ordinary_id, leased_id);
     age_latest_event(workspace, &ordinary_id, 120);
 

@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+/// Open-bead row: (id, title, priority, assignee, manual_blocked, created_at)
+type OpenBeadRow = (String, String, i64, Option<String>, Option<bool>, String);
+
 /// Doctor diagnostic result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiagnosticCheck {
@@ -51,6 +54,7 @@ pub enum DiagnosticScope {
     Dependencies,
     Comments,
     Attempts,
+    Secrets,
     All,
 }
 
@@ -64,6 +68,7 @@ impl DiagnosticScope {
             "dependencies" => Some(DiagnosticScope::Dependencies),
             "comments" => Some(DiagnosticScope::Comments),
             "attempts" => Some(DiagnosticScope::Attempts),
+            "secrets" => Some(DiagnosticScope::Secrets),
             "all" => Some(DiagnosticScope::All),
             _ => None,
         }
@@ -77,6 +82,7 @@ impl DiagnosticScope {
             "dependencies",
             "comments",
             "attempts",
+            "secrets",
             "all",
         ]
     }
@@ -302,7 +308,12 @@ pub fn run_diagnostics_with_scopes(
                 });
             }
             Err(e) => {
-                has_warnings = true;
+                let integrity_failure = matches!(&e, Error::Integrity(_));
+                if integrity_failure {
+                    has_errors = true;
+                } else {
+                    has_warnings = true;
+                }
                 // R027: a remote-advanced checkpoint is an actionable
                 // diagnostic, so the details carry the stable state marker
                 // and the remedy alongside the message text. Match on the
@@ -315,7 +326,14 @@ pub fn run_diagnostics_with_scopes(
                     Error::Workspace(message)
                         if message.starts_with(crate::service::reconcile::REMOTE_ADVANCED_MARKER)
                 );
-                let details = if is_remote_advanced {
+                let details = if integrity_failure {
+                    serde_json::json!({
+                        "state": "covered-ahead-integrity-failure",
+                        "reason_code": "checkpoint_integrity_failure",
+                        "error": e.to_string(),
+                        "remedy": "Pause workspace writers and preserve both histories for explicit verified recovery; do not overwrite the checkpoint"
+                    })
+                } else if is_remote_advanced {
                     serde_json::json!({
                         "state": crate::service::reconcile::REMOTE_ADVANCED_MARKER,
                         "remedy": crate::service::reconcile::REMOTE_ADVANCED_REMEDY,
@@ -328,8 +346,20 @@ pub fn run_diagnostics_with_scopes(
                 };
                 checks.push(DiagnosticCheck {
                     name: "checkpoint_freshness".to_string(),
-                    status: DiagnosticStatus::Warning,
-                    message: format!("Checkpoint freshness warning: {}", e),
+                    status: if integrity_failure {
+                        DiagnosticStatus::Error
+                    } else {
+                        DiagnosticStatus::Warning
+                    },
+                    message: format!(
+                        "Checkpoint freshness {}: {}",
+                        if integrity_failure {
+                            "error"
+                        } else {
+                            "warning"
+                        },
+                        e
+                    ),
                     scope: Some("backup".to_string()),
                     details: Some(details),
                 });
@@ -616,6 +646,49 @@ pub fn run_diagnostics_with_scopes(
                     details: Some(serde_json::json!({
                         "warning": e.to_string()
                     })),
+                });
+            }
+        }
+    }
+
+    if run_all || scopes.contains(&DiagnosticScope::Secrets) {
+        scopes_checked.push("secrets".to_string());
+        match crate::service::secret_diagnostics::run_secret_diagnostics(store) {
+            Ok(report) if report.findings.is_empty() => {
+                checks.push(DiagnosticCheck {
+                    name: "secret_scan".to_string(),
+                    status: DiagnosticStatus::Ok,
+                    message: format!(
+                        "No secret findings across {} live fields and {} retained checkpoint generation(s); effective mode {}",
+                        report.live_fields_scanned,
+                        report.checkpoint_generations_scanned.len(),
+                        report.effective_mode
+                    ),
+                    scope: Some("secrets".to_string()),
+                    details: Some(serde_json::to_value(report)?),
+                });
+            }
+            Ok(report) => {
+                has_warnings = true;
+                checks.push(DiagnosticCheck {
+                    name: "secret_scan".to_string(),
+                    status: DiagnosticStatus::Warning,
+                    message: format!(
+                        "Secret scan found {} blocking and {} advisory finding(s) across live state and retained checkpoints; matched bytes are never shown",
+                        report.blocking_findings, report.advisory_findings
+                    ),
+                    scope: Some("secrets".to_string()),
+                    details: Some(serde_json::to_value(report)?),
+                });
+            }
+            Err(error) => {
+                has_errors = true;
+                checks.push(DiagnosticCheck {
+                    name: "secret_scan".to_string(),
+                    status: DiagnosticStatus::Error,
+                    message: format!("Secret diagnostic failed: {error}"),
+                    scope: Some("secrets".to_string()),
+                    details: Some(serde_json::json!({"error": error.to_string()})),
                 });
             }
         }
@@ -2091,7 +2164,7 @@ pub fn run_starvation_check(store: &impl Store) -> Result<StarvationCheckReport>
         )
         .map_err(|e| Error::Integrity(format!("Failed to prepare statement: {}", e)))?;
 
-    let open_beads: Vec<(String, String, i64, Option<String>, Option<bool>, String)> = open_stmt
+    let open_beads: Vec<OpenBeadRow> = open_stmt
         .query_map([], |row| {
             Ok((
                 row.get(0)?, // id
@@ -2429,8 +2502,19 @@ pub fn run_starvation_recovery(
         if force {
             // Clear assignees for these beads using proper lifecycle service
             for (id, title, assignee) in &assigned_open_beads {
-                match crate::service::lifecycle::update_issue(
-                    &conn, id, None, None, true, None, None, None,
+                match crate::service::lifecycle::update_issue_with_override(
+                    &conn,
+                    id,
+                    None,
+                    None,
+                    true,
+                    None,
+                    None,
+                    None,
+                    // doctor --repair is an explicit operator recovery: it
+                    // holds no claim-epoch credential, so the clear rides the
+                    // audited override path instead of bypassing the fence.
+                    Some("doctor --repair: cleared assignee on assigned open bead"),
                 ) {
                     Ok(_) => {
                         writeln!(
@@ -2599,7 +2683,13 @@ pub fn run_starvation_recovery(
         if force {
             // Release stale in-progress beads using proper lifecycle service
             for (id, title, age_seconds) in &stale_beads {
-                match crate::service::lifecycle::release_issue(&conn, id, None, None) {
+                match crate::service::lifecycle::release_issue_with_override(
+                    &conn,
+                    id,
+                    None,
+                    None,
+                    Some("doctor --repair: released stale in-progress claim"),
+                ) {
                     Ok(_) => {
                         writeln!(
                             log_file,
@@ -2743,6 +2833,7 @@ pub fn run_starvation_recovery(
 /// - Receipt IDs and attempt IDs are properly formatted
 /// - Canonical hashes are valid SHA-256 hex strings
 /// - Evidence refs are properly formatted
+///
 /// Never synthesizes missing outcomes - only reports what exists.
 fn check_attempt_outcomes_integrity(store: &impl Store) -> Result<String> {
     let config = store.get_workspace_config()?;
@@ -2879,7 +2970,9 @@ fn check_attempt_outcomes_integrity(store: &impl Store) -> Result<String> {
 
     if issues.is_empty() {
         let outcome_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM attempt_outcomes", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM attempt_outcomes", [], |row| {
+                row.get(0)
+            })
             .unwrap_or(0);
         Ok(format!(
             "Attempt outcomes integrity OK: {} outcomes validated",
@@ -2967,12 +3060,7 @@ fn check_attempt_tier_consistency(store: &impl Store) -> Result<String> {
         let examples = inconsistent_issues
             .iter()
             .take(5)
-            .map(|(id, failures, tier)| {
-                format!(
-                    "{} (failures={}, tier={})",
-                    id, failures, tier
-                )
-            })
+            .map(|(id, failures, tier)| format!("{} (failures={}, tier={})", id, failures, tier))
             .collect::<Vec<_>>()
             .join(", ");
 
@@ -3037,9 +3125,11 @@ pub fn run_visibility_check(store: &impl Store) -> Result<VisibilityCheckReport>
 
     // 1. Get all open beads (WHERE base_status = 'open')
     let open_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM issues WHERE base_status = 'open'", [], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT COUNT(*) FROM issues WHERE base_status = 'open'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap_or(0);
 
     // 2. Get ready frontier count using the same query as Pluck (find_eligible_frontier)
@@ -3170,16 +3260,21 @@ pub fn run_visibility_check(store: &impl Store) -> Result<VisibilityCheckReport>
             .open(&log_path)
         {
             use std::io::Write;
-            writeln!(
-                log_file,
-                "\n=== Visibility Check Run at {} ===",
-                timestamp
-            )
-            .ok();
+            writeln!(log_file, "\n=== Visibility Check Run at {} ===", timestamp).ok();
             writeln!(log_file, "Open beads: {}", open_bead_count).ok();
             writeln!(log_file, "Ready beads: {}", ready_bead_count).ok();
-            writeln!(log_file, "Discrepancy: {} beads excluded from ready frontier", open_bead_count - ready_bead_count).ok();
-            writeln!(log_file, "Invisible beads ({} shown, max 100):", invisible_beads.len()).ok();
+            writeln!(
+                log_file,
+                "Discrepancy: {} beads excluded from ready frontier",
+                open_bead_count - ready_bead_count
+            )
+            .ok();
+            writeln!(
+                log_file,
+                "Invisible beads ({} shown, max 100):",
+                invisible_beads.len()
+            )
+            .ok();
 
             for bead in &invisible_beads {
                 writeln!(log_file, "  - {}: {}", bead.id, bead.title).ok();

@@ -7,7 +7,7 @@ use rusqlite::{Connection, Result as SqliteResult, Transaction, TransactionBehav
 use sha2::{Digest, Sha256};
 
 /// Current migration version
-pub const CURRENT_VERSION: i64 = 14;
+pub const CURRENT_VERSION: i64 = 17;
 
 /// Whether the store has already reached [`CURRENT_VERSION`].
 ///
@@ -91,7 +91,11 @@ pub fn apply_migrations(conn: &Connection) -> SqliteResult<()> {
         for statement in migration.sql.split(';') {
             let statement = statement.trim();
             if !statement.is_empty() {
-                tx.execute(statement, [])?;
+                if let Err(error) = tx.execute(statement, []) {
+                    if !is_safe_add_column_replay(&tx, version, statement, &error)? {
+                        return Err(error);
+                    }
+                }
             }
         }
 
@@ -108,6 +112,46 @@ pub fn apply_migrations(conn: &Connection) -> SqliteResult<()> {
     }
 
     Ok(())
+}
+
+/// Return true only for a known additive migration whose column is already
+/// present. This permits recovery from the narrow crash boundary where SQLite
+/// committed the schema change but the migration ledger row was not retained,
+/// without treating arbitrary migration failures as success.
+fn is_safe_add_column_replay(
+    tx: &Transaction<'_>,
+    version: i64,
+    statement: &str,
+    error: &rusqlite::Error,
+) -> SqliteResult<bool> {
+    let expected = match version {
+        15 => ("attempt_outcomes", "resulting_state"),
+        17 => ("issues", "claim_epoch"),
+        _ => return Ok(false),
+    };
+
+    let normalized = statement.split_whitespace().collect::<Vec<_>>().join(" ");
+    let expected_statement = format!("ALTER TABLE {} ADD COLUMN {} ", expected.0, expected.1);
+    if !normalized.starts_with(&expected_statement)
+        || !error.to_string().contains("duplicate column name")
+    {
+        return Ok(false);
+    }
+
+    let present = match expected.0 {
+        "attempt_outcomes" => tx.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('attempt_outcomes') WHERE name = ?1",
+            [expected.1],
+            |row| row.get::<_, i64>(0),
+        )?,
+        "issues" => tx.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('issues') WHERE name = ?1",
+            [expected.1],
+            |row| row.get::<_, i64>(0),
+        )?,
+        _ => 0,
+    };
+    Ok(present == 1)
 }
 
 /// Get a migration by version number
@@ -127,6 +171,9 @@ fn get_migration(version: i64) -> Migration {
         12 => migration_12(),
         13 => migration_13(),
         14 => migration_14(),
+        15 => migration_15(),
+        16 => migration_16(),
+        17 => migration_17(),
         v => panic!("Unknown migration version: {}", v),
     }
 }
@@ -786,6 +833,160 @@ CREATE INDEX IF NOT EXISTS attempt_outcomes_created ON attempt_outcomes (created
     }
 }
 
+/// Migration 15: Attempt outcome resulting state (attempt-outcome-v1 contract)
+///
+/// `attempt_outcomes` never stored the receipt's `resulting_state`, so a
+/// replayed resolution could not return the original receipt verbatim and the
+/// checkpoint publisher had to derive the field from the action
+/// (close -> "closed", everything else -> "open"). Store it explicitly.
+fn migration_15() -> Migration {
+    let sql = r#"
+ALTER TABLE attempt_outcomes ADD COLUMN resulting_state TEXT NOT NULL DEFAULT '';
+"#;
+
+    Migration {
+        sql: sql.to_string(),
+    }
+}
+
+/// Migration 17: claim-epoch fencing credential
+///
+/// Every claim -- leased or not -- mints a monotonically increasing
+/// `claim_epoch` on the issue row. It is the durable ownership credential a
+/// claimant presents (`--fencing-token`) to mutate the issue, so a process
+/// from an older claim cannot mutate a newer claim after release and
+/// reassignment.
+///
+/// The column is seeded from the per-issue fencing-token high-water mark so
+/// the epoch sequence continues the historical lease sequence without reusing
+/// a number: existing lease rows keep `fencing_token <= claim_epoch`, and the
+/// first post-migration claim takes `MAX + 1`. Issues never leased start at 0
+/// and are fenced from their first post-migration claim.
+fn migration_17() -> Migration {
+    let sql = r#"
+ALTER TABLE issues ADD COLUMN claim_epoch INTEGER NOT NULL DEFAULT 0;
+
+UPDATE issues
+SET claim_epoch = COALESCE(
+    (SELECT MAX(fencing_token) FROM leases WHERE leases.issue_id = issues.id),
+    0
+);
+"#;
+
+    Migration {
+        sql: sql.to_string(),
+    }
+}
+
+/// Migration 16: audited historical-redaction storage (ADR-015, BR-T15)
+///
+/// Five additive tables hold the durable records the `historical-redaction-v1`
+/// contract defines: scanner findings, advisory acknowledgments, committed
+/// redaction receipts, publication epochs, and anti-resurrection tombstones.
+///
+/// Every selector is flattened into columns rather than stored as JSON so the
+/// recovery-precedence key -- (record_kind, origin_identity, field_path,
+/// prior_record_hash) -- is a real index the import path can probe. The typed
+/// v1 columns name where bytes were and what rule matched, never the bytes.
+/// Bounded JSON extension columns preserve unknown fields as required by the
+/// native checkpoint contract; those fields remain opaque, scanner-visible
+/// recovery input and gain no v1 semantics.
+///
+/// All five are pure additions: no existing table is altered, so a store can
+/// roll back to the previous binary and keep working, and an older reader
+/// simply never learns these tables exist.
+fn migration_16() -> Migration {
+    let sql = r#"
+CREATE TABLE IF NOT EXISTS redaction_findings (
+    fingerprint TEXT PRIMARY KEY,
+    ruleset_version INTEGER NOT NULL CHECK (ruleset_version > 0),
+    rule_id TEXT NOT NULL,
+    record_kind TEXT NOT NULL,
+    origin_identity TEXT NOT NULL,
+    field_path TEXT NOT NULL,
+    byte_start INTEGER NOT NULL CHECK (byte_start >= 0),
+    byte_length INTEGER NOT NULL CHECK (byte_length > 0),
+    prior_record_hash TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    detected_at TEXT NOT NULL,
+    extensions_json TEXT NOT NULL DEFAULT '{}',
+    selector_extensions_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS redaction_findings_location
+    ON redaction_findings (record_kind, origin_identity, field_path);
+
+CREATE TABLE IF NOT EXISTS redaction_acknowledgments (
+    fingerprint TEXT PRIMARY KEY,
+    actor TEXT NOT NULL,
+    reason TEXT NOT NULL CHECK (length(reason) BETWEEN 1 AND 1024),
+    acknowledged_at TEXT NOT NULL,
+    extensions_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS redaction_receipts (
+    receipt_id TEXT PRIMARY KEY,
+    finding_fingerprint TEXT NOT NULL,
+    ruleset_version INTEGER NOT NULL CHECK (ruleset_version > 0),
+    rule_id TEXT NOT NULL,
+    record_kind TEXT NOT NULL,
+    origin_identity TEXT NOT NULL,
+    field_path TEXT NOT NULL,
+    byte_start INTEGER NOT NULL CHECK (byte_start >= 0),
+    byte_length INTEGER NOT NULL CHECK (byte_length > 0),
+    prior_record_hash TEXT NOT NULL,
+    sanitized_record_hash TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    reason TEXT NOT NULL CHECK (length(reason) BETWEEN 1 AND 1024),
+    redacted_at TEXT NOT NULL,
+    affected_issue_revision INTEGER CHECK (affected_issue_revision IS NULL OR affected_issue_revision > 0),
+    publication_state TEXT NOT NULL CHECK (publication_state IN ('committed', 'published', 'discarded')),
+    resulting_generation_id TEXT,
+    epoch_id TEXT,
+    extensions_json TEXT NOT NULL DEFAULT '{}',
+    selector_extensions_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS redaction_receipts_epoch
+    ON redaction_receipts (epoch_id);
+
+CREATE INDEX IF NOT EXISTS redaction_receipts_location
+    ON redaction_receipts (record_kind, origin_identity, field_path);
+
+CREATE TABLE IF NOT EXISTS redaction_epochs (
+    epoch_id TEXT PRIMARY KEY,
+    publication_state TEXT NOT NULL CHECK (publication_state IN ('committed', 'published', 'discarded')),
+    receipt_ids_json TEXT NOT NULL DEFAULT '[]',
+    resulting_generation_id TEXT,
+    previous_generation_reset INTEGER NOT NULL DEFAULT 0 CHECK (previous_generation_reset IN (0, 1)),
+    superseded_generations_json TEXT NOT NULL DEFAULT '[]',
+    opened_at TEXT NOT NULL,
+    published_at TEXT,
+    extensions_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS redaction_tombstones (
+    tombstone_id TEXT PRIMARY KEY,
+    record_kind TEXT NOT NULL,
+    origin_identity TEXT NOT NULL,
+    field_path TEXT NOT NULL,
+    prior_record_hash TEXT NOT NULL,
+    finding_fingerprint TEXT NOT NULL,
+    epoch_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    extensions_json TEXT NOT NULL DEFAULT '{}',
+    UNIQUE (record_kind, origin_identity, field_path, prior_record_hash, finding_fingerprint)
+);
+
+CREATE INDEX IF NOT EXISTS redaction_tombstones_fingerprint
+    ON redaction_tombstones (finding_fingerprint);
+"#;
+
+    Migration {
+        sql: sql.to_string(),
+    }
+}
+
 /// Calculate SHA-256 checksum of a migration
 fn migration_checksum(sql: &str) -> String {
     let mut hasher = Sha256::new();
@@ -954,5 +1155,57 @@ mod tests {
             })
             .unwrap();
         assert_eq!(version, CURRENT_VERSION);
+    }
+
+    #[test]
+    fn historical_redaction_migration_is_additive_and_content_free() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_migrations(&conn).unwrap();
+
+        for table in [
+            "redaction_findings",
+            "redaction_acknowledgments",
+            "redaction_receipts",
+            "redaction_epochs",
+            "redaction_tombstones",
+        ] {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(exists, 1, "missing {table}");
+
+            let mut statement = conn
+                .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))
+                .unwrap();
+            let columns: Vec<String> = statement
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            for forbidden in ["matched", "removed_bytes", "secret", "content", "value"] {
+                assert!(
+                    columns.iter().all(|column| !column.contains(forbidden)),
+                    "{table} has content-bearing column containing {forbidden}"
+                );
+            }
+        }
+
+        let rejected = conn.execute(
+            "INSERT INTO redaction_findings (
+                fingerprint, ruleset_version, rule_id, record_kind,
+                origin_identity, field_path, byte_start, byte_length,
+                prior_record_hash, severity, detected_at
+             ) VALUES (?1, 0, 'rule', 'issue', 'id', 'description', 0, 1,
+                       ?2, 'blocking', '2026-09-03T00:00:00Z')",
+            [&"a".repeat(64), &"b".repeat(64)],
+        );
+        assert!(
+            rejected.is_err(),
+            "zero ruleset version bypassed the schema"
+        );
     }
 }

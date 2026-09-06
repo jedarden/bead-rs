@@ -99,6 +99,11 @@ impl ProfileAdapter for NeedleV1Adapter {
                 obj_map.insert("notes".to_string(), Value::String(notes.clone()));
             }
         }
+        if let Some(claim_epoch) = issue.claim_epoch {
+            if let Some(obj_map) = obj.as_object_mut() {
+                obj_map.insert("claim_epoch".to_string(), Value::from(claim_epoch));
+            }
+        }
 
         Ok(TransformResult {
             data: obj,
@@ -149,6 +154,8 @@ impl ProfileAdapter for NeedleV1Adapter {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
+        let claim_epoch = obj.get("claim_epoch").and_then(Value::as_i64);
+
         let created_at = obj
             .get("created_at")
             .and_then(|v| v.as_str())
@@ -173,6 +180,7 @@ impl ProfileAdapter for NeedleV1Adapter {
             base_status,
             manual_blocked: Some(false),
             assignee,
+            claim_epoch,
             created_at,
             updated_at,
             closed_at: None,
@@ -294,6 +302,7 @@ mod tests {
             base_status: BaseStatus::Open,
             manual_blocked: Some(false),
             assignee: None,
+            claim_epoch: Some(7),
             created_at: "2026-08-10T00:00:00Z".to_string(),
             updated_at: "2026-08-10T00:00:00Z".to_string(),
             closed_at: None,
@@ -314,6 +323,7 @@ mod tests {
         assert_eq!(data["title"], "Test Issue");
         assert_eq!(data["status"], "open");
         assert_eq!(data["priority"], 2);
+        assert_eq!(data["claim_epoch"], 7);
     }
 
     #[test]
@@ -326,6 +336,7 @@ mod tests {
             "priority": 1,
             "status": "in_progress",
             "assignee": null,
+            "claim_epoch": 4,
             "dependencies": [],
             "created_at": "2026-08-10T00:00:00Z",
             "updated_at": "2026-08-10T00:00:00Z",
@@ -341,5 +352,6 @@ mod tests {
         assert_eq!(issue.title, "Needle Issue");
         assert_eq!(issue.base_status, BaseStatus::InProgress);
         assert_eq!(issue.priority, 1);
+        assert_eq!(issue.claim_epoch, Some(4));
     }
 }

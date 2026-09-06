@@ -10,7 +10,6 @@
 //! See: attempt-outcome-v1 specification, R036 attempt receipt diagnostics
 
 use assert_cmd::Command;
-use predicates::prelude::*;
 use tempfile::TempDir;
 
 /// Create a test workspace and return the temp dir
@@ -400,7 +399,9 @@ fn test_doctor_is_read_only() {
     // Record the initial state
     let conn_before = rusqlite::Connection::open(&db_path).unwrap();
     let attempt_count_before: i64 = conn_before
-        .query_row("SELECT COUNT(*) FROM attempt_outcomes", [], |row| row.get(0))
+        .query_row("SELECT COUNT(*) FROM attempt_outcomes", [], |row| {
+            row.get(0)
+        })
         .unwrap_or(0);
 
     // Run doctor (should not modify any data)
@@ -414,7 +415,9 @@ fn test_doctor_is_read_only() {
     // Verify the database state hasn't changed
     let conn_after = rusqlite::Connection::open(&db_path).unwrap();
     let attempt_count_after: i64 = conn_after
-        .query_row("SELECT COUNT(*) FROM attempt_outcomes", [], |row| row.get(0))
+        .query_row("SELECT COUNT(*) FROM attempt_outcomes", [], |row| {
+            row.get(0)
+        })
         .unwrap_or(0);
 
     assert_eq!(
@@ -528,8 +531,11 @@ fn test_why_shows_attempt_tier_progression() {
     .unwrap();
 
     // Update issue state to match the outcome
-    conn.execute("UPDATE issues SET attempt_tier = 1, consecutive_failures = 1 WHERE id = ?1", [&issue_id])
-        .unwrap();
+    conn.execute(
+        "UPDATE issues SET attempt_tier = 1, consecutive_failures = 1 WHERE id = ?1",
+        [&issue_id],
+    )
+    .unwrap();
 
     // Run why command - should show tier progression
     Command::cargo_bin("bead")
