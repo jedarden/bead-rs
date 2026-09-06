@@ -608,9 +608,15 @@ fn concurrent_replays_into_one_target_admit_one_winner_and_exact_once_state() {
                 }
                 Some(1) => {
                     let stderr = variant.stderr(&output);
+                    // The pre-F017 pin predates the newer explicit refusal
+                    // suffix. Both messages reject the now-populated target;
+                    // the exact-state assertions below prove it stayed intact.
                     assert!(
                         stderr.contains("Target database is not empty")
-                            && stderr.contains("Restore refused without mutation"),
+                            && (stderr.contains("Restore refused without mutation")
+                                || stderr.contains(
+                                    "Pre-F017 import requires an empty initialized target"
+                                )),
                         "a losing replayer must refuse without mutating, got {stderr:?}"
                     );
                     clean_refusals += 1;
