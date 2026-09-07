@@ -1,16 +1,24 @@
 # bead-rs Current Product and Software Factory Plan
 
-Plan revision: 14
+Plan revision: 15
 
-As of: 2026-09-05
+As of: 2026-09-06
 
 Status owner: bead-rs maintainers
 
-Status: 0.2.4 is the latest tagged release; the checkout declares 0.2.6.
-Attempt resolution, secret rejection, and historical-redaction recovery are
-implemented on `main`, including the ruleset-v3 Garage credential-identifier
-extension. Exact-source release conformance remains open on the explicit gate
-defects recorded in sections 1.2, 6, and 7. Revision 14 makes the durable
+Status: v0.2.6 was tagged at `d9a32b3` and published as a GitHub release on
+2026-09-06 **ahead of its release evidence**: BR-T18 remains open, the
+CHANGELOG carries no 0.2.6 entry, and gates 11–14 have no recorded proof, so
+per this plan's own rule the tag is a mid-transition snapshot, not an
+evidenced release. Independent checks of the published x86_64 artifact
+(recorded in `beadrs-559d3bfe` notes) confirm checksum, exact-commit version
+string, enforce-mode rejection without value disclosure, ruleset-v3
+capability advertisement, and the `redact` surface. BR-T18 acceptance must
+either bind its evidence to this exact tag or supersede it with an evidenced
+cut. Attempt resolution, secret rejection, and historical-redaction recovery
+are implemented on `main`, including the ruleset-v3 Garage
+credential-identifier extension. Exact-source release conformance remains
+open on the explicit gate defects recorded in sections 1.2, 6, and 7. Revision 14 makes the durable
 claim-epoch transition and its NEEDLE consumer canary explicit as BR-T23
 through BR-T27 rather than leaving that release-blocking work implicit in
 other beads. BR-T28 captures the dispatch race discovered while materializing
