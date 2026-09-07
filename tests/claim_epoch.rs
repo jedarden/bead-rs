@@ -742,10 +742,52 @@ fn lifecycle_mutation(id: &str, label: &str) -> Vec<String> {
     }
 }
 
-/// An issue nobody holds is not fenced: the credential exists to name a
-/// tenure, and with no holder there is nothing to present against.
+/// The state of an issue nobody holds: status, assignee, revision.
+/// [`held_state`] unwraps the assignee, so it cannot read an unclaimed issue.
+fn unheld_state(workspace: &Path, id: &str) -> (String, Option<String>, i64) {
+    let issue = shown_issue(workspace, id);
+    (
+        issue["status"].as_str().unwrap().to_string(),
+        issue["assignee"].as_str().map(str::to_string),
+        issue["revision"].as_i64().unwrap(),
+    )
+}
+
+/// Lease rows the store holds for `id`. A row is the second credential
+/// dimension the fence can consult, so the credential-free arm is only honest
+/// when it is read straight off the store rather than inferred from the issue.
+fn lease_row_count(workspace: &Path, id: &str) -> i64 {
+    let conn = rusqlite::Connection::open_with_flags(
+        workspace.join(".beads").join("beads.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    conn.query_row(
+        "SELECT COUNT(*) FROM leases WHERE issue_id = ?1",
+        [id],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+/// The credential-free arm of the fence. An issue nobody holds accepts every
+/// claimant-owned mutation it is open to, with no credential of any kind: no
+/// `--fencing-token` on the command line and no lease row behind the issue.
+/// The claimed arm is pinned by
+/// `a_claimed_issue_rejects_every_credentialless_claimant_mutation` and its
+/// siblings; this is the complementary arm, and it is what a later tightening
+/// would break -- a fence that started reading the holder's absence as a
+/// missing credential would fail here without ever touching a claimed issue.
+///
+/// `release`, `reopen` and `resolve` are not in the sweep: an open, unassigned
+/// issue is not in a state they accept, so their status guards refuse them
+/// before the credential gate is reached and there is no credential-free
+/// acceptance of them to pin.
+///
+/// Every acceptance is proved by store state -- the status move, the revision
+/// bump, the key set, or the published event -- never by the exit code alone.
 #[test]
-fn an_unclaimed_issue_mutates_without_a_credential() {
+fn an_unclaimed_issue_accepts_every_claimant_mutation_with_no_credential() {
     let workspace = tempfile::tempdir().unwrap();
     run(workspace.path(), ["init", "--prefix", "epoch"]);
     let id =
@@ -754,26 +796,200 @@ fn an_unclaimed_issue_mutates_without_a_credential() {
             .trim()
             .to_string();
 
+    let start = unheld_state(workspace.path(), &id);
+    assert_eq!(start.0, "open", "the sweep starts from an open issue");
+    assert_eq!(start.1, None, "the sweep starts from an unassigned issue");
+    assert_eq!(
+        lease_row_count(workspace.path(), &id),
+        0,
+        "the sweep starts with no lease row to present against"
+    );
+
+    // The feed opens with the create's own event; every count below is
+    // absolute, so that event is the extra one each length assertion carries.
+    let baseline = published_events(workspace.path(), &id);
+    assert_eq!(
+        baseline.len(),
+        1,
+        "the sweep starts from a feed holding only the create, got {baseline:?}"
+    );
+    assert_eq!(baseline[0]["kind"], "created");
+
+    // `update` is the mutation the fence pins hardest on a claimed issue, so
+    // it is the one proved hardest here: it lands, moves nothing but the
+    // revision, and publishes exactly one event.
     run(
         workspace.path(),
         ["update", &id, "--notes", "no holder yet"],
     );
-    run(workspace.path(), ["resource", "add", &id, "--key", "gpu:0"]);
-    assert_eq!(shown_issue(workspace.path(), &id)["assignee"], Value::Null);
+    let updated = unheld_state(workspace.path(), &id);
+    assert_eq!(
+        updated.0, "open",
+        "a credential-free update must not move the status"
+    );
+    assert_eq!(
+        updated.1, None,
+        "a credential-free update must not assign the issue"
+    );
+    assert_eq!(
+        updated.2,
+        start.2 + 1,
+        "a credential-free update must bump the revision exactly once"
+    );
+    assert_eq!(lease_row_count(workspace.path(), &id), 0);
+    let events = published_events(workspace.path(), &id);
+    assert_eq!(
+        events.len(),
+        2,
+        "a credential-free update must publish exactly one event, got {events:?}"
+    );
+    assert_eq!(events[1]["kind"], "updated");
 
-    // And once the claim is handed back the same holds again.
-    let epoch = claim(workspace.path(), "worker-one", false)["claim_epoch"]
+    // The resource-lock pair. Neither can be proved by a revision bump -- a
+    // declaration is scheduling metadata and does not touch the issue row --
+    // so each is proved by the key set it leaves behind plus the event it
+    // published, and the untouched revision is what keeps the close's later
+    // bump attributable to the close alone.
+    let added: Vec<String> = serde_json::from_slice(
+        &run(workspace.path(), ["resource", "add", &id, "--key", "gpu:0"]).stdout,
+    )
+    .unwrap();
+    assert_eq!(added, vec!["gpu:0".to_string()]);
+    let listed: Vec<String> =
+        serde_json::from_slice(&run(workspace.path(), ["resource", "list", &id, "--json"]).stdout)
+            .unwrap();
+    assert_eq!(
+        listed,
+        vec!["gpu:0".to_string()],
+        "the add must have committed"
+    );
+    assert_eq!(
+        unheld_state(workspace.path(), &id).2,
+        updated.2,
+        "a credential-free resource add must commit without bumping the revision"
+    );
+    let events = published_events(workspace.path(), &id);
+    assert_eq!(
+        events.len(),
+        3,
+        "a credential-free resource add must publish exactly one event, got {events:?}"
+    );
+    assert_eq!(events[2]["kind"], "resource_keys_added");
+    assert_eq!(
+        events[2]["detail"]["resource_keys"],
+        serde_json::json!(["gpu:0"])
+    );
+
+    let removed: Vec<String> = serde_json::from_slice(
+        &run(
+            workspace.path(),
+            ["resource", "remove", &id, "--key", "gpu:0"],
+        )
+        .stdout,
+    )
+    .unwrap();
+    assert_eq!(removed, Vec::<String>::new());
+    let listed: Vec<String> =
+        serde_json::from_slice(&run(workspace.path(), ["resource", "list", &id, "--json"]).stdout)
+            .unwrap();
+    assert!(listed.is_empty(), "the remove must have committed");
+    assert_eq!(
+        unheld_state(workspace.path(), &id).2,
+        updated.2,
+        "a credential-free resource remove must commit without bumping the revision"
+    );
+    let events = published_events(workspace.path(), &id);
+    assert_eq!(
+        events.len(),
+        4,
+        "a credential-free resource remove must publish exactly one event, got {events:?}"
+    );
+    assert_eq!(events[3]["kind"], "resource_keys_removed");
+    assert_eq!(events[3]["detail"]["resource_keys"], serde_json::json!([]));
+
+    // `close` ends the sweep the way it begins: no credential, and the issue
+    // stays unassigned through the transition. The closed event carries nulls
+    // for both credential fields rather than omitting them, so a reader of the
+    // change feed can tell an unclaimed close from a fenced one.
+    run(
+        workspace.path(),
+        ["close", &id, "--reason", "no holder needed"],
+    );
+    let closed = unheld_state(workspace.path(), &id);
+    assert_eq!(
+        closed.0, "closed",
+        "a credential-free close must close the issue"
+    );
+    assert_eq!(
+        closed.1, None,
+        "a credential-free close must leave it unassigned"
+    );
+    assert_eq!(
+        closed.2,
+        updated.2 + 1,
+        "a credential-free close must bump the revision exactly once"
+    );
+    assert_eq!(lease_row_count(workspace.path(), &id), 0);
+    let events = published_events(workspace.path(), &id);
+    assert_eq!(
+        events.len(),
+        5,
+        "a credential-free close must publish exactly one event, got {events:?}"
+    );
+    assert_eq!(events[4]["kind"], "closed");
+    assert_eq!(events[4]["detail"]["reason"], "no holder needed");
+    assert_eq!(events[4]["detail"]["claim_epoch"], Value::Null);
+    assert_eq!(events[4]["detail"]["presented_fencing_token"], Value::Null);
+
+    // And the arm holds the moment a claim is handed back, too -- on a fresh
+    // issue, since the one above is closed now. This leg takes its claim
+    // *leased*, so the release leaves a lease row behind: the fence follows
+    // the holder, not the history, and the leftover row must not be enough to
+    // start demanding a credential again.
+    let returned =
+        String::from_utf8(run(workspace.path(), ["create", "--title", "handed back"]).stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+    let claimed = claim(workspace.path(), "worker-one", true);
+    assert_eq!(
+        claimed["bead_id"].as_str(),
+        Some(returned.as_str()),
+        "the fresh issue is the only claimable work"
+    );
+    let epoch = claimed["claim_epoch"]
         .as_i64()
-        .unwrap();
-    run(
-        workspace.path(),
-        ["release", &id, "--fencing-token", &epoch.to_string()],
+        .expect("a leased claim mints an epoch");
+    assert!(
+        lease_row_count(workspace.path(), &returned) > 0,
+        "the leased claim must leave the row this leg is about"
     );
     run(
         workspace.path(),
-        ["update", &id, "--notes", "released again"],
+        ["release", &returned, "--fencing-token", &epoch.to_string()],
     );
-    assert_eq!(shown_issue(workspace.path(), &id)["assignee"], Value::Null);
+    let released = unheld_state(workspace.path(), &returned);
+    assert_eq!(released.0, "open");
+    assert_eq!(released.1, None);
+    assert!(
+        lease_row_count(workspace.path(), &returned) > 0,
+        "the lease row is history, not a fence"
+    );
+
+    run(
+        workspace.path(),
+        ["update", &returned, "--notes", "released again"],
+    );
+    let after = unheld_state(workspace.path(), &returned);
+    assert_eq!(
+        after.1, None,
+        "a credential-free update after release must not assign"
+    );
+    assert_eq!(
+        after.2,
+        released.2 + 1,
+        "a credential-free update must still land once the claim is handed back"
+    );
 }
 
 /// The fence is the last line of defence behind atomic claim selection, so it
