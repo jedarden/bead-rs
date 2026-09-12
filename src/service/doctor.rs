@@ -2057,8 +2057,12 @@ fn detect_dependency_cycles(conn: &rusqlite::Connection) -> Result<Vec<Vec<Strin
     let mut adj_list: HashMap<String, Vec<String>> = HashMap::new();
     let mut all_issues: HashSet<String> = HashSet::new();
 
+    // Cycle detection traverses only `blocks` edges: `relates_to` is
+    // informational and the native contract explicitly permits informational
+    // cycles, so it must never trip the integrity check even though it is
+    // still counted in the overall dependency statistics above.
     let mut stmt = conn
-        .prepare("SELECT blocked_issue_id, blocker_issue_id FROM dependencies")
+        .prepare("SELECT blocked_issue_id, blocker_issue_id FROM dependencies WHERE kind = 'blocks'")
         .map_err(|e| Error::Integrity(format!("Failed to prepare dependencies query: {}", e)))?;
 
     let deps: Vec<(String, String)> = stmt

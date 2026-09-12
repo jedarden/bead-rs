@@ -616,3 +616,100 @@ fn test_doctor_counts_blocked_issues_from_blocks_edges() {
     }
     std::env::set_current_dir(original_dir).unwrap();
 }
+
+#[test]
+#[serial]
+fn doctor_ignores_relates_to_cycles() {
+    // Regression: the NEEDLE workspace had an acyclic `blocks` graph, but
+    // `relates_to` edges (informational by contract) completed mixed-kind
+    // SCCs and `bead doctor` reported dozens of false cycles. Cycle
+    // detection must traverse only `blocks` edges.
+    let temp = tempfile::tempdir().unwrap();
+    let temp_dir = temp.path();
+    let original_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+    std::env::set_current_dir(temp_dir).unwrap();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["init"])
+        .assert()
+        .success();
+
+    let mut ids = Vec::new();
+    for title in ["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta"] {
+        let output = Command::cargo_bin("bead")
+            .unwrap()
+            .args(["create", "--title", title])
+            .output()
+            .unwrap();
+        ids.push(String::from_utf8(output.stdout).unwrap().trim().to_string());
+    }
+
+    // Case 1: a bidirectional `relates_to` cycle must not trip the check.
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["dep", "add", &ids[0], &ids[1], "--kind", "relates_to"])
+        .assert()
+        .success();
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["dep", "add", &ids[1], &ids[0], "--kind", "relates_to"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["doctor"])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("no cycles"));
+
+    // Case 2: an acyclic `blocks` chain plus a `relates_to` edge that closes
+    // a mixed-kind loop must also succeed. Chain: Delta blocked by Gamma,
+    // Epsilon blocked by Delta (acyclic on `blocks` alone). The `relates_to`
+    // edge from Gamma back to Epsilon only closes the loop informationally.
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["dep", "add", &ids[3], &ids[2]])
+        .assert()
+        .success();
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["dep", "add", &ids[4], &ids[3]])
+        .assert()
+        .success();
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["dep", "add", &ids[2], &ids[4], "--kind", "relates_to"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["doctor"])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("no cycles"));
+
+    // Case 3: a genuine `blocks` cycle still produces the dependency_graph
+    // integrity error. `dep add` itself refuses to create a `blocks` cycle,
+    // so the closing edge is inserted directly to simulate a corrupted
+    // store the doctor must still catch.
+    let conn = rusqlite::Connection::open(temp_dir.join(".beads/beads.db")).unwrap();
+    conn.execute(
+        "INSERT INTO dependencies (blocked_issue_id, blocker_issue_id, kind) VALUES (?1, ?2, 'blocks')",
+        [ids[2].as_str(), ids[4].as_str()],
+    )
+    .unwrap();
+    drop(conn);
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["doctor"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("dependency cycles"));
+
+    std::env::set_current_dir(original_dir).unwrap();
+}
