@@ -105,6 +105,22 @@ fn published_events(workspace: &Path, id: &str) -> Vec<Value> {
         .collect()
 }
 
+/// The epoch each recorded claim minted, in feed order -- the durable memory
+/// of every tenure the issue has had, superseded ones included. This is where
+/// an epoch outlives the claim that held it: the issue row carries only the
+/// current credential, but the feed names them all.
+fn claimed_epochs(workspace: &Path, id: &str) -> Vec<i64> {
+    published_events(workspace, id)
+        .into_iter()
+        .filter(|event| event["kind"] == "claimed")
+        .map(|event| {
+            event["detail"]["claim_epoch"]
+                .as_i64()
+                .expect("a claimed event carries the epoch it minted")
+        })
+        .collect()
+}
+
 /// Run `bead` and hand back the raw result, for the cases where a non-zero
 /// exit *is* the assertion.
 fn run_raw<I, S>(workspace: &Path, args: I) -> Output
@@ -187,6 +203,58 @@ fn with_credential(mut args: Vec<String>, credential: &str) -> Vec<String> {
     args.push("--fencing-token".to_string());
     args.push(credential.to_string());
     args
+}
+
+/// Release the claim currently held on `id` -- presenting the exact
+/// credential the store says fences it -- and immediately reclaim as a
+/// different assignee: the release-and-reclaim rotation every successor
+/// tenure goes through. Returns the superseded epoch and the one the
+/// reclaim minted, already asserted to have strictly advanced. The later
+/// release-and-reclaim suites build on this harness so the rotation
+/// contract is pinned once, here.
+fn rotate_claim(workspace: &Path, id: &str, next_assignee: &str, leased: bool) -> (i64, i64) {
+    let before = held_state(workspace, id);
+    assert_ne!(
+        before.1, next_assignee,
+        "rotation must hand the claim to a different assignee"
+    );
+    let events_before = published_event_count(workspace, id);
+
+    // The exact current credential, read back from the store rather than
+    // remembered by the caller: the release only lands if the fence accepts
+    // the epoch this tenure actually holds.
+    let superseded = shown_issue(workspace, id)["claim_epoch"]
+        .as_i64()
+        .expect("a held claim fences with an epoch");
+    run(
+        workspace,
+        ["release", id, "--fencing-token", &superseded.to_string()],
+    );
+
+    let minted = claim(workspace, next_assignee, leased)["claim_epoch"]
+        .as_i64()
+        .expect("a reclaim mints an epoch");
+    assert!(
+        minted > superseded,
+        "rotation must mint a later epoch than the one it replaced, not {minted} after {superseded}"
+    );
+
+    // The rotation landed as a whole: the successor holds the claim, and the
+    // feed advanced by exactly the release and the reclaim -- no partial
+    // write can hide behind the rotation.
+    let after = held_state(workspace, id);
+    assert_eq!(after.0, "in_progress", "the reclaim must hold the claim");
+    assert_eq!(
+        after.1, next_assignee,
+        "the reclaim must assign the successor"
+    );
+    assert_eq!(
+        published_event_count(workspace, id),
+        events_before + 2,
+        "rotation must publish exactly the released and claimed events"
+    );
+
+    (superseded, minted)
 }
 
 #[test]
@@ -540,6 +608,90 @@ fn a_superseded_credential_cannot_mutate_the_claim_that_replaced_it() {
         held_state(workspace.path(), &id).1,
         "worker-two",
         "the current claimant keeps mutating its own claim"
+    );
+}
+
+/// The rotation leg itself, pinned in isolation: presenting the held
+/// claim's exact credential releases it, the reclaim as a different
+/// assignee mints a strictly later epoch, and *both* epochs -- the
+/// superseded one and its replacement -- survive a checkpoint round-trip,
+/// so the rotation is durable state rather than an in-memory mint the
+/// next rebuild forgets. The per-surface successor legs are the later
+/// sub-splits; this is the tenure change they all start from.
+#[test]
+fn release_and_reclaim_rotates_the_claim_epoch_durably() {
+    let workspace = tempfile::tempdir().unwrap();
+    run(workspace.path(), ["init", "--prefix", "epoch"]);
+    let id =
+        String::from_utf8(run(workspace.path(), ["create", "--title", "rotation target"]).stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+
+    claim(workspace.path(), "worker-one", false);
+    let (superseded, minted) = rotate_claim(workspace.path(), &id, "worker-two", false);
+
+    // Strictly later, on the values the CLI minted -- the harness's own
+    // invariant, restated on the pair it returned so the leg is pinned in
+    // the test and not only inside the harness.
+    assert!(
+        minted > superseded,
+        "the reclaim must out-epoch the claim it replaced: {minted} vs {superseded}"
+    );
+
+    // The published checkpoint carries the successor's tenure on the issue
+    // record, and still names the epoch each claim minted -- the superseded
+    // tenure is history the checkpoint remembers, not a value only the
+    // live store held.
+    assert_eq!(
+        checkpoint_issue(workspace.path(), &id)["claim_epoch"].as_i64(),
+        Some(minted),
+        "the published checkpoint must carry the replacement epoch"
+    );
+    assert_eq!(
+        claimed_epochs(workspace.path(), &id),
+        vec![superseded, minted],
+        "both tenures' epochs must be published before the round-trip"
+    );
+
+    // Recover the way a fresh clone does -- rebuild the store from the
+    // checkpoint alone -- and both epochs are still there: the rebuilt
+    // issue carries the replacement, and the rebuilt feed still names each
+    // mint.
+    let saved_checkpoint = workspace.path().join("saved-forensic.jsonl");
+    std::fs::copy(
+        workspace
+            .path()
+            .join(".beads")
+            .join("checkpoint")
+            .join("forensic.jsonl"),
+        &saved_checkpoint,
+    )
+    .unwrap();
+    std::fs::remove_file(workspace.path().join(".beads").join("beads.db")).unwrap();
+    run(workspace.path(), ["init"]);
+    run(
+        workspace.path(),
+        [
+            "sync",
+            "import-only",
+            "--input",
+            saved_checkpoint.to_str().unwrap(),
+            "--restore-into-empty",
+            "--actor",
+            "claim-epoch-test",
+        ],
+    );
+
+    assert_eq!(
+        shown_issue(workspace.path(), &id)["claim_epoch"].as_i64(),
+        Some(minted),
+        "the rebuilt store must carry the replacement epoch"
+    );
+    assert_eq!(
+        claimed_epochs(workspace.path(), &id),
+        vec![superseded, minted],
+        "both epochs must survive the checkpoint round-trip"
     );
 }
 
