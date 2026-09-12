@@ -257,6 +257,55 @@ fn rotate_claim(workspace: &Path, id: &str, next_assignee: &str, leased: bool) -
     (superseded, minted)
 }
 
+/// A workspace holding one issue whose claim was just handed over by
+/// [`rotate_claim`]: `worker-one`'s tenure superseded, `worker-two` holding
+/// the credential the reclaim minted. Every successor-leg test below starts
+/// from this state, and each takes its own workspace so a committed close
+/// or reopen cannot contaminate the next probe.
+fn reclaimed_issue(title: &str) -> (tempfile::TempDir, String, i64, i64) {
+    let workspace = tempfile::tempdir().unwrap();
+    run(workspace.path(), ["init", "--prefix", "epoch"]);
+    let id = String::from_utf8(run(workspace.path(), ["create", "--title", title]).stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+    claim(workspace.path(), "worker-one", false);
+    let (superseded, minted) = rotate_claim(workspace.path(), &id, "worker-two", false);
+    (workspace, id, superseded, minted)
+}
+
+/// The rejection leg every successor test opens with: the exact mutation
+/// that is about to succeed, presented first with the superseded epoch's
+/// credential. The refusal must be the credential gate's own -- exit 4 plus
+/// its message, so a status-guard rejection cannot pass for a fence -- and
+/// a pure no-op: same status, same assignee, same revision, no published
+/// event.
+fn assert_superseded_credential_is_refused(
+    workspace: &Path,
+    id: &str,
+    label: &str,
+    mutation: &[String],
+    superseded: i64,
+) {
+    let held = held_state(workspace, id);
+    let events_before = published_event_count(workspace, id);
+    let output = run_raw(
+        workspace,
+        with_credential(mutation.to_vec(), &superseded.to_string()),
+    );
+    assert_credential_conflict(&output, &format!("{label} with the superseded credential"));
+    assert_eq!(
+        held_state(workspace, id),
+        held,
+        "{label} with the superseded credential must leave the successor's claim intact"
+    );
+    assert_eq!(
+        published_event_count(workspace, id),
+        events_before,
+        "{label} with the superseded credential must not publish an event"
+    );
+}
+
 #[test]
 fn every_claim_mints_a_visible_monotonic_epoch_that_survives_rebuild() {
     let workspace = tempfile::tempdir().unwrap();
@@ -703,6 +752,180 @@ fn release_and_reclaim_rotates_the_claim_epoch_durably() {
         "the reclaim's out-epoching of the claim it replaced must survive the round-trip: {} vs {}",
         rebuilt_epochs[1],
         rebuilt_epochs[0]
+    );
+}
+
+/// The successor's update leg. The rotation harness and the rejection
+/// sweeps prove what the superseded credential cannot do; this is the
+/// complementary proof that the credential the reclaim minted is the one
+/// the fence accepts, and that the update it admits commits: the notes
+/// read back as the value the successor wrote, not merely an exit zero.
+/// The claim survives the update as the successor's own tenure -- same
+/// assignee, same epoch, exactly one revision bump.
+#[test]
+fn after_release_and_reclaim_the_new_claimant_can_update() {
+    let (workspace, id, superseded, minted) = reclaimed_issue("successor update");
+    assert_eq!(
+        shown_issue(workspace.path(), &id)["notes"].as_str(),
+        Some(""),
+        "the update leg must start from an issue with no notes"
+    );
+
+    let update = vec![
+        "update".to_string(),
+        id.clone(),
+        "--notes".to_string(),
+        "written by the successor".to_string(),
+    ];
+    assert_superseded_credential_is_refused(workspace.path(), &id, "update", &update, superseded);
+
+    let before = held_state(workspace.path(), &id);
+    run(
+        workspace.path(),
+        with_credential(update, &minted.to_string()),
+    );
+    assert_eq!(
+        shown_issue(workspace.path(), &id)["notes"].as_str(),
+        Some("written by the successor"),
+        "the update must have committed the notes it carried"
+    );
+    let updated = held_state(workspace.path(), &id);
+    assert_eq!(
+        updated.0, "in_progress",
+        "the update must keep the claim held"
+    );
+    assert_eq!(
+        updated.1, "worker-two",
+        "the update must keep the successor's claim"
+    );
+    assert_eq!(
+        updated.2,
+        before.2 + 1,
+        "the successor's update must bump the revision exactly once"
+    );
+    assert_eq!(
+        shown_issue(workspace.path(), &id)["claim_epoch"].as_i64(),
+        Some(minted),
+        "the update must leave the rotation's epoch standing"
+    );
+}
+
+/// The successor's close leg: the minted credential closes the issue the
+/// reclaim left in progress, and the `closed` event names that credential
+/// as the one that authorized it -- a reader of the feed can tell the
+/// successor's close from the tenure it replaced. Closing keeps the claim,
+/// so the assignee and the epoch survive for a later reopen to hand back.
+#[test]
+fn after_release_and_reclaim_the_new_claimant_can_close() {
+    let (workspace, id, superseded, minted) = reclaimed_issue("successor close");
+
+    let close = vec![
+        "close".to_string(),
+        id.clone(),
+        "--reason".to_string(),
+        "closed by the successor".to_string(),
+    ];
+    assert_superseded_credential_is_refused(workspace.path(), &id, "close", &close, superseded);
+
+    let before = held_state(workspace.path(), &id);
+    run(
+        workspace.path(),
+        with_credential(close, &minted.to_string()),
+    );
+
+    let closed = shown_issue(workspace.path(), &id);
+    assert_eq!(
+        closed["status"].as_str(),
+        Some("closed"),
+        "the close must have committed"
+    );
+    assert_eq!(
+        closed["assignee"].as_str(),
+        Some("worker-two"),
+        "closing must keep the successor's claim standing"
+    );
+    assert_eq!(
+        closed["revision"].as_i64(),
+        Some(before.2 + 1),
+        "the successor's close must bump the revision exactly once"
+    );
+
+    let event = published_events(workspace.path(), &id)
+        .into_iter()
+        .find(|event| event["kind"] == "closed")
+        .expect("the close must publish a closed event");
+    assert_eq!(
+        event["detail"]["claim_epoch"].as_i64(),
+        Some(minted),
+        "the closed event must name the rotation's epoch as the authorizing credential"
+    );
+    assert_eq!(
+        event["detail"]["presented_fencing_token"].as_i64(),
+        Some(minted),
+        "the closed event must name the credential the successor presented"
+    );
+    assert_eq!(
+        event["detail"]["reason"].as_str(),
+        Some("closed by the successor"),
+        "the reason is recorded alongside the credential"
+    );
+}
+
+/// The successor's reopen leg. Reopen is only reachable once the issue is
+/// closed, and closing keeps the claim -- so this leg closes under the
+/// minted credential first (the scaffolding the reopenable state needs; the
+/// close surface has its own workspace above), then proves the superseded
+/// credential cannot hand the claim back from that state while the minted
+/// one can: the issue returns to open, the assignee is cleared, and the
+/// `reopened` event names the tenure it ended.
+#[test]
+fn after_release_and_reclaim_the_new_claimant_can_reopen() {
+    let (workspace, id, superseded, minted) = reclaimed_issue("successor reopen");
+
+    let close = vec![
+        "close".to_string(),
+        id.clone(),
+        "--reason".to_string(),
+        "closed to reach the reopenable state".to_string(),
+    ];
+    run(
+        workspace.path(),
+        with_credential(close, &minted.to_string()),
+    );
+    let closed = held_state(workspace.path(), &id);
+    assert_eq!(closed.0, "closed", "the scaffolding close must land");
+    assert_eq!(
+        closed.1, "worker-two",
+        "the scaffolding close must keep the claim the reopen will hand back"
+    );
+
+    let reopen = vec!["reopen".to_string(), id.clone()];
+    assert_superseded_credential_is_refused(workspace.path(), &id, "reopen", &reopen, superseded);
+
+    run(
+        workspace.path(),
+        with_credential(reopen, &minted.to_string()),
+    );
+    let reopened = unheld_state(workspace.path(), &id);
+    assert_eq!(reopened.0, "open", "the reopen must have committed");
+    assert_eq!(
+        reopened.1, None,
+        "reopen must hand the successor's claim back"
+    );
+    assert_eq!(
+        reopened.2,
+        closed.2 + 1,
+        "the successor's reopen must bump the revision exactly once"
+    );
+
+    let event = published_events(workspace.path(), &id)
+        .into_iter()
+        .find(|event| event["kind"] == "reopened")
+        .expect("the reopen must publish a reopened event");
+    assert_eq!(
+        event["detail"]["prior_assignee"].as_str(),
+        Some("worker-two"),
+        "the reopened event must name the successor's tenure as the one it ended"
     );
 }
 
