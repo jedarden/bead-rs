@@ -688,10 +688,21 @@ fn release_and_reclaim_rotates_the_claim_epoch_durably() {
         Some(minted),
         "the rebuilt store must carry the replacement epoch"
     );
+    let rebuilt_epochs = claimed_epochs(workspace.path(), &id);
     assert_eq!(
-        claimed_epochs(workspace.path(), &id),
+        rebuilt_epochs,
         vec![superseded, minted],
         "both epochs must survive the checkpoint round-trip"
+    );
+
+    // Durability is proven on the same invariant the rotation leg pins, not
+    // merely on the values matching their pre-rebuild counterparts: re-derive
+    // strictly-greater from the epochs the rebuilt feed actually names.
+    assert!(
+        rebuilt_epochs[1] > rebuilt_epochs[0],
+        "the reclaim's out-epoching of the claim it replaced must survive the round-trip: {} vs {}",
+        rebuilt_epochs[1],
+        rebuilt_epochs[0]
     );
 }
 
