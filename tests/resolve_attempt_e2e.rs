@@ -489,6 +489,163 @@ fn resolve_with_a_superseded_credential_leaves_the_new_claim_intact() {
     assert_eq!(receipt["is_replay"], false);
 }
 
+/// The rotation leg the superseded-credential refusal above leaves unpinned:
+/// after a release-and-reclaim, the successor's *exact current* credential is
+/// the one that commits the attempt. The refusal proved the replaced tenure
+/// cannot; this proves the successor can, in the atomic shape every resolve
+/// guarantees -- one receipt row, one published outcome, a replay that
+/// stores nothing further, and a claim left standing on the epoch that
+/// admitted it.
+#[test]
+fn after_release_and_reclaim_the_new_claimant_resolves_and_replays_idempotently() {
+    let ws = setup_workspace();
+    let id = create_issue(ws.path(), "resolve e2e: rotation");
+
+    let first_epoch = claim_ready(ws.path(), "worker-one", None)["claim_epoch"]
+        .as_i64()
+        .unwrap();
+    bead()
+        .args(["release", &id, "--fencing-token", &first_epoch.to_string()])
+        .current_dir(ws.path())
+        .assert()
+        .success();
+    claim_ready(ws.path(), "worker-two", None);
+
+    // The credential the successor must present is the claim the store says
+    // it holds now, read back rather than remembered from the claim call.
+    let held = show(ws.path(), &id);
+    assert_eq!(held["assignee"].as_str(), Some("worker-two"));
+    let current = held["claim_epoch"].as_i64().unwrap();
+    assert!(
+        current > first_epoch,
+        "the reclaim must mint a later epoch than the tenure it replaced"
+    );
+    let events_before = stored_event_count(ws.path(), &id);
+
+    // The replaced tenure's credential is still a pure no-op: refused with
+    // exit 4, nothing recorded, the successor's claim unmoved.
+    bead()
+        .args([
+            "resolve",
+            &id,
+            "--attempt-id",
+            "att-e2e-rotation",
+            "--outcome",
+            "verified_success",
+            "--fencing-token",
+            &first_epoch.to_string(),
+        ])
+        .current_dir(ws.path())
+        .assert()
+        .failure()
+        .code(4)
+        .stderr(predicates::str::contains("Claim-epoch credential mismatch"));
+
+    let refused = show(ws.path(), &id);
+    assert_eq!(refused["status"], held["status"]);
+    assert_eq!(refused["assignee"], held["assignee"]);
+    assert_eq!(
+        refused["revision"], held["revision"],
+        "the superseded credential must not bump the revision"
+    );
+    assert_eq!(
+        refused["claim_epoch"], held["claim_epoch"],
+        "the superseded credential must not rotate the epoch again"
+    );
+    assert_eq!(
+        stored_receipts(ws.path(), "att-e2e-rotation"),
+        0,
+        "the superseded credential must not write an attempt receipt"
+    );
+    assert_eq!(
+        stored_event_count(ws.path(), &id),
+        events_before,
+        "the superseded credential must append no audit event"
+    );
+    assert!(published_outcome(ws.path(), "att-e2e-rotation").is_none());
+
+    // The successor's exact current credential commits the attempt: the
+    // receipt records the outcome for the right issue and attempt, and the
+    // store and the published checkpoint each hold it exactly once.
+    let credential = current.to_string();
+    let receipt = resolve(
+        ws.path(),
+        &[
+            &id,
+            "--attempt-id",
+            "att-e2e-rotation",
+            "--outcome",
+            "verified_success",
+            "--fencing-token",
+            &credential,
+        ],
+    );
+    assert_eq!(receipt["issue_id"], id.as_str());
+    assert_eq!(receipt["attempt_id"], "att-e2e-rotation");
+    assert_eq!(receipt["is_replay"], false);
+    assert_eq!(receipt["resulting_state"], "in_progress");
+    assert!(
+        receipt["receipt_id"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()),
+        "the committed attempt must carry a receipt id"
+    );
+    assert_eq!(
+        stored_receipts(ws.path(), "att-e2e-rotation"),
+        1,
+        "the committed attempt must store its receipt exactly once"
+    );
+    let published = published_outcome(ws.path(), "att-e2e-rotation")
+        .expect("the committed attempt must publish its outcome to the checkpoint");
+    assert_eq!(published["outcome"], "verified_success");
+    assert_eq!(published["receipt_id"], receipt["receipt_id"]);
+
+    // A replay of the same attempt id stays idempotent under the same
+    // credential: the original receipt comes back and nothing is stored
+    // a second time.
+    let replay = resolve(
+        ws.path(),
+        &[
+            &id,
+            "--attempt-id",
+            "att-e2e-rotation",
+            "--outcome",
+            "verified_success",
+            "--fencing-token",
+            &credential,
+        ],
+    );
+    assert_eq!(
+        replay["is_replay"], true,
+        "the successor's replay of its own attempt must stay idempotent"
+    );
+    assert_eq!(
+        replay["receipt_id"], receipt["receipt_id"],
+        "a replay returns the original receipt"
+    );
+    assert_eq!(
+        replay["resulting_issue_revision"], receipt["resulting_issue_revision"],
+        "a replay must not bump the revision again"
+    );
+    assert_eq!(
+        stored_receipts(ws.path(), "att-e2e-rotation"),
+        1,
+        "a replay must not store a second receipt"
+    );
+
+    let settled = show(ws.path(), &id);
+    assert_eq!(
+        settled["assignee"].as_str(),
+        Some("worker-two"),
+        "resolving must not disturb the tenure that admitted it"
+    );
+    assert_eq!(
+        settled["claim_epoch"].as_i64(),
+        Some(current),
+        "the claim must still stand on the epoch that admitted the resolve"
+    );
+}
+
 /// A credential that does not parse never reaches the fence at all: it is a
 /// usage error about the token itself, refused before any authorization
 /// decision, and it records nothing -- same no-op, different words and code.
