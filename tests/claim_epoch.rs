@@ -306,6 +306,33 @@ fn assert_superseded_credential_is_refused(
     );
 }
 
+/// The declared resource keys an issue currently carries, read back from
+/// the store: the surface a resource-lock mutation commits to, which a
+/// refused one must leave exactly as it found it.
+fn resource_keys(workspace: &Path, id: &str) -> Vec<String> {
+    serde_json::from_slice(&run(workspace, ["resource", "list", id, "--json"]).stdout).unwrap()
+}
+
+/// The resource-lock rejection leg: everything the shared refusal asserts
+/// -- exit 4 from the credential gate, the successor's claim and the feed
+/// untouched -- plus the declared key set itself, the part of the issue a
+/// refused declaration must not move.
+fn assert_superseded_credential_keeps_resource_keys(
+    workspace: &Path,
+    id: &str,
+    label: &str,
+    mutation: &[String],
+    superseded: i64,
+) {
+    let keys = resource_keys(workspace, id);
+    assert_superseded_credential_is_refused(workspace, id, label, mutation, superseded);
+    assert_eq!(
+        resource_keys(workspace, id),
+        keys,
+        "{label} with the superseded credential must leave the declared keys untouched"
+    );
+}
+
 #[test]
 fn every_claim_mints_a_visible_monotonic_epoch_that_survives_rebuild() {
     let workspace = tempfile::tempdir().unwrap();
@@ -926,6 +953,119 @@ fn after_release_and_reclaim_the_new_claimant_can_reopen() {
         event["detail"]["prior_assignee"].as_str(),
         Some("worker-two"),
         "the reopened event must name the successor's tenure as the one it ended"
+    );
+}
+
+/// The successor's resource-lock legs. A declaration is scheduling
+/// metadata, not an issue-row edit: unlike the lifecycle surfaces above,
+/// neither verb bumps the revision, so each is proved by the key set it
+/// leaves behind plus the event it published, with the claim asserted
+/// unmoved rather than merely surviving. Both verbs share one workspace --
+/// the add's committed lock is the remove's starting state, which makes
+/// the remove's rejection leg the stronger refusal: the superseded tenure
+/// cannot undeclare the successor's lock any more than it could declare
+/// one.
+#[test]
+fn after_release_and_reclaim_the_new_claimant_can_add_and_remove_resource_locks() {
+    let (workspace, id, superseded, minted) = reclaimed_issue("successor resource locks");
+    assert!(
+        resource_keys(workspace.path(), &id).is_empty(),
+        "the resource legs must start from an issue with no declared keys"
+    );
+
+    // The add's rejection leg: the superseded credential is refused while
+    // the declaration is still empty.
+    let add = resource_mutation(&id, "add");
+    assert_superseded_credential_keeps_resource_keys(
+        workspace.path(),
+        &id,
+        "resource add",
+        &add,
+        superseded,
+    );
+
+    let before = held_state(workspace.path(), &id);
+    let events_before = published_event_count(workspace.path(), &id);
+    let added: Vec<String> = serde_json::from_slice(
+        &run(workspace.path(), with_credential(add, &minted.to_string())).stdout,
+    )
+    .unwrap();
+    assert_eq!(
+        added,
+        vec!["gpu:0".to_string()],
+        "the add must report the set it committed"
+    );
+    assert_eq!(
+        resource_keys(workspace.path(), &id),
+        vec!["gpu:0".to_string()],
+        "the successor's add must leave the lock readable back on the issue"
+    );
+    assert_eq!(
+        held_state(workspace.path(), &id),
+        before,
+        "a resource declaration must not move the status, assignee, or revision"
+    );
+    assert_eq!(
+        shown_issue(workspace.path(), &id)["claim_epoch"].as_i64(),
+        Some(minted),
+        "the add must leave the rotation's epoch standing"
+    );
+    let events = published_events(workspace.path(), &id);
+    assert_eq!(
+        events.len(),
+        events_before + 1,
+        "the successor's add must publish exactly one event, got {events:?}"
+    );
+    assert_eq!(events[events_before]["kind"], "resource_keys_added");
+    assert_eq!(
+        events[events_before]["detail"]["resource_keys"],
+        serde_json::json!(["gpu:0"])
+    );
+
+    // The remove's rejection leg, against the lock the add just committed.
+    let remove = resource_mutation(&id, "remove");
+    assert_superseded_credential_keeps_resource_keys(
+        workspace.path(),
+        &id,
+        "resource remove",
+        &remove,
+        superseded,
+    );
+
+    let before = held_state(workspace.path(), &id);
+    let events_before = published_event_count(workspace.path(), &id);
+    let removed: Vec<String> = serde_json::from_slice(
+        &run(
+            workspace.path(),
+            with_credential(remove, &minted.to_string()),
+        )
+        .stdout,
+    )
+    .unwrap();
+    assert_eq!(
+        removed,
+        Vec::<String>::new(),
+        "the remove must report the emptied set"
+    );
+    assert!(
+        resource_keys(workspace.path(), &id).is_empty(),
+        "the successor's remove must leave the lock gone from the issue"
+    );
+    assert_eq!(
+        held_state(workspace.path(), &id),
+        before,
+        "a resource release must not move the status, assignee, or revision"
+    );
+    let events = published_events(workspace.path(), &id);
+    assert_eq!(
+        events.len(),
+        events_before + 1,
+        "the successor's remove must publish exactly one event, got {events:?}"
+    );
+    assert_eq!(events[events_before]["kind"], "resource_keys_removed");
+    assert_eq!(
+        events[events_before]["detail"]["resource_keys"],
+        serde_json::json!([])
     );
 }
 
