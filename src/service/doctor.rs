@@ -2062,7 +2062,9 @@ fn detect_dependency_cycles(conn: &rusqlite::Connection) -> Result<Vec<Vec<Strin
     // cycles, so it must never trip the integrity check even though it is
     // still counted in the overall dependency statistics above.
     let mut stmt = conn
-        .prepare("SELECT blocked_issue_id, blocker_issue_id FROM dependencies WHERE kind = 'blocks'")
+        .prepare(
+            "SELECT blocked_issue_id, blocker_issue_id FROM dependencies WHERE kind = 'blocks'",
+        )
         .map_err(|e| Error::Integrity(format!("Failed to prepare dependencies query: {}", e)))?;
 
     let deps: Vec<(String, String)> = stmt
