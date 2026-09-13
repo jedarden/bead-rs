@@ -48,7 +48,11 @@ pub const RUNTIME_CHECKPOINT_FILES: &[&str] = &["publish.lock"];
 
 /// Whether a workspace-root-relative checkpoint path is runtime metadata
 /// rather than published state (see [`RUNTIME_CHECKPOINT_FILES`]).
-fn is_runtime_checkpoint_file(path: &str) -> bool {
+///
+/// `pub(crate)`: the write-side staging module (ADR-018) applies the same
+/// carve-out to the fileset it stages (see
+/// [`crate::service::git_stage::stage_published_checkpoint`]).
+pub(crate) fn is_runtime_checkpoint_file(path: &str) -> bool {
     Path::new(path)
         .file_name()
         .is_some_and(|name| RUNTIME_CHECKPOINT_FILES.contains(&name.to_string_lossy().as_ref()))
@@ -264,7 +268,12 @@ fn read_only_git(program: &str, workspace_root: &Path) -> Command {
 /// A plain walk up for a `.git` directory or file (a file means a linked
 /// worktree or submodule). Outside any repository the caller gets the
 /// unavailable answer without spawning a subprocess.
-fn repository_encloses(workspace_root: &Path) -> bool {
+///
+/// `pub(crate)`: the write-side staging module (ADR-018) reuses the same
+/// discovery rule so it too never spawns a subprocess outside a repository
+/// and stages nothing there
+/// ([`crate::service::git_stage::stage_published_checkpoint`]).
+pub(crate) fn repository_encloses(workspace_root: &Path) -> bool {
     let mut current = Some(workspace_root);
     while let Some(dir) = current {
         if dir.join(".git").exists() {

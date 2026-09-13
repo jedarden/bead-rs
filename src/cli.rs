@@ -25,8 +25,11 @@ to atomically assign work.
 SQLite (.beads/beads.db) is the authoritative live state and is not committed.
 The checkpoint under .beads/checkpoint/ is the portable, durable copy and is
 what Git tracks; every successful mutation publishes it automatically after its
-transaction commits, so it is never silently behind the database. `bead sync
-flush-only` remains an explicit idempotent check, and `--no-auto-flush` or
+transaction commits, so it is never silently behind the database. Each
+publication also stages the fileset it verified into the Git index (ADR-018),
+so the next commit carries a complete checkpoint however it is invoked;
+`checkpoint.auto_stage` in .beads/config.json suppresses that staging. `bead
+sync flush-only` remains an explicit idempotent check, and `--no-auto-flush` or
 `checkpoint.auto_flush` in .beads/config.json suppresses automatic publication,
 leaving the checkpoint to be flushed by hand.
 
@@ -2075,6 +2078,9 @@ CAPABILITY INFORMATION:
   - Complete command inventory
   - auto_flush: reports that this binary publishes a checkpoint
     generation after every successful semantic mutation
+  - auto_stage: reports that this binary stages the published
+    checkpoint fileset into the Git index after every successful
+    publication (ADR-018)
 
 AUTO_FLUSH:
   The additive auto_flush field reports the compiled default, not
@@ -2084,6 +2090,14 @@ AUTO_FLUSH:
   present and true under the automatic default. Consumers that require
   a current checkpoint must still read `bead sync --status`, which
   remains the only authority on whether this workspace is clean.
+
+AUTO_STAGE:
+  The additive auto_stage field (ADR-018) reports the compiled default,
+  not workspace state: a workspace that disables staging through
+  checkpoint.auto_stage changes what the binary does, never what it
+  advertises. The field is present and true under the automatic
+  default. Staging runs only after the publication transaction has
+  committed, so a staging failure can never un-publish a mutation.
 
 PROFILES:
   - native-v1: Full native capabilities (default)

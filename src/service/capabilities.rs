@@ -5,7 +5,7 @@
 
 use crate::error::Result;
 use crate::scan::{Mode, CONTRACT_IDENTITY, RULESET_VERSION};
-use crate::service::checkpoint::AUTO_FLUSH_COMPILED_DEFAULT;
+use crate::service::checkpoint::{AUTO_FLUSH_COMPILED_DEFAULT, AUTO_STAGE_COMPILED_DEFAULT};
 use serde::{Deserialize, Serialize};
 
 /// Capabilities document
@@ -48,6 +48,15 @@ pub struct Capabilities {
     /// R026 activation flipped the compiled default on (plan section 11).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_flush: Option<bool>,
+    /// Whether this binary stages the published checkpoint fileset into
+    /// the Git index after every successful publication (ADR-018).
+    /// Reports the compiled default, never workspace state:
+    /// `checkpoint.auto_stage` suppresses staging without changing this
+    /// advertisement, and a workspace outside any Git repository is
+    /// staged as a no-op either way. Absent from the document entirely
+    /// when the compiled default is off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_stage: Option<bool>,
     /// Attempt outcome resolution capabilities (ADR-012)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attempt_outcome: Option<AttemptOutcome>,
@@ -234,6 +243,10 @@ pub fn generate_capabilities_with_secret_mode(
         // flipped it on. The workspace key and the per-invocation
         // flag change behavior, never the advertisement.
         auto_flush: AUTO_FLUSH_COMPILED_DEFAULT.then_some(AUTO_FLUSH_COMPILED_DEFAULT),
+        // The additive ADR-018 handshake: `auto_stage` reports the
+        // compiled default, `true` since the feature landed. The
+        // workspace key changes behavior, never the advertisement.
+        auto_stage: AUTO_STAGE_COMPILED_DEFAULT.then_some(AUTO_STAGE_COMPILED_DEFAULT),
         // ADR-012: advertise attempt outcome resolution capabilities
         attempt_outcome: Some(AttemptOutcome {
             supported: true,

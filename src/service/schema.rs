@@ -277,6 +277,9 @@ fn names(kind: &str) -> &'static [&'static str] {
             // Additive R026 handshake (plan section 11): optional because it
             // is absent until the compiled automatic-flush default flips on
             "auto_flush",
+            // Additive ADR-018 handshake: post-publication staging of the
+            // verified checkpoint fileset, optional for the same reason
+            "auto_stage",
             "secret_scan",
             "historical_redaction",
         ],
@@ -516,7 +519,8 @@ fn property_schema(kind: &str, name: &str) -> Value {
         ("capabilities", "store_layout") => json!({"type":"integer", "minimum":1}),
         ("capabilities", "atomic_claim")
         | ("capabilities", "logical_revision")
-        | ("capabilities", "auto_flush") => {
+        | ("capabilities", "auto_flush")
+        | ("capabilities", "auto_stage") => {
             json!({"type":"boolean"})
         }
         ("capabilities", "statuses")
@@ -688,8 +692,14 @@ fn required_for(kind: &str) -> Vec<String> {
         "provenance_receipt" => &["summary_event_identity"],
         // Optional while the R026 gate keeps the compiled default off, so a
         // document without it validates; present-when-enabled documents
-        // validate against the same additive identity (plan section 11)
-        "capabilities" => &["auto_flush", "secret_scan", "historical_redaction"],
+        // validate against the same additive identity (plan section 11).
+        // `auto_stage` is additive the same way (ADR-018)
+        "capabilities" => &[
+            "auto_flush",
+            "auto_stage",
+            "secret_scan",
+            "historical_redaction",
+        ],
         "attempt_outcome" => &["reason", "model", "harness", "harness_version"],
         "resolve_receipt" => &[],
         "resolve_request" => &[

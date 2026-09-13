@@ -19,6 +19,11 @@ pub mod dryrun;
 pub mod external_refs;
 // Reporting-only Git inspection used by `sync status` (ADR-013).
 pub mod git;
+// Best-effort Git index staging of the published checkpoint fileset
+// (ADR-018) -- the write-side counterpart to the probe above; staging
+// never commits (ADR-003 stands), and `checkpoint.auto_stage` is the
+// durable opt-out.
+pub mod git_stage;
 pub mod issues;
 pub mod leases;
 pub mod lifecycle;

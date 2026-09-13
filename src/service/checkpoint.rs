@@ -74,6 +74,7 @@ use crate::model::redaction::{
 use crate::model::Issue;
 use crate::profile::ProfileLossReport;
 use crate::service::git::{self, GitReachability};
+use crate::service::git_stage;
 use crate::service::resource_locks::{
     acquire_issue_locks, declare_resource_keys, get_resource_keys, resource_keys_from_value,
 };
@@ -207,6 +208,7 @@ pub enum ModePolicy {
 /// ```json
 /// { "checkpoint": { "mode": "sharded",
 ///                   "auto_flush": true,
+///                   "auto_stage": true,
 ///                   "thresholds": { "version": 1, "max_monolith_issue_records": 4 } } }
 /// ```
 #[derive(Debug, Clone, Default)]
@@ -218,6 +220,10 @@ pub struct CheckpointConfig {
     /// Explicit post-commit publication setting (plan 6.2.1); `None` falls
     /// back to [`AUTO_FLUSH_COMPILED_DEFAULT`]
     pub auto_flush: Option<bool>,
+    /// Explicit post-publication Git index staging of the verified
+    /// checkpoint fileset (ADR-018); `None` falls back to
+    /// [`AUTO_STAGE_COMPILED_DEFAULT`]
+    pub auto_stage: Option<bool>,
 }
 
 /// Whether a mutating command publishes a checkpoint generation after its
@@ -234,11 +240,29 @@ pub struct CheckpointConfig {
 /// it meant as an opt-in before the flip.
 pub const AUTO_FLUSH_COMPILED_DEFAULT: bool = true;
 
+/// Whether a successful publication also stages the verified checkpoint
+/// fileset into the Git index when `.beads/config.json` does not say
+/// otherwise (ADR-018).
+///
+/// On by default: staging is the automatic half of the Git handoff, it is
+/// idempotent, it mutates no history, and it is what makes the committed
+/// pointer's referenced set always present in the tree. An explicit
+/// `"checkpoint": { "auto_stage": false }` in `.beads/config.json` is the
+/// durable opt-out; staging is additionally skipped outright in workspaces
+/// outside any Git repository, where there is no index to stage into.
+pub const AUTO_STAGE_COMPILED_DEFAULT: bool = true;
+
 impl CheckpointConfig {
     /// Resolve the post-commit publication setting: an explicit workspace
     /// value wins over [`AUTO_FLUSH_COMPILED_DEFAULT`]
     pub fn auto_flush_enabled(&self) -> bool {
         self.auto_flush.unwrap_or(AUTO_FLUSH_COMPILED_DEFAULT)
+    }
+
+    /// Resolve the post-publication staging setting: an explicit workspace
+    /// value wins over [`AUTO_STAGE_COMPILED_DEFAULT`]
+    pub fn auto_stage_enabled(&self) -> bool {
+        self.auto_stage.unwrap_or(AUTO_STAGE_COMPILED_DEFAULT)
     }
 }
 
@@ -278,6 +302,12 @@ pub fn load_checkpoint_config(beads_dir: &Path) -> Result<CheckpointConfig> {
     if let Some(auto_flush_value) = section.get("auto_flush") {
         config.auto_flush = Some(auto_flush_value.as_bool().ok_or_else(|| {
             anyhow!(".beads/config.json checkpoint.auto_flush must be a boolean")
+        })?);
+    }
+
+    if let Some(auto_stage_value) = section.get("auto_stage") {
+        config.auto_stage = Some(auto_stage_value.as_bool().ok_or_else(|| {
+            anyhow!(".beads/config.json checkpoint.auto_stage must be a boolean")
         })?);
     }
 
@@ -7141,6 +7171,11 @@ fn publish_forensic_checkpoint_inner(
         publish_forensic_view(&corpus, &checkpoint_dir, scratch_dir)?;
         changed_paths.push("forensic.jsonl".to_string());
     }
+    // Whether this generation wrote the compatibility view: it is among the
+    // referenced paths in monolithic mode, and rewritten explicitly in the
+    // sharded redaction case above. The ADR-018 staging set needs to know,
+    // because the view is part of what one external Git commit must carry.
+    let view_written = changed_paths.iter().any(|path| path == "forensic.jsonl");
 
     // Update checkpoint pointers in a write transaction
     let root_hash = publication.root_hash;
@@ -7316,6 +7351,49 @@ fn publish_forensic_checkpoint_inner(
     }
 
     tx.commit()?;
+
+    // The publication is durable; stage the fileset it made authoritative
+    // so the next Git commit carries a complete, consistent checkpoint
+    // (ADR-018). The set is exactly what one external Git commit must carry
+    // (plan 6.2): both pointers, every object the new generation
+    // references, every object the retained outgoing pointer still
+    // references, the compatibility view when this generation wrote one
+    // (it is among the referenced paths), and the removal of every
+    // tombstoned object Git tracks. The assembly draws on the same
+    // referenced and retained lists `sync status` reports on, so the index
+    // cannot quietly disagree with a set status called reachable.
+    // Deliberately best-effort -- a staging
+    // failure cannot fail the publication that already committed (the
+    // ADR-017 rule that publication keys on internals alone); the ordinary
+    // `sync status` reachability buckets surface whatever did not stage.
+    if config.auto_stage_enabled() {
+        let mut stage_candidates: Vec<String> = publication.referenced_paths.clone();
+        stage_candidates.extend(previous_files.iter().cloned());
+        stage_candidates.push("current.json".to_string());
+        if previous_pointer_path.exists() {
+            stage_candidates.push("previous.json".to_string());
+        }
+        if view_written {
+            stage_candidates.push("forensic.jsonl".to_string());
+        }
+        stage_candidates.sort();
+        stage_candidates.dedup();
+        let workspace_root = checkpoint_base.parent().unwrap_or(checkpoint_base);
+        if let Err(reason) = git_stage::stage_published_checkpoint(
+            workspace_root,
+            &checkpoint_dir,
+            &stage_candidates,
+            &deleted_paths_sorted,
+        ) {
+            eprintln!(
+                "checkpoint-publish: warning: staging the verified checkpoint \
+                 fileset failed: {}; the publication itself is durable, and the \
+                 next publication (or a hand-run `git add .beads/checkpoint`) \
+                 stages the fileset",
+                reason
+            );
+        }
+    }
 
     let checkpoint = ForensicFlushResult {
         mode,
