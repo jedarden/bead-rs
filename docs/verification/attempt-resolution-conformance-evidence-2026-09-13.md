@@ -214,3 +214,34 @@ $ <binary> capabilities                # §3 matrix, any binary, fresh workspace
 (On this box `cargo test` with a dirty tree runs locally under cgroup
 limits; a clean tree submits to iad-ci. Suites marked `*_variant_*` drive the
 pinned binaries and need nothing but the pins.)
+
+## 9. Re-verification — 2026-09-13, second dispatch
+
+The first dispatch on the evidence bead committed this report (`10db987`)
+and then hit its hard timeout before verifying and closing. The second
+dispatch re-verified every mechanical claim above live; all green:
+
+- **Binaries re-hashed by content.** All five `pinned-binaries/` pins
+  (`bead-pre-feature`, `bead-pre-attempt-resolution`,
+  `bead-attempt-resolution-e115609`, `bead-attempt-resolution-f25ab5c`,
+  `bead-8e5839b`) and `gates/beadrs-68e30e41/pin/gate-98f088a` — every
+  sha256 matches its recorded `binary_sha256`.
+- **Gate evidence re-read.**
+  `gates/beadrs-68e30e41/gates-summary.json`: all six gates
+  `exit_code: 0`, overall `ALL GATES PASSED`; `logs/test.log` re-totals
+  **1290 passed / 0 failed**.
+- **No source drift since the gate commit.**
+  `git diff --stat 98f088a2..HEAD -- src tests Cargo.toml Cargo.lock
+  build.rs scripts/build-from-archive.sh` is empty — the five commits since
+  `98f088a2` are `chore(beads)` checkpoint syncs and documentation — so the
+  gate results remain the results of the current source tree.
+- **Report is at origin.** `10db987` is an ancestor of `origin/main`, and
+  the working-tree copy of this file is clean at `HEAD` at re-verification
+  time.
+
+Acceptance trace for the evidence bead: exact commands + arguments → §1
+(and per-gate logs in the evidence dir); commit hashes for all binaries →
+§2; test results formatted → §1/§4/§5/§6; capability absence/presence
+matrix → §3; NEEDLE fallback/atomic path coverage → §4; checkpoint
+recovery matrix → §5; persistent location → this file, committed and
+pushed.
