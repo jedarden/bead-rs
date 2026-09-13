@@ -12,7 +12,7 @@ This directory contains checkpoint fixtures representing the format **before** t
 
 The old format lacks the following attempt-resolution capabilities:
 
-1. **No `attempt_outcome` record type** - Checkpoint JSONL contains only `issue` records
+1. **No `attempt_outcome` record type** - Neither layout contains outcome records
 2. **No `attempt_outcome_count` field** - Current.json metadata lacks attempt outcome count
 3. **No `attempt_outcomes` table** - SQLite schema is v13 (no attempt tracking)
 4. **No attempt resolution service** - `src/service/attempt.rs` does not exist
@@ -52,17 +52,17 @@ The old format lacks the following attempt-resolution capabilities:
   "added_paths": [ ... ],
   "created_at": "2026-08-31T...",
   "deleted_paths": [ ... ],
-  "event_count": 10,
+  "event_count": 0,
   "generation_id": "...",
   "issue_count": 3,
   "mode": "monolithic",
-  "receipt_count": 2,
+  "receipt_count": 0,
   "replaced_paths": [ ... ],
   "schema_version": 1,
   "snapshot_sequence": 10,
   "store_uuid": "...",
-  "total_record_count": 15,
-  "attempt_outcome_count": 2
+  "total_record_count": 19,
+  "attempt_outcome_count": 16
 }
 ```
 
@@ -77,6 +77,10 @@ The old format lacks the following attempt-resolution capabilities:
 {"record_type":"issue","issue":{...}}
 {"record_type":"issue","issue":{...}}
 ```
+
+The pre-feature sharded fixture additionally carries the audit events produced
+by its lifecycle sequence, but still has no attempt-outcome records or manifest
+fields.
 
 ### New Format (Issue + Attempt Outcome Records)
 
@@ -102,7 +106,8 @@ These fixtures are used for:
 Old-format fixtures should:
 - ✅ Load successfully with both old and new binaries
 - ✅ Validate as correct JSON/JSONL
-- ✅ Contain only `issue` record types
+- ✅ Monolithic fixture contains only `issue` record types
+- ✅ Carry no `attempt_outcome` records in either layout
 - ✅ Lack `attempt_outcome_count` in metadata
 - ✅ Represent schema v13 (no `attempt_outcomes` table)
 

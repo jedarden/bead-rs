@@ -590,11 +590,12 @@ mod tests {
         let checkpoint = load_new_checkpoint().unwrap();
         assert_eq!(
             checkpoint.len(),
-            5,
-            "New format should have 5 total records"
+            19,
+            "New format should have 19 total records"
         );
 
-        // Should have 3 issues and 2 attempt outcomes
+        // The 16 outcomes cover all 15 valid outcome/action pairs, with one
+        // additional verified_success+none record exercising a second state.
         let issue_count = checkpoint
             .iter()
             .filter(|r| r.get("record_type").and_then(|t| t.as_str()) == Some("issue"))
@@ -605,7 +606,7 @@ mod tests {
             .count();
 
         assert_eq!(issue_count, 3, "Should have 3 issue records");
-        assert_eq!(attempt_count, 2, "Should have 2 attempt outcome records");
+        assert_eq!(attempt_count, 16, "Should have 16 attempt outcome records");
     }
 
     #[test]
@@ -631,7 +632,7 @@ mod tests {
             manifest
                 .get("attempt_outcome_count")
                 .and_then(|v| v.as_u64()),
-            Some(2)
+            Some(16)
         );
 
         // Should have issue_count
@@ -720,7 +721,7 @@ mod tests {
         let checkpoint = load_new_checkpoint().unwrap();
         let outcomes = get_attempt_outcome_records(&checkpoint);
 
-        assert_eq!(outcomes.len(), 2);
+        assert_eq!(outcomes.len(), 16);
 
         // Verify they're attempt outcomes
         for outcome in &outcomes {

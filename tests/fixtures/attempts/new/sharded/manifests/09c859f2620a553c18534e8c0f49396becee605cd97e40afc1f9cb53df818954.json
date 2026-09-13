@@ -1,0 +1,108 @@
+{
+  "attempt_outcome_count": 5,
+  "attempt_outcome_shards": [
+    {
+      "byte_length": 3073,
+      "path": "objects/9a2e4c459fc97542340be50a6433e361abb36041b7e09c190daef8b77aeeae32.jsonl",
+      "record_count": 5,
+      "role": "attempt_outcomes",
+      "sha256": "9a2e4c459fc97542340be50a6433e361abb36041b7e09c190daef8b77aeeae32"
+    }
+  ],
+  "created_at": "2026-09-05T12:27:37.067512922Z",
+  "event_count": 11,
+  "event_shards": [
+    {
+      "byte_length": 3686,
+      "origin_range": {
+        "first": [
+          "eafcb444-e9e7-db8a-2aa8-d6e6a65c37bd",
+          1
+        ],
+        "last": [
+          "eafcb444-e9e7-db8a-2aa8-d6e6a65c37bd",
+          11
+        ]
+      },
+      "path": "objects/f5113909ec476845a3b49353963fdc14aeb409eb76793550311e51a893b0b7a1.jsonl",
+      "record_count": 11,
+      "role": "events",
+      "sealed": false,
+      "sequence_range": [
+        1,
+        11
+      ],
+      "sha256": "f5113909ec476845a3b49353963fdc14aeb409eb76793550311e51a893b0b7a1"
+    }
+  ],
+  "format": "checkpoint-set-v1",
+  "issue_count": 2,
+  "issue_partition": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "a",
+    "b",
+    "c",
+    "d",
+    "e",
+    "f"
+  ],
+  "issue_shards": [
+    {
+      "byte_length": 439,
+      "id_prefix": "9",
+      "path": "objects/e1e968736c662194ea1b2d827b4f27633d8131cc188a79e7a149050a5efc405e.jsonl",
+      "record_count": 1,
+      "role": "issues",
+      "sha256": "e1e968736c662194ea1b2d827b4f27633d8131cc188a79e7a149050a5efc405e"
+    },
+    {
+      "byte_length": 412,
+      "id_prefix": "f",
+      "path": "objects/d9f59cce5c2aad21deba09db04af73d9fa9c4f4b778fa6aa4bb63efbabf6fab0.jsonl",
+      "record_count": 1,
+      "role": "issues",
+      "sha256": "d9f59cce5c2aad21deba09db04af73d9fa9c4f4b778fa6aa4bb63efbabf6fab0"
+    }
+  ],
+  "max_local_ingestion_sequence": 11,
+  "origins": [
+    {
+      "event_count": 11,
+      "max_sequence": 11,
+      "min_sequence": 1,
+      "objects": [
+        "objects/f5113909ec476845a3b49353963fdc14aeb409eb76793550311e51a893b0b7a1.jsonl"
+      ],
+      "origin_store_uuid": "eafcb444-e9e7-db8a-2aa8-d6e6a65c37bd"
+    }
+  ],
+  "partition_algorithm": "sha256-hex-prefix",
+  "partition_thresholds": {
+    "max_event_object_bytes": 67108864,
+    "max_event_object_events": 100000,
+    "max_monolith_issue_records": 50000,
+    "max_monolith_total_bytes": 67108864,
+    "max_record_line_bytes": 8388608,
+    "max_shard_bytes": 52428800,
+    "max_shard_issue_records": 10000,
+    "version": 1
+  },
+  "profile": "native-v1",
+  "receipt_count": 0,
+  "receipt_shards": [],
+  "redaction_record_count": 0,
+  "redaction_shards": [],
+  "schema_version": 1,
+  "snapshot_sequence": 11,
+  "store_uuid": "eafcb444-e9e7-db8a-2aa8-d6e6a65c37bd",
+  "total_record_count": 18
+}

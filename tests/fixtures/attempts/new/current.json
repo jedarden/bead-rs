@@ -1,18 +1,19 @@
 {
   "active_root": {
     "path": "checkpoint.jsonl",
-    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    "sha256": "6dce8e24485d43631dd38fd58a491d06ad57bdd211d466a4f0d3c117aa1f8f7d"
   },
   "added_paths": [
     "checkpoint.jsonl"
   ],
+  "attempt_outcome_count": 16,
   "created_at": "2026-08-31T15:00:00.000000000Z",
   "deleted_paths": [],
-  "event_count": 10,
+  "event_count": 0,
   "generation_id": "gen-new-format-test-fixture",
   "issue_count": 3,
   "mode": "monolithic",
-  "receipt_count": 2,
+  "receipt_count": 0,
   "replaced_paths": [
     "current.json",
     "forensic.jsonl"
@@ -20,6 +21,5 @@
   "schema_version": 1,
   "snapshot_sequence": 10,
   "store_uuid": "00000000-0000-0000-0000-000000000000",
-  "total_record_count": 5,
-  "attempt_outcome_count": 2
+  "total_record_count": 19
 }

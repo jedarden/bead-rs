@@ -1,0 +1,28 @@
+{
+  "active_root": {
+    "path": "manifests/b7d27fd339cda55a9c51cc595418ae64befcc67f823b476ac2f5300253e2ad92.json",
+    "sha256": "b7d27fd339cda55a9c51cc595418ae64befcc67f823b476ac2f5300253e2ad92"
+  },
+  "added_paths": [
+    "manifests/b7d27fd339cda55a9c51cc595418ae64befcc67f823b476ac2f5300253e2ad92.json",
+    "objects/0998f9d0e43b89630d4074c0fa936629fb8708606531bdb66efda67f14958f06.jsonl",
+    "objects/30d6adfa32eb7b062ff0dbeb736b8c61c8b295272e93d35203b750cd2e711789.jsonl",
+    "objects/b2e6293a45e425514f5345df99848839a8e1e3a127022d836b45818212f1434d.jsonl"
+  ],
+  "created_at": "2026-09-05T12:27:36.504468271Z",
+  "deleted_paths": [
+    "objects/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.jsonl"
+  ],
+  "event_count": 11,
+  "generation_id": "gen-4a9edc348a5780d4cfd59f3b19ed8664",
+  "issue_count": 2,
+  "mode": "sharded",
+  "receipt_count": 0,
+  "replaced_paths": [
+    "current.json"
+  ],
+  "schema_version": 1,
+  "snapshot_sequence": 11,
+  "store_uuid": "c62380e3-cc45-fc7f-1317-625bba5ff8cc",
+  "total_record_count": 13
+}
