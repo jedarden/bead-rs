@@ -1,7 +1,8 @@
 //! Service layer for bead operations
 //!
 //! This module provides business logic for issue operations, claiming,
-//! dependencies, checkpoint management, diagnostics, and capabilities.
+//! dependencies, checkpoint management, diagnostics, read-only Git
+//! reachability reporting (ADR-013), and capabilities.
 
 pub mod archaeology;
 pub mod attempt;
@@ -16,6 +17,10 @@ pub mod dependencies;
 pub mod doctor;
 pub mod dryrun;
 pub mod external_refs;
+// Reporting-only module (ADR-013); the binary consumes it once `sync status`
+// wires the reachability line in -- until then it is library API only.
+#[allow(dead_code)]
+pub mod git;
 pub mod issues;
 pub mod leases;
 pub mod lifecycle;
