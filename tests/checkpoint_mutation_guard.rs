@@ -44,6 +44,48 @@ fn sequence(path: &Path) -> i64 {
         .unwrap()
 }
 
+/// A hermetic `git` invocation: no global or system config leaks in, and
+/// the identity never depends on the host.
+fn git(dir: &Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .args([
+            "-c",
+            "user.name=beadrs-test",
+            "-c",
+            "user.email=beadrs-test@invalid",
+        ])
+        .args(args)
+        .output()
+        .expect("git should be runnable in tests");
+    assert!(
+        out.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// ADR-017: `ready_to_commit` is true only when the checkpoint is
+/// internally consistent AND Git can reach every published file. These
+/// fixtures run outside any repository, so give the workspace one and
+/// commit the checkpoint right before asserting readiness. Idempotent:
+/// an unchanged checkpoint commits nothing new (`--allow-empty`). Only
+/// readiness assertions need this; internals-only assertions (dirty,
+/// root_verified, coverage) are gate-independent.
+fn commit_checkpoint(workspace: &Path) {
+    if !workspace.join(".git").exists() {
+        git(workspace, &["init", "-q"]);
+    }
+    git(workspace, &["add", ".beads/checkpoint"]);
+    git(
+        workspace,
+        &["commit", "--allow-empty", "-q", "-m", "checkpoint"],
+    );
+}
+
 #[test]
 fn remote_advancement_blocks_claim_and_suppressed_writes_until_reconciled() {
     let dir = tempfile::tempdir().unwrap();
@@ -144,6 +186,9 @@ fn fork_preserves_the_published_prefix_and_allows_later_mutations() {
     for event in before {
         assert!(after.contains(&event), "fork rewrote a published event");
     }
+    // Reachability is part of readiness (ADR-017); commit the published
+    // prefix before asserting it.
+    commit_checkpoint(dir.path());
     let status: Value =
         serde_json::from_str(&run(dir.path(), &["sync", "status", "--format", "json"])).unwrap();
     assert_eq!(status["ready_to_commit"], true);
@@ -177,6 +222,9 @@ fn concurrent_claims_remain_unique_and_published() {
         let value: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert!(ids.insert(value["bead_id"].as_str().unwrap().to_string()));
     }
+    // Reachability is part of readiness (ADR-017); commit the published
+    // claims before asserting it.
+    commit_checkpoint(dir.path());
     let status: Value =
         serde_json::from_str(&run(dir.path(), &["sync", "status", "--format", "json"])).unwrap();
     assert_eq!(status["ready_to_commit"], true);

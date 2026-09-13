@@ -29,6 +29,51 @@ fn run(dir: &Path, args: &[&str]) -> std::process::Output {
     bead(dir).args(args).assert().success().get_output().clone()
 }
 
+/// A hermetic `git` invocation: no global or system config leaks in, and
+/// the identity never depends on the host.
+fn git_commit(workspace: &Path) {
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(workspace)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .args([
+                "-c",
+                "user.name=beadrs-test",
+                "-c",
+                "user.email=beadrs-test@invalid",
+            ])
+            .args(args)
+            .output()
+            .expect("git should be runnable in tests")
+    };
+    // ADR-017: readiness includes Git reachability, and these fixtures run
+    // outside any repository -- give the workspace one and commit the
+    // checkpoint. Idempotent: an unchanged checkpoint commits nothing new.
+    // Only readiness assertions need this; internals-only assertions (dirty,
+    // root_verified, coverage) are gate-independent.
+    if !workspace.join(".git").exists() {
+        let init = git(&["init", "-q"]);
+        assert!(
+            init.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&init.stderr)
+        );
+    }
+    let add = git(&["add", ".beads/checkpoint"]);
+    assert!(
+        add.status.success(),
+        "git add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    let commit = git(&["commit", "--allow-empty", "-q", "-m", "checkpoint"]);
+    assert!(
+        commit.status.success(),
+        "git commit failed: {}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+}
+
 fn create_issue(dir: &Path, title: &str) -> String {
     String::from_utf8(run(dir, &["create", "--title", title]).stdout)
         .unwrap()
@@ -307,7 +352,10 @@ fn reconcile_merges_publishes_and_becomes_aligned() {
 
     // Under the automatic publication default the post-commit chokepoint
     // published the generation covering the merge: covered equals live and
-    // the workspace is ready to commit.
+    // the workspace is ready to commit. Readiness includes reachability
+    // (ADR-017), so commit the published generation to a fixture
+    // repository before asserting it.
+    git_commit(&pair.origin);
     let report = status(&pair.origin);
     assert_eq!(report["covered_sequence"], report["live_sequence"]);
     assert_eq!(report["dirty"], false);

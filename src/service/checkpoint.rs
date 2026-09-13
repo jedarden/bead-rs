@@ -1020,11 +1020,15 @@ struct PointerRedactionReset {
 /// Checkpoint status for `bead sync status` (plan 6.2)
 ///
 /// `ready_to_commit` is the pre-commit gate: it holds only when the
-/// authoritative pointer verifies against its root object, the checkpoint
-/// covers the live event sequence, no pointer-declared tombstone is
-/// unresolved, the monolithic compatibility view (when applicable) agrees
-/// with the pointer-selected object, and the recorded checkpoint state
-/// agrees with the pointer.
+/// checkpoint is internally consistent -- the authoritative pointer
+/// verifies against its root object, the checkpoint covers the live event
+/// sequence, no pointer-declared tombstone is unresolved, the monolithic
+/// compatibility view (when applicable) agrees with the pointer-selected
+/// object, and the recorded checkpoint state agrees with the pointer --
+/// **and** Git can reach every published file (ADR-017). The internals
+/// verdict alone is preserved in `checkpoint_consistent`, which `sync
+/// flush-only`'s idempotent short-circuit keys on so publication never
+/// waits on the transport.
 #[derive(Debug, Clone, Serialize)]
 pub struct CheckpointStatusReport {
     pub checkpoint_present: bool,
@@ -1041,6 +1045,13 @@ pub struct CheckpointStatusReport {
     pub view_agrees: Option<bool>,
     pub unresolved_tombstones: Vec<String>,
     pub changed_paths: Vec<String>,
+    /// The checkpoint-internals verdict alone: pointer verified, coverage
+    /// aligned, tombstones resolved, view agrees, recorded state agrees.
+    /// Deliberately probe-independent (ADR-017): `sync flush-only`'s
+    /// idempotent short-circuit keys on this, so an uncommitted but
+    /// consistent checkpoint never re-publishes -- the coupling ADR-013
+    /// rejected for `ready_to_commit` stays rejected for publication.
+    pub checkpoint_consistent: bool,
     pub ready_to_commit: bool,
     pub not_ready_reasons: Vec<String>,
     /// The R027 sync relationship between the live store and the durable
@@ -1054,7 +1065,9 @@ pub struct CheckpointStatusReport {
     /// which checkpoint files Git can currently reach, bucketed as
     /// committed/staged/unstaged/untracked/ignored, or why Git could not
     /// answer. `None` when no checkpoint is published -- nothing exists to
-    /// reach. Reporting only: it never gates a decision.
+    /// reach. The readiness gate is its one consumer (ADR-017): the gate
+    /// folds this verdict into `ready_to_commit`, while the probe itself
+    /// stays strictly read-only.
     pub git_reachability: Option<GitReachability>,
 }
 
@@ -7318,6 +7331,30 @@ fn publish_forensic_checkpoint_inner(
     Ok((checkpoint, published_receipt))
 }
 
+/// Apply the ADR-017 readiness gate to a fully populated report.
+///
+/// Records the internals verdict in `checkpoint_consistent` first, so
+/// `sync flush-only`'s idempotent short-circuit can key on it without
+/// consulting the transport; then folds the probe into `ready_to_commit`
+/// through the pure [`git::commit_readiness`] gate. This is the single
+/// point every return path of [`forensic_checkpoint_status`] exits
+/// through, so all three shapes carry the same contract.
+///
+/// Reports without a probe (`git_reachability: None`, i.e. no published
+/// checkpoint) pass through the gate unchanged: the internals verdict
+/// already names that gap, and there is nothing for Git to reach.
+fn gate_readiness(mut report: CheckpointStatusReport) -> Result<CheckpointStatusReport> {
+    report.checkpoint_consistent = report.not_ready_reasons.is_empty();
+    let (ready, reasons) = git::commit_readiness(
+        report.checkpoint_consistent,
+        std::mem::take(&mut report.not_ready_reasons),
+        report.git_reachability.as_ref(),
+    );
+    report.ready_to_commit = ready;
+    report.not_ready_reasons = reasons;
+    Ok(report)
+}
+
 /// Report forensic checkpoint status for `bead sync status` (plan 6.2)
 ///
 /// Reads the authoritative pointer, the root object it selects, the
@@ -7325,7 +7362,11 @@ fn publish_forensic_checkpoint_inner(
 /// live event sequence, then decides whether the checkpoint is ready to
 /// commit. Never mutates anything: repairing a not-ready checkpoint is a
 /// flush's job. The published checkpoint's Git reachability (ADR-013) is
-/// reported alongside, through a read-only probe, and decides nothing.
+/// reported alongside through a read-only probe; under ADR-017 it also
+/// feeds the `ready_to_commit` gate via [`git::commit_readiness`], while
+/// the probe itself stays read-only and `sync flush-only`'s idempotent
+/// short-circuit keeps keying on the internals verdict alone
+/// (`checkpoint_consistent`).
 pub fn forensic_checkpoint_status(
     store: &mut SqliteStore,
     checkpoint_base: &Path,
@@ -7363,9 +7404,11 @@ pub fn forensic_checkpoint_status(
 
     // ADR-013: read-only Git reachability of whatever the checkpoint has
     // published. Computed up front so every return path carries it; the
-    // probe is reporting-only and never gates a decision. With no published
-    // checkpoint there is nothing to reach, so the field stays `None` and
-    // `ready_to_commit: false` already names the gap.
+    // probe stays read-only, and under ADR-017 `gate_readiness` is the one
+    // consumer of its verdict. With no published checkpoint there is
+    // nothing to reach, so the field stays `None` and the gate passes the
+    // internals verdict through unchanged -- `ready_to_commit: false`
+    // already names that gap.
     let git_reachability = pointer_path.exists().then(|| {
         let workspace_root = checkpoint_base.parent().unwrap_or(checkpoint_base);
         git::inspect(workspace_root, git::CHECKPOINT_PATHSPEC)
@@ -7376,7 +7419,7 @@ pub fn forensic_checkpoint_status(
         match serde_json::from_str::<serde_json::Value>(&content) {
             Ok(pointer) => Some(pointer),
             Err(_) => {
-                return Ok(CheckpointStatusReport {
+                return gate_readiness(CheckpointStatusReport {
                     checkpoint_present: true,
                     mode: None,
                     generation_id: None,
@@ -7389,6 +7432,7 @@ pub fn forensic_checkpoint_status(
                     view_agrees: None,
                     unresolved_tombstones: Vec::new(),
                     changed_paths: Vec::new(),
+                    checkpoint_consistent: false,
                     ready_to_commit: false,
                     not_ready_reasons: vec!["current.json is unparseable".to_string()],
                     // A present-but-unparseable pointer is integrity damage,
@@ -7444,6 +7488,7 @@ pub fn forensic_checkpoint_status(
             .as_deref()
             .and_then(|json| serde_json::from_str::<Vec<String>>(json).ok())
             .unwrap_or_default(),
+        checkpoint_consistent: false,
         ready_to_commit: false,
         not_ready_reasons: Vec::new(),
         relationship: crate::service::reconcile::SyncRelationship::Absent
@@ -7456,7 +7501,7 @@ pub fn forensic_checkpoint_status(
         report
             .not_ready_reasons
             .push("no checkpoint published (run `bead sync flush-only`)".to_string());
-        return Ok(report);
+        return gate_readiness(report);
     };
 
     // Verify the root object the pointer selects
@@ -7573,8 +7618,10 @@ pub fn forensic_checkpoint_status(
     }
 
     report.relationship = relationship.as_str().to_string();
-    report.ready_to_commit = report.not_ready_reasons.is_empty();
-    Ok(report)
+    // ADR-017: the readiness gate runs on every exit path -- internals
+    // verdict into `checkpoint_consistent`, probe folded into
+    // `ready_to_commit`.
+    gate_readiness(report)
 }
 
 /// Publish monolithic forensic checkpoint

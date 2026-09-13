@@ -2068,7 +2068,12 @@ fn cmd_sync_flush_only(opts: cli::SyncFlushOptions) -> Result<()> {
             )));
         }
 
-        if !report.dirty && report.ready_to_commit {
+        // ADR-017: the idempotent short-circuit keys on the internals
+        // verdict alone (`checkpoint_consistent`), not the compound
+        // `ready_to_commit`. Publication must never wait on the transport:
+        // an uncommitted-but-consistent checkpoint publishes nothing here,
+        // exactly the coupling ADR-013 rejected folding into this field.
+        if !report.dirty && report.checkpoint_consistent {
             eprintln!("Checkpoint already current:");
             if let Some(mode) = &report.mode {
                 eprintln!("  Mode: {}", mode);
@@ -2331,8 +2336,11 @@ fn cmd_sync_status(opts: cli::SyncStatusOptions) -> Result<()> {
                 println!("    {}", path);
             }
             // ADR-013: read-only Git reachability of the published
-            // checkpoint. Reporting only; it enforces nothing and is absent
-            // when no checkpoint is published.
+            // checkpoint. The probe itself enforces nothing; under ADR-017
+            // its verdict is folded into the `ready_to_commit` line below
+            // (a consistent checkpoint Git cannot reach reads NO with the
+            // pending paths named), and is absent when no checkpoint is
+            // published.
             if let Some(reach) = &report.git_reachability {
                 match &reach.unavailable_reason {
                     Some(reason) => {

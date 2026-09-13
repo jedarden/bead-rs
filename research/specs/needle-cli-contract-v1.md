@@ -76,7 +76,19 @@ workspace outside a Git repository are availability results, not command
 failures: `sync status` still exits 0. The JSON form mirrors this contract in
 `git_reachability`, with `status`, optional `unavailable_reason`, and arrays
 named for the five groups. `git_reachability` is `null` when no checkpoint has
-been published, and Git reachability never changes `ready_to_commit`.
+been published.
+
+Readiness is gated on reachability (ADR-017): `ready_to_commit` is true only
+when the checkpoint is internally consistent AND Git can reach every
+published file. Anything staged, unstaged, untracked, or ignored under
+`.beads/checkpoint` holds the verdict at false, with each pending bucket and
+its paths named in `not_ready_reasons`; an unavailable probe is likewise
+explicitly not ready, carrying the probe's own explanation — never a silent
+yes. No published checkpoint does not gate: the internals verdict already
+names that gap. `checkpoint_consistent` in the JSON carries the
+internals-only verdict for consumers that must not depend on the transport —
+`sync flush-only`'s idempotent short-circuit keys on it, so an
+uncommitted-but-consistent checkpoint publishes nothing on a re-flush.
 
 ## Capability handshake extension
 

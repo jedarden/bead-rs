@@ -81,6 +81,50 @@ fn status(workspace: &Path) -> Value {
     serde_json::from_slice(&output).unwrap()
 }
 
+/// ADR-017: `ready_to_commit` is true only when the checkpoint is
+/// internally consistent AND Git can reach every published file. These
+/// fixtures run outside any repository, so give the workspace one and
+/// commit the checkpoint right before asserting readiness. Idempotent: an
+/// unchanged checkpoint commits nothing new (`--allow-empty`). System git
+/// with a hermetic config: identity never depends on the host.
+fn commit_checkpoint(workspace: &Path) {
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .current_dir(workspace)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .args([
+                "-c",
+                "user.name=beadrs-test",
+                "-c",
+                "user.email=beadrs-test@invalid",
+            ])
+            .args(args)
+            .output()
+            .expect("git should be runnable in tests")
+    };
+    if !workspace.join(".git").exists() {
+        let init = git(&["init", "-q"]);
+        assert!(
+            init.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&init.stderr)
+        );
+    }
+    let add = git(&["add", ".beads/checkpoint"]);
+    assert!(
+        add.status.success(),
+        "git add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    let commit = git(&["commit", "--allow-empty", "-q", "-m", "checkpoint"]);
+    assert!(
+        commit.status.success(),
+        "git commit failed: {}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+}
+
 /// Assert the durable checkpoint covers the live event sequence: the
 /// property automatic flush exists to guarantee.
 fn assert_covers_live(workspace: &Path, context: &str) {
@@ -911,6 +955,9 @@ fn no_auto_flush_suppresses_publication_for_one_invocation() {
     let dirty = status(workspace);
     assert_eq!(dirty["dirty"], Value::Bool(true));
     run(workspace, &["sync", "flush-only"]);
+    // Reachability is part of readiness (ADR-017); commit the flushed
+    // checkpoint before asserting it.
+    commit_checkpoint(workspace);
     let clean = status(workspace);
     assert_eq!(clean["dirty"], Value::Bool(false));
     assert_eq!(
@@ -1044,6 +1091,9 @@ fn real_mutation_publishes_exactly_one_generation() {
         &["update", &issue, "--notes", "one generation only"],
     );
 
+    // Reachability is part of readiness (ADR-017); commit the published
+    // generation before asserting it.
+    commit_checkpoint(workspace);
     let after_status = status(workspace);
     assert_covers_live(workspace, "after one real mutation");
     let after_generation = generation_id(workspace);
@@ -1210,6 +1260,9 @@ fn flush_only_republishes_a_not_ready_checkpoint() {
         !workspace.join(".beads/checkpoint").join(leftover).exists(),
         "the republish must reapply the interrupted tombstone cleanup"
     );
+    // Reachability is part of readiness (ADR-017); commit the republished
+    // checkpoint before asserting it.
+    commit_checkpoint(workspace);
     let report = status(workspace);
     assert_eq!(
         report["ready_to_commit"],

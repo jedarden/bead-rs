@@ -97,6 +97,50 @@ fn status(workspace: &Path) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
+/// ADR-017: `ready_to_commit` is true only when the checkpoint is
+/// internally consistent AND Git can reach every published file. This
+/// suite's fixtures run outside any repository, so give the workspace one
+/// and commit the checkpoint right before asserting readiness. Idempotent:
+/// an unchanged checkpoint commits nothing new (`--allow-empty`). System
+/// git with a hermetic config: identity never depends on the host.
+fn commit_checkpoint(workspace: &Path) {
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .current_dir(workspace)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .args([
+                "-c",
+                "user.name=beadrs-test",
+                "-c",
+                "user.email=beadrs-test@invalid",
+            ])
+            .args(args)
+            .output()
+            .expect("git should be runnable in tests")
+    };
+    if !workspace.join(".git").exists() {
+        let init = git(&["init", "-q"]);
+        assert!(
+            init.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&init.stderr)
+        );
+    }
+    let add = git(&["add", ".beads/checkpoint"]);
+    assert!(
+        add.status.success(),
+        "git add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    let commit = git(&["commit", "--allow-empty", "-q", "-m", "checkpoint"]);
+    assert!(
+        commit.status.success(),
+        "git commit failed: {}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+}
+
 /// Every file under `.beads/checkpoint/` with its bytes, keyed by
 /// checkpoint-relative path. Publication rewrites pointers and mints
 /// content-addressed objects, so any publication at all changes this map --
@@ -524,6 +568,9 @@ fn commit_publishes_exactly_one_generation_for_the_whole_manifest() {
     // The chokepoint published: the checkpoint covers the live sequence,
     // the pointer moved to a new generation, and exactly one object (the
     // new root) was minted for the whole five-operation manifest.
+    // Reachability is part of readiness (ADR-017); commit the published
+    // generation before asserting it.
+    commit_checkpoint(via_manifest.path());
     let manifest_status = status(via_manifest.path());
     assert_eq!(
         manifest_status["covered_sequence"], manifest_status["live_sequence"],

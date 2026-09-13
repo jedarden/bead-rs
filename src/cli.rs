@@ -1290,8 +1290,11 @@ ATOMICITY:
 GIT INTEGRATION:
   Mutations publish automatically; run 'bead sync flush-only' before committing
   the repository as an explicit idempotent check that the checkpoint is current.
-  bead-rs never runs Git commands itself. Recover with the named-generation
-  verifier: 'bead restore --source .beads/checkpoint --generation <GEN> --actor <WHO>'."
+  bead-rs never mutates Git state; its only Git interaction is the
+  read-only reachability report in 'bead sync status' (ADR-013), whose
+  verdict the status readiness line folds in (ADR-017). Recover with the
+  named-generation verifier: 'bead restore --source .beads/checkpoint
+  --generation <GEN> --actor <WHO>'."
     )]
     FlushOnly(SyncFlushOptions),
 
@@ -1396,8 +1399,10 @@ QUALIFICATION:
   - the recorded checkpoint state does not claim more history than the
     live store holds
   Any other checkpoint-ahead-of-live shape is an integrity failure and is
-  refused without mutation. bead-rs never runs Git; it observes the store
-  relationship, not the transport that produced it.
+  refused without mutation. bead-rs never mutates Git; it observes the
+  store relationship, not the transport that produced it (the one read-only
+  Git interaction anywhere in bead-rs is `sync status`'s reachability
+  report, ADR-013).
 
 PUBLICATION:
   Reconcile never publishes a checkpoint generation by its own action. Under
@@ -1437,18 +1442,25 @@ reapplies no changes, and lists any pointer-declared tombstones that are
 still unresolved on disk.
 
 READINESS:
-  ready_to_commit holds only when every check passes:
+  ready_to_commit holds only when every check passes AND Git can reach
+  every published file (ADR-017):
   - the pointer's root object exists and hashes to the declared SHA-256
   - the checkpoint covers the live event sequence (not dirty)
   - no pointer-declared tombstone remains on disk
   - the forensic.jsonl view is byte-identical to the root object
   - the recorded checkpoint state agrees with the pointer
+  - the Git reachability probe reports every published file committed
+    (anything staged, unstaged, untracked, or ignored names its paths in
+    the reasons; probe unavailability is explicit, never a silent yes)
 
-  Under the automatic publication default a not-ready checkpoint means
-  publication was suppressed by `--no-auto-flush` or checkpoint.auto_flush,
-  or failed after a committed mutation. Repository automation must treat a
-  not-ready checkpoint as a failed pre-commit gate: run `bead sync
-  flush-only` and include every reported changed path in the same Git commit.
+  `checkpoint_consistent` carries the internals verdict alone, without the
+  Git gate. Under the automatic publication default a not-ready checkpoint
+  means publication was suppressed by `--no-auto-flush` or
+  checkpoint.auto_flush, failed after a committed mutation, or the
+  checkpoint has not reached its Git commit yet. Repository automation
+  must treat a not-ready checkpoint as a failed pre-commit gate: run
+  `bead sync flush-only` and include every reported changed path in the
+  same Git commit.
 
 EXAMPLES:
   bead sync status                     # Human-readable summary
@@ -1458,7 +1470,8 @@ OUTPUT:
   --format json prints one JSON object with checkpoint_present, mode,
   generation_id, live_sequence, covered_sequence, relationship, dirty,
   root_path, root_hash, root_verified, view_agrees, unresolved_tombstones,
-  changed_paths, ready_to_commit, and not_ready_reasons.
+  changed_paths, checkpoint_consistent, ready_to_commit,
+  not_ready_reasons, and git_reachability.
 
 RELATIONSHIP (R027):
   The sync relationship between the live store and the durable checkpoint:
@@ -1466,7 +1479,22 @@ RELATIONSHIP (R027):
   aligned, remote-advanced (a pulled checkpoint is a verified superset ahead
   of the live store; run `bead sync reconcile --actor <you>`), or
   covered-ahead-integrity-failure (the checkpoint is ahead but failed its
-  qualification; the first failed qualifier is named in the reasons)."
+  qualification; the first failed qualifier is named in the reasons).
+
+GIT REACHABILITY (ADR-013, ADR-017):
+  One read-only Git probe reports whether the published checkpoint has
+  actually reached Git: which files are committed, staged, unstaged,
+  untracked, or ignored (excluded by ignore rules -- the one shape the
+  Git handoff can never heal), or why Git could not answer (no repository
+  above the workspace, no git binary). The probe itself stays strictly
+  read-only: no command refuses, retries, or mutates because of it. Its
+  verdict feeds the `ready_to_commit` gate (ADR-017) -- a consistent,
+  verified checkpoint Git cannot reach reads NO with the pending paths
+  named, and an unavailable probe reads NO with the probe's own
+  explanation -- while `sync flush-only`'s idempotent short-circuit keeps
+  keying on `checkpoint_consistent` alone, so publication never waits on
+  the transport. Absent when no checkpoint is published (see
+  docs/adr/017-gate-ready-to-commit-on-git-reachability.md)."
     )]
     Status(SyncStatusOptions),
 

@@ -46,6 +46,48 @@ fn setup(prefix: &str) -> tempfile::TempDir {
     workspace
 }
 
+/// A hermetic `git` invocation: no global or system config leaks in, and
+/// the identity never depends on the host.
+fn git(dir: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .args([
+            "-c",
+            "user.name=beadrs-test",
+            "-c",
+            "user.email=beadrs-test@invalid",
+        ])
+        .args(args)
+        .output()
+        .expect("git should be runnable in tests");
+    assert!(
+        out.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// ADR-017: `ready_to_commit` is true only when the checkpoint is
+/// internally consistent AND Git can reach every published file. These
+/// fixtures run outside any repository, so give the workspace one and
+/// commit the checkpoint right before asserting readiness. Idempotent:
+/// an unchanged checkpoint commits nothing new (`--allow-empty`). Only
+/// readiness assertions need this; internals-only assertions (dirty,
+/// root_verified, coverage) are gate-independent.
+fn commit_checkpoint(workspace: &Path) {
+    if !workspace.join(".git").exists() {
+        git(workspace, &["init", "-q"]);
+    }
+    git(workspace, &["add", ".beads/checkpoint"]);
+    git(
+        workspace,
+        &["commit", "--allow-empty", "-q", "-m", "checkpoint"],
+    );
+}
+
 fn db_path(workspace: &Path) -> PathBuf {
     workspace.join(".beads/beads.db")
 }
@@ -757,6 +799,10 @@ fn checkpoint_covers_the_whole_dependent_graph() {
         state["covered_sequence"], state["live_sequence"],
         "the published generation must cover the manifest's whole event span"
     );
+    // Reachability is part of readiness (ADR-017); commit the published
+    // generation before asserting it.
+    commit_checkpoint(workspace.path());
+    let state = status(workspace.path());
     assert_eq!(
         state["ready_to_commit"],
         Value::Bool(true),

@@ -9,7 +9,12 @@
 //!
 //! The boundary is narrowed, not reversed (ADR-013; ADR-009 stands): this
 //! module never mutates Git state, never reads remote-tracking or network
-//! state, and nothing conditions behavior on what it reports. The mechanism
+//! state, and nothing conditions behavior on what it reports -- the clause
+//! scopes the probe itself, which stays strictly read-only. One reporting
+//! surface downstream now derives from it by explicit contract (ADR-017):
+//! `sync status` folds the probe into the `ready_to_commit` line through
+//! [`commit_readiness`], while `sync flush-only`'s idempotent short-circuit
+//! deliberately keeps keying on checkpoint internals alone. The mechanism
 //! is shelling out to the `git` binary with `--no-optional-locks` (Git's own
 //! documented read-only inspection switch) and fsmonitor/untracked-cache
 //! disabled for the invocation, so no daemon is spawned and no index
@@ -27,6 +32,27 @@ use std::thread;
 /// The checkpoint pathspec every Git reachability probe is scoped to,
 /// relative to the workspace root.
 pub const CHECKPOINT_PATHSPEC: &str = ".beads/checkpoint";
+
+/// Runtime files that live inside the checkpoint directory but are
+/// synchronization metadata, not published checkpoint state.
+///
+/// The publication lock file is the working example: `bead init` writes
+/// `.beads/.gitignore` (`*.lock`, among others) precisely so it never
+/// travels, it exists only while the workspace is being published
+/// against, and a pulled checkpoint carrying someone else's lock would be
+/// damage, not state. Its transient presence must not read as an
+/// unhealable Git handoff gap -- the `ignored` bucket is reserved for
+/// published checkpoint files an ignore rule excludes (ADR-013), and the
+/// ADR-017 readiness gate treats that bucket as blocking.
+pub const RUNTIME_CHECKPOINT_FILES: &[&str] = &["publish.lock"];
+
+/// Whether a workspace-root-relative checkpoint path is runtime metadata
+/// rather than published state (see [`RUNTIME_CHECKPOINT_FILES`]).
+fn is_runtime_checkpoint_file(path: &str) -> bool {
+    Path::new(path)
+        .file_name()
+        .is_some_and(|name| RUNTIME_CHECKPOINT_FILES.contains(&name.to_string_lossy().as_ref()))
+}
 
 /// How much of the published checkpoint Git can currently reach.
 ///
@@ -335,19 +361,31 @@ fn inspect_with(program: &str, workspace_root: &Path, pathspec: &str) -> GitReac
         Err(reason) => return unavailable(reason),
     };
 
-    let entries = parse_porcelain_z(&status_raw);
+    // Runtime metadata is carved out of every input (ADR-017): wherever
+    // Git would classify it -- tracked, staged, untracked -- the
+    // publication lock is not checkpoint state and must not reach a
+    // bucket.
+    let entries: Vec<_> = parse_porcelain_z(&status_raw)
+        .into_iter()
+        .filter(|(_, _, path)| !is_runtime_checkpoint_file(path))
+        .collect();
     let tracked: BTreeSet<String> = tracked_raw
         .split(|b| *b == 0)
         .filter(|f| !f.is_empty())
         .map(|f| String::from_utf8_lossy(f).into_owned())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter(|path| !is_runtime_checkpoint_file(path))
         .collect();
 
     // `git status` does not report ignored files at all, so the check-ignore
     // question is asked about every on-disk checkpoint file that neither
     // status nor the index accounted for -- that set is exactly where an
-    // ignored checkpoint hides.
+    // ignored checkpoint hides. Runtime metadata (the publication lock)
+    // is not published state and stays out of every bucket.
     let mut on_disk = Vec::new();
     collect_files(workspace_root, &workspace_root.join(pathspec), &mut on_disk);
+    on_disk.retain(|path| !is_runtime_checkpoint_file(path));
     let entered: BTreeSet<String> = entries.iter().map(|(_, _, p)| p.clone()).collect();
     let invisible: Vec<String> = on_disk
         .into_iter()
@@ -437,6 +475,69 @@ fn check_ignore(
                 .trim()
         )),
     }
+}
+
+/// Fold the probe into the `ready_to_commit` verdict (ADR-017).
+///
+/// ADR-013 scoped its "nothing conditions behavior on what it reports"
+/// clause to this module, and the module keeps that boundary: the probe is
+/// strictly read-only and never mutates Git state. The `sync status`
+/// readiness line is the one consumer ADR-017 adds on top: the parent
+/// contract requires "Ready to commit" to mean *ready and not already
+/// committed*, so a consistent, verified checkpoint that Git cannot reach
+/// must not read yes.
+///
+/// The gate is pure so the three contract cases are pinned by unit tests
+/// here rather than only in end-to-end fixtures:
+///
+/// - **(a)** internally consistent and fully committed -- the checkpoint
+///   verdict passes through unchanged;
+/// - **(b)** internally consistent with anything uncommitted -- never a
+///   bare yes; the reason names the pending buckets and their paths;
+/// - **(c)** probe unavailable -- never a silent yes; the probe's own
+///   explanation (no repository above the workspace, no `git` binary)
+///   becomes a not-ready reason.
+///
+/// `None` reachability -- no published checkpoint -- does not gate: the
+/// internals verdict already names that gap ("no checkpoint published").
+/// The internals verdict is preserved separately in
+/// `CheckpointStatusReport::checkpoint_consistent`, which `sync
+/// flush-only`'s idempotent short-circuit keys on: publication must never
+/// wait on the transport (the coupling ADR-013 rejected for this field).
+pub fn commit_readiness(
+    checkpoint_ready: bool,
+    mut checkpoint_reasons: Vec<String>,
+    reachability: Option<&GitReachability>,
+) -> (bool, Vec<String>) {
+    let Some(reach) = reachability else {
+        return (checkpoint_ready, checkpoint_reasons);
+    };
+    if let Some(reason) = &reach.unavailable_reason {
+        checkpoint_reasons.push(format!("git reachability unavailable: {}", reason));
+        return (false, checkpoint_reasons);
+    }
+    let pending: Vec<(&str, &Vec<String>)> = [
+        ("staged", &reach.staged),
+        ("unstaged", &reach.unstaged),
+        ("untracked", &reach.untracked),
+        ("ignored", &reach.ignored),
+    ]
+    .into_iter()
+    .filter(|(_, paths)| !paths.is_empty())
+    .collect();
+    if pending.is_empty() {
+        return (checkpoint_ready, checkpoint_reasons);
+    }
+    let detail = pending
+        .iter()
+        .map(|(bucket, paths)| format!("{}: {}", bucket, paths.join(", ")))
+        .collect::<Vec<_>>()
+        .join("; ");
+    checkpoint_reasons.push(format!(
+        "checkpoint not fully committed (Git cannot reach every published file): {}",
+        detail
+    ));
+    (false, checkpoint_reasons)
 }
 
 #[cfg(test)]
@@ -817,5 +918,183 @@ mod tests {
         assert!(report.staged.is_empty());
         assert!(report.unstaged.is_empty());
         assert!(report.untracked.is_empty());
+    }
+
+    #[test]
+    fn runtime_lock_file_is_carved_out_of_every_bucket() {
+        let repo = temp_repo();
+        write_file(repo.path(), ".beads/checkpoint/current.json", "{}\n");
+        write_file(repo.path(), ".beads/checkpoint/forensic.jsonl", "e1\n");
+        git(repo.path(), &["add", CHECKPOINT_PATHSPEC]);
+        git(repo.path(), &["commit", "-q", "-m", "checkpoint"]);
+        // The publication lock: on disk, ignored by init's own `*.lock`
+        // rule, and by design never part of the published checkpoint. An
+        // unhealable `ignored` verdict for it would make every workspace
+        // with a lock file present permanently not-ready (ADR-017).
+        write_file(repo.path(), ".beads/.gitignore", "*.lock\n");
+        write_file(repo.path(), ".beads/checkpoint/publish.lock", "");
+        let report = inspect(repo.path(), CHECKPOINT_PATHSPEC);
+        assert_eq!(report.status, "committed", "{report:?}");
+        assert!(report.staged.is_empty(), "{report:?}");
+        assert!(report.unstaged.is_empty(), "{report:?}");
+        assert!(report.untracked.is_empty(), "{report:?}");
+        assert!(report.ignored.is_empty(), "{report:?}");
+        assert_eq!(report.committed.len(), 2, "{report:?}");
+    }
+
+    #[test]
+    fn runtime_lock_file_shows_nothing_even_when_git_would_classify_it() {
+        // A workspace whose `.beads/.gitignore` predates the `*.lock`
+        // rule: the lock would classify as untracked. It is still not
+        // checkpoint state, so the probe must not report it.
+        let repo = temp_repo();
+        write_file(repo.path(), ".beads/checkpoint/current.json", "{}\n");
+        git(repo.path(), &["add", CHECKPOINT_PATHSPEC]);
+        git(repo.path(), &["commit", "-q", "-m", "checkpoint"]);
+        write_file(repo.path(), ".beads/checkpoint/publish.lock", "");
+        let report = inspect(repo.path(), CHECKPOINT_PATHSPEC);
+        assert_eq!(report.status, "committed", "{report:?}");
+        assert!(report.untracked.is_empty(), "{report:?}");
+    }
+
+    /// A `GitReachability` with explicit buckets for the gate tests. The
+    /// `status` verdict is a deliberate red herring: the gate reads the
+    /// buckets -- the full detail -- not the summary string.
+    fn reach(
+        committed: &[&str],
+        staged: &[&str],
+        unstaged: &[&str],
+        untracked: &[&str],
+        ignored: &[&str],
+    ) -> GitReachability {
+        GitReachability {
+            status: "committed".to_string(),
+            unavailable_reason: None,
+            committed: committed.iter().map(|s| s.to_string()).collect(),
+            staged: staged.iter().map(|s| s.to_string()).collect(),
+            unstaged: unstaged.iter().map(|s| s.to_string()).collect(),
+            untracked: untracked.iter().map(|s| s.to_string()).collect(),
+            ignored: ignored.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    // ---- commit_readiness: the ADR-017 gate's three contract cases ----
+
+    #[test]
+    fn gate_case_a_consistent_and_fully_committed_reads_yes() {
+        let reach = reach(&[".beads/checkpoint/current.json"], &[], &[], &[], &[]);
+        let (ready, reasons) = commit_readiness(true, Vec::new(), Some(&reach));
+        assert!(ready);
+        assert!(reasons.is_empty());
+    }
+
+    #[test]
+    fn gate_case_b_anything_uncommitted_is_never_a_bare_yes() {
+        // The parent's live reproduction shape: a consistent checkpoint
+        // whose tracked view is modified and whose new objects are
+        // untracked. The reason must name the buckets and the paths.
+        let reach = reach(
+            &[".beads/checkpoint/current.json"],
+            &[],
+            &[".beads/checkpoint/forensic.jsonl"],
+            &[".beads/checkpoint/objects/abc.jsonl"],
+            &[],
+        );
+        let (ready, reasons) = commit_readiness(true, Vec::new(), Some(&reach));
+        assert!(!ready);
+        assert_eq!(reasons.len(), 1, "{reasons:?}");
+        assert!(
+            reasons[0].starts_with(
+                "checkpoint not fully committed (Git cannot reach every published file)"
+            ),
+            "{reasons:?}"
+        );
+        assert!(
+            reasons[0].contains("unstaged: .beads/checkpoint/forensic.jsonl"),
+            "{reasons:?}"
+        );
+        assert!(
+            reasons[0].contains("untracked: .beads/checkpoint/objects/abc.jsonl"),
+            "{reasons:?}"
+        );
+    }
+
+    #[test]
+    fn gate_case_b_staged_alone_still_blocks() {
+        let reach = reach(&["committed.txt"], &["staged.txt"], &[], &[], &[]);
+        let (ready, reasons) = commit_readiness(true, Vec::new(), Some(&reach));
+        assert!(!ready);
+        assert!(reasons[0].contains("staged: staged.txt"), "{reasons:?}");
+    }
+
+    #[test]
+    fn gate_case_b_ignored_blocks_the_never_healable_shape() {
+        // The one configuration the Git handoff can never repair: the
+        // verdict is honest only if it is still a NO.
+        let reach = reach(&[], &[], &[], &[], &[".beads/checkpoint/current.json"]);
+        let (ready, reasons) = commit_readiness(true, Vec::new(), Some(&reach));
+        assert!(!ready);
+        assert!(
+            reasons[0].contains("ignored: .beads/checkpoint/current.json"),
+            "{reasons:?}"
+        );
+    }
+
+    #[test]
+    fn gate_case_c_unavailable_is_explicit_never_a_silent_yes() {
+        let reach = unavailable("no Git repository above /tmp/ws".to_string());
+        let (ready, reasons) = commit_readiness(true, Vec::new(), Some(&reach));
+        assert!(!ready);
+        assert_eq!(reasons.len(), 1, "{reasons:?}");
+        assert!(
+            reasons[0].starts_with("git reachability unavailable: no Git repository above"),
+            "{reasons:?}"
+        );
+    }
+
+    #[test]
+    fn gate_none_reachability_passes_the_internals_verdict_through() {
+        // No published checkpoint: the internals reasons already name that
+        // gap, and there is nothing for Git to reach.
+        let (ready, reasons) = commit_readiness(
+            false,
+            vec!["no checkpoint published (run `bead sync flush-only`)".to_string()],
+            None,
+        );
+        assert!(!ready);
+        assert_eq!(
+            reasons,
+            vec!["no checkpoint published (run `bead sync flush-only`)".to_string()]
+        );
+    }
+
+    #[test]
+    fn gate_fully_committed_leaves_an_internally_not_ready_verdict_alone() {
+        // Fully committed but internally damaged: the probe adds nothing.
+        let reach = reach(&[".beads/checkpoint/current.json"], &[], &[], &[], &[]);
+        let (ready, reasons) = commit_readiness(
+            false,
+            vec!["root hash mismatch: objects/abc".to_string()],
+            Some(&reach),
+        );
+        assert!(!ready);
+        assert_eq!(reasons, vec!["root hash mismatch: objects/abc".to_string()]);
+    }
+
+    #[test]
+    fn gate_accumulates_behind_existing_internals_reasons() {
+        let reach = reach(&[], &[], &[], &[".beads/checkpoint/objects/abc.jsonl"], &[]);
+        let (ready, reasons) = commit_readiness(
+            false,
+            vec!["checkpoint dirty: covered=1, live=2".to_string()],
+            Some(&reach),
+        );
+        assert!(!ready);
+        assert_eq!(reasons.len(), 2, "{reasons:?}");
+        assert_eq!(reasons[0], "checkpoint dirty: covered=1, live=2");
+        assert!(
+            reasons[1].contains("untracked: .beads/checkpoint/objects/abc.jsonl"),
+            "{reasons:?}"
+        );
     }
 }

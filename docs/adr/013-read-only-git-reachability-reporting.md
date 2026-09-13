@@ -1,10 +1,18 @@
 # ADR-013: Read-Only Git Reachability Reporting Through the Git Binary
 
-**Status**: Accepted
+**Status**: Accepted (amended by ADR-017)
 
 **Date**: 2026-09-02
 
 **Decision-makers**: bead-rs maintainers
+
+> **Amended 2026-09-13 by [ADR-017](017-gate-ready-to-commit-on-git-reachability.md):**
+> the `ready_to_commit` status line now derives from this probe — "ready" and
+> *not already committed* — by the parent contract's explicit requirement.
+> The clause below still holds where it was scoped: the probe module itself
+> stays strictly read-only and conditions nothing; `sync flush-only` keys on
+> the internals verdict alone (`checkpoint_consistent`), so publication never
+> waits on the transport.
 
 ## Context
 
@@ -145,7 +153,9 @@ path.
   `flush-only`'s idempotent short-circuit; making it false for an
   uncommitted-but-consistent checkpoint would re-publish on every flush in an
   uncommitted workspace and entangle checkpoint integrity with transport
-  state — the coupling ADR-009 rejected.
+  state — the coupling ADR-009 rejected. (Revisited and adopted by ADR-017,
+  which removes the stated drawback by splitting the internals verdict into
+  `checkpoint_consistent` for the short-circuit to key on.)
 - **Auto-stage the checkpoint as part of this change**: rejected — a mutation
   of Git state conditioned on a report, exactly what the narrowed boundary
   still forbids without its own decision.
