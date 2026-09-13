@@ -713,3 +713,262 @@ fn doctor_ignores_relates_to_cycles() {
 
     std::env::set_current_dir(original_dir).unwrap();
 }
+
+#[test]
+#[serial]
+fn doctor_reports_each_blocks_cycle_once() {
+    // Regression: cycle diagnostics were neither exact nor deterministic.
+    // The DFS truncated each cycle to the two nodes of its closing edge,
+    // returned early on the cycle-found path without unwinding its recursion
+    // stack (so stale stack entries misread downstream and cross edges into
+    // a reported cycle as additional phantom cycles), and iterated a HashSet,
+    // letting row order and hash randomization change both the count and the
+    // paths between runs on the same store. Each genuine `blocks` cycle must
+    // be reported exactly once as a canonical closed path, byte-stable across
+    // repeated runs and independent of dependency insertion order.
+    let original_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+    fn run_doctor() -> (bool, String) {
+        let output = Command::cargo_bin("bead")
+            .unwrap()
+            .args(["doctor"])
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        (output.status.success(), stderr)
+    }
+
+    // The dependency_graph check renders on a single line; other checks and
+    // the trailing timestamp around it are not part of the cycle contract.
+    fn cycle_line(stderr: &str) -> String {
+        stderr
+            .lines()
+            .find(|line| line.contains("dependency cycles"))
+            .expect("doctor reported a dependency_graph failure")
+            .to_string()
+    }
+
+    fn create(title: &str) -> String {
+        let output = Command::cargo_bin("bead")
+            .unwrap()
+            .args(["create", "--title", title])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "create {title} failed");
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    }
+
+    // The TempDir guard must outlive the workspace's use: dropping it deletes
+    // the directory out from under the process cwd.
+    fn init_workspace(titles: &[&str]) -> (tempfile::TempDir, Vec<String>) {
+        let workspace = tempfile::tempdir().unwrap();
+        std::env::set_current_dir(workspace.path()).unwrap();
+        Command::cargo_bin("bead")
+            .unwrap()
+            .args(["init"])
+            .assert()
+            .success();
+        let ids: Vec<String> = titles.iter().map(|t| create(t)).collect();
+        (workspace, ids)
+    }
+
+    // Point the process (and with it every bead subprocess and relative
+    // .beads/beads.db path) back at a specific workspace.
+    fn use_workspace(workspace: &tempfile::TempDir) {
+        std::env::set_current_dir(workspace.path()).unwrap();
+    }
+
+    fn dep_add(blocked: &str, blocker: &str) {
+        Command::cargo_bin("bead")
+            .unwrap()
+            .args(["dep", "add", blocked, blocker])
+            .assert()
+            .success();
+    }
+
+    // `dep add` refuses to create a `blocks` cycle, so closing edges are
+    // inserted directly to simulate a corrupted store the doctor must catch.
+    fn insert_blocks_edge(blocked: &str, blocker: &str) {
+        let conn = rusqlite::Connection::open(".beads/beads.db").unwrap();
+        conn.execute(
+            "INSERT INTO dependencies (blocked_issue_id, blocker_issue_id, kind) VALUES (?1, ?2, 'blocks')",
+            [blocked, blocker],
+        )
+        .unwrap();
+    }
+
+    // The canonical closed path a cycle must render as: rotated to start at
+    // its smallest member and closed back to it.
+    fn expected_path(cycle: &[String]) -> String {
+        let mut rotated = cycle.to_vec();
+        let min = rotated
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, id)| id.as_str())
+            .map(|(i, _)| i)
+            .unwrap();
+        rotated.rotate_left(min);
+        rotated.push(rotated[0].clone());
+        rotated.join(" -> ")
+    }
+
+    // Case 1: one `blocks` cycle with an acyclic descendant and cross edges
+    // reaching back into the cycle — exactly one cycle, reported once.
+    let titles = [
+        "CycleOne",
+        "CycleTwo",
+        "CycleThree",
+        "Descendant",
+        "Cross",
+        "FarSide",
+    ];
+    let (_ws1, ids) = init_workspace(&titles);
+    insert_blocks_edge(&ids[0], &ids[1]);
+    insert_blocks_edge(&ids[1], &ids[2]);
+    insert_blocks_edge(&ids[2], &ids[0]);
+    dep_add(&ids[3], &ids[0]); // descendant blocked by the cycle
+    dep_add(&ids[4], &ids[3]); // cross edge, sibling of the descendant
+    dep_add(&ids[4], &ids[2]); // cross edge reaching into a cycle member
+
+    let (ok, stderr) = run_doctor();
+    assert!(!ok, "doctor must fail on a blocks cycle");
+    let line = cycle_line(&stderr);
+    assert!(
+        line.contains("Found 1 dependency cycles:"),
+        "expected exactly one reported cycle, got: {line}"
+    );
+    let one_cycle = expected_path(&ids[0..3]);
+    assert!(
+        line.contains(&one_cycle),
+        "expected the full closed cycle path {one_cycle}, got: {line}"
+    );
+    assert_eq!(
+        line.matches(&one_cycle).count(),
+        1,
+        "cycle reported more than once: {line}"
+    );
+    for bystander in [&ids[3], &ids[4], &ids[5]] {
+        assert!(
+            !line.contains(bystander.as_str()),
+            "downstream/cross node {bystander} misreported as part of a cycle: {line}"
+        );
+    }
+    // Repeated runs are byte-stable in the cycle details.
+    let (_, stderr_again) = run_doctor();
+    assert_eq!(line, cycle_line(&stderr_again));
+
+    // Case 2: two disjoint cycles in one graph, each reported exactly once.
+    let disjoint_titles = ["PairOne", "PairTwo", "TrioOne", "TrioTwo", "TrioThree"];
+    let (_ws2, disjoint_ids) = init_workspace(&disjoint_titles);
+    let (pair_ids, trio_ids) = (&disjoint_ids[0..2], &disjoint_ids[2..5]);
+    insert_blocks_edge(&pair_ids[0], &pair_ids[1]);
+    insert_blocks_edge(&pair_ids[1], &pair_ids[0]);
+    insert_blocks_edge(&trio_ids[0], &trio_ids[1]);
+    insert_blocks_edge(&trio_ids[1], &trio_ids[2]);
+    insert_blocks_edge(&trio_ids[2], &trio_ids[0]);
+
+    let (ok, stderr) = run_doctor();
+    assert!(!ok, "doctor must fail on two blocks cycles");
+    let line = cycle_line(&stderr);
+    assert!(
+        line.contains("Found 2 dependency cycles:"),
+        "expected exactly two reported cycles, got: {line}"
+    );
+    let pair_path = expected_path(pair_ids);
+    let trio_path = expected_path(trio_ids);
+    for path in [&pair_path, &trio_path] {
+        assert!(
+            line.contains(path),
+            "expected closed path {path} in report, got: {line}"
+        );
+        assert_eq!(
+            line.matches(path).count(),
+            1,
+            "cycle {path} reported more than once: {line}"
+        );
+    }
+    let (_, stderr_again) = run_doctor();
+    assert_eq!(line, cycle_line(&stderr_again));
+
+    // Case 3: dependency insertion order must not change the report. The
+    // same graph as Case 1, with every edge inserted in reverse order; the
+    // two reports must agree once ids are mapped back to their titles (the
+    // two workspaces share a title set precisely so that mapping converges).
+    let ws_titles = ["OrdA", "OrdB", "OrdC", "OrdDesc", "OrdCross", "OrdFar"];
+    let (_ws4, ws_a) = init_workspace(&ws_titles);
+    insert_blocks_edge(&ws_a[0], &ws_a[1]);
+    insert_blocks_edge(&ws_a[1], &ws_a[2]);
+    insert_blocks_edge(&ws_a[2], &ws_a[0]);
+    dep_add(&ws_a[3], &ws_a[0]);
+    dep_add(&ws_a[4], &ws_a[3]);
+    dep_add(&ws_a[4], &ws_a[2]);
+
+    let (_ws5, ws_b) = init_workspace(&ws_titles);
+    dep_add(&ws_b[4], &ws_b[2]);
+    dep_add(&ws_b[4], &ws_b[3]);
+    dep_add(&ws_b[3], &ws_b[0]);
+    insert_blocks_edge(&ws_b[2], &ws_b[0]);
+    insert_blocks_edge(&ws_b[1], &ws_b[2]);
+    insert_blocks_edge(&ws_b[0], &ws_b[1]);
+
+    fn normalized(line: &str, titles: &[&str], ids: &[String]) -> String {
+        let mut out = line.to_string();
+        for (title, id) in titles.iter().zip(ids) {
+            out = out.replace(id.as_str(), title);
+        }
+        out
+    }
+    use_workspace(&_ws4);
+    let line_a = cycle_line(&run_doctor().1);
+    use_workspace(&_ws5);
+    let line_b = cycle_line(&run_doctor().1);
+    // Issue ids are minted from creation time and so differ between the two
+    // stores, which legitimately moves the canonical start member. What must
+    // not depend on insertion order is which cycle is found and the direction
+    // it is traversed in — compare after rotating each path onto the same
+    // anchor title.
+    fn anchored_cycles(line: &str, anchor: &str) -> Vec<String> {
+        let paths = line
+            .split("dependency cycles: ")
+            .nth(1)
+            .expect("cycle detail present");
+        paths
+            .split("; ")
+            .map(|path| {
+                let mut nodes: Vec<&str> = path.split(" -> ").collect();
+                assert_eq!(
+                    nodes.first(),
+                    nodes.last(),
+                    "cycle path must be closed: {path}"
+                );
+                nodes.pop(); // drop the closing repeat
+                let idx = nodes
+                    .iter()
+                    .position(|n| *n == anchor)
+                    .expect("anchor is a cycle member");
+                nodes.rotate_left(idx);
+                let mut closed = nodes.clone();
+                closed.push(nodes[0]);
+                closed.join(" -> ")
+            })
+            .collect()
+    }
+    assert_eq!(
+        anchored_cycles(&normalized(&line_a, &ws_titles, &ws_a), "OrdA"),
+        anchored_cycles(&normalized(&line_b, &ws_titles, &ws_b), "OrdA"),
+        "cycle details depended on dependency insertion order"
+    );
+
+    // Case 4: an acyclic `blocks` graph reports no cycle at all.
+    let chain_titles = ["ChainOne", "ChainTwo", "ChainThree"];
+    let (_ws6, chain) = init_workspace(&chain_titles);
+    dep_add(&chain[1], &chain[0]);
+    dep_add(&chain[2], &chain[1]);
+
+    let (ok, stderr) = run_doctor();
+    assert!(ok, "acyclic blocks graph must pass doctor: {stderr}");
+    assert!(stderr.contains("no cycles"));
+    assert!(!stderr.contains("dependency cycles"));
+
+    std::env::set_current_dir(original_dir).unwrap();
+}

@@ -7,7 +7,6 @@ use crate::error::{Error, Result};
 use crate::store::{open_configured_connection, Store};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 /// Open-bead row: (id, title, priority, assignee, manual_blocked, created_at)
@@ -1385,14 +1384,20 @@ fn check_dependency_graph(store: &impl Store) -> Result<String> {
     let cycles = detect_dependency_cycles(&conn)?;
 
     if !cycles.is_empty() {
+        // Render each canonical cycle as a closed path (`a -> b -> a`) so the
+        // detail shows the whole loop, not just its closing edge.
+        let rendered: Vec<String> = cycles
+            .iter()
+            .map(|cycle| {
+                let mut closed = cycle.clone();
+                closed.push(cycle[0].clone());
+                closed.join(" -> ")
+            })
+            .collect();
         return Err(Error::Integrity(format!(
             "Found {} dependency cycles: {}",
             cycles.len(),
-            cycles
-                .iter()
-                .map(|c| c.join(" -> "))
-                .collect::<Vec<_>>()
-                .join("; ")
+            rendered.join("; ")
         )));
     }
 
@@ -2049,13 +2054,20 @@ fn check_uuid_divergence(store: &impl Store) -> Result<String> {
     Ok("No UUID divergence detected".to_string())
 }
 
-/// Detect cycles in the dependency graph using DFS
+/// Detect cycles in the dependency graph over `blocks` edges.
+///
+/// Returns one canonical path per genuine cycle: rotated to begin at its
+/// lexicographically smallest member (the caller closes the loop when
+/// rendering), deduplicated, and ordered, so the report is a pure function of
+/// the edge set. Two properties the previous recursive DFS lost: it iterated
+/// a `HashSet`, so row order and hash randomization changed both the count
+/// and the paths between runs on the same store; and it returned early on the
+/// cycle-found path without unwinding its recursion stack, so stale stack
+/// entries misread downstream and cross edges into an already-reported cycle
+/// as additional phantom cycles, while truncating each real cycle to the two
+/// nodes of its closing edge.
 fn detect_dependency_cycles(conn: &rusqlite::Connection) -> Result<Vec<Vec<String>>> {
-    use std::collections::{HashMap, HashSet};
-
-    // Build adjacency list
-    let mut adj_list: HashMap<String, Vec<String>> = HashMap::new();
-    let mut all_issues: HashSet<String> = HashSet::new();
+    use std::collections::{BTreeMap, BTreeSet};
 
     // Cycle detection traverses only `blocks` edges: `relates_to` is
     // informational and the native contract explicitly permits informational
@@ -2073,59 +2085,86 @@ fn detect_dependency_cycles(conn: &rusqlite::Connection) -> Result<Vec<Vec<Strin
         .filter_map(|r| r.ok())
         .collect();
 
+    // Sorted adjacency (blocked -> blocker). BTree containers keep every
+    // traversal below independent of insertion order and hash seeds.
+    let mut adj_list: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut nodes: BTreeSet<String> = BTreeSet::new();
     for (blocked, blocker) in deps {
         adj_list
             .entry(blocked.clone())
             .or_default()
-            .push(blocker.clone());
-        all_issues.insert(blocked);
-        all_issues.insert(blocker);
+            .insert(blocker.clone());
+        nodes.insert(blocked);
+        nodes.insert(blocker);
     }
 
-    let mut cycles = Vec::new();
-    let mut visited = HashSet::new();
-    let mut recursion_stack = HashSet::new();
+    // Iterative colored DFS. Color 0 (absent) = unvisited, 1 = on the current
+    // DFS path, 2 = fully explored. There is no recursion to leak: both the
+    // path and the per-node neighbor iterators are explicit stacks that are
+    // fully drained on every run.
+    let mut color: BTreeMap<String, u8> = BTreeMap::new();
+    let mut path: Vec<String> = Vec::new();
+    let mut frames: Vec<(String, std::collections::btree_set::IntoIter<String>)> = Vec::new();
+    // BTreeSet deduplicates canonical forms and fixes the report order, so a
+    // cycle is reported exactly once no matter which back-edge found it.
+    let mut found: BTreeSet<Vec<String>> = BTreeSet::new();
 
-    for issue in &all_issues {
-        if !visited.contains(issue) {
-            if let Some(cycle) =
-                dfs_cycle_check(issue, &adj_list, &mut visited, &mut recursion_stack)
-            {
-                cycles.push(cycle);
-            }
+    for root in &nodes {
+        if color.contains_key(root) {
+            continue;
         }
-    }
+        color.insert(root.clone(), 1);
+        path.push(root.clone());
+        let neighbors = adj_list.get(root).cloned().unwrap_or_default();
+        frames.push((root.clone(), neighbors.into_iter()));
 
-    Ok(cycles)
-}
-
-/// DFS helper for cycle detection
-fn dfs_cycle_check(
-    issue: &str,
-    adj_list: &HashMap<String, Vec<String>>,
-    visited: &mut HashSet<String>,
-    recursion_stack: &mut HashSet<String>,
-) -> Option<Vec<String>> {
-    visited.insert(issue.to_string());
-    recursion_stack.insert(issue.to_string());
-
-    if let Some(neighbors) = adj_list.get(issue) {
-        for neighbor in neighbors {
-            if !visited.contains(neighbor) {
-                if let Some(cycle) = dfs_cycle_check(neighbor, adj_list, visited, recursion_stack) {
-                    return Some(cycle);
+        while let Some(frame) = frames.last_mut() {
+            let next = frame.1.next();
+            match next {
+                Some(neighbor) => match color.get(&neighbor) {
+                    Some(1) => {
+                        // Back-edge: the cycle is the path slice from the
+                        // neighbor's position on the current path down to its
+                        // top. Rotate to the smallest member for a canonical
+                        // form that does not depend on where the walk entered
+                        // the cycle.
+                        let start = path
+                            .iter()
+                            .position(|n| n == &neighbor)
+                            .expect("gray neighbor is on the current path");
+                        let mut cycle: Vec<String> = path[start..].to_vec();
+                        let min = cycle
+                            .iter()
+                            .enumerate()
+                            .min_by_key(|(_, n)| n.as_str())
+                            .map(|(i, _)| i)
+                            .expect("cycle path is non-empty");
+                        cycle.rotate_left(min);
+                        found.insert(cycle);
+                    }
+                    // Fully explored: every cycle through this node was
+                    // already recorded while it was gray, so a downstream or
+                    // cross edge reaching it is never a new cycle.
+                    Some(2) => {}
+                    _ => {
+                        color.insert(neighbor.clone(), 1);
+                        path.push(neighbor.clone());
+                        let neighbors = adj_list.get(&neighbor).cloned().unwrap_or_default();
+                        frames.push((neighbor, neighbors.into_iter()));
+                    }
+                },
+                None => {
+                    // Done with this node: blacken it and unwind both stacks
+                    // on this, the only exit path per frame.
+                    let (node, _) = frames.pop().expect("checked non-empty");
+                    color.insert(node, 2);
+                    path.pop();
                 }
-            } else if recursion_stack.contains(neighbor) {
-                // Found a cycle
-                let mut cycle = vec![neighbor.clone()];
-                cycle.push(issue.to_string());
-                return Some(cycle);
             }
         }
     }
 
-    recursion_stack.remove(issue);
-    None
+    Ok(found.into_iter().collect())
 }
 
 /// Starvation check report
