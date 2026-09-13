@@ -405,12 +405,12 @@ fn every_claim_mints_a_visible_monotonic_epoch_that_survives_rebuild() {
         second_epoch
     );
 
-    run(
-        workspace.path(),
-        ["release", &id, "--fencing-token", &second_epoch.to_string()],
-    );
-    let third = claim(workspace.path(), "worker-three", false);
-    assert!(third["claim_epoch"].as_i64().unwrap() > second_epoch);
+    // The recovered tenure rotates through the same harness as every other
+    // release-and-reclaim: the epoch that survived the rebuild is what the
+    // store says the release fences with, and the reclaim must mint a later
+    // one.
+    let (_, third_epoch) = rotate_claim(workspace.path(), &id, "worker-three", false);
+    assert!(third_epoch > second_epoch);
 }
 
 /// A claimed issue refuses every claimant-owned mutation that presents no
@@ -1341,22 +1341,19 @@ fn surviving_historical_lease_rows_never_brick_a_later_claim_epoch() {
         released_epoch, 1,
         "the target's first tenure mints its first epoch"
     );
-    run(
-        workspace.path(),
-        [
-            "release",
-            &target,
-            "--fencing-token",
-            &released_epoch.to_string(),
-        ],
-    );
-
     // Tenure two: a leased claim whose lease expires beneath it. The row is
     // backdated to the state time would have left, the watchdog recovers the
     // issue the way it recovers a crashed worker's claim, and the row stays.
-    let expired_epoch = claim(workspace.path(), "worker-two", true)["claim_epoch"]
-        .as_i64()
-        .unwrap();
+    // The rotation itself routes through the shared harness, and the
+    // returned pair still pins the exact epochs: the release fences with the
+    // epoch the first tenure actually holds, and the reclaim mints the next
+    // one.
+    let (superseded_epoch, expired_epoch) =
+        rotate_claim(workspace.path(), &target, "worker-two", true);
+    assert_eq!(
+        superseded_epoch, released_epoch,
+        "the release fences with the epoch the first tenure actually holds"
+    );
     assert_eq!(
         expired_epoch, 2,
         "the target's second tenure mints the next epoch"
