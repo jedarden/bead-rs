@@ -73,6 +73,7 @@ use crate::model::redaction::{
 };
 use crate::model::Issue;
 use crate::profile::ProfileLossReport;
+use crate::service::git::{self, GitReachability};
 use crate::service::resource_locks::{
     acquire_issue_locks, declare_resource_keys, get_resource_keys, resource_keys_from_value,
 };
@@ -1049,6 +1050,12 @@ pub struct CheckpointStatusReport {
     /// `aligned` and `behind` claim nothing about pointer health, which the
     /// fields above continue to report independently.
     pub relationship: String,
+    /// Read-only Git reachability of the published checkpoint (ADR-013):
+    /// which checkpoint files Git can currently reach, bucketed as
+    /// committed/staged/unstaged/untracked/ignored, or why Git could not
+    /// answer. `None` when no checkpoint is published -- nothing exists to
+    /// reach. Reporting only: it never gates a decision.
+    pub git_reachability: Option<GitReachability>,
 }
 
 /// Import result with F017 support
@@ -7317,7 +7324,8 @@ fn publish_forensic_checkpoint_inner(
 /// monolithic compatibility view, the recorded checkpoint state, and the
 /// live event sequence, then decides whether the checkpoint is ready to
 /// commit. Never mutates anything: repairing a not-ready checkpoint is a
-/// flush's job.
+/// flush's job. The published checkpoint's Git reachability (ADR-013) is
+/// reported alongside, through a read-only probe, and decides nothing.
 pub fn forensic_checkpoint_status(
     store: &mut SqliteStore,
     checkpoint_base: &Path,
@@ -7353,6 +7361,16 @@ pub fn forensic_checkpoint_status(
     let checkpoint_dir = checkpoint_base.join("checkpoint");
     let pointer_path = checkpoint_dir.join("current.json");
 
+    // ADR-013: read-only Git reachability of whatever the checkpoint has
+    // published. Computed up front so every return path carries it; the
+    // probe is reporting-only and never gates a decision. With no published
+    // checkpoint there is nothing to reach, so the field stays `None` and
+    // `ready_to_commit: false` already names the gap.
+    let git_reachability = pointer_path.exists().then(|| {
+        let workspace_root = checkpoint_base.parent().unwrap_or(checkpoint_base);
+        git::inspect(workspace_root, git::CHECKPOINT_PATHSPEC)
+    });
+
     let pointer = if pointer_path.exists() {
         let content = std::fs::read_to_string(&pointer_path)?;
         match serde_json::from_str::<serde_json::Value>(&content) {
@@ -7381,6 +7399,7 @@ pub fn forensic_checkpoint_status(
                         crate::service::reconcile::SyncRelationship::CoveredAheadIntegrityFailure
                             .as_str()
                             .to_string(),
+                    git_reachability,
                 });
             }
         }
@@ -7430,6 +7449,7 @@ pub fn forensic_checkpoint_status(
         relationship: crate::service::reconcile::SyncRelationship::Absent
             .as_str()
             .to_string(),
+        git_reachability,
     };
 
     let Some(pointer) = pointer else {

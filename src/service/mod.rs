@@ -17,9 +17,7 @@ pub mod dependencies;
 pub mod doctor;
 pub mod dryrun;
 pub mod external_refs;
-// Reporting-only module (ADR-013); the binary consumes it once `sync status`
-// wires the reachability line in -- until then it is library API only.
-#[allow(dead_code)]
+// Reporting-only Git inspection used by `sync status` (ADR-013).
 pub mod git;
 pub mod issues;
 pub mod leases;

@@ -61,6 +61,23 @@ The workspace contains `.beads/`. `issues.jsonl` is the portable checkpoint.
 The native database filename may be `beads.db` for initial NEEDLE health-check
 compatibility, but consumers must not use its schema as an API.
 
+## Sync status Git reachability
+
+`bead sync status` reports whether Git can reach each published file under
+`.beads/checkpoint`. The text form starts with `Git: STATUS`, then prints the
+`committed`, `staged`, `unstaged`, `untracked`, and `ignored` groups in that
+order. Each group carries its file count followed by every workspace-relative
+path in the group, including when a path has both a staged and an unstaged
+disposition. Empty groups still print their zero count.
+
+When Git cannot answer, the text form prints the single line
+`Git: unavailable: WHY` instead of the groups. A missing `git` binary and a
+workspace outside a Git repository are availability results, not command
+failures: `sync status` still exits 0. The JSON form mirrors this contract in
+`git_reachability`, with `status`, optional `unavailable_reason`, and arrays
+named for the five groups. `git_reachability` is `null` when no checkpoint has
+been published, and Git reachability never changes `ready_to_commit`.
+
 ## Capability handshake extension
 
 The native integration adds:

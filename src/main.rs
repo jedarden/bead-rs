@@ -2330,6 +2330,31 @@ fn cmd_sync_status(opts: cli::SyncStatusOptions) -> Result<()> {
             for path in &report.unresolved_tombstones {
                 println!("    {}", path);
             }
+            // ADR-013: read-only Git reachability of the published
+            // checkpoint. Reporting only; it enforces nothing and is absent
+            // when no checkpoint is published.
+            if let Some(reach) = &report.git_reachability {
+                match &reach.unavailable_reason {
+                    Some(reason) => {
+                        println!("  Git: unavailable: {}", reason);
+                    }
+                    None => {
+                        println!("  Git: {}", reach.status);
+                        for (bucket, paths) in [
+                            ("committed", &reach.committed),
+                            ("staged", &reach.staged),
+                            ("unstaged", &reach.unstaged),
+                            ("untracked", &reach.untracked),
+                            ("ignored", &reach.ignored),
+                        ] {
+                            println!("    {}: {}", bucket, paths.len());
+                            for path in paths {
+                                println!("      {}", path);
+                            }
+                        }
+                    }
+                }
+            }
             if report.ready_to_commit {
                 println!("  Ready to commit: yes");
             } else {
