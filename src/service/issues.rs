@@ -4,6 +4,7 @@
 
 use crate::error::{Error, Result};
 use crate::model::{validate_reference_key, validate_reference_namespace, BaseStatus, Issue};
+use crate::service::claim::ReadySort;
 use crate::service::resource_locks::{declare_resource_keys, get_resource_keys};
 use crate::store::WorkspaceConfig;
 use rand::Rng;
@@ -928,6 +929,7 @@ fn show_exclusion_reasons(conn: &Connection, limit: &i64) -> Result<()> {
 }
 
 /// List issues with optional filtering
+#[allow(dead_code)]
 pub fn list_issues(
     conn: &Connection,
     status_filter: Option<&str>,
@@ -936,6 +938,33 @@ pub fn list_issues(
     blocked_only: bool,
     limit: i64,
     verbose: bool,
+) -> Result<Vec<Issue>> {
+    list_issues_with_sort(
+        conn,
+        status_filter,
+        assignee_filter,
+        ready_only,
+        blocked_only,
+        limit,
+        verbose,
+        ReadySort::Fifo,
+    )
+}
+
+/// List issues with an explicit ready-frontier ordering.
+///
+/// The ordering option is intentionally effective only for a ready query;
+/// all other list modes retain the historical FIFO ordering.
+#[allow(clippy::too_many_arguments)]
+pub fn list_issues_with_sort(
+    conn: &Connection,
+    status_filter: Option<&str>,
+    assignee_filter: Option<&str>,
+    ready_only: bool,
+    blocked_only: bool,
+    limit: i64,
+    verbose: bool,
+    ready_sort: ReadySort,
 ) -> Result<Vec<Issue>> {
     // Log total open beads if verbose
     if verbose {
@@ -1040,8 +1069,13 @@ pub fn list_issues(
         params.push(crate::service::resource_locks::now_string());
     }
 
-    // Order by priority (ASC), created_at (ASC), then id (ASC) for FIFO claim order
-    query.push_str(" ORDER BY priority ASC, created_at ASC, id ASC");
+    // Preserve the existing query text exactly unless the ready-only attempts
+    // mode was explicitly requested.
+    if ready_only && ready_sort == ReadySort::Attempts {
+        query.push_str(" ORDER BY priority ASC, consecutive_failures ASC, created_at ASC, id ASC");
+    } else {
+        query.push_str(" ORDER BY priority ASC, created_at ASC, id ASC");
+    }
 
     // Add limit
     query.push_str(" LIMIT ?");

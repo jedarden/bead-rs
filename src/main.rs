@@ -726,6 +726,11 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
 
     // Parse scheduling policy
     let policy = SchedulingPolicy::from_string(&opts.policy)?;
+    let ready_sort = if matches!(policy, SchedulingPolicy::FifoV1) {
+        service::load_claim_ready_sort(&config.root.join(".beads"))?
+    } else {
+        service::ReadySort::Fifo
+    };
 
     // Snapshot eligibility before the claim so the --why trace explains the
     // decision as it was made (read-only; the claim below is the only
@@ -742,13 +747,14 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
     // Perform claim based on policy
     let (enhanced_result, claim_result) = if matches!(policy, SchedulingPolicy::FifoV1) {
         // Use existing FIFO claim for backward compatibility
-        let enhanced = service::claim_issue_with_lease(
+        let enhanced = service::claim_issue_with_lease_and_sort(
             &tx,
             &opts.assignee,
             opts.lease_ttl,
             opts.renew_lease,
             opts.fencing_token,
             opts.single_claim,
+            ready_sort,
         )?;
 
         let claim = ClaimResult {
@@ -1016,7 +1022,12 @@ fn cmd_list(opts: cli::ListOptions) -> Result<()> {
     };
 
     // Get issues
-    let issues = service::list_issues(
+    let ready_sort = if opts.sort.as_deref() == Some("attempts") {
+        service::ReadySort::Attempts
+    } else {
+        service::ReadySort::Fifo
+    };
+    let issues = service::list_issues_with_sort(
         &conn,
         status_filter,
         opts.assignee.as_deref(),
@@ -1024,6 +1035,7 @@ fn cmd_list(opts: cli::ListOptions) -> Result<()> {
         blocked_only,
         opts.limit,
         opts.verbose,
+        ready_sort,
     )?;
 
     // Output results

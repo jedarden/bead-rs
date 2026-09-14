@@ -579,14 +579,16 @@ pub struct CreateOptions {
     long_about = "List issues with optional filtering and comment projection.
 
 Supports filtering by status, assignee, ready frontier, and manual block. Uses claim
-ordering (priority ASC, created_at ASC, id ASC) for deterministic results.
-Ready frontier uses the same ordering as 'bead claim' but is read-only and
-does not reserve work.
+ordering (priority ASC, created_at ASC, id ASC) for deterministic results by
+default. Ready frontier uses the same ordering as 'bead claim' but is read-only
+and does not reserve work. With '--ready --sort attempts', consecutive failures
+order beads within each priority tier before the FIFO tie-breakers.
 
 EXAMPLES:
   bead list --json --limit 10                      # First 10 issues as JSON
   bead list --status open --assignee alice        # Open issues assigned to alice
   bead list --ready --limit 5                      # Next 5 ready candidates
+  bead list --ready --sort attempts --limit 5      # Prefer fresh work within priority
   bead list --blocked                               # Manually blocked open issues
   bead list --comments unresolved --json --limit 20  # Issues with unresolved comments
 
@@ -595,6 +597,7 @@ FILTERS:
                     (Special case: 'blocked' is an alias for --blocked)
   --assignee NAME   Filter by assignee (exact match)
   --ready           Show only ready frontier issues (open, unassigned, not blocked)
+  --sort attempts   Within each priority, show fewer consecutive failures first
   --blocked         Show only manually blocked open issues
   --limit N         Maximum results (0-999999, default: 100)
 
@@ -625,6 +628,16 @@ pub struct ListOptions {
     /// Show only ready frontier issues
     #[arg(long)]
     pub ready: bool,
+
+    /// Ready-frontier ordering: attempts prefers fewer consecutive failures
+    /// within each priority tier, then retains the FIFO tie-breakers
+    #[arg(
+        long,
+        value_name = "ORDER",
+        value_parser = ["attempts"],
+        requires = "ready"
+    )]
+    pub sort: Option<String>,
 
     /// Show only manually blocked open issues
     #[arg(long)]
@@ -703,7 +716,9 @@ pub struct ShowOptions {
 
 Claim performs server-side selection from ready issues (open, unassigned,
 not manually blocked, no unfinished blockers) using fifo-v1 policy:
-priority ASC, created_at ASC, id ASC.
+priority ASC, created_at ASC, id ASC. A workspace may set
+'{\"claim\":{\"sort\":\"attempts\"}}' in .beads/config.json to prefer fewer
+consecutive failures within each priority tier before the FIFO tie-breakers.
 
 Selection and assignment occur in one atomic transaction. With no eligible
 issues, returns exit code 0 and an empty result ({} in JSON mode).

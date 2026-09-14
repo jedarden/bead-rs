@@ -81,7 +81,8 @@ pub use checkpoint::AUTO_FLUSH_COMPILED_DEFAULT;
 // claim_issue_with_trace is public library API but unused by the binary
 #[allow(unused_imports)]
 pub use claim::{
-    claim_issue_with_lease, claim_issue_with_policy, claim_issue_with_trace, EnhancedClaimResult,
+    claim_issue_with_lease, claim_issue_with_lease_and_sort, claim_issue_with_policy,
+    claim_issue_with_trace, load_claim_ready_sort, EnhancedClaimResult, ReadySort,
 };
 pub use conditions::ConditionExpr;
 pub use data::{get_data, list_data, remove_data, set_data};
@@ -96,10 +97,11 @@ pub use external_refs::{
     remove_external_reference,
 };
 pub use issues::get_issue_by_id;
-pub use issues::list_issues;
 pub use issues::{add_comment, analyze_exclusion, ExclusionAnalysis};
 #[allow(unused_imports)]
 pub use issues::{create_issue, create_issue_with_unique_ref, CreateOutcome};
+#[allow(unused_imports)]
+pub use issues::{list_issues, list_issues_with_sort};
 #[allow(unused_imports)]
 pub use leases::{
     current_claim_epoch, validate_claim_epoch_for_mutation, validate_lease_for_mutation,
