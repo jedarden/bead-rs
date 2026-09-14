@@ -127,6 +127,13 @@ pub(crate) struct LiveFindingLocation {
     pub identity_fields: &'static [&'static str],
     pub identity_values: Vec<rusqlite::types::Value>,
     pub field: &'static str,
+    /// Stable semantic identity used by redaction receipts and tombstones.
+    ///
+    /// For an ordinary live finding this is the scanner selector. A finding
+    /// reported from a retained checkpoint keeps its checkpoint selector in
+    /// `finding` so that fingerprint can be revalidated, while this member
+    /// identifies the live row the checkpoint record materializes.
+    pub origin_identity: String,
     pub finding: Finding,
 }
 
@@ -324,6 +331,7 @@ pub(crate) fn find_live_finding(
                         identity_fields: table.identity_fields,
                         identity_values: row.identity_values.clone(),
                         field,
+                        origin_identity: row.selector.clone(),
                         finding,
                     });
                 }
@@ -331,6 +339,164 @@ pub(crate) fn find_live_finding(
         }
     }
     Ok(located)
+}
+
+/// Resolve a retained-checkpoint issue finding to the live row it
+/// materializes, without returning the matched bytes.
+///
+/// Checkpoint diagnostics deliberately fingerprint their physical selector
+/// and JSON field path (for example `checkpoint:current:record:7` and
+/// `record.issue.description`). Those fingerprints therefore differ from the
+/// live-row fingerprint for the same bytes. Historical redaction accepts the
+/// diagnostic handle by deriving the issue identity from that exact
+/// checkpoint record; the caller must still recompute the checkpoint
+/// fingerprint against the live field under its write transaction.
+pub(crate) fn find_retained_checkpoint_finding(
+    checkpoint_dir: &Path,
+    fingerprint: &str,
+) -> Result<Option<LiveFindingLocation>> {
+    let config = ScanConfig::new(Mode::Advisory);
+    let mut located = None;
+    for generation in ["current", "previous"] {
+        let pointer_path = checkpoint_dir.join(format!("{generation}.json"));
+        if !pointer_path.is_file() {
+            continue;
+        }
+        for path in checkpoint_issue_paths(&pointer_path)? {
+            let candidate =
+                find_checkpoint_issue_in_jsonl(&path, generation, fingerprint, &config)?;
+            if let Some(candidate) = candidate {
+                if located.is_some() {
+                    return Err(Error::integrity(
+                        "one secret fingerprint resolved to multiple checkpoint records",
+                    ));
+                }
+                located = Some(candidate);
+            }
+        }
+    }
+    Ok(located)
+}
+
+fn checkpoint_issue_paths(pointer_path: &Path) -> Result<Vec<PathBuf>> {
+    let pointer = read_json(pointer_path, "checkpoint pointer")?;
+    let mode = pointer
+        .get("mode")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::integrity("checkpoint pointer has no mode"))?;
+    let root_path = pointer
+        .get("active_root")
+        .and_then(|root| root.get("path"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::integrity("checkpoint pointer has no active root path"))?;
+    let checkpoint_dir = pointer_path
+        .parent()
+        .ok_or_else(|| Error::integrity("checkpoint pointer has no parent directory"))?;
+    let root_path = confined_path(checkpoint_dir, root_path)?;
+    match mode {
+        "monolithic" => Ok(vec![root_path]),
+        "sharded" => {
+            let manifest = read_json(&root_path, "checkpoint shard manifest")?;
+            manifest
+                .get("issue_shards")
+                .and_then(Value::as_array)
+                .ok_or_else(|| Error::integrity("checkpoint manifest has no issue shards"))?
+                .iter()
+                .map(|shard| {
+                    let path = shard
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| Error::integrity("checkpoint manifest shard has no path"))?;
+                    confined_path(checkpoint_dir, path)
+                })
+                .collect()
+        }
+        _ => Err(Error::integrity("checkpoint pointer has unsupported mode")),
+    }
+}
+
+fn find_checkpoint_issue_in_jsonl(
+    path: &Path,
+    generation: &str,
+    fingerprint: &str,
+    config: &ScanConfig,
+) -> Result<Option<LiveFindingLocation>> {
+    let file = std::fs::File::open(path).map_err(|error| Error::Io {
+        path: path.to_path_buf(),
+        msg: error,
+    })?;
+    let mut located = None;
+    for (line_index, line) in std::io::BufReader::new(file).lines().enumerate() {
+        let line = line.map_err(|error| Error::Io {
+            path: path.to_path_buf(),
+            msg: error,
+        })?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let record: Value = serde_json::from_str(&line).map_err(|_| {
+            Error::integrity(format!(
+                "invalid JSON in {generation} checkpoint record {}",
+                line_index + 1
+            ))
+        })?;
+        if record.get("record_type").and_then(Value::as_str) != Some("issue") {
+            continue;
+        }
+        let selector = format!("checkpoint:{generation}:record:{}", line_index + 1);
+        let mut reports = Vec::new();
+        scan_json_value(config, &selector, "record", &record, &mut reports);
+        for finding in ScanReport::merge(reports)
+            .findings
+            .into_iter()
+            .filter(|finding| finding.fingerprint == fingerprint)
+        {
+            let Some(candidate) = checkpoint_issue_target(&record, finding)? else {
+                continue;
+            };
+            if located.is_some() {
+                return Err(Error::integrity(
+                    "one secret fingerprint resolved to multiple fields in a checkpoint record",
+                ));
+            }
+            located = Some(candidate);
+        }
+    }
+    Ok(located)
+}
+
+fn checkpoint_issue_target(
+    record: &Value,
+    finding: Finding,
+) -> Result<Option<LiveFindingLocation>> {
+    let Some(field_path) = finding.field_path.strip_prefix("record.issue.") else {
+        return Ok(None);
+    };
+    let field = match field_path {
+        "title" => "title",
+        "description" => "description",
+        "notes" => "notes",
+        "close_reason" => "close_reason",
+        _ => return Ok(None),
+    };
+    let issue_id = record
+        .get("issue")
+        .and_then(|issue| issue.get("id"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::integrity("checkpoint issue record has no string id"))?;
+    let table = LIVE_TABLES
+        .iter()
+        .find(|table| table.name == "issues")
+        .ok_or_else(|| Error::integrity("live issue scanner definition is missing"))?;
+    let selector_identity = vec![Some(issue_id.to_string())];
+    Ok(Some(LiveFindingLocation {
+        table: table.name,
+        identity_fields: table.identity_fields,
+        identity_values: vec![rusqlite::types::Value::Text(issue_id.to_string())],
+        field,
+        origin_identity: semantic_selector(table, &selector_identity),
+        finding,
+    }))
 }
 
 /// Determine whether current semantic state contains one exact historical

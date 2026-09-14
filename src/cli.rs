@@ -155,11 +155,13 @@ attempt-outcome-v1 specification with exactly-once semantics."
         long_about = "Destroy exactly one sensitive byte range selected by a current secret-scanner fingerprint.
 
 The command never accepts or prints the matched value. A new redaction requires
---finding, --actor, and --reason; the service revalidates the fingerprint under
-the maintenance and checkpoint-publication locks, replaces only that range with
-the fixed bead-rs marker, records a nonsecret receipt, and publishes a sanitized
-checkpoint generation set. Publication is mandatory even when workspace
-automatic publication is disabled.
+--finding, --actor, and --reason. Fingerprints from either live rows or retained
+current/previous checkpoint issue records are accepted. The service derives the
+live row from a checkpoint record and revalidates the fingerprint against those
+live bytes under the maintenance and checkpoint-publication locks, replaces only
+that range with the fixed bead-rs marker, records a nonsecret receipt, and
+publishes a sanitized checkpoint generation set. Publication is mandatory even
+when workspace automatic publication is disabled.
 
 If publication fails after the SQLite redaction commits, no semantic mutation is
 repeated. Resume the recorded receipt with `bead redact --resume RECEIPT_ID`.
@@ -1116,7 +1118,7 @@ pub struct ReopenOptions {
         .args(["finding", "resume"])
 ))]
 pub struct RedactOptions {
-    /// Fingerprint reported by `bead doctor --scope secrets --format json`
+    /// Live or retained-checkpoint fingerprint reported by secret diagnostics
     #[arg(long, value_name = "FINGERPRINT")]
     pub finding: Option<String>,
 

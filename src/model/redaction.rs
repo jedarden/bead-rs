@@ -295,9 +295,9 @@ pub const MAX_FIELD_BYTES: usize = 4 * 1024 * 1024;
 /// A stored scanner finding.
 ///
 /// Findings are the input to a redaction: the caller supplies only the
-/// fingerprint, and the store revalidates it against a live finding before
-/// anything is replaced. A finding records the rule that matched and where,
-/// never the value that matched.
+/// fingerprint, and the store revalidates it against the addressed live bytes
+/// before anything is replaced. A finding records the rule that matched and
+/// where, never the value that matched.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RedactionFinding {
     /// Schema identity of the finding record.

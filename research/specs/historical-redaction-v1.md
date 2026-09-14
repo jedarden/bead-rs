@@ -24,14 +24,19 @@ attempt reason/evidence metadata, recurrence text, and provenance-receipt text.
 
 `bead redact --finding FINGERPRINT --actor ACTOR --reason REASON` accepts only:
 
-- one fingerprint previously returned by the same binary ruleset for the live
-  workspace;
+- one fingerprint previously returned by the same binary ruleset for either a
+  live workspace field or a retained current/previous checkpoint issue field;
 - a validated nonempty actor; and
 - a bounded nonsecret reason that itself passes secret scanning.
 
 The request does not accept the matched value, replacement text, arbitrary SQL,
-JSON pointer, file path, generation, or byte range. `--dry-run` reports the same
-selector and planned effects without changing state.
+JSON pointer, file path, generation, or byte range. A checkpoint fingerprint is
+resolved through the issue ID in its exact checkpoint record to the live issue
+field, then recomputed over that live field under the redaction transaction; a
+stale or non-matching live range conflicts without mutation. Receipts and
+tombstones retain the live record's stable semantic selector, not the physical
+checkpoint line selector. `--dry-run` reports that semantic selector and the
+planned effects without changing state.
 
 ## 3. Replacement and preserved facts
 
