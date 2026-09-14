@@ -280,6 +280,7 @@ fn names(kind: &str) -> &'static [&'static str] {
             // Additive ADR-018 handshake: post-publication staging of the
             // verified checkpoint fileset, optional for the same reason
             "auto_stage",
+            "attempt_summary",
             "secret_scan",
             "historical_redaction",
         ],
@@ -520,7 +521,8 @@ fn property_schema(kind: &str, name: &str) -> Value {
         ("capabilities", "atomic_claim")
         | ("capabilities", "logical_revision")
         | ("capabilities", "auto_flush")
-        | ("capabilities", "auto_stage") => {
+        | ("capabilities", "auto_stage")
+        | ("capabilities", "attempt_summary") => {
             json!({"type":"boolean"})
         }
         ("capabilities", "statuses")

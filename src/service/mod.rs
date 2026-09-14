@@ -50,7 +50,7 @@ pub use archaeology::{
     ArchaeologyBisectReport, ArchaeologyDiffReport, ArchaeologyQueryReport,
     ARCHAEOLOGY_ARTIFACT_KIND,
 };
-pub use attempt::resolve_attempt;
+pub use attempt::{get_attempt_summary, resolve_attempt, AttemptSummary};
 pub use capabilities::generate_capabilities;
 pub use changes::{
     get_changes_since, get_gap_info, get_snapshot_identity, validate_cursor, Cursor,

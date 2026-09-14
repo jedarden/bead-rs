@@ -1037,11 +1037,13 @@ fn cmd_list(opts: cli::ListOptions) -> Result<()> {
                 let dependencies = load_dependencies(&conn, &issue.id)?;
                 let labels = load_labels(&conn, &issue.id)?;
                 let comments = load_comments(&conn, &issue.id, &opts.comments)?;
+                let attempts = service::get_attempt_summary(&conn, &issue.id)?;
                 let output = serde_json::to_string(&to_needle_json(
                     &issue,
                     &dependencies,
                     &labels,
                     &comments,
+                    &attempts,
                 ))
                 .map_err(|e| {
                     Error::Internal(anyhow::anyhow!("Failed to serialize issue: {}", e))
@@ -1103,12 +1105,15 @@ fn cmd_show(opts: cli::ShowOptions) -> Result<()> {
 
     // Output results
     if opts.json {
+        // Derive compact attempt evidence from the durable outcome sequence.
+        let attempts = service::get_attempt_summary(&conn, &opts.id)?;
         // Emit as one-element array for NEEDLE v1 compatibility
         let output = serde_json::to_string(&vec![to_needle_json(
             &issue,
             &dependencies,
             &labels,
             &comments,
+            &attempts,
         )])
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to serialize issue: {}", e)))?;
         println!("{}", output);
@@ -3048,6 +3053,7 @@ fn to_needle_json(
     dependencies: &[serde_json::Value],
     labels: &[String],
     comments: &[serde_json::Value],
+    attempts: &service::AttemptSummary,
 ) -> serde_json::Value {
     let status_str = match issue.base_status {
         model::BaseStatus::Open => "open",
@@ -3080,6 +3086,7 @@ fn to_needle_json(
         "created_at": issue.created_at,
         "updated_at": issue.updated_at,
         "labels": labels,
+        "attempts": attempts,
         "revision": issue.revision.unwrap_or(1)
     });
 
