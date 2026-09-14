@@ -1969,6 +1969,7 @@ fn cmd_sync(cmd: cli::SyncCommand) -> Result<()> {
         cli::SyncCommand::FlushOnly(opts) => cmd_sync_flush_only(opts),
         cli::SyncCommand::ImportOnly(opts) => cmd_sync_import_only(opts),
         cli::SyncCommand::Reconcile(opts) => cmd_sync_reconcile(opts),
+        cli::SyncCommand::Commit(opts) => cmd_sync_commit(opts),
         cli::SyncCommand::Status(opts) => cmd_sync_status(opts),
         cli::SyncCommand::Diff(opts) => cmd_sync_diff(opts),
         cli::SyncCommand::Bisect(opts) => cmd_sync_bisect(opts),
@@ -2283,6 +2284,62 @@ fn cmd_sync_reconcile(opts: cli::SyncReconcileOptions) -> Result<()> {
         }
         if let Some(sequence) = result.summary_event_sequence {
             println!("  Summary event sequence: {}", sequence);
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_sync_commit(opts: cli::SyncCommitOptions) -> Result<()> {
+    // Discover workspace
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    // Open database connection
+    let db_path = config.database_path();
+    let conn = store::open_configured_connection(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    let mut store = store::SqliteStore::from_conn(conn);
+    let checkpoint_base = config.root.join(".beads");
+
+    let report = service::git_commit::commit_verified_checkpoint(
+        &mut store,
+        &checkpoint_base,
+        opts.message.as_deref(),
+        opts.dry_run,
+    )?;
+
+    if report.dry_run {
+        if report.committed {
+            println!("Dry-run sync commit: a commit would be created.");
+        } else {
+            println!("Dry-run sync commit: nothing to commit.");
+        }
+    } else if report.committed {
+        println!("Committed checkpoint:");
+    } else {
+        println!("Checkpoint already committed; nothing to do.");
+    }
+    if let Some(branch) = &report.branch {
+        println!("  Branch: {}", branch);
+    }
+    if let Some(commit) = &report.commit {
+        println!("  Commit: {}", commit);
+    }
+    if let Some(generation) = &report.generation_id {
+        println!("  Generation: {}", generation);
+    }
+    if !report.staged.is_empty() {
+        println!("  Files committed: {}", report.staged.len());
+        for path in &report.staged {
+            println!("    {}", path);
+        }
+    }
+    if !report.removed.is_empty() {
+        println!("  Removals committed: {}", report.removed.len());
+        for path in &report.removed {
+            println!("    {}", path);
         }
     }
 

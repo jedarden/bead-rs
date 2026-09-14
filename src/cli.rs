@@ -1450,6 +1450,59 @@ WORKFLOW:
     )]
     Reconcile(SyncReconcileOptions),
 
+    /// Commit the published checkpoint with a bead-only pathspec (ADR-019)
+    #[command(
+        name = "commit",
+        about = "Commit the published checkpoint with a bead-only pathspec",
+        long_about = "Stage the verified checkpoint fileset and commit exactly it (ADR-019).
+
+The follow-on to auto-staging (ADR-018): publication stages the verified
+fileset into the index, and this command assembles the commit that carries
+it. The commit is recorded with a pathspec of exactly the checkpoint files
+the current generation makes authoritative -- both pointers, every object
+either pointer still references, the compatibility view when one exists,
+and the removal of every tombstoned object Git tracks. A pathspec commit
+ignores every other staged path, so on a shared checkout another worker's
+staging is left staged and untouched, never swept into checkpoint history.
+
+GATES (each refuses before the index or history is touched, naming its
+remedy):
+  - no checkpoint published        -> `bead sync flush-only`
+  - checkpoint dirty (live ahead)  -> `bead sync flush-only` first
+  - checkpoint remote-advanced     -> `bead sync reconcile --actor <WHO>`
+  - covered-ahead integrity failure -> `bead doctor`
+  - internally inconsistent        -> `bead sync flush-only` / `bead doctor`
+  - detached HEAD                  -> check out a branch first
+  - ignore rules exclude checkpoint files -> amend the ignore rule
+  - a referenced file is missing from disk -> the checkpoint is damaged
+
+COMMITTING IS POLICY: the command never bypasses pre-commit gates (no
+--no-verify -- a hook that rejects the commit rejects it here too), never
+creates branches, and never pushes. Automatic committing on every mutation
+was considered and rejected: a pre-commit gate must be able to hold the
+commit, and branch, history shape, and message are the operator's
+decisions. This command removes only the mechanical mistakes -- the
+omitted untracked object, the stale hand-typed pathspec, the shared-index
+sweep.
+
+IDEMPOTENCE: against a consistent checkpoint whose verified set Git
+already reaches, the command commits nothing and exits 0.
+
+EXAMPLES:
+  bead sync commit                                      # conventional message
+  bead sync commit --message \"sync beads before rebase\"  # explicit message
+  bead sync commit --dry-run                            # report, touch nothing
+
+EXIT CODES:
+  0 - Committed, or nothing to commit (checkpoint already committed)
+  2 - Refused: absent/dirty/inconsistent checkpoint, detached HEAD,
+      Git unavailable, or ignored checkpoint files
+  4 - Refused: the checkpoint is remote-advanced
+  5 - Refused: covered-ahead integrity failure, damaged checkpoint, or
+      staging failure"
+    )]
+    Commit(SyncCommitOptions),
+
     /// Report checkpoint status and readiness to commit
     #[command(
         name = "status",
@@ -1669,6 +1722,19 @@ pub struct SyncReconcileOptions {
     pub actor: String,
 
     /// Perform dry-run validation without mutating the live store
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+/// Options for the explicit checkpoint commit (ADR-019)
+#[derive(Parser, Debug)]
+pub struct SyncCommitOptions {
+    /// Commit message; the default names the published generation
+    #[arg(long, short = 'm')]
+    pub message: Option<String>,
+
+    /// Report what would be staged and committed without touching the
+    /// index or history
     #[arg(long)]
     pub dry_run: bool,
 }

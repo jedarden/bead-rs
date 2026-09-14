@@ -8602,7 +8602,10 @@ fn update_forensic_checkpoint_state(
 /// longer references -- so they are excluded. `current.json` itself is
 /// included because every publication rewrites it: it is replaced, never
 /// deleted.
-fn read_pointer_referenced_files(pointer_path: &Path) -> Result<HashSet<String>> {
+/// `pub(crate)`: the explicit commit command (ADR-019) reconstructs the
+/// verified fileset from the pointers alone at commit time, the same
+/// referenced set this function reads at publication time.
+pub(crate) fn read_pointer_referenced_files(pointer_path: &Path) -> Result<HashSet<String>> {
     let content = std::fs::read_to_string(pointer_path)?;
 
     if let Ok(pointer) = serde_json::from_str::<serde_json::Value>(&content) {

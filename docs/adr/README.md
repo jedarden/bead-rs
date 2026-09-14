@@ -53,3 +53,4 @@ Use the template in `000-template.md` for new ADRs. Each ADR should include:
 | [016](016-observational-workspace-probes.md) | Keep workspace probes observational | Accepted | 2026-09-04 |
 | [017](017-gate-ready-to-commit-on-git-reachability.md) | Gate `ready_to_commit` on Git reachability | Accepted | 2026-09-13 |
 | [018](018-auto-stage-published-checkpoint-fileset.md) | Auto-Stage the Published Checkpoint Fileset | Accepted | 2026-09-13 |
+| [019](019-explicit-sync-commit-command.md) | The Explicit `sync commit` Command | Accepted | 2026-09-14 |

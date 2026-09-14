@@ -24,6 +24,11 @@ pub mod git;
 // never commits (ADR-003 stands), and `checkpoint.auto_stage` is the
 // durable opt-out.
 pub mod git_stage;
+// The explicit checkpoint commit (`bead sync commit`, ADR-019): stages the
+// verified set, refuses a dirty or ahead checkpoint, and records the
+// commit with a bead-only pathspec. The one sanctioned commit half that
+// ADR-018's staging deliberately stopped short of.
+pub mod git_commit;
 pub mod issues;
 pub mod leases;
 pub mod lifecycle;
