@@ -153,6 +153,7 @@ fn test_init_creates_gitignore() {
         content.contains("diagnostics/"),
         "Should exclude diagnostics/ directory"
     );
+    assert!(content.contains("logs/"), "Should exclude logs/ directory");
     assert!(
         content.contains("receipts/"),
         "Should exclude receipts/ directory"
@@ -465,6 +466,7 @@ fn test_gitignore_excludes_all_runtime_artifacts() {
         "*.journal",
         "traces/",
         "diagnostics/",
+        "logs/",
         "receipts/",
         "events.jsonl",
         "heartbeats.jsonl",

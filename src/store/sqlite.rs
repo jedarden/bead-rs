@@ -235,8 +235,8 @@ impl SqliteStore {
     /// edit any existing .gitignore — preserve custom ignore files byte-for-byte.
     ///
     /// The .gitignore excludes runtime-only artifacts (database files, traces,
-    /// diagnostics, locks, journals, temporary files) while leaving config.json
-    /// and checkpoint content trackable.
+    /// diagnostics, logs, locks, journals, temporary files) while leaving
+    /// config.json and checkpoint content trackable.
     ///
     /// # Arguments
     /// * `beads_dir` - Path to the .beads directory
@@ -272,9 +272,10 @@ impl SqliteStore {
 # Journals
 *.journal
 
-# Runtime directories (traces, diagnostics, receipts)
+# Runtime directories (traces, diagnostics, logs, receipts)
 traces/
 diagnostics/
+logs/
 receipts/
 
 # Runtime event logs (root-level JSONL files)
