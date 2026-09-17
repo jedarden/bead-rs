@@ -472,8 +472,7 @@ mod tests {
             &["current.json".to_string()],
             &[],
         )
-        .err()
-        .expect("a missing binary must be an error reason");
+        .expect_err("a missing binary must be an error reason");
         assert!(err.contains("git"), "{}", err);
     }
 }
