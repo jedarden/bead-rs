@@ -14,7 +14,8 @@ set -euo pipefail
 # Configuration
 REPO="jedarden/bead-rs"
 INSTALL_PATH="${BEAD_INSTALL_PATH:-$HOME/.local/bin/bead}"
-GITHUB_API="https://api.github.com/repos/$REPO/releases/latest" # gitleaks:allow - public API endpoint
+GITHUB_API="${BEAD_GITHUB_API:-https://api.github.com/repos/$REPO/releases/latest}" # gitleaks:allow - public API endpoint
+DOWNLOAD_BASE="${BEAD_DOWNLOAD_BASE:-https://github.com/${REPO}/releases/download}"
 SKIP_CHECKSUM="${BEAD_SKIP_CHECKSUM:-false}"
 
 # Colors (only if stdout is a terminal)
@@ -104,6 +105,14 @@ OPTIONS:
 ENVIRONMENT VARIABLES:
     BEAD_INSTALL_PATH      Installation path (default: ~/.local/bin/bead)
     BEAD_SKIP_CHECKSUM     Set to '1' or 'true' to skip checksum verification (NOT RECOMMENDED)
+    BEAD_GITHUB_API        Release API URL queried for the latest tag (default: the
+                           public GitHub API for this repository). For mirrors and
+                           automated testing of this script.
+    BEAD_DOWNLOAD_BASE     Base URL for release artifacts; the binary and
+                           checksums.txt are fetched from
+                           \${BEAD_DOWNLOAD_BASE}/<tag>/<asset> (default:
+                           https://github.com/jedarden/bead-rs/releases/download).
+                           For mirrors and automated testing of this script.
 
 SECURITY NOTE:
     This installer verifies SHA-256 checksums to ensure the downloaded binary has not been
@@ -254,7 +263,7 @@ main() {
     info "Latest version: $version"
 
     # Construct download URL
-    download_url="https://github.com/${REPO}/releases/download/${version}/${asset_name}"
+    download_url="${DOWNLOAD_BASE}/${version}/${asset_name}"
 
     # Create temporary directory for download.
     #
@@ -273,7 +282,7 @@ main() {
     download_file "$download_url" "$temp_binary"
 
     # Download and verify checksums (fail-closed: verification enabled by default for security)
-    local checksums_url="https://github.com/${REPO}/releases/download/${version}/checksums.txt"
+    local checksums_url="${DOWNLOAD_BASE}/${version}/checksums.txt"
     local checksums_file="$temp_dir/checksums.txt"
     info "Downloading checksums..."
     if ! download_file "$checksums_url" "$checksums_file" 2>/dev/null; then
@@ -347,7 +356,7 @@ This flag only applies when checksums are unavailable, not when they indicate a 
 
     # Optional GPG signature verification (informational only, never fails)
     if command -v gpg &>/dev/null; then
-        local sig_url="https://github.com/${REPO}/releases/download/${version}/checksums.txt.asc"
+        local sig_url="${DOWNLOAD_BASE}/${version}/checksums.txt.asc"
         local sig_file="$temp_dir/checksums.txt.asc"
         if download_file "$sig_url" "$sig_file" 2>/dev/null; then
             info "Verifying GPG signature..."
