@@ -28,8 +28,10 @@ QUALIFICATION:
   \- the recorded checkpoint state does not claim more history than the
     live store holds
   Any other checkpoint\-ahead\-of\-live shape is an integrity failure and is
-  refused without mutation. bead\-rs never runs Git; it observes the store
-  relationship, not the transport that produced it.
+  refused without mutation. bead\-rs never mutates Git; it observes the
+  store relationship, not the transport that produced it (the one read\-only
+  Git interaction anywhere in bead\-rs is `sync status`\*(Aqs reachability
+  report, ADR\-013).
 .PP
 PUBLICATION:
   Reconcile never publishes a checkpoint generation by its own action. Under

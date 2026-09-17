@@ -10,7 +10,9 @@ Atomically claim and assign one issue from the ready frontier.
 .PP
 Claim performs server\-side selection from ready issues (open, unassigned,
 not manually blocked, no unfinished blockers) using fifo\-v1 policy:
-priority ASC, created_at ASC, id ASC.
+priority ASC, created_at ASC, id ASC. A workspace may set
+\*(Aq{"claim":{"sort":"attempts"}}\*(Aq in .beads/config.json to prefer fewer
+consecutive failures within each priority tier before the FIFO tie\-breakers.
 .PP
 Selection and assignment occur in one atomic transaction. With no eligible
 issues, returns exit code 0 and an empty result ({} in JSON mode).

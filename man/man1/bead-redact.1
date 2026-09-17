@@ -1,0 +1,56 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead redact" 1  "bead redact " 
+.SH NAME
+bead redact \- Redact one historical secret by scanner fingerprint
+.SH SYNOPSIS
+\fBbead redact\fR [\fB\-\-actor\fR] [\fB\-\-reason\fR] [\fB\-\-dry\-run\fR] [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-finding\fR|\fB\-\-resume\fR> 
+.SH DESCRIPTION
+Destroy exactly one sensitive byte range selected by a current secret\-scanner fingerprint.
+.PP
+The command never accepts or prints the matched value. A new redaction requires
+\-\-finding, \-\-actor, and \-\-reason. Fingerprints from either live rows or retained
+current/previous checkpoint issue records are accepted. The service derives the
+live row from a checkpoint record and revalidates the fingerprint against those
+live bytes under the maintenance and checkpoint\-publication locks, replaces only
+that range with the fixed bead\-rs marker, records a nonsecret receipt, and
+publishes a sanitized checkpoint generation set. Publication is mandatory even
+when workspace automatic publication is disabled.
+.PP
+If publication fails after the SQLite redaction commits, no semantic mutation is
+repeated. Resume the recorded receipt with `bead redact \-\-resume RECEIPT_ID`.
+.PP
+EXAMPLES:
+  bead doctor \-\-scope secrets \-\-format json
+  bead redact \-\-finding FINGERPRINT \-\-actor operator \-\-reason "credential rotation" \-\-dry\-run \-\-json
+  bead redact \-\-finding FINGERPRINT \-\-actor operator \-\-reason "credential rotation" \-\-json
+  bead redact \-\-resume RECEIPT_ID \-\-json
+.PP
+EXIT CODES:
+  0  redaction and sanitized publication completed, or dry\-run succeeded
+  1  internal failure or redaction committed but publication did not complete
+  2  invalid request, actor, reason, fingerprint, or option combination
+  3  finding or receipt not found
+  4  stale target or semantic conflict
+.SH OPTIONS
+.TP
+\fB\-\-finding\fR \fI<FINGERPRINT>\fR
+Live or retained\-checkpoint fingerprint reported by secret diagnostics
+.TP
+\fB\-\-resume\fR \fI<RECEIPT_ID>\fR
+Resume sanitized publication for an already committed receipt
+.TP
+\fB\-\-actor\fR \fI<ACTOR>\fR
+Identity ordering a new redaction
+.TP
+\fB\-\-reason\fR \fI<REASON>\fR
+Bounded nonsecret justification for a new redaction
+.TP
+\fB\-\-dry\-run\fR
+Report the exact selector and effects without changing SQLite or checkpoint files
+.TP
+\fB\-\-json\fR
+Emit the preview or published receipt as JSON
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

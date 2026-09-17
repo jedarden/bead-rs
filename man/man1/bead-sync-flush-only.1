@@ -45,8 +45,11 @@ ATOMICITY:
 GIT INTEGRATION:
   Mutations publish automatically; run \*(Aqbead sync flush\-only\*(Aq before committing
   the repository as an explicit idempotent check that the checkpoint is current.
-  bead\-rs never runs Git commands itself. Recover with the named\-generation
-  verifier: \*(Aqbead restore \-\-source .beads/checkpoint \-\-generation <GEN> \-\-actor <WHO>\*(Aq.
+  bead\-rs never mutates Git state; its only Git interaction is the
+  read\-only reachability report in \*(Aqbead sync status\*(Aq (ADR\-013), whose
+  verdict the status readiness line folds in (ADR\-017). Recover with the
+  named\-generation verifier: \*(Aqbead restore \-\-source .beads/checkpoint
+  \-\-generation <GEN> \-\-actor <WHO>\*(Aq.
 .SH OPTIONS
 .TP
 \fB\-\-output\fR \fI<OUTPUT>\fR

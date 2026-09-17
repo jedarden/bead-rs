@@ -15,6 +15,7 @@ EXAMPLES:
   bead dep remove BLOCKED BLOCKER                    # Remove all dependencies
   bead dep remove task\-1 task\-2 \-\-kind blocks        # Remove specific kind
   bead dep remove feature\-a bug\-fix \-\-kind relates_to # Remove relates_to edge
+  bead dep remove impl\-x check\-y \-\-kind verifies      # Remove verifies edge
 .PP
 IDEMPOTENCY:
   Removing a non\-existent dependency succeeds without error.
