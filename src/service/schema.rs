@@ -12,6 +12,16 @@ use crate::service::capabilities::SchemaEntry;
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
 
+/// Version of the native field-guide document emitted by
+/// `bead schema explain`. Bump when the guide's typed shape or any documented
+/// semantic changes incompatibly; snapshot and conformance tests pin this
+/// value, and the `field_guide` JSON Schema carries it as a `const`.
+pub const FIELD_GUIDE_VERSION: i64 = 1;
+
+/// Artifact identity carried by every `bead schema explain` response, per the
+/// accepted field-guide contract (`research/specs/native-field-guide-v1.md`).
+pub const FIELD_GUIDE_SCHEMA_REF: &str = "urn:bead-rs:schema:field-guide:native-v1";
+
 struct Descriptor {
     schema_ref: &'static str,
     document_kind: &'static str,
@@ -123,7 +133,7 @@ const DESCRIPTORS: &[Descriptor] = &[
         emit: &["checkpoint-set-v1"],
     },
     Descriptor {
-        schema_ref: "urn:bead-rs:schema:field-guide:native-v1",
+        schema_ref: FIELD_GUIDE_SCHEMA_REF,
         document_kind: "field_guide",
         readable: true,
         writable: true,
@@ -534,7 +544,7 @@ fn property_schema(kind: &str, name: &str) -> Value {
         ("capabilities", "secret_scan") | ("capabilities", "historical_redaction") => {
             json!({"type":"object"})
         }
-        ("field_guide", "guide_version") => json!({"const":1}),
+        ("field_guide", "guide_version") => json!({"const": FIELD_GUIDE_VERSION}),
         ("attempt_outcome", "attempt_id") => {
             json!({"type":"string", "minLength":1, "maxLength":255})
         }
@@ -764,11 +774,17 @@ fn guide_documents() -> Vec<Value> {
             "issue",
             &[
                 "assignee",
+                "attempts",
+                "claim_epoch",
+                "comments",
                 "created_at",
                 "dependencies",
                 "description",
+                "effective_status",
                 "id",
                 "labels",
+                "manual_blocked",
+                "notes",
                 "priority",
                 "revision",
                 "status",
@@ -786,7 +802,7 @@ fn guide_documents() -> Vec<Value> {
             "claim_result",
             "urn:bead-rs:schema:issue:native-v1",
             "claim_result",
-            &["assignee", "bead_id", "lease"],
+            &["assignee", "bead_id", "claim_epoch", "lease"],
         ),
         (
             "checkpoint_event",
@@ -808,22 +824,909 @@ fn guide_documents() -> Vec<Value> {
     }).collect()
 }
 
-fn guide_field(document: &str, name: &str) -> Value {
-    let checkpoint_kind = match document {
+/// JSON Schema fragment for one projection member, used to derive the typed
+/// `json_type` and `nullable` guide entries. Checkpoint documents reuse the
+/// registry schemas; the two interactive projections carry their own shapes
+/// because they are computed views, not stored records.
+fn projection_property_schema(document: &str, name: &str) -> Value {
+    match (document, name) {
+        ("cli_issue", "assignee") => json!({"type":["string","null"]}),
+        ("cli_issue", "attempts")
+        | ("cli_issue", "comments")
+        | ("cli_issue", "dependencies")
+        | ("cli_issue", "labels") => json!({"type":"array"}),
+        ("cli_issue", "claim_epoch") => json!({"type":["integer","null"], "minimum":1}),
+        ("cli_issue", "created_at") | ("cli_issue", "updated_at") => {
+            json!({"type":"string", "format":"date-time"})
+        }
+        ("cli_issue", "manual_blocked") => json!({"type":"boolean"}),
+        ("cli_issue", "priority") => json!({"type":"integer", "minimum":0, "maximum":4}),
+        ("cli_issue", "revision") => json!({"type":"integer", "minimum":1}),
+        ("cli_issue", _) => json!({"type":"string"}),
+        ("claim_result", "lease") => json!({"type":["object","null"]}),
+        ("claim_result", "bead_id") | ("claim_result", "assignee") => {
+            json!({"type":["string","null"]})
+        }
+        ("claim_result", "claim_epoch") => json!({"type":["integer","null"], "minimum":1}),
+        _ => {
+            let checkpoint_kind = match document {
+                "checkpoint_event" => "audit_event",
+                "checkpoint_provenance_receipt" => "provenance_receipt",
+                _ => "issue",
+            };
+            property_schema(checkpoint_kind, name)
+        }
+    }
+}
+
+/// Curated semantics for one `(document, name)` guide entry: everything the
+/// accepted field-guide contract requires per field — ownership, owning
+/// operations, default, example, invariants, and the common mistake.
+struct FieldSemantics {
+    ownership: &'static str,
+    operations: &'static [&'static str],
+    has_default: bool,
+    default: Value,
+    example: Value,
+    invariants: &'static [&'static str],
+    common_mistake: &'static str,
+}
+
+/// Fallback marking a semantics-table gap. `guide_field` must never emit it:
+/// the conformance tests assert every declared member of every document has
+/// curated semantics, so hitting this arm is a bug, not a graceful degrade.
+fn unspecified_semantics() -> FieldSemantics {
+    FieldSemantics {
+        ownership: "unspecified",
+        operations: &[],
+        has_default: false,
+        default: Value::Null,
+        example: Value::Null,
+        invariants: &["documentation gap: this member lacks curated semantics"],
+        common_mistake: "Semantics table gap: report this as a bug.",
+    }
+}
+
+fn field_semantics(document: &str, name: &str) -> FieldSemantics {
+    match (document, name) {
+        // ---- cli_issue (interactive CLI issue projection) ------------------
+        ("cli_issue", "id") => FieldSemantics {
+            ownership: "system",
+            operations: &["create"],
+            has_default: false,
+            default: Value::Null,
+            example: json!("bead-18409c0e"),
+            invariants: &[
+                "1-255 UTF-8 bytes",
+                "leading/trailing whitespace, '/', '\\', NUL, and control characters other than tab, LF, and CR are forbidden",
+                "immutable",
+                "preserved verbatim by native restore",
+            ],
+            common_mistake: "Manufacturing an ID or inferring chronology from its spelling.",
+        },
+        ("cli_issue", "title") => FieldSemantics {
+            ownership: "caller",
+            operations: &["create"],
+            has_default: false,
+            default: Value::Null,
+            example: json!("Verify restore invariants"),
+            invariants: &["1-4096 UTF-8 bytes", "immutable after create"],
+            common_mistake: "Attempting update --title, which is a usage error.",
+        },
+        ("cli_issue", "revision") => FieldSemantics {
+            ownership: "system",
+            operations: &["close", "release", "reopen", "update"],
+            has_default: true,
+            default: json!(1),
+            example: json!(4),
+            invariants: &[
+                "integer starting at 1, advanced by semantic mutations",
+                "--if-revision on update, release, close, and reopen consumes a previously read value",
+                "claim has no revision guard",
+                "materialized as 1 only when an older in-memory value lacks it",
+            ],
+            common_mistake: "Choosing the next revision or treating it as time.",
+        },
+        ("cli_issue", "description") => FieldSemantics {
+            ownership: "caller",
+            operations: &["create"],
+            has_default: true,
+            default: json!(""),
+            example: json!("Rehearse flush and restore."),
+            invariants: &[
+                "maximum 4 MiB",
+                "absent checkpoint description materializes as the empty string in this projection",
+                "immutable after create",
+            ],
+            common_mistake:
+                "Treating checkpoint absence, explicit null, and projected empty text as interchangeable.",
+        },
+        ("cli_issue", "notes") => FieldSemantics {
+            ownership: "caller",
+            operations: &["update"],
+            has_default: true,
+            default: json!(""),
+            example: json!("Reproduction captured in the reconciliation report."),
+            invariants: &[
+                "maximum 4 MiB",
+                "checkpoint content, not a secret store",
+                "absent checkpoint notes materialize as the empty string in this projection",
+                "written only through update --notes, which replaces the whole field",
+            ],
+            common_mistake: "Expecting create --notes or assuming notes are private.",
+        },
+        ("cli_issue", "priority") => FieldSemantics {
+            ownership: "caller",
+            operations: &["create"],
+            has_default: true,
+            default: json!(2),
+            example: json!(2),
+            invariants: &[
+                "integer from 0 through 4",
+                "P0 urgent, P1 critical, P2 high (native default), P3 normal, P4 aspirational",
+                "lower is more urgent",
+                "fixed at creation",
+            ],
+            common_mistake: "Calling P2 normal or reversing the ordering.",
+        },
+        ("cli_issue", "status") => FieldSemantics {
+            ownership: "derived",
+            operations: &["list", "show"],
+            has_default: false,
+            default: Value::Null,
+            example: json!("open"),
+            invariants: &[
+                "projects base_status; the manual_blocked overlay is exposed separately as effective_status",
+                "never stored in a checkpoint issue",
+                "consumers must not treat blocked as a stored base value",
+            ],
+            common_mistake:
+                "Assuming status == open proves readiness or that a status member exists in a native checkpoint issue.",
+        },
+        ("cli_issue", "effective_status") => FieldSemantics {
+            ownership: "derived",
+            operations: &["list", "show"],
+            has_default: false,
+            default: Value::Null,
+            example: json!("open"),
+            invariants: &[
+                "blocked exactly when manual_blocked is true on non-closed work; otherwise equals status",
+                "never stored in a checkpoint issue",
+                "readiness is stricter than effective_status == open: assignment and graph blockers also apply",
+            ],
+            common_mistake:
+                "Reading effective_status as a stored base value or as proof of readiness.",
+        },
+        ("cli_issue", "manual_blocked") => FieldSemantics {
+            ownership: "caller",
+            operations: &["close", "reopen", "update"],
+            has_default: true,
+            default: json!(false),
+            example: json!(false),
+            invariants: &[
+                "true prevents readiness",
+                "cleared by close and reopen",
+                "never encodes graph blocking",
+            ],
+            common_mistake:
+                "Encoding graph blocking in this flag or assuming false proves readiness.",
+        },
+        ("cli_issue", "assignee") => FieldSemantics {
+            ownership: "caller",
+            operations: &["claim", "create", "release", "update"],
+            has_default: true,
+            default: Value::Null,
+            example: Value::Null,
+            invariants: &[
+                "explicit null when unassigned",
+                "nonempty when present",
+                "claim assigns and enters in_progress",
+                "release applies to in_progress work; an open assigned bead uses update --clear-assignee",
+            ],
+            common_mistake: "Treating assignment as authorization.",
+        },
+        ("cli_issue", "dependencies") => FieldSemantics {
+            ownership: "caller",
+            operations: &["dep.add", "dep.remove"],
+            has_default: true,
+            default: json!([]),
+            example: json!([{"blocker":"bead-a","kind":"blocks"}]),
+            invariants: &[
+                "entries carry blocker and kind",
+                "blocks edges reject self-edges and cycles",
+                "a blocker blocks while its base status is not closed; a deferred blocker still blocks",
+            ],
+            common_mistake: "Reversing the blocked-first direction.",
+        },
+        ("cli_issue", "created_at") => FieldSemantics {
+            ownership: "system",
+            operations: &["create"],
+            has_default: false,
+            default: Value::Null,
+            example: json!("2026-08-12T22:51:52.301697398Z"),
+            invariants: &[
+                "RFC 3339 UTC with nanosecond precision",
+                "immutable",
+                "preserved by native restore",
+            ],
+            common_mistake:
+                "Synthesizing a source tracker's time as a native creation instant during rehydration.",
+        },
+        ("cli_issue", "updated_at") => FieldSemantics {
+            ownership: "system",
+            operations: &["claim", "close", "release", "reopen", "update"],
+            has_default: false,
+            default: Value::Null,
+            example: json!("2026-08-12T22:53:00.000000000Z"),
+            invariants: &[
+                "RFC 3339 UTC with nanosecond precision",
+                "advanced by semantic mutation",
+                "not an optimistic concurrency token; use revision",
+            ],
+            common_mistake: "Using it as an optimistic concurrency token.",
+        },
+        ("cli_issue", "labels") => FieldSemantics {
+            ownership: "caller",
+            operations: &["create", "label.add", "label.remove"],
+            has_default: true,
+            default: json!([]),
+            example: json!([]),
+            invariants: &[
+                "case-sensitive strings",
+                "add and remove are idempotent",
+            ],
+            common_mistake: "Treating a label as lifecycle state.",
+        },
+        ("cli_issue", "attempts") => FieldSemantics {
+            ownership: "system",
+            operations: &[],
+            has_default: true,
+            default: json!([]),
+            example: json!([]),
+            invariants: &[
+                "read-only attempt summaries recorded by the resolve/attempt subsystem",
+                "empty array when no attempts exist",
+                "never present in checkpoint issue records",
+            ],
+            common_mistake: "Manufacturing or editing attempt entries.",
+        },
+        ("cli_issue", "comments") => FieldSemantics {
+            ownership: "system",
+            operations: &[],
+            has_default: true,
+            default: json!([]),
+            example: json!([]),
+            invariants: &[
+                "ordered by creation time then ID",
+                "v0.1 has no public command that creates comments",
+                "interactive reads expose only the projection selected by --comments",
+            ],
+            common_mistake:
+                "Treating comments as unknown extensions or assuming an interactive omission means no durable comments exist.",
+        },
+        ("cli_issue", "claim_epoch") => FieldSemantics {
+            ownership: "system",
+            operations: &["claim"],
+            has_default: true,
+            default: Value::Null,
+            example: json!(1),
+            invariants: &[
+                "absent from this projection until the first claim mints one",
+                "monotonically increasing credential minted by every successful claim",
+                "presented back as --fencing-token for claimant-owned mutations",
+                "not a revision and not a timestamp",
+            ],
+            common_mistake:
+                "Treating the epoch as an optimistic concurrency token or assuming it is always present.",
+        },
+        // ---- checkpoint_issue (native checkpoint issue record) --------------
+        ("checkpoint_issue", "id") => FieldSemantics {
+            ownership: "system",
+            operations: &["create", "sync.import-only"],
+            has_default: false,
+            default: Value::Null,
+            example: json!("bead-18409c0e"),
+            invariants: &[
+                "1-255 UTF-8 bytes",
+                "leading/trailing whitespace, '/', '\\', NUL, and control characters other than tab, LF, and CR are forbidden",
+                "immutable",
+                "preserved verbatim by native restore",
+            ],
+            common_mistake: "Manufacturing an ID or inferring chronology from its spelling.",
+        },
+        ("checkpoint_issue", "title") => FieldSemantics {
+            ownership: "caller",
+            operations: &["create"],
+            has_default: false,
+            default: Value::Null,
+            example: json!("Verify restore invariants"),
+            invariants: &["1-4096 UTF-8 bytes", "immutable after create"],
+            common_mistake: "Attempting update --title, which is a usage error.",
+        },
+        ("checkpoint_issue", "revision") => FieldSemantics {
+            ownership: "system",
+            operations: &["close", "release", "reopen", "update"],
+            has_default: true,
+            default: json!(1),
+            example: json!(4),
+            invariants: &[
+                "integer starting at 1, advanced by semantic mutations",
+                "--if-revision on update, release, close, and reopen consumes a previously read value; claim has none",
+                "preserved through export, restore, and merge insertion",
+                "on merge, an incoming revision newer than the live token is retained; otherwise replacement advances the live token by one",
+                "a stale checkpoint cannot roll the token backward",
+            ],
+            common_mistake:
+                "Choosing the next revision or treating it as time. Released v0.1.1 reset revisions to 1.",
+        },
+        ("checkpoint_issue", "description") => FieldSemantics {
+            ownership: "caller",
+            operations: &["create"],
+            has_default: false,
+            default: Value::Null,
+            example: json!("Rehearse flush and restore."),
+            invariants: &[
+                "optional nullable string; absent when create omits --description",
+                "maximum 4 MiB",
+            ],
+            common_mistake:
+                "Treating absent checkpoint description, explicit null, and projected empty text as interchangeable.",
+        },
+        ("checkpoint_issue", "notes") => FieldSemantics {
+            ownership: "caller",
+            operations: &["update"],
+            has_default: true,
+            default: json!(""),
+            example: json!("Reproduction captured in the reconciliation report."),
+            invariants: &[
+                "optional nullable string with live default empty string",
+                "maximum 4 MiB",
+                "checkpoint content, not a secret store",
+                "written only through update --notes, which replaces the whole field",
+            ],
+            common_mistake: "Expecting create --notes or assuming notes are private.",
+        },
+        ("checkpoint_issue", "priority") => FieldSemantics {
+            ownership: "caller",
+            operations: &["create"],
+            has_default: true,
+            default: json!(2),
+            example: json!(2),
+            invariants: &[
+                "integer from 0 through 4",
+                "P0 urgent, P1 critical, P2 high (native default), P3 normal, P4 aspirational",
+                "lower is more urgent",
+                "fixed at creation",
+            ],
+            common_mistake: "Calling P2 normal or reversing the ordering.",
+        },
+        ("checkpoint_issue", "base_status") => FieldSemantics {
+            ownership: "system",
+            operations: &["claim", "close", "release", "reopen", "update"],
+            has_default: true,
+            default: json!("open"),
+            example: json!("open"),
+            invariants: &[
+                "enum: open, in_progress, deferred, closed",
+                "closed_at is present exactly when base_status is closed",
+                "blocked and ready are never stored base values",
+                "import validation rejects lifecycle violations in both directions",
+            ],
+            common_mistake: "Storing blocked or ready as a base value.",
+        },
+        ("checkpoint_issue", "manual_blocked") => FieldSemantics {
+            ownership: "caller",
+            operations: &["close", "reopen", "update"],
+            has_default: true,
+            default: json!(false),
+            example: json!(false),
+            invariants: &[
+                "optional nullable boolean with effective default false",
+                "true prevents readiness",
+                "cleared by close and reopen",
+                "never encodes graph blocking",
+            ],
+            common_mistake:
+                "Encoding graph blocking in this flag or assuming false proves readiness.",
+        },
+        ("checkpoint_issue", "assignee") => FieldSemantics {
+            ownership: "caller",
+            operations: &["claim", "create", "release", "update"],
+            has_default: false,
+            default: Value::Null,
+            example: json!("agent-name"),
+            invariants: &[
+                "absence when unset; an imported explicit null reserializes as absence",
+                "nonempty when present",
+                "claim assigns and enters in_progress",
+                "release applies to in_progress work; an open assigned bead uses update --clear-assignee",
+            ],
+            common_mistake: "Treating assignment as authorization.",
+        },
+        ("checkpoint_issue", "claim_epoch") => FieldSemantics {
+            ownership: "system",
+            operations: &["claim"],
+            has_default: false,
+            default: Value::Null,
+            example: json!(1),
+            invariants: &[
+                "stored as 0 when no claim epoch exists and serialized as absence",
+                "monotonically increasing credential minted by every successful claim",
+                "presented back as --fencing-token for claimant-owned mutations",
+                "not a revision and not a timestamp",
+            ],
+            common_mistake: "Treating the epoch as an optimistic concurrency token.",
+        },
+        ("checkpoint_issue", "issue_type") => FieldSemantics {
+            ownership: "caller",
+            operations: &["create"],
+            has_default: true,
+            default: json!("task"),
+            example: json!("task"),
+            invariants: &[
+                "free nonempty string with no enumerated value validation",
+                "effective default task",
+                "fixed at creation",
+            ],
+            common_mistake:
+                "Attempting to update it or treating the examples in CLI help as an exhaustive enum.",
+        },
+        ("checkpoint_issue", "created_at") => FieldSemantics {
+            ownership: "system",
+            operations: &["create"],
+            has_default: false,
+            default: Value::Null,
+            example: json!("2026-08-12T22:51:52.301697398Z"),
+            invariants: &[
+                "RFC 3339 UTC with nanosecond precision",
+                "immutable",
+                "preserved by native restore",
+            ],
+            common_mistake:
+                "Synthesizing a source tracker's time as a native creation instant during rehydration.",
+        },
+        ("checkpoint_issue", "updated_at") => FieldSemantics {
+            ownership: "system",
+            operations: &["claim", "close", "release", "reopen", "update"],
+            has_default: false,
+            default: Value::Null,
+            example: json!("2026-08-12T22:53:00.000000000Z"),
+            invariants: &[
+                "RFC 3339 UTC with nanosecond precision",
+                "advanced by semantic mutation",
+                "on merge, scalar issue content follows the newer updated_at",
+                "not an optimistic concurrency token; use revision",
+            ],
+            common_mistake: "Using it as an optimistic concurrency token.",
+        },
+        ("checkpoint_issue", "closed_at") => FieldSemantics {
+            ownership: "system",
+            operations: &["close", "reopen"],
+            has_default: false,
+            default: Value::Null,
+            example: json!("2026-08-12T23:00:00.000000000Z"),
+            invariants: &[
+                "present exactly when base_status is closed",
+                "cleared to absence by reopen",
+                "import validation rejects violations in both directions; doctor detects legacy rows without guessing repairs",
+            ],
+            common_mistake: "Assuming detection repaired legacy rows.",
+        },
+        ("checkpoint_issue", "close_reason") => FieldSemantics {
+            ownership: "caller",
+            operations: &["close", "reopen"],
+            has_default: false,
+            default: Value::Null,
+            example: json!("Completed and verified"),
+            invariants: &[
+                "nonempty for closed issues",
+                "no length bound",
+                "cleared to absence by reopen",
+            ],
+            common_mistake: "Omitting --reason.",
+        },
+        ("checkpoint_issue", "source_repo") => FieldSemantics {
+            ownership: "system",
+            operations: &[],
+            has_default: false,
+            default: Value::Null,
+            example: json!("forgejo:jedarden/project"),
+            invariants: &[
+                "no public writer in v0.1 and unreachable through normal creation",
+                "never network-resolved",
+            ],
+            common_mistake:
+                "Editing checkpoint JSON to inject provenance; use external references and the reconciliation report.",
+        },
+        ("checkpoint_issue", "profile") => FieldSemantics {
+            ownership: "system",
+            operations: &["sync.import-only"],
+            has_default: true,
+            default: json!("native-v1"),
+            example: json!("native-v1"),
+            invariants: &["version 0.1 accepts no external checkpoint profile"],
+            common_mistake: "Relabeling foreign records as native.",
+        },
+        ("checkpoint_issue", "schema_ref") => FieldSemantics {
+            ownership: "system",
+            operations: &[],
+            has_default: true,
+            default: json!("urn:bead-rs:schema:issue:native-v1"),
+            example: json!("urn:bead-rs:schema:issue:native-v1"),
+            invariants: &[
+                "required absolute URI on every native-v1 issue record",
+                "immutable",
+                "identifies the public document schema, not SQLite storage",
+            ],
+            common_mistake: "Silently replacing an unknown reference.",
+        },
+        ("checkpoint_issue", "data") => FieldSemantics {
+            ownership: "caller",
+            operations: &["data.set", "data.remove"],
+            has_default: true,
+            default: json!({}),
+            example: json!({"example":{"schema_ref":"urn:example:v1","value":{}}}),
+            invariants: &[
+                "optional nullable object for legacy input and required in new native output, where no namespaces serialize as {}",
+                "each namespace has an immutable schema reference and an arbitrary JSON value",
+                "merge replaces the collection when present and preserves it when absent",
+                "preserved transactionally through export and activation",
+            ],
+            common_mistake:
+                "Editing the aggregate through issue update. Released v0.1.1 lost this table.",
+        },
+        ("checkpoint_issue", "labels") => FieldSemantics {
+            ownership: "caller",
+            operations: &["create", "label.add", "label.remove"],
+            has_default: true,
+            default: json!([]),
+            example: json!([]),
+            invariants: &[
+                "case-sensitive strings",
+                "add and remove are idempotent",
+                "merge is additive",
+            ],
+            common_mistake: "Treating a label as lifecycle state.",
+        },
+        ("checkpoint_issue", "dependencies") => FieldSemantics {
+            ownership: "caller",
+            operations: &["dep.add", "dep.remove"],
+            has_default: true,
+            default: json!([]),
+            example: json!([{"blocker":"bead-a","kind":"blocks"}]),
+            invariants: &[
+                "edges retain blocked ID, blocker ID, kind, and optional condition",
+                "blocks edges reject self-edges and cycles",
+                "merge is additive",
+            ],
+            common_mistake: "Reversing the blocked-first direction.",
+        },
+        ("checkpoint_issue", "comments") => FieldSemantics {
+            ownership: "system",
+            operations: &[],
+            has_default: true,
+            default: json!([]),
+            example: json!([]),
+            invariants: &[
+                "optional array for legacy inputs and required in new native output, where empty serializes as []",
+                "each entry carries id, author, body, nullable reply_to_id, nullable resolution_state, and created_at",
+                "ordered by creation time then ID",
+                "merge replaces when present and preserves when absent",
+            ],
+            common_mistake:
+                "Treating comments as unknown extensions or assuming an interactive omission means no durable comments exist.",
+        },
+        ("checkpoint_issue", "external_references") => FieldSemantics {
+            ownership: "caller",
+            operations: &["ref.add", "ref.remove"],
+            has_default: true,
+            default: json!([]),
+            example: json!({"namespace":"source","key":"issue-id","value":"bf-123"}),
+            invariants: &[
+                "optional array for legacy inputs and required in new native output, where empty serializes as []",
+                "namespace, key, and value are required non-null strings",
+                "merge replaces when present and preserves when absent",
+            ],
+            common_mistake:
+                "Confusing these tracker/commit bindings with structured-data schema_ref values.",
+        },
+        // ---- claim_result (bead claim --json) -------------------------------
+        ("claim_result", "bead_id") => FieldSemantics {
+            ownership: "system",
+            operations: &["claim"],
+            has_default: false,
+            default: Value::Null,
+            example: json!("bead-18409c0e"),
+            invariants: &[
+                "identifies the selected issue",
+                "an empty queue returns an object without a nonempty bead_id",
+                "this projection does not rename bead_id to id",
+            ],
+            common_mistake:
+                "Assuming every claim returns work, or reading the result as an issue projection.",
+        },
+        ("claim_result", "assignee") => FieldSemantics {
+            ownership: "system",
+            operations: &["claim"],
+            has_default: false,
+            default: Value::Null,
+            example: json!("agent-name"),
+            invariants: &[
+                "echoes the --assignee requested by the caller",
+                "nonempty when present",
+            ],
+            common_mistake: "Treating assignment as authorization.",
+        },
+        ("claim_result", "claim_epoch") => FieldSemantics {
+            ownership: "system",
+            operations: &["claim"],
+            has_default: false,
+            default: Value::Null,
+            example: json!(1),
+            invariants: &[
+                "minted by every successful claim, leased or not",
+                "presented back as --fencing-token for claimant-owned mutations",
+                "not a revision and not a timestamp",
+            ],
+            common_mistake: "Treating the epoch as an issue revision.",
+        },
+        ("claim_result", "lease") => FieldSemantics {
+            ownership: "system",
+            operations: &["claim"],
+            has_default: false,
+            default: Value::Null,
+            example: Value::Null,
+            invariants: &[
+                "null when the claim carries no lease",
+                "a lease carries issue_id, assignee, fencing_token, and expires_at",
+                "after expiry the holder cannot update, release, or close until renewal or a new claim",
+                "a stale or mismatched token is an exit-4 conflict",
+                "a coordination guard, not an issue revision",
+            ],
+            common_mistake:
+                "Treating the fencing token as an issue revision or assuming leases never expire.",
+        },
+        // ---- checkpoint_event (native event record) -------------------------
+        ("checkpoint_event", "$schema") => FieldSemantics {
+            ownership: "system",
+            operations: &[],
+            has_default: false,
+            default: Value::Null,
+            example: json!("urn:bead-rs:schema:event:native-v1"),
+            invariants: &[
+                "required non-null absolute URI",
+                "event records use the $schema spelling where issue records use schema_ref",
+            ],
+            common_mistake: "Replacing it with the issue record's schema_ref spelling.",
+        },
+        ("checkpoint_event", "origin_store_uuid") => FieldSemantics {
+            ownership: "system",
+            operations: &[],
+            has_default: false,
+            default: Value::Null,
+            example: json!("workspace-uuid"),
+            invariants: &[
+                "required non-null string identifying the originating store",
+                "preserved by native restore",
+            ],
+            common_mistake: "Substituting the destination store identity on restore.",
+        },
+        ("checkpoint_event", "origin_event_sequence") => FieldSemantics {
+            ownership: "system",
+            operations: &[],
+            has_default: false,
+            default: Value::Null,
+            example: json!(1),
+            invariants: &[
+                "required positive integer",
+                "monotonically contiguous within the origin store",
+                "preserved by native restore",
+            ],
+            common_mistake: "Renumbering origin events after restore.",
+        },
+        ("checkpoint_event", "issue_id") => FieldSemantics {
+            ownership: "system",
+            operations: &[],
+            has_default: false,
+            default: Value::Null,
+            example: Value::Null,
+            invariants: &["null for workspace-scoped events", "names the affected issue otherwise"],
+            common_mistake: "Assuming every event belongs to an issue.",
+        },
+        ("checkpoint_event", "kind") => FieldSemantics {
+            ownership: "system",
+            operations: &[],
+            has_default: false,
+            default: Value::Null,
+            example: json!("updated"),
+            invariants: &[
+                "required nonempty string",
+                "complete v0.1 set: updated, claimed, released, reopened, closed, assignment_cleared",
+                "create, dependency, and label mutations append no event",
+            ],
+            common_mistake: "Treating an unknown kind as permission to discard the event.",
+        },
+        ("checkpoint_event", "actor") => FieldSemantics {
+            ownership: "system",
+            operations: &[],
+            has_default: false,
+            default: Value::Null,
+            example: json!("system"),
+            invariants: &[
+                "producer-required but import-tolerated as null",
+                "derived from operation context, not authentication",
+            ],
+            common_mistake: "Treating it as proof of authentication or assuming import rejects null.",
+        },
+        ("checkpoint_event", "time") => FieldSemantics {
+            ownership: "system",
+            operations: &[],
+            has_default: false,
+            default: Value::Null,
+            example: json!("2026-08-12T22:51:52.301697398Z"),
+            invariants: &[
+                "required non-null RFC 3339 UTC timestamp with nanosecond precision",
+                "not part of event identity",
+            ],
+            common_mistake: "Using it as event identity.",
+        },
+        ("checkpoint_event", "detail") => FieldSemantics {
+            ownership: "system",
+            operations: &[],
+            has_default: false,
+            default: Value::Null,
+            example: json!({}),
+            invariants: &[
+                "required in producer output; import defaults an absent member to null",
+                "arbitrary JSON value with no defined keys",
+            ],
+            common_mistake:
+                "Interpreting arbitrary detail keys as durable issue fields or conflating the producer example with the import default.",
+        },
+        // ---- checkpoint_provenance_receipt ----------------------------------
+        ("checkpoint_provenance_receipt", "$schema") => FieldSemantics {
+            ownership: "system",
+            operations: &[],
+            has_default: false,
+            default: Value::Null,
+            example: json!("urn:bead-rs:schema:provenance-receipt:native-v1"),
+            invariants: &["required non-null absolute URI"],
+            common_mistake:
+                "Confusing this receipt identity with the issue or event schema identity.",
+        },
+        ("checkpoint_provenance_receipt", "receipt_id") => FieldSemantics {
+            ownership: "system",
+            operations: &[],
+            has_default: false,
+            default: Value::Null,
+            example: json!("0".repeat(64)),
+            invariants: &[
+                "64 lowercase hex characters",
+                "unique per receipt",
+                "covers the receipt content",
+            ],
+            common_mistake: "Reading the receipt as issue state.",
+        },
+        ("checkpoint_provenance_receipt", "kind") => FieldSemantics {
+            ownership: "system",
+            operations: &[],
+            has_default: false,
+            default: Value::Null,
+            example: json!("restore"),
+            invariants: &[
+                "one of restore, merge, fork",
+                "records system-owned restore, merge, or fork provenance",
+            ],
+            common_mistake: "Reading the receipt as issue state.",
+        },
+        ("checkpoint_provenance_receipt", "source_store_uuid") => FieldSemantics {
+            ownership: "system",
+            operations: &[],
+            has_default: false,
+            default: Value::Null,
+            example: json!("workspace-uuid"),
+            invariants: &["origin store identity of the applied checkpoint"],
+            common_mistake: "Substituting the destination store identity.",
+        },
+        ("checkpoint_provenance_receipt", "target_store_uuid") => FieldSemantics {
+            ownership: "system",
+            operations: &[],
+            has_default: false,
+            default: Value::Null,
+            example: json!("workspace-uuid"),
+            invariants: &["store identity the checkpoint was applied to"],
+            common_mistake: "Swapping source and target identities.",
+        },
+        ("checkpoint_provenance_receipt", "source_root_sha256") => FieldSemantics {
+            ownership: "system",
+            operations: &[],
+            has_default: false,
+            default: Value::Null,
+            example: json!("0".repeat(64)),
+            invariants: &[
+                "64 lowercase hex characters",
+                "digest of the source checkpoint root",
+            ],
+            common_mistake: "Recomputing or re-basing the digest on the target store.",
+        },
+        ("checkpoint_provenance_receipt", "actor") => FieldSemantics {
+            ownership: "system",
+            operations: &[],
+            has_default: false,
+            default: Value::Null,
+            example: json!("system"),
+            invariants: &["derived from the operation context"],
+            common_mistake: "Treating it as proof of authentication.",
+        },
+        ("checkpoint_provenance_receipt", "created_at") => FieldSemantics {
+            ownership: "system",
+            operations: &[],
+            has_default: false,
+            default: Value::Null,
+            example: json!("2026-08-12T22:51:52.301697398Z"),
+            invariants: &[
+                "RFC 3339 UTC with nanosecond precision",
+                "set once when the receipt is written",
+            ],
+            common_mistake:
+                "Using it to order operations across stores; use the counts and event identity.",
+        },
+        ("checkpoint_provenance_receipt", "counts") => FieldSemantics {
+            ownership: "system",
+            operations: &[],
+            has_default: false,
+            default: Value::Null,
+            example: json!({"events":0,"issues":1,"provenance_receipts":0}),
+            invariants: &[
+                "exactly the issues, events, and provenance_receipts members, each a nonnegative integer",
+            ],
+            common_mistake:
+                "Reading counts as live-store totals; they describe the applied checkpoint.",
+        },
+        ("checkpoint_provenance_receipt", "result") => FieldSemantics {
+            ownership: "system",
+            operations: &[],
+            has_default: false,
+            default: Value::Null,
+            example: json!("success"),
+            invariants: &["operation outcome recorded by the producing operation"],
+            common_mistake: "Treating a receipt as a request to re-apply the operation.",
+        },
+        ("checkpoint_provenance_receipt", "summary_event_identity") => FieldSemantics {
+            ownership: "system",
+            operations: &[],
+            has_default: false,
+            default: Value::Null,
+            example: Value::Null,
+            invariants: &["null when the operation produced no summary event"],
+            common_mistake: "Assuming every receipt carries a summary event identity.",
+        },
+        ("checkpoint_provenance_receipt", "receipt_sha256") => FieldSemantics {
+            ownership: "system",
+            operations: &[],
+            has_default: false,
+            default: Value::Null,
+            example: json!("0".repeat(64)),
+            invariants: &[
+                "64 lowercase hex characters",
+                "digest binding the receipt content",
+            ],
+            common_mistake: "Validating the digest against mutated receipt content.",
+        },
+        _ => unspecified_semantics(),
+    }
+}
+
+fn checkpoint_document_kind(document: &str) -> &'static str {
+    match document {
         "checkpoint_event" => "audit_event",
         "checkpoint_provenance_receipt" => "provenance_receipt",
         _ => "issue",
-    };
-    let schema = if document == "cli_issue" && name == "status" {
-        json!({"type":"string"})
-    } else if document == "claim_result" {
-        match name {
-            "lease" => json!({"type":["object","null"]}),
-            _ => json!({"type":["string","null"]}),
-        }
-    } else {
-        property_schema(checkpoint_kind, name)
-    };
+    }
+}
+
+fn guide_field(document: &str, name: &str) -> Value {
+    let schema = projection_property_schema(document, name);
     let json_type = schema
         .get("type")
         .and_then(|value| {
@@ -845,144 +1748,280 @@ fn guide_field(document: &str, name: &str) -> Value {
         .get("type")
         .and_then(Value::as_array)
         .is_some_and(|types| types.iter().any(|value| value == "null"));
-    let required = match document {
-        "cli_issue" => true,
-        "claim_result" => name != "lease",
-        _ => required_for(checkpoint_kind)
-            .iter()
-            .any(|required| required == name),
-    };
-    let (ownership, operations, default, has_default, example, mistake): (
-        &str,
-        Vec<&str>,
-        Value,
-        bool,
-        Value,
-        &str,
-    ) = match name {
-        "id" => (
-            "system",
-            vec!["create", "sync.import-only"],
-            Value::Null,
-            false,
-            json!("bead-18409c0e"),
-            "Manufacturing an ID or inferring chronology from its spelling.",
-        ),
-        "title" => (
-            "caller",
-            vec!["create"],
-            Value::Null,
-            false,
-            json!("Verify restore invariants"),
-            "Attempting update --title, which is a usage error.",
-        ),
-        "revision" => (
-            "system",
-            vec!["close", "release", "reopen", "update"],
-            json!(1),
-            true,
-            json!(4),
-            "Choosing the next revision or treating it as time.",
-        ),
-        "description" => (
-            "caller",
-            vec!["create"],
-            if document == "cli_issue" {
-                json!("")
+    let presence = match (document, name) {
+        ("cli_issue", "claim_epoch") => "conditional",
+        ("claim_result", "bead_id") => "conditional",
+        ("claim_result", "lease") => "optional",
+        ("cli_issue", _) | ("claim_result", _) => "required",
+        _ => {
+            let required = required_for(checkpoint_document_kind(document))
+                .iter()
+                .any(|member| member == name);
+            if required {
+                "required"
             } else {
-                Value::Null
-            },
-            document == "cli_issue",
-            json!("Rehearse flush and restore."),
-            "Treating absence, null, and projected empty text as interchangeable.",
-        ),
-        "notes" => (
-            "caller",
-            vec!["update"],
-            json!(""),
-            true,
-            json!("Reproduction captured."),
-            "Expecting create --notes or assuming notes are private.",
-        ),
-        "priority" => (
-            "caller",
-            vec!["create"],
-            json!(2),
-            true,
-            json!(2),
-            "Treating P2 as normal or reversing priority order.",
-        ),
-        "base_status" => (
-            "system",
-            vec!["claim", "close", "release", "reopen", "update"],
-            json!("open"),
-            true,
-            json!("open"),
-            "Storing blocked or ready as a base value.",
-        ),
-        "status" => (
-            "derived",
-            vec!["list", "show"],
-            Value::Null,
-            false,
-            json!("open"),
-            "Assuming status open proves readiness.",
-        ),
-        "manual_blocked" => (
-            "caller",
-            vec!["close", "reopen", "update"],
-            json!(false),
-            true,
-            json!(false),
-            "Encoding graph blocking in this flag.",
-        ),
-        "assignee" => (
-            "caller",
-            vec!["claim", "create", "release", "update"],
-            Value::Null,
-            document == "cli_issue",
-            Value::Null,
-            "Treating assignment as authorization.",
-        ),
-        "labels" => (
-            "caller",
-            vec!["create", "label.add", "label.remove"],
-            json!([]),
-            true,
-            json!([]),
-            "Treating a label as lifecycle state.",
-        ),
-        "dependencies" => (
-            "caller",
-            vec!["dep.add", "dep.remove"],
-            json!([]),
-            true,
-            json!([]),
-            "Reversing the blocked-first direction.",
-        ),
-        "$schema" | "schema_ref" => (
-            "system",
-            vec![],
-            Value::Null,
-            false,
-            json!("urn:bead-rs:schema:issue:native-v1"),
-            "Confusing a public schema identity with private storage layout.",
-        ),
-        _ => (
-            "system",
-            vec![],
-            Value::Null,
-            false,
-            Value::Null,
-            "Inferring semantics from the member name instead of the governing schema.",
-        ),
+                "optional"
+            }
+        }
     };
+    let semantics = field_semantics(document, name);
+    let mut operations: Vec<&str> = semantics.operations.to_vec();
+    operations.sort_unstable();
     json!({
         "document":document,"name":name,"json_type":json_type,"nullable":nullable,
-        "presence":if required {"required"} else {"optional"},"has_default":has_default,
-        "default":default,"ownership":ownership,"operations":operations,"invariants":[],
-        "example":example,"common_mistake":mistake
+        "presence":presence,"has_default":semantics.has_default,
+        "default":semantics.default,"ownership":semantics.ownership,
+        "operations":operations,"invariants":semantics.invariants,
+        "example":semantics.example,"common_mistake":semantics.common_mistake
     })
+}
+
+/// Documented mutating and read operations of the native model. Exit codes
+/// follow the shared contract: 0 success, 2 usage, 3 not-found, 4 conflict,
+/// 5 integrity. Entries are emitted lexicographically sorted by name.
+fn guide_operations() -> Vec<Value> {
+    struct OperationSemantics {
+        name: &'static str,
+        ownership_effect: &'static str,
+        failure_exits: &'static [i64],
+        affected_fields: &'static [&'static str],
+        rules: &'static [&'static str],
+    }
+    let ops: &[OperationSemantics] = &[
+        OperationSemantics {
+            name: "claim",
+            ownership_effect: "assigns the caller and starts work",
+            failure_exits: &[2, 3, 4],
+            affected_fields: &["assignee", "base_status", "claim_epoch", "updated_at"],
+            rules: &[
+                "atomic selection, assignment, and transition to in_progress",
+                "default fifo-v1 orders candidates by priority ascending, creation time ascending, then ID ascending",
+                "no revision guard; its atomic transaction and optional lease fencing provide concurrency safety",
+                "an empty queue returns success with no nonempty bead_id",
+            ],
+        },
+        OperationSemantics {
+            name: "close",
+            ownership_effect: "terminal caller-visible transition",
+            failure_exits: &[2, 3, 4],
+            affected_fields: &[
+                "base_status",
+                "closed_at",
+                "close_reason",
+                "manual_blocked",
+                "revision",
+                "updated_at",
+            ],
+            rules: &[
+                "requires a non-empty --reason",
+                "clears manual blocking",
+                "may expose dependents",
+                "accepts a previously read revision through --if-revision",
+            ],
+        },
+        OperationSemantics {
+            name: "create",
+            ownership_effect: "initializes caller-owned fields",
+            failure_exits: &[2, 5],
+            affected_fields: &[
+                "assignee",
+                "base_status",
+                "created_at",
+                "description",
+                "id",
+                "issue_type",
+                "labels",
+                "priority",
+                "revision",
+                "schema_ref",
+                "title",
+                "updated_at",
+            ],
+            rules: &[
+                "only public entry point for new native issues",
+                "title, description, priority, assignee, issue_type, and labels are fixed at creation",
+                "appends no audit event",
+            ],
+        },
+        OperationSemantics {
+            name: "data.remove",
+            ownership_effect: "removes a caller-owned namespace",
+            failure_exits: &[2, 3],
+            affected_fields: &["data"],
+            rules: &["each namespace's schema reference is immutable"],
+        },
+        OperationSemantics {
+            name: "data.set",
+            ownership_effect: "writes a caller-owned namespace",
+            failure_exits: &[2, 3],
+            affected_fields: &["data"],
+            rules: &["each namespace's schema reference is immutable"],
+        },
+        OperationSemantics {
+            name: "dep.add",
+            ownership_effect: "extends caller-owned graph state",
+            failure_exits: &[2, 3, 4],
+            affected_fields: &["dependencies"],
+            rules: &[
+                "blocks edges reject self-edges and cycles",
+                "relates_to is informational",
+                "--condition attaches a bounded declarative predicate",
+            ],
+        },
+        OperationSemantics {
+            name: "dep.remove",
+            ownership_effect: "removes caller-owned graph state",
+            failure_exits: &[2, 3],
+            affected_fields: &["dependencies"],
+            rules: &["removing the last active blocker can expose a dependent"],
+        },
+        OperationSemantics {
+            name: "label.add",
+            ownership_effect: "extends caller-owned collections",
+            failure_exits: &[2, 3],
+            affected_fields: &["labels"],
+            rules: &["idempotent"],
+        },
+        OperationSemantics {
+            name: "label.remove",
+            ownership_effect: "removes from caller-owned collections",
+            failure_exits: &[2, 3],
+            affected_fields: &["labels"],
+            rules: &["idempotent"],
+        },
+        OperationSemantics {
+            name: "list",
+            ownership_effect: "read-only projection",
+            failure_exits: &[2],
+            affected_fields: &[],
+            rules: &["inspects the ready frontier only with --ready, without reservation"],
+        },
+        OperationSemantics {
+            name: "ref.add",
+            ownership_effect: "extends caller-owned external references",
+            failure_exits: &[2, 3],
+            affected_fields: &["external_references"],
+            rules: &["never resolves over a network"],
+        },
+        OperationSemantics {
+            name: "ref.remove",
+            ownership_effect: "removes caller-owned external references",
+            failure_exits: &[2, 3],
+            affected_fields: &["external_references"],
+            rules: &["never resolves over a network"],
+        },
+        OperationSemantics {
+            name: "release",
+            ownership_effect: "clears assignment and stops work",
+            failure_exits: &[2, 3, 4],
+            affected_fields: &["assignee", "base_status", "updated_at"],
+            rules: &[
+                "semantically applies to in_progress -> open",
+                "an assigned open bead uses update --clear-assignee instead",
+            ],
+        },
+        OperationSemantics {
+            name: "reopen",
+            ownership_effect: "reverses closure",
+            failure_exits: &[2, 3, 4],
+            affected_fields: &[
+                "base_status",
+                "closed_at",
+                "close_reason",
+                "manual_blocked",
+                "revision",
+                "updated_at",
+            ],
+            rules: &[
+                "clears close metadata and manual blocking",
+                "only transition out of closed",
+                "accepts a previously read revision through --if-revision",
+            ],
+        },
+        OperationSemantics {
+            name: "schema.explain",
+            ownership_effect: "read-only guide emission",
+            failure_exits: &[2],
+            affected_fields: &[],
+            rules: &["workspace-independent; exact catalog identities only"],
+        },
+        OperationSemantics {
+            name: "schema.list",
+            ownership_effect: "read-only catalog emission",
+            failure_exits: &[2],
+            affected_fields: &[],
+            rules: &["workspace-independent"],
+        },
+        OperationSemantics {
+            name: "schema.show",
+            ownership_effect: "read-only schema emission",
+            failure_exits: &[2],
+            affected_fields: &[],
+            rules: &["emits the exact immutable JSON Schema for the identity"],
+        },
+        OperationSemantics {
+            name: "show",
+            ownership_effect: "read-only projection",
+            failure_exits: &[2, 3],
+            affected_fields: &[],
+            rules: &["emits one issue projection"],
+        },
+        OperationSemantics {
+            name: "sync.flush-only",
+            ownership_effect: "publishes durable checkpoint state",
+            failure_exits: &[2, 5],
+            affected_fields: &[],
+            rules: &["writes the durable checkpoint from the live store", "idempotent"],
+        },
+        OperationSemantics {
+            name: "sync.import-only",
+            ownership_effect: "restores or merges checkpoint state",
+            failure_exits: &[2, 4, 5],
+            affected_fields: &[],
+            rules: &[
+                "restores into a fresh workspace or merges into an existing one",
+                "performs bidirectional issue validation before activation",
+            ],
+        },
+        OperationSemantics {
+            name: "update",
+            ownership_effect: "mutates caller-owned fields",
+            failure_exits: &[2, 3, 4, 5],
+            affected_fields: &[
+                "assignee",
+                "base_status",
+                "manual_blocked",
+                "notes",
+                "revision",
+                "updated_at",
+            ],
+            rules: &[
+                "accepts a previously read revision through --if-revision",
+                "a held claim epoch must be presented with --fencing-token",
+                "cannot modify title, description, priority, or issue_type",
+            ],
+        },
+    ];
+    let mut entries: Vec<Value> = ops
+        .iter()
+        .map(|op| {
+            json!({
+                "name": op.name,
+                "ownership_effect": op.ownership_effect,
+                "success_exit": 0,
+                "failure_exits": op.failure_exits,
+                "affected_fields": op.affected_fields,
+                "rules": op.rules,
+            })
+        })
+        .collect();
+    entries.sort_by(|left, right| {
+        left["name"]
+            .as_str()
+            .unwrap_or_default()
+            .cmp(right["name"].as_str().unwrap_or_default())
+    });
+    entries
 }
 
 fn native_field_guide() -> Value {
@@ -999,14 +2038,14 @@ fn native_field_guide() -> Value {
         })
         .collect();
     json!({
-        "schema_ref":"urn:bead-rs:schema:field-guide:native-v1","guide_version":1,
+        "schema_ref":FIELD_GUIDE_SCHEMA_REF,"guide_version":FIELD_GUIDE_VERSION,
         "describes_schema_refs":["urn:bead-rs:schema:event:native-v1","urn:bead-rs:schema:issue:native-v1","urn:bead-rs:schema:provenance-receipt:native-v1"],
         "documents":documents,"fields":fields,
         "additional_properties":{"allowed":true,"ownership":"preserved","rules":["Unknown checkpoint issue members retain exact JSON name, type, value, and null-versus-absence presence."]},
         "lifecycle":{"base_values":["closed","deferred","in_progress","open"],"allowed_transitions":["closed->open","deferred->closed","deferred->open","in_progress->closed","in_progress->deferred","in_progress->open","open->closed","open->deferred","open->in_progress"]},
         "derived_state":{"status":{"ownership":"derived","rules":["manual_blocked overlays non-closed base status as blocked"]},"ready":{"ownership":"derived","rules":["base status is open, not manually blocked, unassigned, and has no unfinished blocks blocker"]},"blocked_by":{"ownership":"derived","rules":["derived from incoming blocks edges"]},"blocking":{"ownership":"derived","rules":["derived from outgoing blocks edges"]}},
         "events":{"envelope_member":"event","schema_ref_member":"$schema","identity":["origin_store_uuid","origin_event_sequence"],"ordering":["origin_store_uuid","origin_event_sequence"]},
-        "operations":[],
+        "operations":guide_operations(),
         "rehydration":{"source_mode":"read-only","allowed_writes":["public bead commands in a separate destination"],"forbidden_writes":["foreign SQLite","native SQLite","synthetic checkpoint JSON"],"verification":["issue reconciliation","dependency orientation","ready frontier","fresh restore"]},
         "known_implementation_deviations":[{"id":"manual-blocked-cli-projection","severity":"known","behavior":"v0.1 CLI projections expose base_status without the manual_blocked overlay","required_disposition":"Consumers must not infer readiness from status alone."}]
     })
@@ -1052,8 +2091,8 @@ pub fn schema_explanation(schema_ref: &str) -> Result<Value> {
         json!([])
     };
     Ok(json!({
-        "schema_ref": "urn:bead-rs:schema:field-guide:native-v1",
-        "guide_version": 1,
+        "schema_ref": FIELD_GUIDE_SCHEMA_REF,
+        "guide_version": FIELD_GUIDE_VERSION,
         "describes_schema_refs": [descriptor.schema_ref],
         "documents": [{
             "name": descriptor.document_kind,
@@ -1090,6 +2129,10 @@ pub fn schema_explanation(schema_ref: &str) -> Result<Value> {
     }))
 }
 
+/// Deterministic Markdown rendering of the typed guide value: fixed section
+/// order, fields in document order, operations in their lexicographically
+/// sorted array order, LF line endings, and no generated timestamp. Every
+/// typed member the JSON carries is represented here.
 pub fn schema_explanation_markdown(explanation: &Value) -> String {
     let mut output = format!(
         "# Native field guide v{}\n\nSchema: `{}`\n\n",
@@ -1111,7 +2154,7 @@ pub fn schema_explanation_markdown(explanation: &Value) -> String {
     output.push_str("## Fields\n\n");
     for field in explanation["fields"].as_array().into_iter().flatten() {
         output.push_str(&format!(
-            "### {}.{}\n\n- Type: `{}`{}\n- Presence: `{}`\n- Ownership: `{}`\n- Common mistake: {}\n\n",
+            "### {}.{}\n\n- Type: `{}`{}\n- Presence: `{}`\n- Ownership: `{}`\n",
             field["document"].as_str().unwrap_or("document"),
             field["name"].as_str().unwrap_or("member"),
             field["json_type"].as_str().unwrap_or("json"),
@@ -1121,8 +2164,142 @@ pub fn schema_explanation_markdown(explanation: &Value) -> String {
                 ""
             },
             field["presence"].as_str().unwrap_or("unknown"),
-            field["ownership"].as_str().unwrap_or("unknown"),
+            field["ownership"].as_str().unwrap_or("unknown")
+        ));
+        if field["has_default"].as_bool().unwrap_or(false) {
+            output.push_str(&format!("- Default: `{}`\n", field["default"]));
+        } else {
+            output.push_str("- Default: none\n");
+        }
+        output.push_str(&format!(
+            "- Operations: {}\n",
+            field["operations"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|operation| format!("`{}`", operation.as_str().unwrap_or("")))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        for invariant in field["invariants"].as_array().into_iter().flatten() {
+            output.push_str(&format!(
+                "- Invariant: {}\n",
+                invariant.as_str().unwrap_or("")
+            ));
+        }
+        output.push_str(&format!("- Example: `{}`\n", field["example"]));
+        output.push_str(&format!(
+            "- Common mistake: {}\n\n",
             field["common_mistake"].as_str().unwrap_or("")
+        ));
+    }
+    output.push_str("## Additional properties\n\n");
+    let additional = &explanation["additional_properties"];
+    output.push_str(&format!(
+        "- Allowed: {}\n- Ownership: `{}`\n",
+        additional["allowed"].as_bool().unwrap_or(false),
+        additional["ownership"].as_str().unwrap_or("unknown")
+    ));
+    for rule in additional["rules"].as_array().into_iter().flatten() {
+        output.push_str(&format!("- {}\n", rule.as_str().unwrap_or("")));
+    }
+    output.push('\n');
+    output.push_str("## Lifecycle\n\n- Base values:");
+    let lifecycle = &explanation["lifecycle"];
+    for value in lifecycle["base_values"].as_array().into_iter().flatten() {
+        output.push_str(&format!(" `{}`", value.as_str().unwrap_or("")));
+    }
+    output.push_str("\n- Allowed transitions:");
+    for value in lifecycle["allowed_transitions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        output.push_str(&format!(" `{}`", value.as_str().unwrap_or("")));
+    }
+    output.push_str("\n\n");
+    output.push_str("## Derived state\n\n");
+    for name in ["status", "ready", "blocked_by", "blocking"] {
+        let derived = &explanation["derived_state"][name];
+        output.push_str(&format!(
+            "### {name}\n\n- Ownership: `{}`\n",
+            derived["ownership"].as_str().unwrap_or("unknown")
+        ));
+        for rule in derived["rules"].as_array().into_iter().flatten() {
+            output.push_str(&format!("- {}\n", rule.as_str().unwrap_or("")));
+        }
+        output.push('\n');
+    }
+    output.push_str("## Events\n\n");
+    let events = &explanation["events"];
+    output.push_str(&format!(
+        "- Envelope member: `{}`\n- Schema reference member: `{}`\n- Identity:",
+        events["envelope_member"].as_str().unwrap_or(""),
+        events["schema_ref_member"].as_str().unwrap_or("")
+    ));
+    for member in events["identity"].as_array().into_iter().flatten() {
+        output.push_str(&format!(" `{}`", member.as_str().unwrap_or("")));
+    }
+    output.push_str("\n- Ordering:");
+    for member in events["ordering"].as_array().into_iter().flatten() {
+        output.push_str(&format!(" `{}`", member.as_str().unwrap_or("")));
+    }
+    output.push_str("\n\n");
+    output.push_str("## Operations\n\n");
+    for operation in explanation["operations"].as_array().into_iter().flatten() {
+        output.push_str(&format!(
+            "### {}\n\n- Ownership effect: {}\n- Success exit: `{}`\n- Failure exits:",
+            operation["name"].as_str().unwrap_or("operation"),
+            operation["ownership_effect"].as_str().unwrap_or(""),
+            operation["success_exit"].as_i64().unwrap_or(0)
+        ));
+        for exit in operation["failure_exits"].as_array().into_iter().flatten() {
+            output.push_str(&format!(" `{}`", exit));
+        }
+        output.push_str("\n- Affected fields:");
+        for field in operation["affected_fields"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            output.push_str(&format!(" `{}`", field.as_str().unwrap_or("")));
+        }
+        output.push_str("\n\nRules:\n\n");
+        for rule in operation["rules"].as_array().into_iter().flatten() {
+            output.push_str(&format!("- {}\n", rule.as_str().unwrap_or("")));
+        }
+        output.push('\n');
+    }
+    output.push_str("## Rehydration\n\n- Source mode: ");
+    let rehydration = &explanation["rehydration"];
+    output.push_str(&format!(
+        "`{}`\n",
+        rehydration["source_mode"].as_str().unwrap_or("unknown")
+    ));
+    for (label, member) in [
+        ("Allowed writes", "allowed_writes"),
+        ("Forbidden writes", "forbidden_writes"),
+        ("Verification", "verification"),
+    ] {
+        output.push_str(&format!("- {label}:"));
+        for value in rehydration[member].as_array().into_iter().flatten() {
+            output.push_str(&format!(" `{}`", value.as_str().unwrap_or("")));
+        }
+        output.push('\n');
+    }
+    output.push('\n');
+    output.push_str("## Known implementation deviations\n\n");
+    for deviation in explanation["known_implementation_deviations"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        output.push_str(&format!(
+            "### {}\n\n- Severity: `{}`\n- Behavior: {}\n- Required disposition: {}\n\n",
+            deviation["id"].as_str().unwrap_or("deviation"),
+            deviation["severity"].as_str().unwrap_or("unknown"),
+            deviation["behavior"].as_str().unwrap_or(""),
+            deviation["required_disposition"].as_str().unwrap_or("")
         ));
     }
     output
