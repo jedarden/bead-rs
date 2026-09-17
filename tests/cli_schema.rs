@@ -168,6 +168,32 @@ fn schema_show_and_explain_reject_unknown_identity() {
     }
 }
 
+/// Resolution is by exact catalog identity: anything that is not a byte-equal
+/// match — empty, unadorned, truncated, mistyped, or wrong-case — is a
+/// malformed identity and must be a CLI usage error (exit 2), never a panic
+/// and never a partial match.
+#[test]
+fn schema_show_and_explain_reject_malformed_identities() {
+    let malformed = [
+        "",                                    // empty
+        "issue",                               // bare word, no URN shape
+        "urn:bead-rs:schema:issue",            // truncated
+        "urn:bead-rs:schema:issue:native-v0",  // wrong revision
+        "urn:bead-rs:schema:issue:native-v1 ", // whitespace-padded
+        "URN:BEAD-RS:SCHEMA:ISSUE:NATIVE-V1",  // wrong case
+    ];
+    for operation in ["show", "explain"] {
+        for schema_ref in malformed {
+            Command::cargo_bin("bead")
+                .unwrap()
+                .args(["schema", operation, schema_ref])
+                .assert()
+                .code(2)
+                .stderr(predicate::str::contains("Unsupported schema identity"));
+        }
+    }
+}
+
 #[test]
 fn schema_explain_output_is_byte_identical_across_runs() {
     let schema_ref = "urn:bead-rs:schema:issue:native-v1";
