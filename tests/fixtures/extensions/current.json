@@ -1,0 +1,26 @@
+{
+  "active_root": {
+    "path": "checkpoint.jsonl",
+    "sha256": "c07aa95113f105f8032165b0c1b2af04782da09d92f3b6acd4261cfaa6d02a03"
+  },
+  "added_paths": [
+    "objects/849c072adf873fb52c6cf72c0f2059e4c3346a276da35176f42d33ba52c0eab4.jsonl"
+  ],
+  "attempt_outcome_count": 0,
+  "created_at": "2026-09-17T07:30:12.181860503Z",
+  "deleted_paths": [],
+  "event_count": 14,
+  "generation_id": "gen-9d2f91d968a1d1564a8d8d7bde6a2200",
+  "issue_count": 3,
+  "mode": "monolithic",
+  "receipt_count": 0,
+  "redaction_record_count": 0,
+  "replaced_paths": [
+    "current.json",
+    "forensic.jsonl"
+  ],
+  "schema_version": 1,
+  "snapshot_sequence": 14,
+  "store_uuid": "d1a64525-da37-88d5-b756-045bf4eeabcb",
+  "total_record_count": 17
+}
