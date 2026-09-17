@@ -2060,6 +2060,39 @@ fn reject_archaeology_view(value: &serde_json::Value, path: &Path) -> Result<()>
     Ok(())
 }
 
+/// Schema identity carried by every record of an agent-guided rehydration
+/// reconciliation report (`research/specs/reconciliation-report-v1.md`).
+const RECONCILIATION_REPORT_SCHEMA_REF: &str = "urn:bead-rs:schema:reconciliation-report:v1";
+
+/// Refuse an agent-guided rehydration reconciliation report before the
+/// checkpoint reader reports an incidental record-level error. Rehydration
+/// produces native beads exclusively through public `bead` commands
+/// (ADR-002); the report it emits is a review artifact for humans and is
+/// never native store input, so a report handed to an import path is named
+/// explicitly instead of failing as malformed or unknown records.
+fn reject_reconciliation_report_view(value: &serde_json::Value, path: &Path) -> Result<()> {
+    let object = match value.as_object() {
+        Some(object) => object,
+        None => return Ok(()),
+    };
+    let carries_report_schema_ref = object.get("schema_ref").and_then(serde_json::Value::as_str)
+        == Some(RECONCILIATION_REPORT_SCHEMA_REF);
+    let carries_report_shape = matches!(
+        object
+            .get("record_type")
+            .and_then(serde_json::Value::as_str),
+        Some("header" | "entry")
+    ) && (object.contains_key("disposition")
+        || object.contains_key("source_repository"));
+    if carries_report_schema_ref || carries_report_shape {
+        bail!(
+            "Refusing reconciliation report {}: reports are review artifacts and are never native checkpoint input (ADR-002, research/specs/reconciliation-report-v1.md)",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 fn validate_sha256(hash: &str, field: &str) -> Result<()> {
     if hash.len() != 64
         || !hash
@@ -2542,6 +2575,7 @@ fn reject_archaeology_source_file(input_path: &Path) -> Result<()> {
     let mut deserializer = serde_json::Deserializer::from_reader(file);
     if let Ok(value) = serde_json::Value::deserialize(&mut deserializer) {
         reject_archaeology_view(&value, input_path)?;
+        reject_reconciliation_report_view(&value, input_path)?;
     }
     Ok(())
 }
@@ -2772,6 +2806,7 @@ fn stage_monolithic_checkpoint(input_path: &Path) -> Result<ForensicStaging> {
         let record: serde_json::Value = serde_json::from_str(&line)
             .map_err(|e| anyhow!("Line {}: malformed JSON: {}", line_num, e))?;
         reject_archaeology_view(&record, input_path)?;
+        reject_reconciliation_report_view(&record, input_path)?;
 
         // Check if this is a forensic record with record_type
         if let Some(record_type) = record.get("record_type").and_then(|v| v.as_str()) {
@@ -3243,6 +3278,7 @@ fn process_shard_file(
             )
         })?;
         reject_archaeology_view(&record, shard_path)?;
+        reject_reconciliation_report_view(&record, shard_path)?;
 
         let record_type = record
             .get("record_type")
