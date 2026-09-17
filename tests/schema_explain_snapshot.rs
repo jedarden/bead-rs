@@ -17,13 +17,21 @@
 //!   was asked about, and every field it publishes is fully curated
 //! * field/document parity: the fields array is exactly the flattened members
 //!   of the documents array, for every identity
+//! * renderer parity: the Markdown the CLI emits is byte-for-byte
+//!   `schema_explanation_markdown` applied to the very JSON explanation the
+//!   CLI emits — one typed source, two renderings, no second code path
+//! * repeat-invocation determinism: every snapshot rendering reproduces its
+//!   pinned digest on every repeated run, so determinism is pinned by digest
+//!   rather than asserted between two runs
 
 use assert_cmd::Command;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 
-use bead_rs::service::schema::{FIELD_GUIDE_SCHEMA_REF, FIELD_GUIDE_VERSION};
+use bead_rs::service::schema::{
+    schema_explanation_markdown, FIELD_GUIDE_SCHEMA_REF, FIELD_GUIDE_VERSION,
+};
 
 /// Canonical native-guide identity: the richest explanation the command emits
 /// (all five documents, the full semantics table, and every section rendered).
@@ -258,5 +266,75 @@ fn fields_match_published_document_members_exactly() {
             actual.len(),
             "{schema_ref} has duplicate fields"
         );
+    }
+}
+
+/// JSON and Markdown are two renderings of one typed explanation value. The
+/// Markdown the CLI emits must be byte-for-byte what `schema_explanation_markdown`
+/// produces when handed the very explanation JSON the CLI emits — if the
+/// Markdown path ever grew its own source, this catches it on both identities.
+#[test]
+fn markdown_is_exactly_the_rendering_of_the_emitted_json_explanation() {
+    for snapshot in SNAPSHOTS {
+        let explanation: Value = serde_json::from_slice(&explain(snapshot.schema_ref, "json"))
+            .unwrap_or_else(|error| {
+                panic!("{} emitted unparseable JSON: {error}", snapshot.schema_ref)
+            });
+        let cli_markdown = String::from_utf8(explain(snapshot.schema_ref, "markdown"))
+            .expect("markdown output is UTF-8");
+        let rendered = schema_explanation_markdown(&explanation);
+        // The renderer is a pure function of the typed value: rendering the
+        // same value twice never differs.
+        assert_eq!(
+            rendered,
+            schema_explanation_markdown(&explanation),
+            "{} renderer must be deterministic for a fixed explanation value",
+            snapshot.schema_ref
+        );
+        assert_eq!(
+            rendered, cli_markdown,
+            "{} markdown must be exactly the rendering of the emitted JSON \
+             explanation — same typed source, no second code path",
+            snapshot.schema_ref
+        );
+    }
+}
+
+/// Repeated invocations are byte-identical, pinned by digest: every run of
+/// every snapshot rendering must reproduce the exact pinned sha256, so
+/// determinism holds per-run against a fixed value rather than merely
+/// between two adjacent runs.
+#[test]
+fn repeated_invocations_reproduce_the_pinned_digests() {
+    const RUNS: usize = 3;
+    for snapshot in SNAPSHOTS {
+        for (format, expected) in [
+            ("json", snapshot.json_sha256),
+            ("markdown", snapshot.markdown_sha256),
+        ] {
+            let mut digests: HashSet<String> = HashSet::new();
+            for _ in 0..RUNS {
+                let output = explain(snapshot.schema_ref, format);
+                assert!(
+                    !output.is_empty(),
+                    "{} {format} output must not be empty",
+                    snapshot.schema_ref
+                );
+                let digest = sha256(&output);
+                digests.insert(digest.clone());
+                assert_eq!(
+                    digest, expected,
+                    "{format} rendering of {} drifted from the pinned guide v1 \
+                     digest across repeated invocations",
+                    snapshot.schema_ref
+                );
+            }
+            assert_eq!(
+                digests.len(),
+                1,
+                "{} {format} varied across {RUNS} repeated invocations: {digests:?}",
+                snapshot.schema_ref
+            );
+        }
     }
 }
