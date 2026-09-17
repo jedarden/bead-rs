@@ -1034,6 +1034,7 @@ fn field_semantics(document: &str, name: &str) -> FieldSemantics {
             invariants: &[
                 "entries carry blocker and kind",
                 "blocks edges reject self-edges and cycles",
+                "relates_to and verifies never affect readiness",
                 "a blocker blocks while its base status is not closed; a deferred blocker still blocks",
             ],
             common_mistake: "Reversing the blocked-first direction.",
@@ -1865,6 +1866,7 @@ fn guide_operations() -> Vec<Value> {
             rules: &[
                 "blocks edges reject self-edges and cycles",
                 "relates_to is informational",
+                "verifies declares the blocker checks the blocked issue's work; informational for readiness",
                 "--condition attaches a bounded declarative predicate",
             ],
         },

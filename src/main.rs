@@ -1583,6 +1583,18 @@ fn cmd_dep(cmd: cli::DepCommand) -> Result<()> {
     }
 }
 
+/// Render the relationship a dependency kind asserts between BLOCKED and
+/// BLOCKER in the `dep add` success message. `verifies` (R025, ADR-001)
+/// declares the blocker checks the blocked issue's work; it never affects
+/// readiness.
+fn dependency_phrase(kind: &str) -> &'static str {
+    match kind {
+        "blocks" => "blocked by",
+        "verifies" => "verified by",
+        _ => "related to",
+    }
+}
+
 fn cmd_dep_add(opts: cli::DepAddOptions) -> Result<()> {
     // Discover workspace
     let config = store::WorkspaceConfig::discover()?
@@ -1635,22 +1647,14 @@ fn cmd_dep_add(opts: cli::DepAddOptions) -> Result<()> {
         println!(
             "Added conditional dependency: {} {} {} (when condition met)",
             opts.blocked,
-            if opts.kind == "blocks" {
-                "blocked by"
-            } else {
-                "related to"
-            },
+            dependency_phrase(&opts.kind),
             opts.blocker
         );
     } else {
         println!(
             "Added dependency: {} {} {}",
             opts.blocked,
-            if opts.kind == "blocks" {
-                "blocked by"
-            } else {
-                "related to"
-            },
+            dependency_phrase(&opts.kind),
             opts.blocker
         );
     }

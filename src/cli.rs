@@ -217,10 +217,10 @@ are not distributed locks and do not coordinate different stores.
 
 An edge is written blocked-first: `bead dep add <BLOCKED> <BLOCKER>` means
 BLOCKER must close before BLOCKED can become ready. `blocks` edges affect the
-ready frontier and may not form cycles; `relates_to` edges are informational
-only and may.
+ready frontier and may not form cycles; `relates_to` and `verifies` edges are
+informational only and may.
 
-  bead dep add <BLOCKED> <BLOCKER> [--kind blocks|relates_to]
+  bead dep add <BLOCKED> <BLOCKER> [--kind blocks|relates_to|verifies]
   bead dep remove <BLOCKED> <BLOCKER> [--kind KIND]"
     )]
     Dep(DepCommand),
@@ -1928,22 +1928,31 @@ pub enum DepCommand {
         long_about = "Add a dependency relationship between two issues.
 
 Creates a directional dependency edge from blocked issue to blocker issue.
-The 'blocks' kind affects readiness; 'relates_to' does not affect readiness
-but allows tracking related work.
+The 'blocks' kind affects readiness; 'relates_to' and 'verifies' do not affect
+readiness but allow tracking related work.
 
 EXAMPLES:
   bead dep add BLOCKED BLOCKER                       # Add blocks dependency
   bead dep add task-1 task-2 --kind blocks            # Explicit blocks
   bead dep add feature-a bug-fix --kind relates_to     # Non-blocking relationship
+  bead dep add impl-x check-y --kind verifies          # check-y checks impl-x's work
 
 DEPENDENCY KINDS:
   - blocks: BLOCKED is blocked until BLOCKER is closed (affects readiness)
   - relates_to: Related issues without blocking semantics (cycles allowed)
+  - verifies: BLOCKER checks the work BLOCKED performs (never affects readiness)
 
 CYCLE DETECTION:
   'blocks' dependencies cannot create cycles.
   Adding an edge that creates a directed cycle will fail with exit code 4.
-  'relates_to' edges can form cycles (no restriction).
+  'relates_to' and 'verifies' edges can form cycles (no restriction).
+
+INVERTED VERIFICATION GATES:
+  A `blocks` edge whose blocker also `verifies` the blocked issue orders the
+  check before the work it checks, which no execution can satisfy. `bead
+  doctor --scope dependencies` reports each such pair as an advisory warning;
+  the edges stay legal because a deliberate baseline-first gate looks
+  identical. The relationship is never inferred from issue titles.
 
 READINESS IMPACT:
   Only 'blocks' dependencies affect ready frontier:
@@ -1974,6 +1983,7 @@ EXAMPLES:
   bead dep remove BLOCKED BLOCKER                    # Remove all dependencies
   bead dep remove task-1 task-2 --kind blocks        # Remove specific kind
   bead dep remove feature-a bug-fix --kind relates_to # Remove relates_to edge
+  bead dep remove impl-x check-y --kind verifies      # Remove verifies edge
 
 IDEMPOTENCY:
   Removing a non-existent dependency succeeds without error.
@@ -1995,7 +2005,7 @@ pub struct DepAddOptions {
     pub blocked: String,
     /// Blocker issue ID
     pub blocker: String,
-    /// Dependency kind (default: blocks)
+    /// Dependency kind: blocks, relates_to, or verifies (default: blocks)
     #[arg(long, default_value = "blocks")]
     pub kind: String,
     /// Conditional dependency expression as JSON (optional)

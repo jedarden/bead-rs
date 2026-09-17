@@ -328,9 +328,9 @@ pub fn add_dependency_dryrun(
     condition: Option<&str>,
 ) -> Result<DependencyDryRunResult> {
     // Validate dependency kind
-    if kind != "blocks" && kind != "relates_to" {
+    if kind != "blocks" && kind != "relates_to" && kind != "verifies" {
         return Err(Error::validation(format!(
-            "Invalid dependency kind '{}': must be 'blocks' or 'relates_to'",
+            "Invalid dependency kind '{}': must be 'blocks', 'relates_to', or 'verifies'",
             kind
         )));
     }

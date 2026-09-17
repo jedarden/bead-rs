@@ -7,7 +7,7 @@ use rusqlite::{Connection, Result as SqliteResult, Transaction, TransactionBehav
 use sha2::{Digest, Sha256};
 
 /// Current migration version
-pub const CURRENT_VERSION: i64 = 17;
+pub const CURRENT_VERSION: i64 = 18;
 
 /// Whether the store has already reached [`CURRENT_VERSION`].
 ///
@@ -174,6 +174,7 @@ fn get_migration(version: i64) -> Migration {
         15 => migration_15(),
         16 => migration_16(),
         17 => migration_17(),
+        18 => migration_18(),
         v => panic!("Unknown migration version: {}", v),
     }
 }
@@ -980,6 +981,50 @@ CREATE TABLE IF NOT EXISTS redaction_tombstones (
 
 CREATE INDEX IF NOT EXISTS redaction_tombstones_fingerprint
     ON redaction_tombstones (finding_fingerprint);
+"#;
+
+    Migration {
+        sql: sql.to_string(),
+    }
+}
+
+/// Migration 18: third dependency kind `verifies` (R025, ADR-001)
+///
+/// Widens the CHECK constraint on dependencies.kind to admit `verifies`,
+/// a declared check relationship that -- like `relates_to` -- never affects
+/// readiness, while cycles among `verifies` edges alone stay permitted.
+///
+/// The table is rebuilt rather than altered because SQLite cannot change a
+/// CHECK constraint in place; the copy preserves every existing row
+/// (including the `condition` column migration 7 appended) and both foreign
+/// keys. Native mutation still fails closed on unknown kinds through the
+/// service-level kind validation, which admits exactly the three CHECK kinds.
+fn migration_18() -> Migration {
+    let sql = r#"
+-- Recreate dependencies table with the widened kind constraint
+CREATE TABLE IF NOT EXISTS dependencies_new (
+    blocked_issue_id TEXT NOT NULL,
+    blocker_issue_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('blocks', 'relates_to', 'verifies')),
+    condition TEXT,
+    PRIMARY KEY (blocked_issue_id, blocker_issue_id, kind),
+    FOREIGN KEY (blocked_issue_id) REFERENCES issues(id) ON DELETE CASCADE,
+    FOREIGN KEY (blocker_issue_id) REFERENCES issues(id) ON DELETE CASCADE,
+    CHECK (blocked_issue_id != blocker_issue_id)
+);
+
+-- Copy existing data to new table, condition column included
+INSERT INTO dependencies_new
+SELECT blocked_issue_id, blocker_issue_id, kind, condition FROM dependencies;
+
+-- Drop old table and rename new one
+DROP TABLE dependencies;
+ALTER TABLE dependencies_new RENAME TO dependencies;
+
+-- Recreate indexes
+CREATE INDEX IF NOT EXISTS dependencies_blocker ON dependencies (blocker_issue_id);
+CREATE INDEX IF NOT EXISTS dependencies_blocked ON dependencies (blocked_issue_id);
+CREATE INDEX IF NOT EXISTS dependencies_condition ON dependencies (condition);
 "#;
 
     Migration {

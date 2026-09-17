@@ -557,6 +557,74 @@ pub fn run_diagnostics_with_scopes(
                 });
             }
         }
+
+        // 6c. Declared inverted verification gates (R025, ADR-001)
+        match check_inverted_verification_gates(store) {
+            Ok(report) => {
+                if report.pairs.is_empty() {
+                    checks.push(DiagnosticCheck {
+                        name: "inverted_verification_gates".to_string(),
+                        status: DiagnosticStatus::Ok,
+                        message: "No inverted verification gates: no `blocks` edge has a blocker that also `verifies` the blocked issue".to_string(),
+                        scope: Some("dependencies".to_string()),
+                        details: Some(serde_json::json!({
+                            "count": 0,
+                            "gates": [],
+                        })),
+                    });
+                } else {
+                    // Rendered in the report's canonical (blocked, blocker)
+                    // order so two runs over the same graph byte-match.
+                    let rendered: Vec<String> = report
+                        .pairs
+                        .iter()
+                        .map(|(blocked, blocker)| {
+                            format!("{blocked} is blocked by {blocker}, which also verifies it")
+                        })
+                        .collect();
+                    let message = format!(
+                        "Found {} inverted verification gate(s): {}. The check is ordered before the work it checks; remove or re-orient one edge if unintended",
+                        report.pairs.len(),
+                        rendered.join("; ")
+                    );
+                    checks.push(DiagnosticCheck {
+                        name: "inverted_verification_gates".to_string(),
+                        status: DiagnosticStatus::Warning,
+                        message,
+                        scope: Some("dependencies".to_string()),
+                        details: Some(serde_json::json!({
+                            "count": report.pairs.len(),
+                            "gates": report
+                                .pairs
+                                .iter()
+                                .map(|(blocked, blocker)| {
+                                    serde_json::json!({
+                                        "blocked": blocked,
+                                        "blocker": blocker,
+                                        "reason_code": "inverted_verification_gate",
+                                    })
+                                })
+                                .collect::<Vec<_>>(),
+                            "remedy": "Remove or re-orient one of the two edges: `bead dep remove <BLOCKED> <BLOCKER> --kind blocks` or `--kind verifies`",
+                            "explanation": "A `blocks` edge whose blocker also carries a `verifies` edge to the same blocked issue orders the check before the work it checks. A deliberate baseline-first gate is structurally identical, so the finding is advisory and never enforced.",
+                        })),
+                    });
+                    has_warnings = true;
+                }
+            }
+            Err(e) => {
+                has_errors = true;
+                checks.push(DiagnosticCheck {
+                    name: "inverted_verification_gates".to_string(),
+                    status: DiagnosticStatus::Error,
+                    message: format!("Inverted verification gate check error: {}", e),
+                    scope: Some("dependencies".to_string()),
+                    details: Some(serde_json::json!({
+                        "error": e.to_string()
+                    })),
+                });
+            }
+        }
     }
 
     // Comments scope checks
@@ -1420,6 +1488,55 @@ fn check_dependency_graph(store: &impl Store) -> Result<String> {
         "Dependency graph OK: {} dependencies, {} blocked issues, no cycles",
         dep_count, blocked_count
     ))
+}
+
+/// Inverted verification gate report (R025, ADR-001)
+#[derive(Debug, Clone)]
+pub struct InvertedGateReport {
+    /// (blocked, blocker) pairs where a `blocks` edge and a `verifies` edge
+    /// share both endpoints: the blocker is declared to check the very work it
+    /// gates. Sorted blocked-then-blocker, so the report is deterministic
+    /// regardless of row order in the store.
+    pub pairs: Vec<(String, String)>,
+}
+
+/// Detect declared inverted verification gates (R025, ADR-001)
+///
+/// A `blocks` edge whose blocker also `verifies` its blocked bead states that
+/// the check must close before the work it checks may start -- an ordering no
+/// execution can satisfy. The pair is decidable exactly because the check
+/// relationship is declared by a `verifies` edge; issue titles are never
+/// inspected, matching the store's no-title-heuristics principle. Like R021's
+/// policy lint this is advisory: the edges stay legal, a deliberate
+/// "prove the baseline green first" gate is structurally identical to the
+/// error, and only the author can distinguish them.
+fn check_inverted_verification_gates(store: &impl Store) -> Result<InvertedGateReport> {
+    let config = store.get_workspace_config()?;
+    let db_path = config.root.join(".beads/beads.db");
+
+    let conn = open_configured_connection(&db_path)
+        .map_err(|e| Error::Integrity(format!("Failed to open database: {}", e)))?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT b.blocked_issue_id, b.blocker_issue_id
+             FROM dependencies b
+             JOIN dependencies v
+               ON b.blocked_issue_id = v.blocked_issue_id
+              AND b.blocker_issue_id = v.blocker_issue_id
+             WHERE b.kind = 'blocks' AND v.kind = 'verifies'",
+        )
+        .map_err(|e| Error::Integrity(format!("Failed to prepare inverted-gate query: {}", e)))?;
+
+    let mut pairs: Vec<(String, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|e| Error::Integrity(format!("Failed to query inverted gates: {}", e)))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    pairs.sort();
+
+    Ok(InvertedGateReport { pairs })
 }
 
 /// Check comments data integrity
