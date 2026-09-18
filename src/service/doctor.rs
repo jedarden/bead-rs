@@ -759,6 +759,39 @@ pub fn run_diagnostics_with_scopes(
                 });
             }
         }
+
+        // 2026-09-18 leak follow-up: worker stdout, database backups and
+        // bf-era exports under `.beads/` reached public history in four repos
+        // because init-era ignore files never named those directories. The
+        // scan above catches secrets bead-rs can see in its own state; this
+        // advisory catches the paths that leak *around* that state. Advisory
+        // only: rewriting a workspace's ignore file is the operator's call,
+        // exactly as for the assignee-held frontier (R035).
+        match check_runtime_dir_ignore_coverage(store) {
+            Ok(msg) => {
+                checks.push(DiagnosticCheck {
+                    name: "runtime_dir_ignore_coverage".to_string(),
+                    status: DiagnosticStatus::Ok,
+                    message: msg.clone(),
+                    scope: Some("secrets".to_string()),
+                    details: Some(serde_json::json!({
+                        "message": msg
+                    })),
+                });
+            }
+            Err(e) => {
+                has_warnings = true;
+                checks.push(DiagnosticCheck {
+                    name: "runtime_dir_ignore_coverage".to_string(),
+                    status: DiagnosticStatus::Warning,
+                    message: format!("Runtime directory ignore coverage warning: {}", e),
+                    scope: Some("secrets".to_string()),
+                    details: Some(serde_json::json!({
+                        "warning": e.to_string()
+                    })),
+                });
+            }
+        }
     }
 
     // Always check temporary files (part of store scope but run separately for safety)
@@ -1898,6 +1931,150 @@ fn check_temporary_files(store: &impl Store) -> Result<String> {
             "Found {} temporary file(s) that can be cleaned up with --repair",
             temp_count
         )))
+    }
+}
+
+/// Does one gitignore `line` carry an ignore rule for the directory `name`?
+///
+/// Returns `Some(true)` for a matching ignore pattern, `Some(false)` for a
+/// matching negation (an explicit `!name/` un-ignores the directory), and
+/// `None` when the line does not name the directory at all (blank lines,
+/// comments, patterns for other paths). Understands the anchored
+/// (`/name/`), glob-prefixed (`**/name/`) and subtree (`name/**`) spellings
+/// of the same rule. The matcher is deliberately narrow — it verifies that
+/// the runtime directories are *explicitly* listed, which is what `bead
+/// init` generates and what the advisory asks operators to restore — not a
+/// full gitignore engine.
+fn ignore_line_covers(line: &str, name: &str) -> Option<bool> {
+    let raw = line.trim_end();
+    if raw.is_empty() || raw.starts_with('#') {
+        return None;
+    }
+    let (negated, pattern) = match raw.strip_prefix('!') {
+        Some(rest) => (true, rest),
+        None => (false, raw),
+    };
+    // Strip the equivalent spellings step by step; each fallback is the
+    // result of the previous strip, never the original pattern.
+    let pattern = pattern.strip_prefix("**/").unwrap_or(pattern);
+    let pattern = pattern.strip_prefix('/').unwrap_or(pattern);
+    let pattern = pattern.strip_suffix('/').unwrap_or(pattern);
+    let pattern = pattern.strip_suffix("/**").unwrap_or(pattern);
+    (pattern == name).then_some(!negated)
+}
+
+/// Does `content` carry an ignore rule naming `name`?
+///
+/// A matching negation anywhere decides against coverage: git's
+/// last-match-wins ordering means an explicit `!name/` leaves the directory
+/// tracked-able, and an advisory must never read a leak risk as covered.
+fn ignore_content_covers(content: &str, name: &str) -> Option<bool> {
+    let mut coverage = None;
+    for line in content.lines() {
+        match ignore_line_covers(line, name) {
+            Some(false) => return Some(false),
+            Some(true) => coverage = Some(true),
+            None => {}
+        }
+    }
+    coverage
+}
+
+/// Advisory: are the `.beads/` runtime directories that carried worker
+/// stdout, database backups and bf-era exports into public history on
+/// 2026-09-18 (AgentScribe, screenferry, miroir, drawrace; a live Postgres
+/// password rode along in `.bf_history` exports) named by the workspace's
+/// ignore files?
+///
+/// `bead init` writes `.beads/.gitignore` only for brand-new workspaces and
+/// preserves any existing file byte-for-byte, so every workspace initialized
+/// before the leak set was extended stays under-covered indefinitely — the
+/// exact shape that leaked. This check cannot repair that (rewriting an
+/// operator's ignore file is not doctor's business); it can refuse to stay
+/// silent about it.
+///
+/// Coverage is decided against the generated file's own vocabulary via
+/// [`ignore_line_covers`], not by invoking git: doctor must diagnose broken
+/// workspaces where no repository or git binary is reachable, and the one
+/// wholesale case a per-directory matcher cannot see — a repository root
+/// `.gitignore` ignoring `.beads/` outright — is handled explicitly.
+fn check_runtime_dir_ignore_coverage(store: &impl Store) -> Result<String> {
+    let config = store.get_workspace_config()?;
+    let beads_dir = config.root.join(".beads");
+    let names = crate::store::RUNTIME_IGNORE_DIRS;
+
+    let listed: Vec<String> = names.iter().map(|name| format!("{name}/")).collect();
+    let present: Vec<&str> = names
+        .iter()
+        .copied()
+        .filter(|name| beads_dir.join(name).exists())
+        .collect();
+
+    // A repository that ignores `.beads/` wholesale needs no per-directory
+    // rules. (For a bead-rs workspace that root rule is itself wrong — the
+    // checkpoint must be tracked — but it is not a leak, and the reachability
+    // diagnostics already report untracked checkpoint files.)
+    if let Ok(root_ignore) = std::fs::read_to_string(config.root.join(".gitignore")) {
+        if ignore_content_covers(&root_ignore, ".beads").unwrap_or(false) {
+            return Ok(format!(
+                "Repository .gitignore ignores .beads/ wholesale; the runtime directories ({}) cannot reach git",
+                names.join(", ")
+            ));
+        }
+    }
+
+    let gitignore_path = beads_dir.join(".gitignore");
+    match std::fs::read_to_string(&gitignore_path) {
+        Ok(content) => {
+            let uncovered: Vec<&str> = names
+                .iter()
+                .copied()
+                .filter(|name| !ignore_content_covers(&content, name).unwrap_or(false))
+                .collect();
+            if uncovered.is_empty() {
+                Ok(format!(
+                    "All {} runtime directories are ignored by .beads/.gitignore: {}",
+                    names.len(),
+                    listed.join(", ")
+                ))
+            } else {
+                let uncovered_listed: Vec<String> =
+                    uncovered.iter().map(|name| format!("{name}/")).collect();
+                let leaking: Vec<String> = uncovered
+                    .iter()
+                    .filter(|name| present.contains(name))
+                    .map(|name| format!("{name}/"))
+                    .collect();
+                Err(Error::workspace(format!(
+                    ".beads/.gitignore does not ignore runtime directories: {}. \
+                     init writes the ignore file only for brand-new workspaces, so add \
+                     `<dir>/` lines for these by hand{}",
+                    uncovered_listed.join(", "),
+                    if leaking.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            " — {} currently present under .beads/ and on its way into the next `git add`",
+                            leaking.join(", ")
+                        )
+                    }
+                )))
+            }
+        }
+        Err(_) if present.is_empty() => Ok(
+            "No runtime directories present and no .beads/.gitignore to verify \
+             (init writes one only for brand-new workspaces)"
+                .to_string(),
+        ),
+        Err(_) => Err(Error::workspace(format!(
+            "Runtime directories present under .beads/ but no .beads/.gitignore ignores \
+             them: {}",
+            present
+                .iter()
+                .map(|name| format!("{name}/"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
     }
 }
 
@@ -3469,4 +3646,68 @@ pub fn run_visibility_check(store: &impl Store) -> Result<VisibilityCheckReport>
         has_discrepancy,
         discrepancy_details,
     })
+}
+
+#[cfg(test)]
+mod runtime_ignore_coverage_tests {
+    use super::{ignore_content_covers, ignore_line_covers};
+
+    #[test]
+    fn generated_style_patterns_cover_the_directory() {
+        for line in [
+            "traces/",
+            "/traces/",
+            "traces",
+            "**/traces/",
+            "traces/**",
+            "traces  ",
+        ] {
+            assert_eq!(
+                ignore_line_covers(line, "traces"),
+                Some(true),
+                "line should cover: {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn comments_blanks_and_other_names_do_not_cover() {
+        assert_eq!(ignore_line_covers("# traces/", "traces"), None);
+        assert_eq!(ignore_line_covers("", "traces"), None);
+        assert_eq!(ignore_line_covers("   ", "traces"), None);
+        assert_eq!(ignore_line_covers("diagnostics/", "traces"), None);
+        assert_eq!(ignore_line_covers("traces-old/", "traces"), None);
+        assert_eq!(ignore_line_covers("*.db", "traces"), None);
+    }
+
+    #[test]
+    fn negation_un_covers_even_after_a_positive_rule() {
+        assert_eq!(ignore_line_covers("!traces/", "traces"), Some(false));
+        assert_eq!(
+            ignore_content_covers("traces/\n!traces/\n", "traces"),
+            Some(false),
+            "an explicit negation leaves the directory tracked-able"
+        );
+    }
+
+    #[test]
+    fn content_coverage_reports_presence_without_negation() {
+        assert_eq!(ignore_content_covers("*.db\nlogs/\n", "traces"), None);
+        assert_eq!(
+            ignore_content_covers("*.db\ntraces/\nlogs/\n", "traces"),
+            Some(true)
+        );
+        assert_eq!(ignore_content_covers("", "traces"), None);
+    }
+
+    #[test]
+    fn every_runtime_ignore_dir_is_self_covered_by_its_own_pattern() {
+        for name in crate::store::RUNTIME_IGNORE_DIRS {
+            assert_eq!(
+                ignore_line_covers(&format!("{name}/"), name),
+                Some(true),
+                "the generated pattern must cover its own directory: {name}"
+            );
+        }
+    }
 }

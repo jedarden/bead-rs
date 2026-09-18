@@ -55,6 +55,25 @@ pub struct SqliteStore {
     conn: Option<Connection>,
 }
 
+/// Runtime directories under `.beads/` that must never reach git history.
+///
+/// Single source of truth for the directory section `create_gitignore`
+/// renders and for the doctor's `runtime_dir_ignore_coverage` advisory,
+/// so the generated file and the check cannot drift apart.
+///
+/// On 2026-09-18 worker stdout (`traces/`), database backups
+/// (`.br_recovery/`) and bf-era exports (`.bf_history/`, one carrying a
+/// live Postgres password) rode into public history in four repos because
+/// init-era ignore files did not name them. See declarative-config
+/// `tools/history-scrub/README.md`.
+pub(crate) const RUNTIME_IGNORE_DIRS: [&str; 5] = [
+    "traces",
+    "diagnostics",
+    ".br_recovery",
+    ".bf_history",
+    "recovery",
+];
+
 impl SqliteStore {
     /// Create a new SQLite store
     pub fn new() -> Self {
@@ -235,8 +254,9 @@ impl SqliteStore {
     /// edit any existing .gitignore — preserve custom ignore files byte-for-byte.
     ///
     /// The .gitignore excludes runtime-only artifacts (database files, traces,
-    /// diagnostics, logs, locks, journals, temporary files) while leaving
-    /// config.json and checkpoint content trackable.
+    /// diagnostics, recovery and bf-era history directories, logs, locks,
+    /// journals, temporary files) while leaving config.json and checkpoint
+    /// content trackable.
     ///
     /// # Arguments
     /// * `beads_dir` - Path to the .beads directory
@@ -254,9 +274,18 @@ impl SqliteStore {
 
         let gitignore_path = beads_dir.join(".gitignore");
 
+        // Render the directory section from RUNTIME_IGNORE_DIRS so the
+        // generated file and the doctor's coverage advisory cannot disagree.
+        let runtime_dirs = RUNTIME_IGNORE_DIRS
+            .iter()
+            .map(|dir| format!("{dir}/"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
         // Avoid check-then-create race: use exclusive creation. If the file already
         // exists (e.g., created by a concurrent init), do NOT overwrite it.
-        let content = r#"# Runtime database artifacts (SQLite files and backups)
+        let content = format!(
+            r#"# Runtime database artifacts (SQLite files and backups)
 *.db
 *.db-shm
 *.db-wal
@@ -272,16 +301,17 @@ impl SqliteStore {
 # Journals
 *.journal
 
-# Runtime directories (traces, diagnostics, logs, receipts)
-traces/
-diagnostics/
+# Runtime directories (worker stdout, diagnostics, recovery trees, bf-era exports)
+{}
 logs/
 receipts/
 
 # Runtime event logs (root-level JSONL files)
 events.jsonl
 heartbeats.jsonl
-"#;
+"#,
+            runtime_dirs
+        );
 
         // Use create_new to fail if the file already exists, preventing
         // concurrent init calls from overwriting each other's .gitignore.

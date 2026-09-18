@@ -153,6 +153,20 @@ fn test_init_creates_gitignore() {
         content.contains("diagnostics/"),
         "Should exclude diagnostics/ directory"
     );
+    // 2026-09-18 leak set: recovery trees and bf-era exports carried worker
+    // stdout and credentials into public history in four repos.
+    assert!(
+        content.contains(".br_recovery/"),
+        "Should exclude .br_recovery/ directory"
+    );
+    assert!(
+        content.contains(".bf_history/"),
+        "Should exclude .bf_history/ directory"
+    );
+    assert!(
+        content.contains("recovery/"),
+        "Should exclude recovery/ directory"
+    );
     assert!(content.contains("logs/"), "Should exclude logs/ directory");
     assert!(
         content.contains("receipts/"),
@@ -466,6 +480,9 @@ fn test_gitignore_excludes_all_runtime_artifacts() {
         "*.journal",
         "traces/",
         "diagnostics/",
+        ".br_recovery/",
+        ".bf_history/",
+        "recovery/",
         "logs/",
         "receipts/",
         "events.jsonl",
