@@ -16,7 +16,7 @@ use std::collections::HashSet;
 /// `bead schema explain`. Bump when the guide's typed shape or any documented
 /// semantic changes incompatibly; snapshot and conformance tests pin this
 /// value, and the `field_guide` JSON Schema carries it as a `const`.
-pub const FIELD_GUIDE_VERSION: i64 = 1;
+pub const FIELD_GUIDE_VERSION: i64 = 2;
 
 /// Artifact identity carried by every `bead schema explain` response, per the
 /// accepted field-guide contract (`research/specs/native-field-guide-v1.md`).
@@ -915,7 +915,7 @@ fn field_semantics(document: &str, name: &str) -> FieldSemantics {
         },
         ("cli_issue", "revision") => FieldSemantics {
             ownership: "system",
-            operations: &["close", "release", "reopen", "update"],
+            operations: &["claim", "close", "release", "reopen", "update"],
             has_default: true,
             default: json!(1),
             example: json!(4),
@@ -1013,7 +1013,7 @@ fn field_semantics(document: &str, name: &str) -> FieldSemantics {
         },
         ("cli_issue", "assignee") => FieldSemantics {
             ownership: "caller",
-            operations: &["claim", "create", "release", "update"],
+            operations: &["claim", "create", "release", "reopen", "update"],
             has_default: true,
             default: Value::Null,
             example: Value::Null,
@@ -1022,6 +1022,7 @@ fn field_semantics(document: &str, name: &str) -> FieldSemantics {
                 "nonempty when present",
                 "claim assigns and enters in_progress",
                 "release applies to in_progress work; an open assigned bead uses update --clear-assignee",
+                "preserved by close; cleared by reopen",
             ],
             common_mistake: "Treating assignment as authorization.",
         },
@@ -1113,8 +1114,9 @@ fn field_semantics(document: &str, name: &str) -> FieldSemantics {
             example: json!(1),
             invariants: &[
                 "absent from this projection until the first claim mints one",
-                "monotonically increasing credential minted by every successful claim",
-                "presented back as --fencing-token for claimant-owned mutations",
+                "monotonically increasing credential minted by every claim that selects work",
+                "also advanced by lease renewal and claimant reassignment",
+                "presented back as --fencing-token for mutations of claimed work",
                 "not a revision and not a timestamp",
             ],
             common_mistake:
@@ -1146,7 +1148,7 @@ fn field_semantics(document: &str, name: &str) -> FieldSemantics {
         },
         ("checkpoint_issue", "revision") => FieldSemantics {
             ownership: "system",
-            operations: &["close", "release", "reopen", "update"],
+            operations: &["claim", "close", "release", "reopen", "update"],
             has_default: true,
             default: json!(1),
             example: json!(4),
@@ -1232,7 +1234,7 @@ fn field_semantics(document: &str, name: &str) -> FieldSemantics {
         },
         ("checkpoint_issue", "assignee") => FieldSemantics {
             ownership: "caller",
-            operations: &["claim", "create", "release", "update"],
+            operations: &["claim", "create", "release", "reopen", "update"],
             has_default: false,
             default: Value::Null,
             example: json!("agent-name"),
@@ -1241,6 +1243,7 @@ fn field_semantics(document: &str, name: &str) -> FieldSemantics {
                 "nonempty when present",
                 "claim assigns and enters in_progress",
                 "release applies to in_progress work; an open assigned bead uses update --clear-assignee",
+                "preserved by close; cleared by reopen",
             ],
             common_mistake: "Treating assignment as authorization.",
         },
@@ -1252,8 +1255,9 @@ fn field_semantics(document: &str, name: &str) -> FieldSemantics {
             example: json!(1),
             invariants: &[
                 "stored as 0 when no claim epoch exists and serialized as absence",
-                "monotonically increasing credential minted by every successful claim",
-                "presented back as --fencing-token for claimant-owned mutations",
+                "monotonically increasing credential minted by every claim that selects work",
+                "also advanced by lease renewal and claimant reassignment",
+                "presented back as --fencing-token for mutations of claimed work",
                 "not a revision and not a timestamp",
             ],
             common_mistake: "Treating the epoch as an optimistic concurrency token.",
@@ -1465,8 +1469,8 @@ fn field_semantics(document: &str, name: &str) -> FieldSemantics {
             default: Value::Null,
             example: json!(1),
             invariants: &[
-                "minted by every successful claim, leased or not",
-                "presented back as --fencing-token for claimant-owned mutations",
+                "minted by every claim that selects work, leased or not; the empty-queue result omits the member",
+                "presented back as --fencing-token for mutations of claimed work",
                 "not a revision and not a timestamp",
             ],
             common_mistake: "Treating the epoch as an issue revision.",
@@ -1480,7 +1484,9 @@ fn field_semantics(document: &str, name: &str) -> FieldSemantics {
             invariants: &[
                 "null when the claim carries no lease",
                 "a lease carries issue_id, assignee, fencing_token, and expires_at",
-                "after expiry the holder cannot update, release, or close until renewal or a new claim",
+                "after expiry the holder cannot update, release, close, or reopen (exit 4)",
+                "an expired lease cannot be renewed: renewal requires an unexpired lease, so --renew-lease reports an empty success",
+                "expiry does not reopen the frontier: the issue stays claimed until an override clears it",
                 "a stale or mismatched token is an exit-4 conflict",
                 "a coordination guard, not an issue revision",
             ],
@@ -1542,8 +1548,9 @@ fn field_semantics(document: &str, name: &str) -> FieldSemantics {
             example: json!("updated"),
             invariants: &[
                 "required nonempty string",
-                "complete v0.1 set: updated, claimed, released, reopened, closed, assignment_cleared",
-                "create, dependency, and label mutations append no event",
+                "the published JSON Schema enum lists six issue-lifecycle kinds: updated, claimed, released, reopened, closed, assignment_cleared",
+                "stores write further kinds: created, lease_renewed, claim_override, label_added, label_removed, dependency_added, dependency_removed, data_set, data_removed, external_ref_added, external_ref_removed, resource_keys_added, resource_keys_removed, attempt_resolved, checkpoint_restored, checkpoint_imported, checkpoint_monolithic or checkpoint_sharded (merge import summary), workspace_forked, historical_redaction",
+                "import preserves foreign kinds verbatim",
             ],
             common_mistake: "Treating an unknown kind as permission to discard the event.",
         },
@@ -1751,7 +1758,7 @@ fn guide_field(document: &str, name: &str) -> Value {
         .is_some_and(|types| types.iter().any(|value| value == "null"));
     let presence = match (document, name) {
         ("cli_issue", "claim_epoch") => "conditional",
-        ("claim_result", "bead_id") => "conditional",
+        ("claim_result", "bead_id") | ("claim_result", "claim_epoch") => "conditional",
         ("claim_result", "lease") => "optional",
         ("cli_issue", _) | ("claim_result", _) => "required",
         _ => {
@@ -1779,7 +1786,11 @@ fn guide_field(document: &str, name: &str) -> Value {
 
 /// Documented mutating and read operations of the native model. Exit codes
 /// follow the shared contract: 0 success, 2 usage, 3 not-found, 4 conflict,
-/// 5 integrity. Entries are emitted lexicographically sorted by name.
+/// 5 integrity, plus 1 (internal, including post-commit publication failure)
+/// reachable from any command and 6 (database busy, the workspace operation
+/// lock) from any guarded mutation. Per-operation
+/// `failure_exits` list the operation-specific codes. Entries are emitted
+/// lexicographically sorted by name.
 fn guide_operations() -> Vec<Value> {
     struct OperationSemantics {
         name: &'static str,
@@ -1793,11 +1804,13 @@ fn guide_operations() -> Vec<Value> {
             name: "claim",
             ownership_effect: "assigns the caller and starts work",
             failure_exits: &[2, 3, 4],
-            affected_fields: &["assignee", "base_status", "claim_epoch", "updated_at"],
+            affected_fields: &["assignee", "base_status", "claim_epoch", "revision", "updated_at"],
             rules: &[
                 "atomic selection, assignment, and transition to in_progress",
+                "candidates are open, unassigned, not manually blocked, free of unfinished blocks edges, and free of conflicting held resource keys",
                 "default fifo-v1 orders candidates by priority ascending, creation time ascending, then ID ascending",
                 "no revision guard; its atomic transaction and optional lease fencing provide concurrency safety",
+                "appends the claimed event; the default sort advances the revision (intelligent R019 policies assign without one)",
                 "an empty queue returns success with no nonempty bead_id",
             ],
         },
@@ -1817,13 +1830,15 @@ fn guide_operations() -> Vec<Value> {
                 "requires a non-empty --reason",
                 "clears manual blocking",
                 "may expose dependents",
+                "preserves assignment and the claim epoch; reopen hands the assignee back",
+                "re-closing with a different reason conflicts (exit 4)",
                 "accepts a previously read revision through --if-revision",
             ],
         },
         OperationSemantics {
             name: "create",
             ownership_effect: "initializes caller-owned fields",
-            failure_exits: &[2, 5],
+            failure_exits: &[2, 3, 5],
             affected_fields: &[
                 "assignee",
                 "base_status",
@@ -1841,7 +1856,7 @@ fn guide_operations() -> Vec<Value> {
             rules: &[
                 "only public entry point for new native issues",
                 "title, description, priority, assignee, issue_type, and labels are fixed at creation",
-                "appends no audit event",
+                "appends the created audit event",
             ],
         },
         OperationSemantics {
@@ -1916,10 +1931,13 @@ fn guide_operations() -> Vec<Value> {
             name: "release",
             ownership_effect: "clears assignment and stops work",
             failure_exits: &[2, 3, 4],
-            affected_fields: &["assignee", "base_status", "updated_at"],
+            affected_fields: &["assignee", "base_status", "revision", "updated_at"],
             rules: &[
                 "semantically applies to in_progress -> open",
                 "an assigned open bead uses update --clear-assignee instead",
+                "a no-op on unassigned open work: success without a write or event",
+                "conflicts on closed and deferred work",
+                "the claim epoch survives as a high-water mark",
             ],
         },
         OperationSemantics {
@@ -1927,6 +1945,7 @@ fn guide_operations() -> Vec<Value> {
             ownership_effect: "reverses closure",
             failure_exits: &[2, 3, 4],
             affected_fields: &[
+                "assignee",
                 "base_status",
                 "closed_at",
                 "close_reason",
@@ -1935,8 +1954,10 @@ fn guide_operations() -> Vec<Value> {
                 "updated_at",
             ],
             rules: &[
-                "clears close metadata and manual blocking",
-                "only transition out of closed",
+                "clears close metadata, the assignee, and manual blocking",
+                "returns closed work to open; a no-op on already-open work",
+                "conflicts on in_progress and deferred work",
+                "the claim epoch survives as a high-water mark",
                 "accepts a previously read revision through --if-revision",
             ],
         },
@@ -1988,10 +2009,11 @@ fn guide_operations() -> Vec<Value> {
         OperationSemantics {
             name: "update",
             ownership_effect: "mutates caller-owned fields",
-            failure_exits: &[2, 3, 4, 5],
+            failure_exits: &[2, 3, 4],
             affected_fields: &[
                 "assignee",
                 "base_status",
+                "claim_epoch",
                 "manual_blocked",
                 "notes",
                 "revision",
@@ -2001,6 +2023,31 @@ fn guide_operations() -> Vec<Value> {
                 "accepts a previously read revision through --if-revision",
                 "a held claim epoch must be presented with --fencing-token",
                 "cannot modify title, description, priority, or issue_type",
+                "cannot enter or leave closed (use close or reopen)",
+                "--status blocked sets the manual overlay without changing base status",
+                "reassigning to a different worker mints a new claim epoch",
+            ],
+        },
+        OperationSemantics {
+            name: "resolve",
+            ownership_effect: "applies an attempt outcome and records it",
+            failure_exits: &[2, 3, 4, 5],
+            affected_fields: &[
+                "assignee",
+                "base_status",
+                "closed_at",
+                "close_reason",
+                "manual_blocked",
+                "revision",
+                "updated_at",
+            ],
+            rules: &[
+                "records the attempt_outcome row and the attempt_resolved event in one transaction",
+                "close and release route through the lifecycle rules; block sets the manual overlay",
+                "claimed work requires the claim epoch via --fencing-token for every action; close and release re-validate through the shared lifecycle rules",
+                "verified_success preserves the attempt tier; work_failure advances it (tier 3 quarantines)",
+                "an identical retry returns the original receipt with is_replay true and no mutation; a divergent reuse of the attempt id conflicts (exit 4)",
+                "the printed receipt is not separately persisted; the durable record is the attempt_outcome row",
             ],
         },
     ];
@@ -2045,7 +2092,7 @@ fn native_field_guide() -> Value {
         "documents":documents,"fields":fields,
         "additional_properties":{"allowed":true,"ownership":"preserved","rules":["Unknown checkpoint issue members retain exact JSON name, type, value, and null-versus-absence presence."]},
         "lifecycle":{"base_values":["closed","deferred","in_progress","open"],"allowed_transitions":["closed->open","deferred->closed","deferred->open","in_progress->closed","in_progress->deferred","in_progress->open","open->closed","open->deferred","open->in_progress"]},
-        "derived_state":{"status":{"ownership":"derived","rules":["manual_blocked overlays non-closed base status as blocked"]},"ready":{"ownership":"derived","rules":["base status is open, not manually blocked, unassigned, and has no unfinished blocks blocker"]},"blocked_by":{"ownership":"derived","rules":["derived from incoming blocks edges"]},"blocking":{"ownership":"derived","rules":["derived from outgoing blocks edges"]}},
+        "derived_state":{"status":{"ownership":"derived","rules":["manual_blocked overlays non-closed base status as blocked"]},"ready":{"ownership":"derived","rules":["base status is open, not manually blocked, unassigned, has no unfinished blocks blocker, and holds no conflicting resource key"]},"blocked_by":{"ownership":"derived","rules":["derived from incoming blocks edges"]},"blocking":{"ownership":"derived","rules":["derived from outgoing blocks edges"]}},
         "events":{"envelope_member":"event","schema_ref_member":"$schema","identity":["origin_store_uuid","origin_event_sequence"],"ordering":["origin_store_uuid","origin_event_sequence"]},
         "operations":guide_operations(),
         "rehydration":{"source_mode":"read-only","allowed_writes":["public bead commands in a separate destination"],"forbidden_writes":["foreign SQLite","native SQLite","synthetic checkpoint JSON"],"verification":["issue reconciliation","dependency orientation","ready frontier","fresh restore"]},
