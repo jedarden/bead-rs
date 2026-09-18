@@ -16,7 +16,7 @@ use std::collections::HashSet;
 /// `bead schema explain`. Bump when the guide's typed shape or any documented
 /// semantic changes incompatibly; snapshot and conformance tests pin this
 /// value, and the `field_guide` JSON Schema carries it as a `const`.
-pub const FIELD_GUIDE_VERSION: i64 = 2;
+pub const FIELD_GUIDE_VERSION: i64 = 3;
 
 /// Artifact identity carried by every `bead schema explain` response, per the
 /// accepted field-guide contract (`research/specs/native-field-guide-v1.md`).
@@ -1109,7 +1109,7 @@ fn field_semantics(document: &str, name: &str) -> FieldSemantics {
         ("cli_issue", "claim_epoch") => FieldSemantics {
             ownership: "system",
             operations: &["claim"],
-            has_default: true,
+            has_default: false,
             default: Value::Null,
             example: json!(1),
             invariants: &[
@@ -1458,7 +1458,7 @@ fn field_semantics(document: &str, name: &str) -> FieldSemantics {
             example: json!("agent-name"),
             invariants: &[
                 "echoes the --assignee requested by the caller",
-                "nonempty when present",
+                "always present; empty only when the caller requested an empty --assignee, which claim does not validate",
             ],
             common_mistake: "Treating assignment as authorization.",
         },
@@ -1757,8 +1757,13 @@ fn guide_field(document: &str, name: &str) -> Value {
         .and_then(Value::as_array)
         .is_some_and(|types| types.iter().any(|value| value == "null"));
     let presence = match (document, name) {
+        // "conditional" = the member is omitted from the JSON until a condition
+        // holds; "optional" = always emitted, null when not applicable. The
+        // empty-queue claim result is the shape that separates them: bead_id
+        // and lease are emitted as null, claim_epoch is skipped entirely.
         ("cli_issue", "claim_epoch") => "conditional",
-        ("claim_result", "bead_id") | ("claim_result", "claim_epoch") => "conditional",
+        ("claim_result", "bead_id") => "optional",
+        ("claim_result", "claim_epoch") => "conditional",
         ("claim_result", "lease") => "optional",
         ("cli_issue", _) | ("claim_result", _) => "required",
         _ => {
