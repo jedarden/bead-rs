@@ -145,9 +145,10 @@ fn uncommitted_checkpoint_is_never_a_bare_yes_and_names_paths() {
     init_bead(root, "rdyfl");
     commit_checkpoint(root, "checkpoint baseline");
 
-    // Mutate, then flush: the re-publication leaves the tracked
-    // current.json/forensic.jsonl/previous.json modified and fresh
-    // objects/ files untracked, exactly like the live reproduction.
+    // Mutate, then flush: the re-publication makes the new checkpoint
+    // authoritative and stages its fileset (ADR-018), so the pending
+    // paths are staged-but-uncommitted rather than modified-unstaged
+    // with untracked objects.
     let create = run_bead(
         root,
         &[
@@ -199,21 +200,26 @@ fn uncommitted_checkpoint_is_never_a_bare_yes_and_names_paths() {
         "{report}"
     );
 
+    // Since ADR-018 every publication stages exactly the fileset it made
+    // authoritative, so the still-unreachable pending paths sit in the
+    // staged bucket -- staged counts as "Git cannot reach" for the verdict.
+    // Pinning the staged bucket (rather than accepting any pending bucket)
+    // also fails loudly if publication regresses to the pre-ADR-018
+    // modified-unstaged-with-untracked-objects shape.
     let reach = &report["git_reachability"];
-    let unstaged = reach["unstaged"].as_array().expect("unstaged bucket");
+    let staged = reach["staged"].as_array().expect("staged bucket");
     assert!(
-        unstaged
+        staged
             .iter()
             .any(|path| path == ".beads/checkpoint/current.json"),
-        "current.json not unstaged: {report}"
+        "current.json not staged: {report}"
     );
-    let untracked = reach["untracked"].as_array().expect("untracked bucket");
     assert!(
-        untracked.iter().any(|path| path
+        staged.iter().any(|path| path
             .as_str()
             .unwrap_or("")
             .starts_with(".beads/checkpoint/objects/")),
-        "no untracked objects/ file: {report}"
+        "no staged objects/ file: {report}"
     );
 }
 
