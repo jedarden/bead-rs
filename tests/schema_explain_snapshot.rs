@@ -48,11 +48,11 @@ const SNAPSHOT_GUIDE_VERSION: i64 = 3;
 
 /// `bead schema explain <native-guide identity> --format json`, guide v3.
 const NATIVE_GUIDE_JSON_SHA256: &str =
-    "c1079003b921d7cf185c2194d3baf81491bd0d230e792b3314b7923e6bc197cb";
+    "9e90be650926a08266104d1c5b9a51915fe561ed5efc5e8ef9ba548e3c2b989d";
 
 /// `bead schema explain <native-guide identity> --format markdown`, guide v3.
 const NATIVE_GUIDE_MARKDOWN_SHA256: &str =
-    "2e5ba05c137374a3936ddf98245b94a9f092a8997af6220c7042952cb92b37fa";
+    "0178eab46c8b8ca8a1a28862b2bd8690405bf5d4dab5aa53aa45f0acd80d4108";
 
 /// `bead schema explain <concise identity> --format json`, guide v3.
 const CONCISE_JSON_SHA256: &str =

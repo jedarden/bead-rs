@@ -1835,7 +1835,7 @@ fn guide_operations() -> Vec<Value> {
                 "requires a non-empty --reason",
                 "clears manual blocking",
                 "may expose dependents",
-                "preserves assignment and the claim epoch; reopen hands the assignee back",
+                "preserves assignment and the claim epoch; reopen clears the assignee",
                 "re-closing with a different reason conflicts (exit 4)",
                 "accepts a previously read revision through --if-revision",
             ],
