@@ -44,23 +44,23 @@ const CONCISE_SCHEMA_REF: &str = "urn:bead-rs:schema:checkpoint-pointer:native-v
 /// Guide version the snapshots below were taken at. Bumping
 /// `FIELD_GUIDE_VERSION` in `src/service/schema.rs` without refreshing the
 /// digests is exactly the drift this constant exists to catch.
-const SNAPSHOT_GUIDE_VERSION: i64 = 5;
+const SNAPSHOT_GUIDE_VERSION: i64 = 6;
 
-/// `bead schema explain <native-guide identity> --format json`, guide v5.
+/// `bead schema explain <native-guide identity> --format json`, guide v6.
 const NATIVE_GUIDE_JSON_SHA256: &str =
-    "c8cfc2d36f23c23f85eef0e5cdf5543d649555e6895b8cc100c88fb8d7d60187";
+    "7b300688552861f1cb25f30aa8bc6067398c7adec5ad5df3695343ae3ad85303";
 
-/// `bead schema explain <native-guide identity> --format markdown`, guide v5.
+/// `bead schema explain <native-guide identity> --format markdown`, guide v6.
 const NATIVE_GUIDE_MARKDOWN_SHA256: &str =
-    "a2a01a3d651aba6e12a75986bfae8d8835aac9e239a91fcc704b471acdb89d76";
+    "0d1712e8ac26db49d5890c5f173d7fe253a17e0348d2f649a345c089d9b5abed";
 
-/// `bead schema explain <concise identity> --format json`, guide v5.
+/// `bead schema explain <concise identity> --format json`, guide v6.
 const CONCISE_JSON_SHA256: &str =
-    "e89052d3d389af286f42e3554b485fc49350c637178f12aa207b00b4950c9531";
+    "f34c83490d5d75ca4f2465cc9b419fb22a72e27eebd1bce3c7ea966cec4a310c";
 
-/// `bead schema explain <concise identity> --format markdown`, guide v5.
+/// `bead schema explain <concise identity> --format markdown`, guide v6.
 const CONCISE_MARKDOWN_SHA256: &str =
-    "98d3207eabf643d11c3d339b6829dccd42f57d00ff5dd052a8767e9cfd61bfbc";
+    "810e93ccfa0eabada827358f17fc083a9f57c604b867d3e1969a92b6a036c490";
 
 const GUIDE_FIELD_MEMBERS: [&str; 10] = [
     "json_type",
@@ -120,7 +120,7 @@ const SNAPSHOTS: [Snapshot; 2] = [
 /// `FIELD_GUIDE_VERSION` in `src/service/schema.rs` if so, and refresh the
 /// `*_SHA256` constants in this file — all in the same commit.
 #[test]
-fn snapshots_pin_field_guide_v5_renders() {
+fn snapshots_pin_field_guide_v6_renders() {
     assert_eq!(
         FIELD_GUIDE_VERSION, SNAPSHOT_GUIDE_VERSION,
         "FIELD_GUIDE_VERSION moved without refreshing the snapshot digests in \
@@ -141,7 +141,7 @@ fn snapshots_pin_field_guide_v5_renders() {
             assert_eq!(
                 sha256(&output),
                 expected,
-                "{format} rendering of {} drifted from the guide v5 snapshot; \
+                "{format} rendering of {} drifted from the guide v6 snapshot; \
                  if this change is intentional, bump FIELD_GUIDE_VERSION and \
                  refresh the digest in tests/schema_explain_snapshot.rs",
                 snapshot.schema_ref
@@ -211,6 +211,17 @@ fn every_catalog_identity_conforms_to_the_published_guide_version() {
                  field_semantics table in src/service/schema.rs instead of \
                  publishing a documentation gap"
             );
+            assert_ne!(
+                field["ownership"], "document producer",
+                "{key} of {schema_ref} still carries the concise-path \
+                 placeholder ownership — the concise branch must emit \
+                 curated entries through guide_field_for_schema"
+            );
+            assert!(
+                !field["invariants"].as_array().unwrap().is_empty(),
+                "{key} of {schema_ref} publishes an empty invariants section — \
+                 extend the field_semantics table in src/service/schema.rs"
+            );
             assert!(
                 !field["invariants"]
                     .as_array()
@@ -221,6 +232,15 @@ fn every_catalog_identity_conforms_to_the_published_guide_version() {
                  invariant — extend the field_semantics table instead"
             );
         }
+
+        let lifecycle = &explanation["lifecycle"];
+        let base_values = lifecycle["base_values"].as_array().unwrap();
+        let transitions = lifecycle["allowed_transitions"].as_array().unwrap();
+        assert!(
+            !(base_values.is_empty() && transitions.is_empty()),
+            "{schema_ref} publishes an empty lifecycle section — extend \
+             concise_lifecycle in src/service/schema.rs instead"
+        );
     }
 }
 
@@ -324,7 +344,7 @@ fn repeated_invocations_reproduce_the_pinned_digests() {
                 digests.insert(digest.clone());
                 assert_eq!(
                     digest, expected,
-                    "{format} rendering of {} drifted from the pinned guide v5 \
+                    "{format} rendering of {} drifted from the pinned guide v6 \
                      digest across repeated invocations",
                     snapshot.schema_ref
                 );
