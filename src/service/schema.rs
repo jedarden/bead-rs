@@ -21,7 +21,12 @@ use std::collections::HashSet;
 /// semantics, defaults, and invariants and a populated lifecycle for every
 /// catalog identity, replacing the `document producer` placeholder fields and
 /// the empty lifecycle section (beadrs-62a57bdf).
-pub const FIELD_GUIDE_VERSION: i64 = 6;
+///
+/// v7: the (audit_event, kind) enum enumerates every kind the stores actually
+/// write — it previously listed only the six issue-lifecycle kinds while the
+/// code wrote twenty-one more, so `bead schema show` validated stores against
+/// an enum they violate (beadrs-085daf20).
+pub const FIELD_GUIDE_VERSION: i64 = 7;
 
 /// Artifact identity carried by every `bead schema explain` response, per the
 /// accepted field-guide contract (`research/specs/native-field-guide-v1.md`).
@@ -521,8 +526,23 @@ fn property_schema(kind: &str, name: &str) -> Value {
         ("audit_event", "issue_id") | ("audit_event", "actor") => json!({"type":["string","null"]}),
         ("audit_event", "time") => timestamp(),
         ("audit_event", "detail") => json!({}),
+        // The producer's full write set, one enum value per call site. Import
+        // can additionally preserve foreign kinds verbatim; those stay outside
+        // the published enum by design.
         ("audit_event", "kind") => {
-            json!({"type":"string", "enum":["updated","claimed","released","reopened","closed","assignment_cleared"]})
+            json!({"type":"string", "enum":[
+                "created","updated","claimed","released","reopened","closed",
+                "assignment_cleared","lease_renewed","claim_override",
+                "label_added","label_removed",
+                "dependency_added","dependency_removed",
+                "data_set","data_removed",
+                "external_ref_added","external_ref_removed",
+                "resource_keys_added","resource_keys_removed",
+                "attempt_resolved",
+                "checkpoint_restored","checkpoint_imported",
+                "checkpoint_monolithic","checkpoint_sharded",
+                "workspace_forked","historical_redaction","secret_acknowledged",
+            ]})
         }
         ("provenance_receipt", "summary_event_identity") => json!({"type":["string","null"]}),
         ("provenance_receipt", "counts") => {
@@ -1633,8 +1653,8 @@ fn field_semantics(document: &str, name: &str) -> FieldSemantics {
             example: json!("updated"),
             invariants: &[
                 "required nonempty string",
-                "the published JSON Schema enum lists six issue-lifecycle kinds: updated, claimed, released, reopened, closed, assignment_cleared",
-                "stores write further kinds: created, lease_renewed, claim_override, label_added, label_removed, dependency_added, dependency_removed, data_set, data_removed, external_ref_added, external_ref_removed, resource_keys_added, resource_keys_removed, attempt_resolved, checkpoint_restored, checkpoint_imported, checkpoint_monolithic or checkpoint_sharded (merge import summary), workspace_forked, historical_redaction",
+                "the published JSON Schema enum enumerates every kind the stores write: created, updated, claimed, released, reopened, closed, assignment_cleared, lease_renewed, claim_override, label_added, label_removed, dependency_added, dependency_removed, data_set, data_removed, external_ref_added, external_ref_removed, resource_keys_added, resource_keys_removed, attempt_resolved, checkpoint_restored, checkpoint_imported, checkpoint_monolithic, checkpoint_sharded, workspace_forked, historical_redaction, secret_acknowledged",
+                "checkpoint_monolithic and checkpoint_sharded are the merge import summary kinds, selected by checkpoint mode",
                 "import preserves foreign kinds verbatim",
             ],
             common_mistake: "Treating an unknown kind as permission to discard the event.",

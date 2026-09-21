@@ -44,23 +44,23 @@ const CONCISE_SCHEMA_REF: &str = "urn:bead-rs:schema:checkpoint-pointer:native-v
 /// Guide version the snapshots below were taken at. Bumping
 /// `FIELD_GUIDE_VERSION` in `src/service/schema.rs` without refreshing the
 /// digests is exactly the drift this constant exists to catch.
-const SNAPSHOT_GUIDE_VERSION: i64 = 6;
+const SNAPSHOT_GUIDE_VERSION: i64 = 7;
 
-/// `bead schema explain <native-guide identity> --format json`, guide v6.
+/// `bead schema explain <native-guide identity> --format json`, guide v7.
 const NATIVE_GUIDE_JSON_SHA256: &str =
-    "7b300688552861f1cb25f30aa8bc6067398c7adec5ad5df3695343ae3ad85303";
+    "06dc842230eb4cd72b9f54f9b6f442000796575aa4364419ede1efb032842c5b";
 
-/// `bead schema explain <native-guide identity> --format markdown`, guide v6.
+/// `bead schema explain <native-guide identity> --format markdown`, guide v7.
 const NATIVE_GUIDE_MARKDOWN_SHA256: &str =
-    "0d1712e8ac26db49d5890c5f173d7fe253a17e0348d2f649a345c089d9b5abed";
+    "1d23cf1f424ccbcee33d93fb3aae065358eb4bdd83031deafaa5f674d42951f7";
 
-/// `bead schema explain <concise identity> --format json`, guide v6.
+/// `bead schema explain <concise identity> --format json`, guide v7.
 const CONCISE_JSON_SHA256: &str =
-    "f34c83490d5d75ca4f2465cc9b419fb22a72e27eebd1bce3c7ea966cec4a310c";
+    "8fab48f5ee660d6872893ea685424e2f31d9d6b1ad987464669e9f20afc893dc";
 
-/// `bead schema explain <concise identity> --format markdown`, guide v6.
+/// `bead schema explain <concise identity> --format markdown`, guide v7.
 const CONCISE_MARKDOWN_SHA256: &str =
-    "810e93ccfa0eabada827358f17fc083a9f57c604b867d3e1969a92b6a036c490";
+    "ba188be7e68f0d3dfff62914bab2f971aaf560f3b8cee84ccf2fdcfb9c99d141";
 
 const GUIDE_FIELD_MEMBERS: [&str; 10] = [
     "json_type",
@@ -120,7 +120,7 @@ const SNAPSHOTS: [Snapshot; 2] = [
 /// `FIELD_GUIDE_VERSION` in `src/service/schema.rs` if so, and refresh the
 /// `*_SHA256` constants in this file — all in the same commit.
 #[test]
-fn snapshots_pin_field_guide_v6_renders() {
+fn snapshots_pin_field_guide_v7_renders() {
     assert_eq!(
         FIELD_GUIDE_VERSION, SNAPSHOT_GUIDE_VERSION,
         "FIELD_GUIDE_VERSION moved without refreshing the snapshot digests in \
@@ -141,7 +141,7 @@ fn snapshots_pin_field_guide_v6_renders() {
             assert_eq!(
                 sha256(&output),
                 expected,
-                "{format} rendering of {} drifted from the guide v6 snapshot; \
+                "{format} rendering of {} drifted from the guide v7 snapshot; \
                  if this change is intentional, bump FIELD_GUIDE_VERSION and \
                  refresh the digest in tests/schema_explain_snapshot.rs",
                 snapshot.schema_ref
@@ -344,7 +344,7 @@ fn repeated_invocations_reproduce_the_pinned_digests() {
                 digests.insert(digest.clone());
                 assert_eq!(
                     digest, expected,
-                    "{format} rendering of {} drifted from the pinned guide v6 \
+                    "{format} rendering of {} drifted from the pinned guide v7 \
                      digest across repeated invocations",
                     snapshot.schema_ref
                 );
