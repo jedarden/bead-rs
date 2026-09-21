@@ -26,7 +26,14 @@ use std::collections::HashSet;
 /// write — it previously listed only the six issue-lifecycle kinds while the
 /// code wrote twenty-one more, so `bead schema show` validated stores against
 /// an enum they violate (beadrs-085daf20).
-pub const FIELD_GUIDE_VERSION: i64 = 7;
+///
+/// v8: the capabilities catalog publishes its `attempt_outcome` member — the
+/// implementation struct has carried the ADR-012 handshake since it landed
+/// (always emitted, `supported: true`, src/service/capabilities.rs) while the
+/// published schema omitted it, so `bead schema show` under-reported the
+/// documents this binary emits and rejected a member the contract's own
+/// detection recipe reads (beadrs-7b6590ba).
+pub const FIELD_GUIDE_VERSION: i64 = 8;
 
 /// Artifact identity carried by every `bead schema explain` response, per the
 /// accepted field-guide contract (`research/specs/native-field-guide-v1.md`).
@@ -310,6 +317,13 @@ fn names(kind: &str) -> &'static [&'static str] {
             // Additive ADR-018 handshake: post-publication staging of the
             // verified checkpoint fileset, optional for the same reason
             "auto_stage",
+            // Additive ADR-012 handshake: attempt outcome resolution
+            // capabilities, optional so a producer predating attempt
+            // resolution can omit it and still validate. This binary always
+            // emits it with supported true (src/service/capabilities.rs),
+            // and the contract's own detection recipe reads
+            // .attempt_outcome.supported (src/cli.rs resolve --help)
+            "attempt_outcome",
             "attempt_summary",
             "secret_scan",
             "historical_redaction",
@@ -628,7 +642,9 @@ fn property_schema(kind: &str, name: &str) -> Value {
         | ("capabilities", "schemas")
         | ("capabilities", "commands") => json!({"type":"array"}),
         ("capabilities", "priorities") => json!({"type":"object"}),
-        ("capabilities", "secret_scan") | ("capabilities", "historical_redaction") => {
+        ("capabilities", "attempt_outcome")
+        | ("capabilities", "secret_scan")
+        | ("capabilities", "historical_redaction") => {
             json!({"type":"object"})
         }
         ("field_guide", "guide_version") => json!({"const": FIELD_GUIDE_VERSION}),
@@ -794,10 +810,14 @@ fn required_for(kind: &str) -> Vec<String> {
         // has been on since the R026 activation flipped it, so the
         // documents it emits always carry the member, and both shapes
         // validate against the same additive identity (plan section 11).
-        // `auto_stage` is additive the same way (ADR-018)
+        // `auto_stage` is additive the same way (ADR-018), and
+        // `attempt_outcome` likewise (ADR-012): a producer without
+        // attempt resolution omits the member entirely rather than
+        // publishing supported false
         "capabilities" => &[
             "auto_flush",
             "auto_stage",
+            "attempt_outcome",
             "secret_scan",
             "historical_redaction",
         ],
@@ -3069,6 +3089,19 @@ fn field_semantics(document: &str, name: &str) -> FieldSemantics {
                 "absent entirely when the compiled default is off",
             ],
             common_mistake: "Reading it as a promise that every workspace is a Git repository; staging outside one is a no-op.",
+        },
+        ("capabilities", "attempt_outcome") => FieldSemantics {
+            ownership: "system",
+            operations: &["capabilities"],
+            has_default: false,
+            default: Value::Null,
+            example: json!({"supported":true,"outcomes":["verified_success","work_failure","infrastructure_failure","cancelled","indeterminate"],"actions":["close","release","quarantine","block","none"],"replay_detection":true,"revision_guard":true,"fencing_token":true,"evidence_refs":true,"resolve_receipt_schema":"urn:bead-rs:schema:resolve-receipt:native-v1","resolve_request_schema":"urn:bead-rs:schema:resolve-request:native-v1"}),
+            invariants: &[
+                "optional object: supported flag, the five outcome classifications, the five lifecycle actions, replay-detection/revision-guard/fencing-token/evidence-refs support, and the resolve receipt and request schema identities",
+                "a producer without the ADR-012 capability omits the member entirely, never publishes supported false; this binary always emits it with supported true",
+                "the contract's own detection recipe reads .attempt_outcome.supported (bead capabilities piped through jq)",
+            ],
+            common_mistake: "Reading absence as supported false; pre-ADR-012 producers leave the member out of the document entirely.",
         },
         ("capabilities", "attempt_summary") => FieldSemantics {
             ownership: "system",
