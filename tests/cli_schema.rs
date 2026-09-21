@@ -124,7 +124,7 @@ fn schema_explain_json_and_markdown_are_deterministic() {
         .stdout
         .clone();
     let explanation: Value = serde_json::from_slice(&json_output).unwrap();
-    assert_eq!(explanation["guide_version"], 3);
+    assert_eq!(explanation["guide_version"], 4);
     assert!(explanation["describes_schema_refs"]
         .as_array()
         .unwrap()
@@ -152,7 +152,7 @@ fn schema_explain_json_and_markdown_are_deterministic() {
         .args(["schema", "explain", schema_ref, "--format", "markdown"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("# Native field guide v3"))
+        .stdout(predicate::str::contains("# Native field guide v4"))
         .stdout(predicate::str::contains("checkpoint_issue.priority"));
 }
 

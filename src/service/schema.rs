@@ -16,7 +16,7 @@ use std::collections::HashSet;
 /// `bead schema explain`. Bump when the guide's typed shape or any documented
 /// semantic changes incompatibly; snapshot and conformance tests pin this
 /// value, and the `field_guide` JSON Schema carries it as a `const`.
-pub const FIELD_GUIDE_VERSION: i64 = 3;
+pub const FIELD_GUIDE_VERSION: i64 = 4;
 
 /// Artifact identity carried by every `bead schema explain` response, per the
 /// accepted field-guide contract (`research/specs/native-field-guide-v1.md`).
@@ -284,8 +284,11 @@ fn names(kind: &str) -> &'static [&'static str] {
             "schema_ref",
             "schemas",
             "commands",
-            // Additive R026 handshake (plan section 11): optional because it
-            // is absent until the compiled automatic-flush default flips on
+            // Additive R026 handshake (plan section 11): optional so a
+            // producer whose compiled automatic-flush default is off can
+            // omit it and still validate. This binary's default has been on
+            // since the R026 activation flipped it, so the documents it
+            // emits always carry the member
             "auto_flush",
             // Additive ADR-018 handshake: post-publication staging of the
             // verified checkpoint fileset, optional for the same reason
@@ -702,8 +705,10 @@ fn required_for(kind: &str) -> Vec<String> {
         ],
         "audit_event" => &["issue_id", "actor"],
         "provenance_receipt" => &["summary_event_identity"],
-        // Optional while the R026 gate keeps the compiled default off, so a
-        // document without it validates; present-when-enabled documents
+        // Optional so a document from a producer whose compiled
+        // automatic-flush default is off validates; this binary's default
+        // has been on since the R026 activation flipped it, so the
+        // documents it emits always carry the member, and both shapes
         // validate against the same additive identity (plan section 11).
         // `auto_stage` is additive the same way (ADR-018)
         "capabilities" => &[
@@ -1997,14 +2002,18 @@ fn guide_operations() -> Vec<Value> {
         OperationSemantics {
             name: "sync.flush-only",
             ownership_effect: "publishes durable checkpoint state",
-            failure_exits: &[2, 5],
+            failure_exits: &[2, 3, 4, 5],
             affected_fields: &[],
-            rules: &["writes the durable checkpoint from the live store", "idempotent"],
+            rules: &[
+                "writes the durable checkpoint from the live store",
+                "idempotent",
+                "refuses to publish over a remote-advanced checkpoint (exit 4) or a covered-ahead integrity failure (exit 5)",
+            ],
         },
         OperationSemantics {
             name: "sync.import-only",
             ownership_effect: "restores or merges checkpoint state",
-            failure_exits: &[2, 4, 5],
+            failure_exits: &[2, 3, 4, 5],
             affected_fields: &[],
             rules: &[
                 "restores into a fresh workspace or merges into an existing one",
