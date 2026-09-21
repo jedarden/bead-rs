@@ -4259,7 +4259,7 @@ pub fn schema_explanation(schema_ref: &str) -> Result<Value> {
         .collect();
     let fields: Vec<Value> = members
         .iter()
-        .map(|name| guide_field_for_schema(&descriptor.document_kind, name))
+        .map(|name| guide_field_for_schema(descriptor.document_kind, name))
         .collect();
     // Audit F1 (beadrs-f8805045): the two checkpoint documents are the only
     // registry kinds whose on-disk documents carry no in-document schema
@@ -4294,8 +4294,8 @@ pub fn schema_explanation(schema_ref: &str) -> Result<Value> {
             "members": members
         }],
         "fields": fields,
-        "additional_properties": concise_additional_properties(&descriptor.document_kind),
-        "lifecycle": concise_lifecycle(&descriptor.document_kind),
+        "additional_properties": concise_additional_properties(descriptor.document_kind),
+        "lifecycle": concise_lifecycle(descriptor.document_kind),
         "derived_state": {
             "status": {"ownership": "system", "rules": []},
             "ready": {"ownership": "system", "rules": []},
