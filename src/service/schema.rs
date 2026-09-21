@@ -16,7 +16,7 @@ use std::collections::HashSet;
 /// `bead schema explain`. Bump when the guide's typed shape or any documented
 /// semantic changes incompatibly; snapshot and conformance tests pin this
 /// value, and the `field_guide` JSON Schema carries it as a `const`.
-pub const FIELD_GUIDE_VERSION: i64 = 4;
+pub const FIELD_GUIDE_VERSION: i64 = 5;
 
 /// Artifact identity carried by every `bead schema explain` response, per the
 /// accepted field-guide contract (`research/specs/native-field-guide-v1.md`).
@@ -105,6 +105,13 @@ const DESCRIPTORS: &[Descriptor] = &[
         consume: &[],
         emit: &["capabilities"],
     },
+    // The checkpoint-set-v1 edge value names the durable checkpoint fileset
+    // (its format tag), not an operation like sync.flush-only: sync both
+    // emits these documents into the set and consumes them back on the next
+    // publication, import, and restore, so the edges are genuinely
+    // bidirectional. SchemaEntry.consume/emit values are documented as
+    // operations but carry this set-format label too — dual use by design
+    // (audit o1, beadrs-f8805045).
     Descriptor {
         schema_ref: "urn:bead-rs:schema:checkpoint-manifest:native-v1",
         document_kind: "checkpoint_manifest",
@@ -405,6 +412,10 @@ fn names(kind: &str) -> &'static [&'static str] {
             "epoch_id",
             "created_at",
         ],
+        // The three trailing members mirror write_current_pointer's
+        // redaction extension: inserted after created_at, and only on a
+        // pointer published from a redaction generation, so required_for
+        // keeps them optional (audit F3, beadrs-f8805045).
         "checkpoint_pointer" => &[
             "schema_version",
             "generation_id",
@@ -422,7 +433,15 @@ fn names(kind: &str) -> &'static [&'static str] {
             "redaction_record_count",
             "total_record_count",
             "created_at",
+            "redaction_epoch_id",
+            "previous_generation_reset",
+            "superseded_generations",
         ],
+        // issue_partition, the four totals, and origins mirror the sharded
+        // manifest writer. They joined the format checkpoint-set-v1 member
+        // set after the first sharded publications while schema_version
+        // stayed 1, so required_for keeps them optional like the other
+        // additive members (audit F2, beadrs-f8805045).
         "checkpoint_manifest" => &[
             "format",
             "schema_version",
@@ -433,13 +452,19 @@ fn names(kind: &str) -> &'static [&'static str] {
             "profile",
             "partition_algorithm",
             "partition_thresholds",
+            "issue_partition",
+            "issue_count",
+            "event_count",
+            "receipt_count",
             "issue_shards",
             "event_shards",
             "receipt_shards",
             "attempt_outcome_count",
             "redaction_record_count",
+            "total_record_count",
             "attempt_outcome_shards",
             "redaction_shards",
+            "origins",
         ],
         "field_guide" => &[
             "schema_ref",
@@ -515,6 +540,15 @@ fn property_schema(kind: &str, name: &str) -> Value {
         | ("checkpoint_pointer", "deleted_paths") => {
             json!({"type":"array", "items":{"type":"string"}})
         }
+        // Redaction-published pointers only; same shapes the redaction_epoch
+        // document carries for the same values
+        ("checkpoint_pointer", "redaction_epoch_id") => {
+            json!({"type":"string", "pattern":"^[0-9a-f]{64}$"})
+        }
+        ("checkpoint_pointer", "previous_generation_reset") => json!({"type":"boolean"}),
+        ("checkpoint_pointer", "superseded_generations") => {
+            json!({"type":"array", "items":{"type":"string"}})
+        }
         ("checkpoint_manifest", "schema_version") => json!({"const":1}),
         ("checkpoint_manifest", "snapshot_sequence")
         | ("checkpoint_manifest", "max_local_ingestion_sequence") => {
@@ -528,6 +562,31 @@ fn property_schema(kind: &str, name: &str) -> Value {
         ("checkpoint_manifest", "attempt_outcome_count")
         | ("checkpoint_manifest", "redaction_record_count") => {
             json!({"type":"integer", "minimum":0})
+        }
+        ("checkpoint_manifest", "issue_count")
+        | ("checkpoint_manifest", "event_count")
+        | ("checkpoint_manifest", "receipt_count")
+        | ("checkpoint_manifest", "total_record_count") => {
+            json!({"type":"integer", "minimum":0})
+        }
+        ("checkpoint_manifest", "issue_partition") => {
+            json!({"type":"array", "items":{"type":"string"}})
+        }
+        // Per-origin event summary the sharded writer records alongside the
+        // event objects it packed for that origin
+        ("checkpoint_manifest", "origins") => {
+            json!({"type":"array", "items":{
+                "type":"object",
+                "required":["origin_store_uuid","event_count","min_sequence","max_sequence","objects"],
+                "properties":{
+                    "origin_store_uuid":{"type":"string"},
+                    "event_count":{"type":"integer","minimum":0},
+                    "min_sequence":{"type":"integer","minimum":1},
+                    "max_sequence":{"type":"integer","minimum":1},
+                    "objects":{"type":"array","items":{"type":"string"}}
+                },
+                "additionalProperties":false
+            }})
         }
         ("checkpoint_manifest", "partition_thresholds") => json!({"type":"object"}),
         ("capabilities", "store_layout") => json!({"type":"integer", "minimum":1}),
@@ -739,12 +798,28 @@ fn required_for(kind: &str) -> Vec<String> {
             "superseded_generations",
             "published_at",
         ],
-        "checkpoint_pointer" => &["attempt_outcome_count", "redaction_record_count"],
+        // The redaction members exist only on redaction-published pointers;
+        // the additive counts exist only on manifests from the
+        // sha256-hex-prefix era forward — both stay optional so documents
+        // from producers that predate the member still validate
+        "checkpoint_pointer" => &[
+            "attempt_outcome_count",
+            "redaction_record_count",
+            "redaction_epoch_id",
+            "previous_generation_reset",
+            "superseded_generations",
+        ],
         "checkpoint_manifest" => &[
             "attempt_outcome_count",
             "redaction_record_count",
             "attempt_outcome_shards",
             "redaction_shards",
+            "issue_partition",
+            "issue_count",
+            "event_count",
+            "receipt_count",
+            "total_record_count",
+            "origins",
         ],
         _ => &[],
     };
@@ -2153,6 +2228,26 @@ pub fn schema_explanation(schema_ref: &str) -> Result<Value> {
     } else {
         json!([])
     };
+    // Audit F1 (beadrs-f8805045): the two checkpoint documents are the only
+    // registry kinds whose on-disk documents carry no in-document schema
+    // URN — the manifest self-identifies as format checkpoint-set-v1 and the
+    // pointer only as schema_version 1 — while issue, audit_event,
+    // provenance_receipt, attempt_outcome, and redaction documents stamp
+    // `$schema`. Publish that binding difference for these kinds instead of
+    // leaving it implicit.
+    let known_deviations = if matches!(
+        descriptor.document_kind,
+        "checkpoint_manifest" | "checkpoint_pointer"
+    ) {
+        json!([{
+            "id": "checkpoint-documents-carry-no-schema-urn",
+            "severity": "known",
+            "behavior": "checkpoint_manifest and checkpoint_pointer documents stamp no in-document schema URN: the manifest self-identifies as format checkpoint-set-v1 and the pointer only as schema_version 1, unlike issue, audit_event, provenance_receipt, attempt_outcome, and redaction documents, which stamp $schema",
+            "required_disposition": "Resolve checkpoint document identity through the checkpoint set (the pointer active_root names the manifest) or bead schema list, never by requiring a $schema member on a checkpoint document."
+        }])
+    } else {
+        json!([])
+    };
     Ok(json!({
         "schema_ref": FIELD_GUIDE_SCHEMA_REF,
         "guide_version": FIELD_GUIDE_VERSION,
@@ -2188,7 +2283,7 @@ pub fn schema_explanation(schema_ref: &str) -> Result<Value> {
             "rules": ["Exact schema identities only."]
         }],
         "rehydration": {"source_mode": "read-only", "allowed_writes": [], "forbidden_writes": [], "verification": []},
-        "known_implementation_deviations": []
+        "known_implementation_deviations": known_deviations
     }))
 }
 
