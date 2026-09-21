@@ -1,0 +1,185 @@
+# One-off build + push for the bead-rs-ci-builder image.
+#
+# This is NOT an ArgoCD-managed manifest (it lives in the bead-rs repo, not
+# declarative-config) and there is deliberately no sensor triggering it: the
+# builder image changes rarely, and every build must be a conscious act that
+# ends with the resulting digest being pinned into the bead-rs-ci
+# WorkflowTemplate (see README.md, "Rotating the image").
+#
+# Submit from a machine with ~/.kube/iad-ci.kubeconfig:
+#
+#   REV=$(git rev-parse HEAD)          # a commit containing this directory
+#   kubectl --kubeconfig=$HOME/.kube/iad-ci.kubeconfig create -f - <<EOF
+#   <this manifest, with revision/version/build-date/source-revision filled in>
+#   EOF
+#
+# Read the digest from the workflow's output parameter and record it in
+# PROVENANCE-<version>.md and the WorkflowTemplate pin.
+#
+# Shape mirrors the proven needle-ci-builder template (declarative-config
+# k8s/iad-ci/argo-workflows/needle-ci-builder-workflowtemplate.yml): a git
+# init-container populates a local build context so no git transport runs
+# inside kaniko, and kaniko pushes through the docker-hub-registry secret.
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: bead-rs-ci-builder-build-
+  namespace: argo-workflows
+spec:
+  # Toolchain downloads (~2 GiB across two toolchains + four target stds)
+  # plus the aarch64 cross toolchain, plus kaniko snapshotting of those
+  # layers. The needle base build OOMKilled at 4Gi mid-snapshot; start at the
+  # proven 6Gi. 3600s covers a slow toolchain CDN day; it is a backstop, not
+  # a budget.
+  activeDeadlineSeconds: 3600
+  entrypoint: build
+  serviceAccountName: argo-workflow
+  # Successful builds are disposable; a failed kaniko or checkout pod keeps
+  # its log for diagnosis (the cluster default OnPodCompletion deletes both).
+  podGC:
+    strategy: OnPodSuccess
+  arguments:
+    parameters:
+      # Must be a full lowercase 40-hex commit SHA of jedarden/bead-rs whose
+      # tree contains this directory. The init container validates the shape
+      # and the checkout, and the Dockerfile bakes the SHA into the image's
+      # IDENTITY file.
+      - name: revision
+        value: sensor-or-operator-must-supply-sha
+      # Must match containers/bead-rs-ci-builder/VERSION in that tree; the
+      # init container cross-checks and fails closed on drift.
+      - name: version
+        value: operator-must-supply
+      # RFC3339 UTC build timestamp, e.g. 2026-09-20T12:34:56Z.
+      - name: build-date
+        value: operator-must-supply
+  volumes:
+    - name: docker-config
+      secret:
+        secretName: docker-hub-registry
+        items:
+          - key: .dockerconfigjson
+            path: config.json
+    - name: build-context
+      emptyDir:
+        sizeLimit: 2Gi
+  templates:
+    - name: build
+      outputs:
+        parameters:
+          - name: digest
+            valueFrom:
+              path: /tmp/digest
+      initContainers:
+        - name: checkout-build-context
+          image: alpine/git:2.49.1@sha256:53a6239398162098fed2f49a46512f9cbba9e3f31b9f2cea4fa90129ee069a99
+          command: [sh, -c]
+          args:
+            - |
+              set -eu
+
+              REVISION="$REVISION_PARAM"
+              VERSION="$VERSION_PARAM"
+
+              if ! printf '%s\n' "$REVISION" | grep -Eq '^[0-9a-f]{40}$'; then
+                echo "revision must be a full lowercase commit SHA" >&2
+                exit 1
+              fi
+
+              cat > /tmp/git-askpass <<'ASKEOF'
+              #!/bin/sh
+              case "$1" in
+                *Username*) printf '%s\n' x-token ;;
+                *Password*) printf '%s\n' "$FORGEJO_TOKEN" ;;
+                *) exit 1 ;;
+              esac
+              ASKEOF
+              chmod 0700 /tmp/git-askpass
+              export GIT_ASKPASS=/tmp/git-askpass GIT_TERMINAL_PROMPT=0
+
+              CONTEXT_ROOT=/build-context
+              git init -q "$CONTEXT_ROOT"
+              git -C "$CONTEXT_ROOT" remote add origin 'https://git.ardenone.com/jedarden/bead-rs.git'
+
+              MAX_ATTEMPTS=5
+              attempt=1
+              backoff=2
+              # Let git abort only a sustained sub-1-byte/s stall; the
+              # workflow deadline bounds all attempts.
+              until git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=120 \
+                -C "$CONTEXT_ROOT" fetch --quiet --no-tags --depth 1 origin "$REVISION"; do
+                if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
+                  echo "exact-revision fetch failed after $MAX_ATTEMPTS attempts" >&2
+                  exit 1
+                fi
+                echo "fetch attempt $attempt failed; retrying in ${backoff}s" >&2
+                sleep "$backoff"
+                attempt=$((attempt + 1))
+                backoff=$((backoff * 2))
+              done
+
+              git -C "$CONTEXT_ROOT" checkout --detach --quiet "$REVISION"
+              if [ "$(git -C "$CONTEXT_ROOT" rev-parse HEAD)" != "$REVISION" ]; then
+                echo "build context does not match requested revision" >&2
+                exit 1
+              fi
+
+              CHECKED_VERSION="$(tr -d '[:space:]' < "$CONTEXT_ROOT/containers/bead-rs-ci-builder/VERSION")"
+              if [ "$CHECKED_VERSION" != "$VERSION" ]; then
+                echo "version param '$VERSION' does not match VERSION file '$CHECKED_VERSION'" >&2
+                exit 1
+              fi
+              rm -rf "$CONTEXT_ROOT/.git"
+          env:
+            - name: REVISION_PARAM
+              value: "{{workflow.parameters.revision}}"
+            - name: VERSION_PARAM
+              value: "{{workflow.parameters.version}}"
+            - name: FORGEJO_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: forgejo-webhook-token
+                  key: token
+          volumeMounts:
+            - name: build-context
+              mountPath: /build-context
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      container:
+        image: gcr.io/kaniko-project/executor:v1.23.2
+        args:
+          - --context=dir:///build-context
+          - --dockerfile=containers/bead-rs-ci-builder/Dockerfile
+          # Semver tag from containers/bead-rs-ci-builder/VERSION. No :latest,
+          # no bare-SHA tag (k8s/iad-ci conventions); the consumer pins the
+          # digest emitted to /tmp/digest.
+          - --destination=ronaldraygun/bead-rs-ci-builder:{{workflow.parameters.version}}
+          - --build-arg=BUILDER_VERSION={{workflow.parameters.version}}
+          - --build-arg=BUILD_DATE={{workflow.parameters.build-date}}
+          - --build-arg=SOURCE_REVISION={{workflow.parameters.revision}}
+          - --cache=true
+          - --cache-repo=ronaldraygun/cache
+          - --digest-file=/tmp/digest
+          - --single-snapshot
+        volumeMounts:
+          - name: docker-config
+            mountPath: /kaniko/.docker
+          - name: build-context
+            mountPath: /build-context
+            readOnly: true
+        resources:
+          requests:
+            cpu: 1500m
+            memory: 3Gi
+          limits:
+            # 3500m/6Gi: the namespace LimitRange rejects anything above
+            # 3500m, and kaniko hashes every file of each new layer into
+            # memory while snapshotting (the needle base build was OOMKilled
+            # at 4Gi doing exactly this).
+            cpu: 3500m
+            memory: 6Gi
