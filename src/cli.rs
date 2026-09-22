@@ -2203,6 +2203,11 @@ SCHEMA CATALOG:
   - validate: Schema available for 'bead schema show'
   - consume: Operations accepting this document type
   - emit: Operations producing this document type
+  Every catalog identity resolves through 'bead schema show' and is
+  explainable through 'bead schema explain' (the field-guide entry's emit
+  names that command). consume and emit values name operations, or the
+  checkpoint-set-v1 durable fileset tag for documents carried in the
+  checkpoint fileset rather than emitted by a single command.
 
 Use this command for capability negotiation and feature detection."
 )]
@@ -2226,7 +2231,37 @@ pub enum SchemaCommand {
     Show(SchemaShowOptions),
     #[command(
         about = "Explain a public schema",
-        long_about = "Explain an exact public schema identity as deterministic typed JSON or Markdown.\n\nThe explanation describes ownership, transport, supported operations, and the schema's public members."
+        long_about = "Explain an exact public schema identity as deterministic typed JSON or Markdown.
+
+The explanation describes ownership, transport, supported operations, and the
+schema's public members. The command is read-only and workspace-independent:
+it resolves against the same immutable catalog that `bead capabilities`
+reports and never opens a workspace.
+
+IDENTITY RESOLUTION:
+  - SCHEMA_REF must byte-match an exact catalog identity; discover every
+    explainable identity with `bead schema list`
+  - The issue, event, and provenance-receipt identities share one native
+    field guide that describes all three documents together
+  - Every other catalog identity returns a concise explanation of that one
+    schema alone
+  - The response carries the field-guide artifact identity in schema_ref and
+    names the requested identity in describes_schema_refs
+
+FORMATS:
+  - json (default): the typed explanation value
+  - markdown: a deterministic rendering of that same value (fixed section
+    order, LF line endings, no generated timestamp)
+
+EXIT CODES:
+  - 0 on success
+  - 2 for an unknown identity or an unsupported --format value
+
+EXAMPLES:
+  bead schema explain urn:bead-rs:schema:issue:native-v1                    # Native field guide as typed JSON
+  bead schema explain urn:bead-rs:schema:issue:native-v1 --format markdown  # The same guide rendered as Markdown
+  bead schema explain urn:bead-rs:schema:checkpoint-pointer:native-v1       # Concise explanation of one schema
+  bead schema list                                                          # Discover every explainable identity"
     )]
     Explain(SchemaExplainOptions),
 }

@@ -33,7 +33,13 @@ use std::collections::HashSet;
 /// published schema omitted it, so `bead schema show` under-reported the
 /// documents this binary emits and rejected a member the contract's own
 /// detection recipe reads (beadrs-7b6590ba).
-pub const FIELD_GUIDE_VERSION: i64 = 8;
+///
+/// v9: the guide's own `schema.explain` operations entry now carries worked
+/// examples for both `--format` values and the two common mistakes agents hit
+/// with the command (byte-exact identity resolution, concise-path
+/// restrictions), and the `field_guide.guide_version` example tracks the
+/// compiled constant instead of a stale literal (beadrs-bead5974).
+pub const FIELD_GUIDE_VERSION: i64 = 9;
 
 /// Artifact identity carried by every `bead schema explain` response, per the
 /// accepted field-guide contract (`research/specs/native-field-guide-v1.md`).
@@ -3606,7 +3612,7 @@ fn field_semantics(document: &str, name: &str) -> FieldSemantics {
             operations: &["schema.explain"],
             has_default: false,
             default: Value::Null,
-            example: json!(6),
+            example: json!(FIELD_GUIDE_VERSION),
             invariants: &[
                 "the pinned guide version; snapshot and conformance tests pin rendered content to it",
                 "a bump means the guide's typed shape or a documented semantic changed incompatibly, and the snapshots refresh in the same commit",
@@ -4157,7 +4163,14 @@ fn guide_operations() -> Vec<Value> {
             ownership_effect: "read-only guide emission",
             failure_exits: &[2],
             affected_fields: &[],
-            rules: &["workspace-independent; exact catalog identities only"],
+            rules: &[
+                "workspace-independent; exact catalog identities only",
+                "worked example (typed JSON): bead schema explain urn:bead-rs:schema:issue:native-v1 --format json",
+                "worked example (Markdown): bead schema explain urn:bead-rs:schema:issue:native-v1 --format markdown",
+                "a request for any other catalog identity, for example bead schema explain urn:bead-rs:schema:checkpoint-pointer:native-v1, returns the concise explanation of that schema alone",
+                "common mistake: passing a shortened, padded, or wrong-case identity such as urn:bead-rs:schema:issue — resolution is byte-exact, so anything that is not a catalog identity is a usage error (exit 2); copy the identity verbatim from bead schema list",
+                "common mistake: expecting a concise explanation to carry the issue lifecycle, the derived-state rules, or the full operations table — the issue, audit-event, and provenance-receipt identities share the full native guide, while every other identity publishes only its own members with schema.show as the sole listed operation",
+            ],
         },
         OperationSemantics {
             name: "schema.list",

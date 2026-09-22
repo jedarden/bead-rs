@@ -62,6 +62,11 @@ SCHEMA CATALOG:
   \- validate: Schema available for \*(Aqbead schema show\*(Aq
   \- consume: Operations accepting this document type
   \- emit: Operations producing this document type
+  Every catalog identity resolves through \*(Aqbead schema show\*(Aq and is
+  explainable through \*(Aqbead schema explain\*(Aq (the field\-guide entry\*(Aqs emit
+  names that command). consume and emit values name operations, or the
+  checkpoint\-set\-v1 durable fileset tag for documents carried in the
+  checkpoint fileset rather than emitted by a single command.
 .PP
 Use this command for capability negotiation and feature detection.
 .SH OPTIONS
