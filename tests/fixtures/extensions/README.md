@@ -80,7 +80,8 @@ cargo test --test checkpoint_unknown_field_round_trip
 ## Consumers
 
 - `tests/checkpoint_unknown_field_round_trip.rs` — structural validation,
-  restore fidelity for both layouts, flush fidelity for both layouts, the
-  full export×import chain, merge insert/replace/retain semantics, and the
-  known-projection boundary (`resource_keys` is validated, not preserved
-  blindly).
+  restore fidelity for both layouts, flush fidelity for both layouts,
+  deterministic re-export (two lost-pointer flushes of the same restored
+  store must address byte-identical roots), the full export×import chain,
+  merge insert/replace/retain semantics, and the known-projection boundary
+  (`resource_keys` is validated, not preserved blindly).

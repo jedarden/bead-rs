@@ -19,6 +19,10 @@
 //!   land in their own tables and never in `issue_extensions`
 //! * flush fidelity: a restored workspace re-published monolithically and
 //!   shardedly, the new generations parsed, unknown fields diffed exactly
+//! * deterministic re-export: a restored store republished twice over a
+//!   lost pointer addresses both generations to byte-identical roots, so
+//!   the HashMap-backed re-projection cannot leak iteration order into the
+//!   published bytes
 //! * the full export×import chain: fixture → restore → monolithic flush →
 //!   restore → sharded flush → restore, payload intact at the far end
 //! * merge semantics: insert into a fresh workspace, replace when the
@@ -648,6 +652,70 @@ fn sharded_flush_reprojects_unknown_fields() {
 
     let expected = expected_extensions(&fixture_issue_records());
     assert_flush_reprojects(workspace.path(), &expected, "sharded");
+}
+
+// ---- deterministic re-export -----------------------------------------------
+
+/// Re-projecting the payload into a published generation must be
+/// deterministic: export loads the unknown fields from `issue_extensions`
+/// into a `HashMap`, so any leakage of its iteration order into the
+/// serialized generation would desynchronize two publications of the same
+/// unchanged store. The republication is triggered the way an interrupted
+/// publication triggers one in production (plan 6.2.1 item 8): the pointer
+/// is lost, so a clean `sync flush-only` must publish -- and because the
+/// root is content-addressed, byte-identical generation bytes must address
+/// the same object under the same hash.
+#[test]
+fn republishing_a_restored_store_reproduces_byte_identical_roots() {
+    let workspace = restore(&fixture_dir().join("checkpoint.jsonl"));
+    set_checkpoint_config(workspace.path(), json!({ "auto_flush": false }));
+    let checkpoint_dir = workspace.path().join(".beads/checkpoint");
+    let expected = expected_extensions(&fixture_issue_records());
+
+    // First publication. Losing the pointer makes flush-only publish even
+    // though the restored store is otherwise clean.
+    let _ = fs::remove_file(checkpoint_dir.join("current.json"));
+    bead(workspace.path(), &["sync", "flush-only"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Flushed forensic checkpoint:"));
+    let first = read_pointer(checkpoint_dir.join("current.json"));
+    let first_root = first["active_root"]["path"].as_str().unwrap().to_string();
+    let first_bytes = fs::read(checkpoint_dir.join(&first_root)).unwrap();
+
+    // Second publication of the same unchanged store: the generation bytes
+    // must reproduce exactly, so both generations address the same root.
+    let _ = fs::remove_file(checkpoint_dir.join("current.json"));
+    bead(workspace.path(), &["sync", "flush-only"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Flushed forensic checkpoint:"));
+    let second = read_pointer(checkpoint_dir.join("current.json"));
+    let second_root = second["active_root"]["path"].as_str().unwrap().to_string();
+
+    assert_ne!(
+        first["generation_id"], second["generation_id"],
+        "each lost-pointer republication must publish a fresh generation"
+    );
+    assert_eq!(
+        first["active_root"]["sha256"], second["active_root"]["sha256"],
+        "both pointers must record the same root hash"
+    );
+    assert_eq!(
+        sha256_hex(&first_bytes),
+        first["active_root"]["sha256"],
+        "the recorded root hash must match the published bytes"
+    );
+    assert_eq!(
+        first_root, second_root,
+        "re-projected generation bytes must be byte-identical: the root is \
+         content-addressed, so nondeterminism in the re-projection (HashMap \
+         iteration order over the re-projected unknown fields, for instance) \
+         would address a different object"
+    );
+
+    // And the re-projected generation still carries the full payload.
+    assert_flush_reprojects(workspace.path(), &expected, "monolithic");
 }
 
 // ---- the full export x import chain ---------------------------------------
