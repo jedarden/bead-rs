@@ -409,3 +409,81 @@ fn r035_doctor_never_clears_assignee_even_under_repair() {
         "Issue should still be diagnosed as held"
     );
 }
+
+/// The prose warning names a bounded sample of the offending ids, while the
+/// machine-readable `held_ids` projection stays complete: with more assigned
+/// open issues than the sample window, the tail must appear in `details` and
+/// must stay out of the message, so the sample can never be mistaken for the
+/// full set — that is what `held_count` and `held_ids` carry.
+#[test]
+#[serial]
+fn r035_prose_sample_is_bounded_while_details_remain_complete() {
+    let temp = TempDir::new().unwrap();
+    let workspace = temp.path();
+
+    run(workspace, &["init", "--prefix", "r035-bounded"]);
+
+    // More assigned open issues than the five the prose names.
+    let mut held = Vec::new();
+    for n in 0..7 {
+        let id = create_issue(workspace, &format!("Held by sample bound {n}"));
+        run(workspace, &["update", &id, "--assignee", "worker-1"]);
+        held.push(id);
+    }
+
+    let output = run(workspace, &["doctor", "--json"]);
+    let doctor_json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let checks = doctor_json["checks"].as_array().unwrap();
+
+    let frontier_check = checks
+        .iter()
+        .find(|c| c["name"] == "ready_frontier")
+        .expect("ready_frontier check should be present");
+
+    assert_eq!(
+        frontier_check["status"], "warning",
+        "Assigned open issues should trigger the warning"
+    );
+
+    // details carries the complete list: every held id, count to match.
+    let held_ids: Vec<String> = frontier_check["details"]["held_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        held_ids.len(),
+        held.len(),
+        "details.held_ids must list every held issue"
+    );
+    for id in &held {
+        assert!(held_ids.contains(id), "details.held_ids must contain {id}");
+    }
+    assert_eq!(
+        frontier_check["details"]["held_count"].as_u64().unwrap(),
+        held.len() as u64,
+        "held_count must match the complete list"
+    );
+
+    // The prose names exactly the first five of that list: a bounded sample.
+    // Nothing beyond the window may leak into the message, or the sample and
+    // the machine-readable list would not be distinguishable.
+    let message = frontier_check["message"].as_str().unwrap();
+    for id in &held_ids[..5] {
+        assert!(
+            message.contains(id),
+            "prose sample should name {id}: {message}"
+        );
+    }
+    for id in &held_ids[5..] {
+        assert!(
+            !message.contains(id),
+            "prose must stay bounded: {id} leaked past the sample window"
+        );
+    }
+    assert!(
+        message.contains("7 open issue(s)"),
+        "the count must account for every held issue, not just the sample: {message}"
+    );
+}
