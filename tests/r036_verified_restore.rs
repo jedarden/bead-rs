@@ -383,6 +383,113 @@ fn unverified_generation_artifact_is_refused_before_target_initialization() {
 }
 
 #[test]
+fn missing_generation_is_refused_and_names_the_available_one() {
+    let source = source_checkpoint();
+    let copied = tempfile::tempdir().unwrap();
+    let copied_checkpoint = copied.path().join("checkpoint");
+    copy_tree(&source.checkpoint, &copied_checkpoint);
+    let target = tempfile::tempdir().unwrap();
+
+    bead(target.path())
+        .args([
+            "restore",
+            "--source",
+            copied_checkpoint.to_str().unwrap(),
+            "--generation",
+            "gen-never-existed",
+            "--actor",
+            "recovery-operator",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "is not selected by current.json or previous.json",
+        ))
+        .stderr(predicate::str::contains(&source.generation))
+        .stderr(predicate::str::contains("available:"));
+    assert!(
+        !target.path().join(".beads").exists(),
+        "generation selection failure must precede target initialization"
+    );
+}
+
+#[test]
+fn direct_pointer_source_with_wrong_generation_is_refused() {
+    let source = source_checkpoint();
+    let target = tempfile::tempdir().unwrap();
+    let pointer = source.checkpoint.join("current.json");
+
+    bead(target.path())
+        .args([
+            "restore",
+            "--source",
+            pointer.to_str().unwrap(),
+            "--generation",
+            "gen-never-existed",
+            "--actor",
+            "recovery-operator",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Restore generation mismatch"))
+        .stderr(predicate::str::contains("gen-never-existed"))
+        .stderr(predicate::str::contains(&source.generation));
+    assert!(
+        !target.path().join(".beads").exists(),
+        "pointer mismatch must precede target initialization"
+    );
+}
+
+#[test]
+fn missing_and_empty_sources_are_refused_before_target_initialization() {
+    let target = tempfile::tempdir().unwrap();
+    let missing = target.path().join("nowhere/checkpoint");
+
+    bead(target.path())
+        .args([
+            "restore",
+            "--source",
+            missing.to_str().unwrap(),
+            "--generation",
+            "gen-any",
+            "--actor",
+            "recovery-operator",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "Restore source not found or unreadable",
+        ));
+    assert!(
+        !target.path().join(".beads").exists(),
+        "missing source must precede target initialization"
+    );
+
+    let empty = tempfile::tempdir().unwrap();
+    let empty_target = tempfile::tempdir().unwrap();
+
+    bead(empty_target.path())
+        .args([
+            "restore",
+            "--source",
+            empty.path().to_str().unwrap(),
+            "--generation",
+            "gen-any",
+            "--actor",
+            "recovery-operator",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "contains no current.json or previous.json generation pointer",
+        ));
+    assert!(
+        !empty_target.path().join(".beads").exists(),
+        "empty source must precede target initialization"
+    );
+}
+
+#[test]
 fn r029_archaeology_view_is_explicitly_refused() {
     let view_dir = tempfile::tempdir().unwrap();
     let view = view_dir.path().join("historical-view.json");
