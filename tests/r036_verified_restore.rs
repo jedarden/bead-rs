@@ -7,6 +7,7 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use serde_json::Value;
+use sha2::Digest;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
@@ -537,6 +538,250 @@ fn r029_archaeology_view_is_explicitly_refused() {
         .failure()
         .stderr(predicate::str::contains("R029 checkpoint archaeology view"))
         .stderr(predicate::str::contains("explicitly non-importable"));
+}
+
+#[test]
+fn restore_help_documents_the_explicit_recovery_contract() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // Top-level help offers the named recovery verb...
+    bead(dir.path())
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Restore one named, verified checkpoint generation",
+        ));
+
+    // ...and the command's own help pins the canonical long names plus the
+    // authoritative framing that keeps `sync import-only` secondary.
+    bead(dir.path())
+        .args(["restore", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("--source")
+                .and(predicate::str::contains("--generation"))
+                .and(predicate::str::contains("--actor"))
+                .and(predicate::str::contains("--allow-non-empty"))
+                .and(predicate::str::contains("--prefix"))
+                .and(predicate::str::contains("--format"))
+                .and(predicate::str::contains(
+                    "authoritative operator recovery command",
+                )),
+        );
+}
+
+#[test]
+fn input_and_force_aliases_are_live_forms_of_the_canonical_flags() {
+    let source = source_checkpoint();
+    let target = tempfile::tempdir().unwrap();
+    run(target.path(), &["init", "--prefix", "target"]);
+    let displaced_id = create_issue(target.path(), "displaced through aliases");
+
+    let output = bead(target.path())
+        .args([
+            "restore",
+            "--input",
+            source.checkpoint.to_str().unwrap(),
+            "--generation",
+            &source.generation,
+            "--actor",
+            "recovery-operator",
+            "--force",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let report: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(report["generation_id"], source.generation);
+    assert_eq!(report["non_empty_override"], true);
+    assert_eq!(report["displaced"]["issues"], 1);
+
+    let listed =
+        String::from_utf8(run(target.path(), &["list", "--json", "--limit", "999"]).stdout)
+            .unwrap();
+    assert!(listed.contains(&source.issue_id));
+    assert!(!listed.contains(&displaced_id));
+}
+
+#[test]
+fn successful_restore_writes_the_audit_event_and_a_digest_pinned_receipt() {
+    let source = source_checkpoint();
+    let target = tempfile::tempdir().unwrap();
+    let args = restore_args(&source);
+    let output = run(
+        target.path(),
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+
+    let conn = rusqlite::Connection::open(target.path().join(".beads/beads.db")).unwrap();
+
+    // Exactly one local checkpoint_restored audit event, attributed to the
+    // actor and carrying the verified source identity it authorized.
+    let (sequence, actor, detail): (i64, String, String) = conn
+        .query_row(
+            "SELECT sequence, actor, detail FROM events WHERE kind = 'checkpoint_restored'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(sequence, report["summary_event_sequence"]);
+    assert_eq!(actor, "recovery-operator");
+    let detail: Value = serde_json::from_str(&detail).unwrap();
+    assert_eq!(detail["source_root_sha256"], report["source_root_sha256"]);
+    assert_eq!(detail["replaced_non_empty_target"], false);
+    assert_eq!(detail["issues_restored"], 1);
+    let audits: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE kind = 'checkpoint_restored'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(audits, 1);
+
+    // The receipt is immutable, success-resulted, linked to the summary
+    // event, and its published digest is reproducible from its own fields.
+    let receipt_id = report["restore_receipt_id"].as_str().unwrap();
+    let (
+        stored_kind,
+        stored_root,
+        stored_actor,
+        created_at,
+        counts_json,
+        stored_result,
+        summary_identity,
+        stored_digest,
+    ): (
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+    ) = conn
+        .query_row(
+            "SELECT kind, source_root_sha256, actor, created_at, counts_json, result, \
+             summary_event_identity, receipt_sha256
+             FROM provenance_receipts WHERE receipt_id = ?1",
+            [receipt_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(stored_kind, "restore");
+    assert_eq!(stored_root, report["source_root_sha256"]);
+    assert_eq!(stored_actor, "recovery-operator");
+    assert_eq!(stored_result, "success");
+    assert_eq!(
+        summary_identity,
+        format!("local-{}", report["summary_event_sequence"])
+    );
+    let counts: Value = serde_json::from_str(&counts_json).unwrap();
+    assert_eq!(counts["issues"], 1);
+    assert_eq!(counts["provenance_receipts"], 0);
+
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(receipt_id);
+    hasher.update(&stored_kind);
+    hasher.update(&stored_root);
+    hasher.update(&stored_actor);
+    hasher.update(created_at.as_bytes());
+    hasher.update(b"success");
+    assert_eq!(format!("{:x}", hasher.finalize()), stored_digest);
+}
+
+#[test]
+fn successful_restore_publishes_a_generation_covering_the_summary_event() {
+    let source = source_checkpoint();
+    let target = tempfile::tempdir().unwrap();
+    let args = restore_args(&source);
+    let output = run(
+        target.path(),
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+
+    // Post-commit publication ran even though this restore had to initialize
+    // its own target: a fresh generation covers the restore.
+    let checkpoint = target.path().join(".beads/checkpoint");
+    let pointer: Value =
+        serde_json::from_slice(&fs::read(checkpoint.join("current.json")).unwrap()).unwrap();
+    assert_ne!(
+        pointer["generation_id"], source.generation,
+        "restore must publish a new generation, not reuse the source's"
+    );
+    assert_eq!(
+        pointer["event_count"],
+        source.pointer["event_count"].as_u64().unwrap() + 1,
+        "published events must be the restored events plus the restore summary"
+    );
+    assert_eq!(
+        pointer["receipt_count"],
+        source.pointer["receipt_count"].as_u64().unwrap() + 1,
+        "published receipts must be the restored receipts plus the new restore receipt"
+    );
+    assert_ne!(
+        pointer["active_root"]["sha256"],
+        report["source_root_sha256"]
+    );
+
+    // That published generation is itself a valid recovery artifact carrying
+    // the audit event and receipt this restore wrote.
+    let root =
+        fs::read_to_string(checkpoint.join(pointer["active_root"]["path"].as_str().unwrap()))
+            .unwrap();
+    assert!(root.contains("checkpoint_restored"));
+    assert!(root.contains(report["restore_receipt_id"].as_str().unwrap()));
+}
+
+#[test]
+fn no_auto_flush_restores_without_publishing_the_target() {
+    let source = source_checkpoint();
+    let target = tempfile::tempdir().unwrap();
+    let mut args = restore_args(&source);
+    args.push("--no-auto-flush".into());
+    let output = run(
+        target.path(),
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["issues_restored"], 1);
+
+    // The activation itself landed...
+    let conn = rusqlite::Connection::open(target.path().join(".beads/beads.db")).unwrap();
+    let receipts: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM provenance_receipts WHERE kind = 'restore'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(receipts, 1);
+
+    // ...but publication stayed suppressed: no generation covers the restore.
+    assert!(!target
+        .path()
+        .join(".beads/checkpoint/current.json")
+        .exists());
 }
 
 #[test]
