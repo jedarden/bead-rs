@@ -98,9 +98,8 @@ fn template_lane(template: &str) -> TemplateLane {
     let pin = Regex::new(r"(?m)^\s*MSRV=([0-9]+\.[0-9]+(?:\.[0-9]+)?)\s*$").expect("static regex");
     let parameterized =
         Regex::new(r#"cargo\s+"\+\$\{MSRV\}"\s+check\s+--all-targets"#).expect("static regex");
-    let literal =
-        Regex::new(r"cargo\s+\+([0-9]+\.[0-9]+(?:\.[0-9]+)?)\s+check\s+--all-targets")
-            .expect("static regex");
+    let literal = Regex::new(r"cargo\s+\+([0-9]+\.[0-9]+(?:\.[0-9]+)?)\s+check\s+--all-targets")
+        .expect("static regex");
 
     let mut lane_commands: Vec<String> = parameterized
         .find_iter(template)

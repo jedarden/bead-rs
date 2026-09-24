@@ -21,8 +21,7 @@ use std::path::Path;
 
 fn readme() -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md");
-    fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()))
+    fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()))
 }
 
 #[test]
