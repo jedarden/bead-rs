@@ -17,6 +17,20 @@
 //!
 //! Any field NOT expected to be preserved must be explicitly named with
 //! a comment explaining why.
+//!
+//! The maximally-populated workspace also carries unknown fields (the
+//! `issue_extensions` side table): JSON keys that are neither part of the
+//! native-v1 issue schema nor one of the projected collections. No CLI
+//! command produces one, so they are direct-inserted the way comments are.
+//! The round trip must preserve them unchanged through both native
+//! surfaces — the published generation's issue records (export) and the
+//! restored store's side table (import) — while every known-field
+//! assertion above keeps holding against a workspace that now carries
+//! them. The native read path is pinned to keep working over the
+//! payload-bearing records: `list --json` is a purpose-built projection
+//! that renders neither unknown fields nor every known column, so there
+//! the contract is that parsing succeeds, the known fields render
+//! correctly, and nothing mangled leaks into the output.
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -25,6 +39,38 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
+
+/// Every key an issue object may carry that is NOT an unknown extension:
+/// the serialized fields of `Issue` (src/model.rs) plus the projected
+/// collections the checkpoint layer embeds and routes to their own tables.
+/// Anything outside this set in an exported issue record is an unknown
+/// field that must survive the round trip unchanged.
+const KNOWN_ISSUE_KEYS: [&str; 24] = [
+    "id",
+    "title",
+    "revision",
+    "description",
+    "notes",
+    "priority",
+    "base_status",
+    "manual_blocked",
+    "assignee",
+    "claim_epoch",
+    "issue_type",
+    "created_at",
+    "updated_at",
+    "closed_at",
+    "close_reason",
+    "source_repo",
+    "profile",
+    "schema_ref",
+    "data",
+    "dependencies",
+    "labels",
+    "comments",
+    "external_references",
+    "resource_keys",
+];
 
 /// Create a test workspace and return the temp dir
 fn create_workspace() -> TempDir {
@@ -105,6 +151,37 @@ fn remove_projected_collections(checkpoint: &Path) {
         .collect::<Vec<_>>()
         .join("\n");
     fs::write(generation, format!("{rewritten}\n")).unwrap();
+}
+
+/// The unknown fields of one issue in the active checkpoint generation:
+/// every key the issue object carries beyond the known native-v1 fields
+/// and projections. The generation is the monolithic layout this suite
+/// publishes, so the pointer's active root is read directly.
+fn active_generation_unknown_fields(
+    workspace: &Path,
+    bead_id: &str,
+) -> serde_json::Map<String, Value> {
+    let checkpoint = workspace.join(".beads/checkpoint");
+    let pointer: Value =
+        serde_json::from_str(&fs::read_to_string(checkpoint.join("current.json")).unwrap())
+            .unwrap();
+    let generation = checkpoint.join(pointer["active_root"]["path"].as_str().unwrap());
+    let record = fs::read_to_string(&generation)
+        .unwrap()
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .find(|record| {
+            record["record_type"] == "issue" && record["issue"]["id"].as_str() == Some(bead_id)
+        })
+        .unwrap_or_else(|| panic!("active generation is missing issue {bead_id}"));
+    record["issue"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .filter(|(key, _)| !KNOWN_ISSUE_KEYS.contains(&key.as_str()))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
 }
 
 /// Compare all issues between two workspaces for complete equality
@@ -339,7 +416,14 @@ fn read_all_issues(db_path: &Path) -> Vec<Value> {
         let mut extensions_map = serde_json::Map::new();
         for ext in extensions {
             let (k, v) = ext.unwrap();
-            extensions_map.insert(k, serde_json::Value::String(v));
+            // Extension values are stored as JSON text and re-projected as
+            // JSON values, so parse before comparing: string equality cannot
+            // tell null from "null", an array from its text, or an integer
+            // from a float.
+            let parsed: Value = serde_json::from_str(&v).unwrap_or_else(|e| {
+                panic!("extension '{k}' of {} is not JSON: {e}", issue_json["id"])
+            });
+            extensions_map.insert(k, parsed);
         }
         issue_json.as_object_mut().unwrap().insert(
             "extensions".to_string(),
@@ -870,6 +954,46 @@ fn test_checkpoint_round_trip_fidelity_comprehensive() {
             .success();
     }
 
+    // Add unknown fields (the `issue_extensions` side table): the shapes a
+    // preservation contract can get wrong — the empty-string key, null,
+    // empty containers, a bool, a negative integer next to an exactly
+    // representable float, newline and non-ASCII text, deep nesting ending
+    // in `[true, false, null]`, and a heterogeneous array. No CLI command
+    // produces one, so they are direct-inserted the way comments are.
+    let unknown_fields = serde_json::json!({
+        "": "empty-string key",
+        "x-null": null,
+        "x-empty-object": {},
+        "x-empty-array": [],
+        "x-bool": true,
+        "x-negative-int": -42,
+        "x-float": 0.125,
+        "x-text": "line one\nline two — em-dash ünïcode",
+        "x-nested": { "level": [1, "two", { "three": [true, false, null] }] },
+        "x-heterogeneous": [1, "two", [3], { "four": 4 }],
+    });
+    for (key, value) in unknown_fields.as_object().unwrap() {
+        conn.execute(
+            "INSERT INTO issue_extensions (issue_id, key, value, profile)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                &bead1_id,
+                key,
+                serde_json::to_string(value).unwrap(),
+                "native-v1",
+            ],
+        )
+        .unwrap();
+    }
+    // A second issue carries one scalar, so the round trip proves per-issue
+    // routing rather than a single row's survival.
+    conn.execute(
+        "INSERT INTO issue_extensions (issue_id, key, value, profile)
+         VALUES (?1, 'x-second-issue', '\"carried over\"', 'native-v1')",
+        [&bead2_id],
+    )
+    .unwrap();
+
     // Manually increment revisions to ensure they're not reset to 1
     conn.execute(
         "UPDATE issues SET revision = revision + 1 WHERE id = ?1",
@@ -898,6 +1022,21 @@ fn test_checkpoint_round_trip_fidelity_comprehensive() {
         .success()
         .stderr(predicate::str::contains("Flushed forensic checkpoint:"))
         .stderr(predicate::str::contains("Issues: 4"));
+
+    // Step 2b: export fidelity — the published generation must re-project
+    // the unknown fields into the issue records unchanged: at the top
+    // level (never under an extensions wrapper), with exact JSON shapes,
+    // and nothing beyond the known fields and the payload itself.
+    assert_eq!(
+        active_generation_unknown_fields(source_workspace.path(), &bead1_id),
+        *unknown_fields.as_object().unwrap(),
+        "the published generation did not re-project the unknown fields of {bead1_id}"
+    );
+    assert_eq!(
+        active_generation_unknown_fields(source_workspace.path(), &bead2_id).get("x-second-issue"),
+        Some(&serde_json::json!("carried over")),
+        "the published generation did not re-project the unknown field of {bead2_id}"
+    );
 
     // Step 3: Restore into fresh empty workspace
     let restored_workspace = create_workspace();
@@ -995,6 +1134,38 @@ fn test_checkpoint_round_trip_fidelity_comprehensive() {
         count_jsonl(&list2.get_output().stdout),
         "List count mismatch"
     );
+
+    // The restored workspace's native read path must parse records carrying
+    // unknown fields without complaint and render their known fields
+    // correctly. `list --json` is a purpose-built projection that does not
+    // render unknown fields (the re-projection proofs above — the published
+    // generation and the restored side table — are the preservation
+    // contract); this pins that the payload does not break the reader or
+    // leak into its rendering. (The open issue is the safe probe; the
+    // default list omits in_progress issues.)
+    let restored_records: Vec<Value> = String::from_utf8_lossy(&list2.get_output().stdout)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let restored_bead1 = restored_records
+        .iter()
+        .find(|record| record["id"].as_str() == Some(bead1_id.as_str()))
+        .unwrap_or_else(|| panic!("restored list is missing {bead1_id}"));
+    assert_eq!(
+        restored_bead1["title"], "Test Issue 1 - All Fields",
+        "restored `list --json` rendered wrong known fields for {bead1_id}"
+    );
+    // `list` derives a few render-time keys (the computed status pair and
+    // the attempts summary) that ride the record like extensions; nothing
+    // else outside the known set may appear, mangled payload included.
+    const LIST_DERIVED_KEYS: [&str; 3] = ["attempts", "effective_status", "status"];
+    for key in restored_bead1.as_object().unwrap().keys() {
+        assert!(
+            KNOWN_ISSUE_KEYS.contains(&key.as_str()) || LIST_DERIVED_KEYS.contains(&key.as_str()),
+            "restored `list --json` rendered an unexpected key '{key}' for {bead1_id}"
+        );
+    }
 }
 
 #[test]
