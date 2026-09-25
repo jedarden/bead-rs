@@ -79,6 +79,10 @@ fn text_status_prints_counts_and_paths_for_every_git_disposition() {
     run_git(root, &["add", ".beads/checkpoint/staged.txt"]);
     fs::write(checkpoint.join("untracked.txt"), "untracked\n").unwrap();
     fs::write(checkpoint.join("ignored.txt"), "ignored\n").unwrap();
+    // git's default template normally ships .git/info/exclude, but an
+    // init.templatedir override may not — create it rather than depend on
+    // the host template.
+    fs::create_dir_all(root.join(".git/info")).unwrap();
     fs::write(
         root.join(".git/info/exclude"),
         ".beads/checkpoint/ignored.txt\n",

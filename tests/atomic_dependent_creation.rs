@@ -375,9 +375,11 @@ fn concurrent_claimers_observe_zero_wins_before_graph_commit() {
     };
 
     let stop = Arc::new(AtomicBool::new(false));
+    let (win_tx, win_rx) = std::sync::mpsc::channel::<String>();
     let mut handles = Vec::new();
     for worker in 0..2 {
         let stop = Arc::clone(&stop);
+        let win_tx = win_tx.clone();
         let path = db_path(workspace.path());
         handles.push(std::thread::spawn(move || {
             let conn = open_configured_connection(&path).unwrap();
@@ -394,6 +396,7 @@ fn concurrent_claimers_observe_zero_wins_before_graph_commit() {
                     Ok(result) => {
                         tx.commit().unwrap();
                         if let Some(id) = result.bead_id {
+                            let _ = win_tx.send(id.clone());
                             claimed.push(id);
                         }
                     }
@@ -409,6 +412,26 @@ fn concurrent_claimers_observe_zero_wins_before_graph_commit() {
             claimed
         }));
     }
+
+    // The decoy is the only claimable bead, so whoever wins it first also
+    // drains the frontier. Waiting for that first win guarantees the
+    // claimers actually ran before the in-flight transaction opens: without
+    // it, a loaded machine can leave every claimer unscheduled until after
+    // the commit, the win list ends up empty, and the zero-wins assertion
+    // passes vacuously (or fails its own non-vacuity guard).
+    let first_win = win_rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .unwrap_or_else(|_| {
+            panic!(
+                "no claimer ever won the decoy within 10s; the claim \
+                 harness never got scheduled, so the flight window was \
+                 never actually raced"
+            )
+        });
+    assert_eq!(
+        first_win, decoy,
+        "the first claim win must be the decoy: nothing else is claimable yet"
+    );
 
     // The dependent graph is built inside one transaction and held open
     // across many claimer attempts, so any half-built visibility would
