@@ -709,7 +709,7 @@ fn run_warmup(config: &BenchmarkConfig, store: &mut SqliteStore) -> Result<()> {
                         tx.commit()?;
 
                         // Immediately release for warmup (release_issue self-manages its transaction)
-                        lifecycle::release_issue(store.conn(), bead_id, None, None)?;
+                        lifecycle::release_issue(store.conn(), bead_id, None, result.claim_epoch)?;
                     } else {
                         tx.commit()?;
                     }
@@ -803,7 +803,7 @@ fn execute_claim_close(
                                 bead_id,
                                 "benchmark completed",
                                 None,
-                                None,
+                                result.claim_epoch,
                             )?;
                             metrics.closes += 1;
                         }
@@ -855,7 +855,12 @@ fn execute_claim_release(
 
                         // Release the claimed issue
                         if let Some(bead_id) = &result.bead_id {
-                            lifecycle::release_issue(store.conn(), bead_id, None, None)?;
+                            lifecycle::release_issue(
+                                store.conn(),
+                                bead_id,
+                                None,
+                                result.claim_epoch,
+                            )?;
                             metrics.releases += 1;
                         }
                     } else {
@@ -926,7 +931,12 @@ fn execute_mixed_workload(
                         Ok(claimed) => {
                             if let Some(bead_id) = &claimed.bead_id {
                                 tx.commit()?;
-                                lifecycle::release_issue(store.conn(), bead_id, None, None)?;
+                                lifecycle::release_issue(
+                                    store.conn(),
+                                    bead_id,
+                                    None,
+                                    claimed.claim_epoch,
+                                )?;
                                 metrics.releases += 1;
                             } else {
                                 tx.commit()?;
@@ -950,11 +960,16 @@ fn execute_mixed_workload(
                                     bead_id,
                                     "benchmark cycle",
                                     None,
-                                    None,
+                                    claimed.claim_epoch,
                                 )?;
                                 metrics.closes += 1;
 
-                                lifecycle::reopen_issue(store.conn(), bead_id, None, None)?;
+                                lifecycle::reopen_issue(
+                                    store.conn(),
+                                    bead_id,
+                                    None,
+                                    claimed.claim_epoch,
+                                )?;
                                 metrics.reopens += 1;
                             } else {
                                 tx.commit()?;
@@ -1019,7 +1034,12 @@ fn execute_dependency_churn(
                         tx.commit()?;
 
                         if let Some(bead_id) = &result.bead_id {
-                            lifecycle::release_issue(store.conn(), bead_id, None, None)?;
+                            lifecycle::release_issue(
+                                store.conn(),
+                                bead_id,
+                                None,
+                                result.claim_epoch,
+                            )?;
                             metrics.releases += 1;
                         }
                     } else {

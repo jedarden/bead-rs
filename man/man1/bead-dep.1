@@ -10,10 +10,10 @@ Add or remove dependency edges between issues.
 .PP
 An edge is written blocked\-first: `bead dep add <BLOCKED> <BLOCKER>` means
 BLOCKER must close before BLOCKED can become ready. `blocks` edges affect the
-ready frontier and may not form cycles; `relates_to` edges are informational
-only and may.
+ready frontier and may not form cycles; `relates_to` and `verifies` edges are
+informational only and may.
 .PP
-  bead dep add <BLOCKED> <BLOCKER> [\-\-kind blocks|relates_to]
+  bead dep add <BLOCKED> <BLOCKER> [\-\-kind blocks|relates_to|verifies]
   bead dep remove <BLOCKED> <BLOCKER> [\-\-kind KIND]
 .SH OPTIONS
 .TP

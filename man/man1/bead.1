@@ -1,10 +1,10 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH bead 1  "bead 0.2.4 (bcda20a-dirty 2026-08-31T17:43:08Z)" 
+.TH bead 1  "bead 0.2.6 (unknown 2026-09-21T11:00:55Z)" 
 .SH NAME
 bead \- Clean\-room task coordination for agent fleets
 .SH SYNOPSIS
-\fBbead\fR [\fB\-\-no\-auto\-flush\fR] [\fB\-\-skip\-foreign\-workspace\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIsubcommands\fR>
+\fBbead\fR [\fB\-\-no\-auto\-flush\fR] [\fB\-\-acknowledge\-secret\fR] [\fB\-\-skip\-foreign\-workspace\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIsubcommands\fR>
 .SH DESCRIPTION
 bead\-rs is an independent Rust task\-coordination system.
 .PP
@@ -20,8 +20,11 @@ to atomically assign work.
 SQLite (.beads/beads.db) is the authoritative live state and is not committed.
 The checkpoint under .beads/checkpoint/ is the portable, durable copy and is
 what Git tracks; every successful mutation publishes it automatically after its
-transaction commits, so it is never silently behind the database. `bead sync
-flush\-only` remains an explicit idempotent check, and `\-\-no\-auto\-flush` or
+transaction commits, so it is never silently behind the database. Each
+publication also stages the fileset it verified into the Git index (ADR\-018),
+so the next commit carries a complete checkpoint however it is invoked;
+`checkpoint.auto_stage` in .beads/config.json suppresses that staging. `bead
+sync flush\-only` remains an explicit idempotent check, and `\-\-no\-auto\-flush` or
 `checkpoint.auto_flush` in .beads/config.json suppresses automatic publication,
 leaving the checkpoint to be flushed by hand.
 .PP
@@ -51,6 +54,9 @@ Run `bead <COMMAND> \-\-help` for the full description of any command.
 .TP
 \fB\-\-no\-auto\-flush\fR
 Suppress automatic post\-commit checkpoint publication for this one invocation, leaving the checkpoint dirty for a later explicit `bead sync flush\-only`; overrides the `checkpoint.auto_flush` workspace configuration key
+.TP
+\fB\-\-acknowledge\-secret\fR \fI<FINGERPRINT>\fR
+Admit only findings whose exact scanner fingerprint matches this value. Repeat for multiple findings. Every successful mutation using an acknowledgment records a same\-transaction audit event; there is no blanket bypass flag
 .TP
 \fB\-\-skip\-foreign\-workspace\fR
 Let workspace discovery continue past the first `.beads` directory when it is not a bead\-rs workspace (no `.beads/config.json`), so a bead\-rs workspace farther up the tree can be used. Discovery otherwise stops there and fails closed: it never silently skips a `.beads` it does not recognize to operate on an unrelated parent workspace, and it never writes into the unrecognized directory \-\- including under this flag, which only widens the search
@@ -91,6 +97,9 @@ Reopen a closed issue
 .TP
 bead\-resolve(1)
 Record an execution attempt outcome atomically
+.TP
+bead\-redact(1)
+Redact one historical secret by scanner fingerprint
 .TP
 bead\-claim(1)
 Claim an issue from the ready frontier
@@ -152,6 +161,6 @@ Validate workspace policy and scheduling configuration
 bead\-help(1)
 Print this message or the help of the given subcommand(s)
 .SH VERSION
-v0.2.4 (bcda20a\-dirty 2026\-08\-31T17:43:08Z)
+v0.2.6 (unknown 2026\-09\-21T11:00:55Z)
 .SH AUTHORS
 Jed Arden <github@jedarden.com>

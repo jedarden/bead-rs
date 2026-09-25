@@ -298,8 +298,15 @@ fn append_dependency_event(
 }
 
 /// Returns whether `kind` is supported by the dependency graph.
+///
+/// `verifies` (R025, ADR-001) declares that the blocker checks the work the
+/// blocked issue performs. Like `relates_to` it never affects readiness -- only
+/// `blocks` does -- and it never participates in cycle detection, so cycles
+/// among `verifies` edges alone are permitted. Native mutation fails closed on
+/// every other kind: the checkpoint interchange keeps unknown kinds
+/// preservable, but they cannot enter the store through this path.
 fn is_valid_kind(kind: &str) -> bool {
-    matches!(kind, "blocks" | "relates_to")
+    matches!(kind, "blocks" | "relates_to" | "verifies")
 }
 
 /// Removes a dependency edge.
@@ -800,8 +807,10 @@ mod tests {
     fn test_is_valid_kind() {
         assert!(is_valid_kind("blocks"));
         assert!(is_valid_kind("relates_to"));
+        assert!(is_valid_kind("verifies"));
         assert!(!is_valid_kind("parent-child"));
         assert!(!is_valid_kind("depends-on"));
+        assert!(!is_valid_kind("Verify"));
     }
 
     #[test]
@@ -1040,6 +1049,110 @@ mod tests {
             .unwrap();
 
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_verifies_add_persists_kind() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "impl-1", "Add tilde expansion helper");
+        create_test_issue(&mut store, "check-1", "Run clippy and fix warnings");
+
+        // A verifies edge is written verifier-second, like every other edge:
+        // impl-1 is verified by check-1.
+        add_dependency(&mut store, "impl-1", "check-1", "verifies", None).unwrap();
+
+        let conn = store.conn();
+        let (blocked, blocker, kind): (String, String, String) = conn
+            .query_row(
+                "SELECT blocked_issue_id, blocker_issue_id, kind FROM dependencies",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+
+        assert_eq!(
+            (blocked.as_str(), blocker.as_str(), kind.as_str()),
+            ("impl-1", "check-1", "verifies")
+        );
+    }
+
+    #[test]
+    fn test_verifies_allows_cycles() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "issue-1", "Issue 1");
+        create_test_issue(&mut store, "issue-2", "Issue 2");
+
+        // Cycles among `verifies` edges alone are permitted: the kind never
+        // enters cycle detection, only `blocks` does.
+        add_dependency(&mut store, "issue-1", "issue-2", "verifies", None).unwrap();
+        add_dependency(&mut store, "issue-2", "issue-1", "verifies", None).unwrap();
+
+        let conn = store.conn();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM dependencies WHERE kind = 'verifies'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_verifies_self_edge_rejected() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "issue-1", "Self Issue");
+
+        let result = add_dependency(&mut store, "issue-1", "issue-1", "verifies", None);
+        assert!(matches!(result, Err(Error::Conflict(_))));
+    }
+
+    #[test]
+    fn test_verifies_appends_event_with_kind() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "impl-1", "Implementation Issue");
+        create_test_issue(&mut store, "check-1", "Verification Issue");
+
+        add_dependency(&mut store, "impl-1", "check-1", "verifies", None).unwrap();
+
+        let events = read_events(&mut store);
+        assert_eq!(events.len(), 1, "one event per committed add");
+
+        let (issue_id, kind, detail) = &events[0];
+        assert_eq!(issue_id.as_deref(), Some("impl-1"));
+        assert_eq!(kind, "dependency_added");
+        assert_eq!(detail["blocked"], "impl-1");
+        assert_eq!(detail["blocker"], "check-1");
+        assert_eq!(detail["kind"], "verifies");
+    }
+
+    #[test]
+    fn test_verifies_and_blocks_coexist_for_inverted_pair() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "impl-1", "Implementation Issue");
+        create_test_issue(&mut store, "check-1", "Verification Issue");
+
+        // An inverted gate is both edges on the same pair. Insertion stays
+        // legal -- the diagnosis is advisory, reported by doctor, never
+        // rejected here (ADR-001).
+        add_dependency(&mut store, "impl-1", "check-1", "verifies", None).unwrap();
+        add_dependency(&mut store, "impl-1", "check-1", "blocks", None).unwrap();
+
+        let conn = store.conn();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM dependencies
+                 WHERE blocked_issue_id = 'impl-1' AND blocker_issue_id = 'check-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(
+            count, 2,
+            "the primary key is per-kind, so both edges persist"
+        );
     }
 
     #[test]

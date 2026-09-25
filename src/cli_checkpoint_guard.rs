@@ -49,6 +49,14 @@ fn policy(command: &Command) -> Option<bool> {
             SyncCommand::Fork(_) => Some(true),
             SyncCommand::FlushOnly(opts) => opts.output.is_none().then_some(true),
             SyncCommand::ImportOnly(_) | SyncCommand::Reconcile(_) => Some(false),
+            // `sync commit` (ADR-019) mutates Git, never beads state, and
+            // it must not hold the workspace operation lock across the
+            // commit: a pre-commit gate can block for a long time, and
+            // every other worker's mutations would queue behind it. The
+            // publication it might race is benign -- the verified set is
+            // re-read from the artifacts, and a superseding generation is
+            // consistent by construction.
+            SyncCommand::Commit(_) => None,
             SyncCommand::Status(_) | SyncCommand::Diff(_) | SyncCommand::Bisect(_) => None,
         },
         Command::Init(_) | Command::Restore(_) | Command::Redact(_) => Some(false),

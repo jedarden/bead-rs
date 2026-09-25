@@ -10,10 +10,12 @@ This document describes the differences between the old-format checkpoint fixtur
 tests/fixtures/attempts/
 ├── old/                    # Pre-attempt-resolution format
 │   ├── checkpoint.jsonl  # Old-format checkpoint data
-│   └── current.json      # Old-format manifest
+│   ├── current.json      # Old-format monolithic pointer
+│   └── sharded/          # Old-format content-addressed checkpoint set
 ├── new/                    # With attempt-resolution feature
 │   ├── checkpoint.jsonl  # New-format checkpoint data
-│   └── current.json      # New-format manifest
+│   ├── current.json      # New-format monolithic pointer
+│   └── sharded/          # New-format content-addressed checkpoint set
 └── FORMAT_DIFFERENCES.md  # This file
 ```
 
@@ -71,7 +73,7 @@ tests/fixtures/attempts/
 {"record_type":"issue","issue":{...issue data...}}
 {"record_type":"issue","issue":{...issue data...}}
 {"record_type":"attempt_outcome","attempt_outcome":{...attempt outcome data...}}
-{"record_type":"attempt_outcome","attempt_outcome":{...attempt outcome data...}}
+... 15 additional attempt_outcome records ...
 ```
 
 ### attempt_outcome Record Schema
@@ -107,17 +109,17 @@ Each `attempt_outcome` record includes:
   "added_paths": ["checkpoint.jsonl"],
   "created_at": "2026-08-31T15:00:00.000000000Z",
   "deleted_paths": [],
-  "event_count": 10,
+  "event_count": 0,
   "generation_id": "gen-new-format-test-fixture",
   "issue_count": 3,
   "mode": "monolithic",
-  "receipt_count": 2,
+  "receipt_count": 0,
   "replaced_paths": ["current.json", "forensic.jsonl"],
   "schema_version": 1,
   "snapshot_sequence": 10,
   "store_uuid": "00000000-0000-0000-0000-000000000000",
-  "total_record_count": 5,
-  "attempt_outcome_count": 2
+  "total_record_count": 19,
+  "attempt_outcome_count": 16
 }
 ```
 
@@ -133,7 +135,7 @@ total_record_count = issue_count + event_count + receipt_count + attempt_outcome
 
 For the example new-format fixture:
 ```
-5 = 3 (issues) + 0 (events) + 0 (receipts) + 2 (attempt_outcomes)
+19 = 3 (issues) + 0 (events) + 0 (receipts) + 16 (attempt_outcomes)
 ```
 
 ## Schema Validation
@@ -160,8 +162,9 @@ Both old and new formats validate against the same checkpoint-manifest schema (`
 
 The fixtures are used by:
 
-1. `tests/attempt_outcome_round_trip.rs`: Validates attempt outcome persistence through checkpoint export/import
-2. `tests/pinned_binary_capability.rs`: Tests capability detection and compatibility between pre-feature and feature-enabled binaries
+1. `tests/checkpoint_fixture_conformance.rs`: Validates old/new format boundaries, complete outcome/action coverage, lifecycle event coverage, hashes, counts, and restore behavior for both layouts
+2. `tests/attempt_outcome_round_trip.rs`: Validates attempt outcome persistence through checkpoint export/import
+3. `tests/pinned_binary_capability.rs`: Tests capability detection and compatibility between pre-feature and feature-enabled binaries
 
 ### Validation Commands
 
@@ -177,6 +180,9 @@ jq -r 'select(.record_type == "attempt_outcome") | .attempt_outcome.attempt_id' 
 
 # Verify manifest counts
 jq -r '.attempt_outcome_count' tests/fixtures/attempts/new/current.json
+
+# Run all fixture checks, including content-addressed sharded objects
+./tests/fixtures/attempts/validate.sh
 ```
 
 ## Implementation Reference

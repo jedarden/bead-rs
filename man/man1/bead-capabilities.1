@@ -30,6 +30,9 @@ CAPABILITY INFORMATION:
   \- Complete command inventory
   \- auto_flush: reports that this binary publishes a checkpoint
     generation after every successful semantic mutation
+  \- auto_stage: reports that this binary stages the published
+    checkpoint fileset into the Git index after every successful
+    publication (ADR\-018)
 .PP
 AUTO_FLUSH:
   The additive auto_flush field reports the compiled default, not
@@ -39,6 +42,14 @@ AUTO_FLUSH:
   present and true under the automatic default. Consumers that require
   a current checkpoint must still read `bead sync \-\-status`, which
   remains the only authority on whether this workspace is clean.
+.PP
+AUTO_STAGE:
+  The additive auto_stage field (ADR\-018) reports the compiled default,
+  not workspace state: a workspace that disables staging through
+  checkpoint.auto_stage changes what the binary does, never what it
+  advertises. The field is present and true under the automatic
+  default. Staging runs only after the publication transaction has
+  committed, so a staging failure can never un\-publish a mutation.
 .PP
 PROFILES:
   \- native\-v1: Full native capabilities (default)
@@ -51,6 +62,11 @@ SCHEMA CATALOG:
   \- validate: Schema available for \*(Aqbead schema show\*(Aq
   \- consume: Operations accepting this document type
   \- emit: Operations producing this document type
+  Every catalog identity resolves through \*(Aqbead schema show\*(Aq and is
+  explainable through \*(Aqbead schema explain\*(Aq (the field\-guide entry\*(Aqs emit
+  names that command). consume and emit values name operations, or the
+  checkpoint\-set\-v1 durable fileset tag for documents carried in the
+  checkpoint fileset rather than emitted by a single command.
 .PP
 Use this command for capability negotiation and feature detection.
 .SH OPTIONS

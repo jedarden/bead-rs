@@ -1,7 +1,8 @@
 //! Service layer for bead operations
 //!
 //! This module provides business logic for issue operations, claiming,
-//! dependencies, checkpoint management, diagnostics, and capabilities.
+//! dependencies, checkpoint management, diagnostics, read-only Git
+//! reachability reporting (ADR-013), and capabilities.
 
 pub mod archaeology;
 pub mod attempt;
@@ -16,6 +17,18 @@ pub mod dependencies;
 pub mod doctor;
 pub mod dryrun;
 pub mod external_refs;
+// Reporting-only Git inspection used by `sync status` (ADR-013).
+pub mod git;
+// Best-effort Git index staging of the published checkpoint fileset
+// (ADR-018) -- the write-side counterpart to the probe above; staging
+// never commits (ADR-003 stands), and `checkpoint.auto_stage` is the
+// durable opt-out.
+pub mod git_stage;
+// The explicit checkpoint commit (`bead sync commit`, ADR-019): stages the
+// verified set, refuses a dirty or ahead checkpoint, and records the
+// commit with a bead-only pathspec. The one sanctioned commit half that
+// ADR-018's staging deliberately stopped short of.
+pub mod git_commit;
 pub mod issues;
 pub mod leases;
 pub mod lifecycle;
@@ -42,7 +55,7 @@ pub use archaeology::{
     ArchaeologyBisectReport, ArchaeologyDiffReport, ArchaeologyQueryReport,
     ARCHAEOLOGY_ARTIFACT_KIND,
 };
-pub use attempt::resolve_attempt;
+pub use attempt::{get_attempt_summary, resolve_attempt, AttemptSummary};
 pub use capabilities::generate_capabilities;
 pub use changes::{
     get_changes_since, get_gap_info, get_snapshot_identity, validate_cursor, Cursor,
@@ -73,7 +86,8 @@ pub use checkpoint::AUTO_FLUSH_COMPILED_DEFAULT;
 // claim_issue_with_trace is public library API but unused by the binary
 #[allow(unused_imports)]
 pub use claim::{
-    claim_issue_with_lease, claim_issue_with_policy, claim_issue_with_trace, EnhancedClaimResult,
+    claim_issue_with_lease, claim_issue_with_lease_and_sort, claim_issue_with_policy,
+    claim_issue_with_trace, load_claim_ready_sort, EnhancedClaimResult, ReadySort,
 };
 pub use conditions::ConditionExpr;
 pub use data::{get_data, list_data, remove_data, set_data};
@@ -88,10 +102,11 @@ pub use external_refs::{
     remove_external_reference,
 };
 pub use issues::get_issue_by_id;
-pub use issues::list_issues;
 pub use issues::{add_comment, analyze_exclusion, ExclusionAnalysis};
 #[allow(unused_imports)]
 pub use issues::{create_issue, create_issue_with_unique_ref, CreateOutcome};
+#[allow(unused_imports)]
+pub use issues::{list_issues, list_issues_with_sort};
 #[allow(unused_imports)]
 pub use leases::{
     current_claim_epoch, validate_claim_epoch_for_mutation, validate_lease_for_mutation,

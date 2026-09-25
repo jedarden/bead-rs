@@ -4,19 +4,21 @@
 .SH NAME
 bead list \- List issues
 .SH SYNOPSIS
-\fBbead list\fR [\fB\-\-json\fR] [\fB\-\-status\fR] [\fB\-\-assignee\fR] [\fB\-\-ready\fR] [\fB\-\-blocked\fR] [\fB\-\-comments\fR] [\fB\-\-limit\fR] [\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBbead list\fR [\fB\-\-json\fR] [\fB\-\-status\fR] [\fB\-\-assignee\fR] [\fB\-\-ready\fR] [\fB\-\-sort\fR] [\fB\-\-blocked\fR] [\fB\-\-comments\fR] [\fB\-\-limit\fR] [\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] 
 .SH DESCRIPTION
 List issues with optional filtering and comment projection.
 .PP
 Supports filtering by status, assignee, ready frontier, and manual block. Uses claim
-ordering (priority ASC, created_at ASC, id ASC) for deterministic results.
-Ready frontier uses the same ordering as \*(Aqbead claim\*(Aq but is read\-only and
-does not reserve work.
+ordering (priority ASC, created_at ASC, id ASC) for deterministic results by
+default. Ready frontier uses the same ordering as \*(Aqbead claim\*(Aq but is read\-only
+and does not reserve work. With \*(Aq\-\-ready \-\-sort attempts\*(Aq, consecutive failures
+order beads within each priority tier before the FIFO tie\-breakers.
 .PP
 EXAMPLES:
   bead list \-\-json \-\-limit 10                      # First 10 issues as JSON
   bead list \-\-status open \-\-assignee alice        # Open issues assigned to alice
   bead list \-\-ready \-\-limit 5                      # Next 5 ready candidates
+  bead list \-\-ready \-\-sort attempts \-\-limit 5      # Prefer fresh work within priority
   bead list \-\-blocked                               # Manually blocked open issues
   bead list \-\-comments unresolved \-\-json \-\-limit 20  # Issues with unresolved comments
 .PP
@@ -25,6 +27,7 @@ FILTERS:
                     (Special case: \*(Aqblocked\*(Aq is an alias for \-\-blocked)
   \-\-assignee NAME   Filter by assignee (exact match)
   \-\-ready           Show only ready frontier issues (open, unassigned, not blocked)
+  \-\-sort attempts   Within each priority, show fewer consecutive failures first
   \-\-blocked         Show only manually blocked open issues
   \-\-limit N         Maximum results (0\-999999, default: 100)
 .PP
@@ -51,6 +54,17 @@ Filter by assignee
 .TP
 \fB\-\-ready\fR
 Show only ready frontier issues
+.TP
+\fB\-\-sort\fR \fI<ORDER>\fR
+Ready\-frontier ordering: attempts prefers fewer consecutive failures within each priority tier, then retains the FIFO tie\-breakers
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+attempts
+.RE
 .TP
 \fB\-\-blocked\fR
 Show only manually blocked open issues

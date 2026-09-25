@@ -8,6 +8,8 @@
 //! attempt resolve -- with no credential, a superseded one, and the current
 //! one.
 
+mod lease_history_seeding;
+
 use assert_cmd::Command;
 use serde_json::Value;
 use std::path::Path;
@@ -105,6 +107,22 @@ fn published_events(workspace: &Path, id: &str) -> Vec<Value> {
         .collect()
 }
 
+/// The epoch each recorded claim minted, in feed order -- the durable memory
+/// of every tenure the issue has had, superseded ones included. This is where
+/// an epoch outlives the claim that held it: the issue row carries only the
+/// current credential, but the feed names them all.
+fn claimed_epochs(workspace: &Path, id: &str) -> Vec<i64> {
+    published_events(workspace, id)
+        .into_iter()
+        .filter(|event| event["kind"] == "claimed")
+        .map(|event| {
+            event["detail"]["claim_epoch"]
+                .as_i64()
+                .expect("a claimed event carries the epoch it minted")
+        })
+        .collect()
+}
+
 /// Run `bead` and hand back the raw result, for the cases where a non-zero
 /// exit *is* the assertion.
 fn run_raw<I, S>(workspace: &Path, args: I) -> Output
@@ -189,6 +207,134 @@ fn with_credential(mut args: Vec<String>, credential: &str) -> Vec<String> {
     args
 }
 
+/// Release the claim currently held on `id` -- presenting the exact
+/// credential the store says fences it -- and immediately reclaim as a
+/// different assignee: the release-and-reclaim rotation every successor
+/// tenure goes through. Returns the superseded epoch and the one the
+/// reclaim minted, already asserted to have strictly advanced. The later
+/// release-and-reclaim suites build on this harness so the rotation
+/// contract is pinned once, here.
+fn rotate_claim(workspace: &Path, id: &str, next_assignee: &str, leased: bool) -> (i64, i64) {
+    let before = held_state(workspace, id);
+    assert_ne!(
+        before.1, next_assignee,
+        "rotation must hand the claim to a different assignee"
+    );
+    let events_before = published_event_count(workspace, id);
+
+    // The exact current credential, read back from the store rather than
+    // remembered by the caller: the release only lands if the fence accepts
+    // the epoch this tenure actually holds.
+    let superseded = shown_issue(workspace, id)["claim_epoch"]
+        .as_i64()
+        .expect("a held claim fences with an epoch");
+    run(
+        workspace,
+        ["release", id, "--fencing-token", &superseded.to_string()],
+    );
+
+    let minted = claim(workspace, next_assignee, leased)["claim_epoch"]
+        .as_i64()
+        .expect("a reclaim mints an epoch");
+    assert!(
+        minted > superseded,
+        "rotation must mint a later epoch than the one it replaced, not {minted} after {superseded}"
+    );
+
+    // The rotation landed as a whole: the successor holds the claim, and the
+    // feed advanced by exactly the release and the reclaim -- no partial
+    // write can hide behind the rotation.
+    let after = held_state(workspace, id);
+    assert_eq!(after.0, "in_progress", "the reclaim must hold the claim");
+    assert_eq!(
+        after.1, next_assignee,
+        "the reclaim must assign the successor"
+    );
+    assert_eq!(
+        published_event_count(workspace, id),
+        events_before + 2,
+        "rotation must publish exactly the released and claimed events"
+    );
+
+    (superseded, minted)
+}
+
+/// A workspace holding one issue whose claim was just handed over by
+/// [`rotate_claim`]: `worker-one`'s tenure superseded, `worker-two` holding
+/// the credential the reclaim minted. Every successor-leg test below starts
+/// from this state, and each takes its own workspace so a committed close
+/// or reopen cannot contaminate the next probe.
+fn reclaimed_issue(title: &str) -> (tempfile::TempDir, String, i64, i64) {
+    let workspace = tempfile::tempdir().unwrap();
+    run(workspace.path(), ["init", "--prefix", "epoch"]);
+    let id = String::from_utf8(run(workspace.path(), ["create", "--title", title]).stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+    claim(workspace.path(), "worker-one", false);
+    let (superseded, minted) = rotate_claim(workspace.path(), &id, "worker-two", false);
+    (workspace, id, superseded, minted)
+}
+
+/// The rejection leg every successor test opens with: the exact mutation
+/// that is about to succeed, presented first with the superseded epoch's
+/// credential. The refusal must be the credential gate's own -- exit 4 plus
+/// its message, so a status-guard rejection cannot pass for a fence -- and
+/// a pure no-op: same status, same assignee, same revision, no published
+/// event.
+fn assert_superseded_credential_is_refused(
+    workspace: &Path,
+    id: &str,
+    label: &str,
+    mutation: &[String],
+    superseded: i64,
+) {
+    let held = held_state(workspace, id);
+    let events_before = published_event_count(workspace, id);
+    let output = run_raw(
+        workspace,
+        with_credential(mutation.to_vec(), &superseded.to_string()),
+    );
+    assert_credential_conflict(&output, &format!("{label} with the superseded credential"));
+    assert_eq!(
+        held_state(workspace, id),
+        held,
+        "{label} with the superseded credential must leave the successor's claim intact"
+    );
+    assert_eq!(
+        published_event_count(workspace, id),
+        events_before,
+        "{label} with the superseded credential must not publish an event"
+    );
+}
+
+/// The declared resource keys an issue currently carries, read back from
+/// the store: the surface a resource-lock mutation commits to, which a
+/// refused one must leave exactly as it found it.
+fn resource_keys(workspace: &Path, id: &str) -> Vec<String> {
+    serde_json::from_slice(&run(workspace, ["resource", "list", id, "--json"]).stdout).unwrap()
+}
+
+/// The resource-lock rejection leg: everything the shared refusal asserts
+/// -- exit 4 from the credential gate, the successor's claim and the feed
+/// untouched -- plus the declared key set itself, the part of the issue a
+/// refused declaration must not move.
+fn assert_superseded_credential_keeps_resource_keys(
+    workspace: &Path,
+    id: &str,
+    label: &str,
+    mutation: &[String],
+    superseded: i64,
+) {
+    let keys = resource_keys(workspace, id);
+    assert_superseded_credential_is_refused(workspace, id, label, mutation, superseded);
+    assert_eq!(
+        resource_keys(workspace, id),
+        keys,
+        "{label} with the superseded credential must leave the declared keys untouched"
+    );
+}
+
 #[test]
 fn every_claim_mints_a_visible_monotonic_epoch_that_survives_rebuild() {
     let workspace = tempfile::tempdir().unwrap();
@@ -259,12 +405,12 @@ fn every_claim_mints_a_visible_monotonic_epoch_that_survives_rebuild() {
         second_epoch
     );
 
-    run(
-        workspace.path(),
-        ["release", &id, "--fencing-token", &second_epoch.to_string()],
-    );
-    let third = claim(workspace.path(), "worker-three", false);
-    assert!(third["claim_epoch"].as_i64().unwrap() > second_epoch);
+    // The recovered tenure rotates through the same harness as every other
+    // release-and-reclaim: the epoch that survived the rebuild is what the
+    // store says the release fences with, and the reclaim must mint a later
+    // one.
+    let (_, third_epoch) = rotate_claim(workspace.path(), &id, "worker-three", false);
+    assert!(third_epoch > second_epoch);
 }
 
 /// A claimed issue refuses every claimant-owned mutation that presents no
@@ -543,6 +689,388 @@ fn a_superseded_credential_cannot_mutate_the_claim_that_replaced_it() {
     );
 }
 
+/// The rotation leg itself, pinned in isolation: presenting the held
+/// claim's exact credential releases it, the reclaim as a different
+/// assignee mints a strictly later epoch, and *both* epochs -- the
+/// superseded one and its replacement -- survive a checkpoint round-trip,
+/// so the rotation is durable state rather than an in-memory mint the
+/// next rebuild forgets. The per-surface successor legs are the later
+/// sub-splits; this is the tenure change they all start from.
+#[test]
+fn release_and_reclaim_rotates_the_claim_epoch_durably() {
+    let workspace = tempfile::tempdir().unwrap();
+    run(workspace.path(), ["init", "--prefix", "epoch"]);
+    let id =
+        String::from_utf8(run(workspace.path(), ["create", "--title", "rotation target"]).stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+
+    claim(workspace.path(), "worker-one", false);
+    let (superseded, minted) = rotate_claim(workspace.path(), &id, "worker-two", false);
+
+    // Strictly later, on the values the CLI minted -- the harness's own
+    // invariant, restated on the pair it returned so the leg is pinned in
+    // the test and not only inside the harness.
+    assert!(
+        minted > superseded,
+        "the reclaim must out-epoch the claim it replaced: {minted} vs {superseded}"
+    );
+
+    // The published checkpoint carries the successor's tenure on the issue
+    // record, and still names the epoch each claim minted -- the superseded
+    // tenure is history the checkpoint remembers, not a value only the
+    // live store held.
+    assert_eq!(
+        checkpoint_issue(workspace.path(), &id)["claim_epoch"].as_i64(),
+        Some(minted),
+        "the published checkpoint must carry the replacement epoch"
+    );
+    assert_eq!(
+        claimed_epochs(workspace.path(), &id),
+        vec![superseded, minted],
+        "both tenures' epochs must be published before the round-trip"
+    );
+
+    // Recover the way a fresh clone does -- rebuild the store from the
+    // checkpoint alone -- and both epochs are still there: the rebuilt
+    // issue carries the replacement, and the rebuilt feed still names each
+    // mint.
+    let saved_checkpoint = workspace.path().join("saved-forensic.jsonl");
+    std::fs::copy(
+        workspace
+            .path()
+            .join(".beads")
+            .join("checkpoint")
+            .join("forensic.jsonl"),
+        &saved_checkpoint,
+    )
+    .unwrap();
+    std::fs::remove_file(workspace.path().join(".beads").join("beads.db")).unwrap();
+    run(workspace.path(), ["init"]);
+    run(
+        workspace.path(),
+        [
+            "sync",
+            "import-only",
+            "--input",
+            saved_checkpoint.to_str().unwrap(),
+            "--restore-into-empty",
+            "--actor",
+            "claim-epoch-test",
+        ],
+    );
+
+    assert_eq!(
+        shown_issue(workspace.path(), &id)["claim_epoch"].as_i64(),
+        Some(minted),
+        "the rebuilt store must carry the replacement epoch"
+    );
+    let rebuilt_epochs = claimed_epochs(workspace.path(), &id);
+    assert_eq!(
+        rebuilt_epochs,
+        vec![superseded, minted],
+        "both epochs must survive the checkpoint round-trip"
+    );
+
+    // Durability is proven on the same invariant the rotation leg pins, not
+    // merely on the values matching their pre-rebuild counterparts: re-derive
+    // strictly-greater from the epochs the rebuilt feed actually names.
+    assert!(
+        rebuilt_epochs[1] > rebuilt_epochs[0],
+        "the reclaim's out-epoching of the claim it replaced must survive the round-trip: {} vs {}",
+        rebuilt_epochs[1],
+        rebuilt_epochs[0]
+    );
+}
+
+/// The successor's update leg. The rotation harness and the rejection
+/// sweeps prove what the superseded credential cannot do; this is the
+/// complementary proof that the credential the reclaim minted is the one
+/// the fence accepts, and that the update it admits commits: the notes
+/// read back as the value the successor wrote, not merely an exit zero.
+/// The claim survives the update as the successor's own tenure -- same
+/// assignee, same epoch, exactly one revision bump.
+#[test]
+fn after_release_and_reclaim_the_new_claimant_can_update() {
+    let (workspace, id, superseded, minted) = reclaimed_issue("successor update");
+    assert_eq!(
+        shown_issue(workspace.path(), &id)["notes"].as_str(),
+        Some(""),
+        "the update leg must start from an issue with no notes"
+    );
+
+    let update = vec![
+        "update".to_string(),
+        id.clone(),
+        "--notes".to_string(),
+        "written by the successor".to_string(),
+    ];
+    assert_superseded_credential_is_refused(workspace.path(), &id, "update", &update, superseded);
+
+    let before = held_state(workspace.path(), &id);
+    run(
+        workspace.path(),
+        with_credential(update, &minted.to_string()),
+    );
+    assert_eq!(
+        shown_issue(workspace.path(), &id)["notes"].as_str(),
+        Some("written by the successor"),
+        "the update must have committed the notes it carried"
+    );
+    let updated = held_state(workspace.path(), &id);
+    assert_eq!(
+        updated.0, "in_progress",
+        "the update must keep the claim held"
+    );
+    assert_eq!(
+        updated.1, "worker-two",
+        "the update must keep the successor's claim"
+    );
+    assert_eq!(
+        updated.2,
+        before.2 + 1,
+        "the successor's update must bump the revision exactly once"
+    );
+    assert_eq!(
+        shown_issue(workspace.path(), &id)["claim_epoch"].as_i64(),
+        Some(minted),
+        "the update must leave the rotation's epoch standing"
+    );
+}
+
+/// The successor's close leg: the minted credential closes the issue the
+/// reclaim left in progress, and the `closed` event names that credential
+/// as the one that authorized it -- a reader of the feed can tell the
+/// successor's close from the tenure it replaced. Closing keeps the claim,
+/// so the assignee and the epoch survive for a later reopen to hand back.
+#[test]
+fn after_release_and_reclaim_the_new_claimant_can_close() {
+    let (workspace, id, superseded, minted) = reclaimed_issue("successor close");
+
+    let close = vec![
+        "close".to_string(),
+        id.clone(),
+        "--reason".to_string(),
+        "closed by the successor".to_string(),
+    ];
+    assert_superseded_credential_is_refused(workspace.path(), &id, "close", &close, superseded);
+
+    let before = held_state(workspace.path(), &id);
+    run(
+        workspace.path(),
+        with_credential(close, &minted.to_string()),
+    );
+
+    let closed = shown_issue(workspace.path(), &id);
+    assert_eq!(
+        closed["status"].as_str(),
+        Some("closed"),
+        "the close must have committed"
+    );
+    assert_eq!(
+        closed["assignee"].as_str(),
+        Some("worker-two"),
+        "closing must keep the successor's claim standing"
+    );
+    assert_eq!(
+        closed["revision"].as_i64(),
+        Some(before.2 + 1),
+        "the successor's close must bump the revision exactly once"
+    );
+
+    let event = published_events(workspace.path(), &id)
+        .into_iter()
+        .find(|event| event["kind"] == "closed")
+        .expect("the close must publish a closed event");
+    assert_eq!(
+        event["detail"]["claim_epoch"].as_i64(),
+        Some(minted),
+        "the closed event must name the rotation's epoch as the authorizing credential"
+    );
+    assert_eq!(
+        event["detail"]["presented_fencing_token"].as_i64(),
+        Some(minted),
+        "the closed event must name the credential the successor presented"
+    );
+    assert_eq!(
+        event["detail"]["reason"].as_str(),
+        Some("closed by the successor"),
+        "the reason is recorded alongside the credential"
+    );
+}
+
+/// The successor's reopen leg. Reopen is only reachable once the issue is
+/// closed, and closing keeps the claim -- so this leg closes under the
+/// minted credential first (the scaffolding the reopenable state needs; the
+/// close surface has its own workspace above), then proves the superseded
+/// credential cannot hand the claim back from that state while the minted
+/// one can: the issue returns to open, the assignee is cleared, and the
+/// `reopened` event names the tenure it ended.
+#[test]
+fn after_release_and_reclaim_the_new_claimant_can_reopen() {
+    let (workspace, id, superseded, minted) = reclaimed_issue("successor reopen");
+
+    let close = vec![
+        "close".to_string(),
+        id.clone(),
+        "--reason".to_string(),
+        "closed to reach the reopenable state".to_string(),
+    ];
+    run(
+        workspace.path(),
+        with_credential(close, &minted.to_string()),
+    );
+    let closed = held_state(workspace.path(), &id);
+    assert_eq!(closed.0, "closed", "the scaffolding close must land");
+    assert_eq!(
+        closed.1, "worker-two",
+        "the scaffolding close must keep the claim the reopen will hand back"
+    );
+
+    let reopen = vec!["reopen".to_string(), id.clone()];
+    assert_superseded_credential_is_refused(workspace.path(), &id, "reopen", &reopen, superseded);
+
+    run(
+        workspace.path(),
+        with_credential(reopen, &minted.to_string()),
+    );
+    let reopened = unheld_state(workspace.path(), &id);
+    assert_eq!(reopened.0, "open", "the reopen must have committed");
+    assert_eq!(
+        reopened.1, None,
+        "reopen must hand the successor's claim back"
+    );
+    assert_eq!(
+        reopened.2,
+        closed.2 + 1,
+        "the successor's reopen must bump the revision exactly once"
+    );
+
+    let event = published_events(workspace.path(), &id)
+        .into_iter()
+        .find(|event| event["kind"] == "reopened")
+        .expect("the reopen must publish a reopened event");
+    assert_eq!(
+        event["detail"]["prior_assignee"].as_str(),
+        Some("worker-two"),
+        "the reopened event must name the successor's tenure as the one it ended"
+    );
+}
+
+/// The successor's resource-lock legs. A declaration is scheduling
+/// metadata, not an issue-row edit: unlike the lifecycle surfaces above,
+/// neither verb bumps the revision, so each is proved by the key set it
+/// leaves behind plus the event it published, with the claim asserted
+/// unmoved rather than merely surviving. Both verbs share one workspace --
+/// the add's committed lock is the remove's starting state, which makes
+/// the remove's rejection leg the stronger refusal: the superseded tenure
+/// cannot undeclare the successor's lock any more than it could declare
+/// one.
+#[test]
+fn after_release_and_reclaim_the_new_claimant_can_add_and_remove_resource_locks() {
+    let (workspace, id, superseded, minted) = reclaimed_issue("successor resource locks");
+    assert!(
+        resource_keys(workspace.path(), &id).is_empty(),
+        "the resource legs must start from an issue with no declared keys"
+    );
+
+    // The add's rejection leg: the superseded credential is refused while
+    // the declaration is still empty.
+    let add = resource_mutation(&id, "add");
+    assert_superseded_credential_keeps_resource_keys(
+        workspace.path(),
+        &id,
+        "resource add",
+        &add,
+        superseded,
+    );
+
+    let before = held_state(workspace.path(), &id);
+    let events_before = published_event_count(workspace.path(), &id);
+    let added: Vec<String> = serde_json::from_slice(
+        &run(workspace.path(), with_credential(add, &minted.to_string())).stdout,
+    )
+    .unwrap();
+    assert_eq!(
+        added,
+        vec!["gpu:0".to_string()],
+        "the add must report the set it committed"
+    );
+    assert_eq!(
+        resource_keys(workspace.path(), &id),
+        vec!["gpu:0".to_string()],
+        "the successor's add must leave the lock readable back on the issue"
+    );
+    assert_eq!(
+        held_state(workspace.path(), &id),
+        before,
+        "a resource declaration must not move the status, assignee, or revision"
+    );
+    assert_eq!(
+        shown_issue(workspace.path(), &id)["claim_epoch"].as_i64(),
+        Some(minted),
+        "the add must leave the rotation's epoch standing"
+    );
+    let events = published_events(workspace.path(), &id);
+    assert_eq!(
+        events.len(),
+        events_before + 1,
+        "the successor's add must publish exactly one event, got {events:?}"
+    );
+    assert_eq!(events[events_before]["kind"], "resource_keys_added");
+    assert_eq!(
+        events[events_before]["detail"]["resource_keys"],
+        serde_json::json!(["gpu:0"])
+    );
+
+    // The remove's rejection leg, against the lock the add just committed.
+    let remove = resource_mutation(&id, "remove");
+    assert_superseded_credential_keeps_resource_keys(
+        workspace.path(),
+        &id,
+        "resource remove",
+        &remove,
+        superseded,
+    );
+
+    let before = held_state(workspace.path(), &id);
+    let events_before = published_event_count(workspace.path(), &id);
+    let removed: Vec<String> = serde_json::from_slice(
+        &run(
+            workspace.path(),
+            with_credential(remove, &minted.to_string()),
+        )
+        .stdout,
+    )
+    .unwrap();
+    assert_eq!(
+        removed,
+        Vec::<String>::new(),
+        "the remove must report the emptied set"
+    );
+    assert!(
+        resource_keys(workspace.path(), &id).is_empty(),
+        "the successor's remove must leave the lock gone from the issue"
+    );
+    assert_eq!(
+        held_state(workspace.path(), &id),
+        before,
+        "a resource release must not move the status, assignee, or revision"
+    );
+    let events = published_events(workspace.path(), &id);
+    assert_eq!(
+        events.len(),
+        events_before + 1,
+        "the successor's remove must publish exactly one event, got {events:?}"
+    );
+    assert_eq!(events[events_before]["kind"], "resource_keys_removed");
+    assert_eq!(
+        events[events_before]["detail"]["resource_keys"],
+        serde_json::json!([])
+    );
+}
+
 /// Reassigning is a change of ownership tenure, not just a field edit: the
 /// new holder gets the next epoch and the previous holder's still-remembered
 /// credential stops working. This is the release-and-reassign hole.
@@ -718,6 +1246,368 @@ fn a_leased_claim_is_fenced_by_the_same_credential() {
     assert_eq!(shown_issue(workspace.path(), &id)["assignee"], Value::Null);
 }
 
+/// The historical-data arm of the fence. Lease rows are append-only, so a
+/// store that has seen leases carries rows no verb ever removes: a released
+/// lease's row survives with its expiry still in the future, an expired
+/// lease's row survives with a lapsed one (the watchdog hands the issue back
+/// the way it recovers a crashed worker, and the row stays), and other
+/// issues keep live rows whose tokens number the same range as this issue's.
+/// None of that history may brick or collide with a later valid tenure: the
+/// claim that lands on top of the surviving rows mints a strictly greater
+/// epoch, that epoch commits every fenced mutation while the rows remain
+/// untouched, and both superseded epochs' credentials stay refused. Every
+/// leg is proved by exit code plus store state -- the rows are read back
+/// before and after, so no error string's absence stands in for the fence
+/// working.
+#[test]
+fn surviving_historical_lease_rows_never_brick_a_later_claim_epoch() {
+    let workspace = tempfile::tempdir().unwrap();
+    run(workspace.path(), ["init", "--prefix", "epoch"]);
+
+    // Other issues holding live leases, so the target's history is never the
+    // only lease state in the store. The second rival's issue is rotated to
+    // its third leased tenure on purpose: its live row then carries fencing
+    // token 3, the same number the target's third claim is about to mint --
+    // a fence that matched credentials by number alone, instead of per
+    // issue, would collide exactly here.
+    let other_one = String::from_utf8(
+        run(
+            workspace.path(),
+            ["create", "--title", "other leased issue one"],
+        )
+        .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    let held_one = claim(workspace.path(), "rival-one", true);
+    assert_eq!(
+        held_one["bead_id"].as_str(),
+        Some(other_one.as_str()),
+        "the first rival must hold its own issue, not the target"
+    );
+
+    let other_two = String::from_utf8(
+        run(
+            workspace.path(),
+            ["create", "--title", "other leased issue two"],
+        )
+        .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    for expected_epoch in 1..=2 {
+        let rotated = claim(workspace.path(), "rival-two", true);
+        assert_eq!(rotated["bead_id"].as_str(), Some(other_two.as_str()));
+        let epoch = rotated["claim_epoch"]
+            .as_i64()
+            .expect("a rotated tenure mints an epoch");
+        assert_eq!(
+            epoch, expected_epoch,
+            "tenure {expected_epoch} on the second rival's issue"
+        );
+        run(
+            workspace.path(),
+            ["release", &other_two, "--fencing-token", &epoch.to_string()],
+        );
+    }
+    let held_two = claim(workspace.path(), "rival-two", true);
+    assert_eq!(held_two["bead_id"].as_str(), Some(other_two.as_str()));
+    let rival_live_token = held_two["claim_epoch"]
+        .as_i64()
+        .expect("the held tenure mints an epoch");
+    assert_eq!(
+        rival_live_token, 3,
+        "the live row that must collide with the target's next epoch"
+    );
+
+    // The target's history. Tenure one: a leased claim released while the
+    // lease still had time -- the row outlives the claim unexpired.
+    let target = String::from_utf8(
+        run(
+            workspace.path(),
+            ["create", "--title", "target over lease history"],
+        )
+        .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    let released_epoch = claim(workspace.path(), "worker-one", true)["claim_epoch"]
+        .as_i64()
+        .unwrap();
+    assert_eq!(
+        released_epoch, 1,
+        "the target's first tenure mints its first epoch"
+    );
+    // Tenure two: a leased claim whose lease expires beneath it. The row is
+    // backdated to the state time would have left, the watchdog recovers the
+    // issue the way it recovers a crashed worker's claim, and the row stays.
+    // The rotation itself routes through the shared harness, and the
+    // returned pair still pins the exact epochs: the release fences with the
+    // epoch the first tenure actually holds, and the reclaim mints the next
+    // one.
+    let (superseded_epoch, expired_epoch) =
+        rotate_claim(workspace.path(), &target, "worker-two", true);
+    assert_eq!(
+        superseded_epoch, released_epoch,
+        "the release fences with the epoch the first tenure actually holds"
+    );
+    assert_eq!(
+        expired_epoch, 2,
+        "the target's second tenure mints the next epoch"
+    );
+    let lapsed_at = lease_history_seeding::lapse_lease(workspace.path(), &target, expired_epoch, 2);
+    run(workspace.path(), ["watchdog", "--threshold", "1h"]);
+    let recovered = unheld_state(workspace.path(), &target);
+    assert_eq!(
+        recovered.0, "open",
+        "the watchdog must hand the expired lease back to the frontier"
+    );
+    assert_eq!(
+        recovered.1, None,
+        "the watchdog must clear the dead tenure's assignee"
+    );
+    assert_eq!(
+        shown_issue(workspace.path(), &target)["claim_epoch"].as_i64(),
+        Some(expired_epoch),
+        "the watchdog leaves the high-water mark it inherited"
+    );
+
+    // The seeded store, read back rather than assumed: exactly the two
+    // historical rows on the target -- the released lease's still
+    // unexpired, the expired lease's lapsed at the seeded instant.
+    let stale_rows = lease_history_seeding::lease_rows(workspace.path(), &target);
+    assert_eq!(
+        stale_rows.len(),
+        2,
+        "one row per superseded tenure, both surviving"
+    );
+    assert_eq!(stale_rows[0].assignee, "worker-one");
+    assert_eq!(stale_rows[0].fencing_token, released_epoch);
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    assert!(
+        stale_rows[0].expires_at > now,
+        "the released lease's row must still be unexpired -- its history is release, not expiry"
+    );
+    assert_eq!(stale_rows[1].assignee, "worker-two");
+    assert_eq!(stale_rows[1].fencing_token, expired_epoch);
+    assert_eq!(
+        stale_rows[1].expires_at, lapsed_at,
+        "the expired lease's row must carry exactly the lapsed instant seeding wrote"
+    );
+
+    // The claim that lands on top of the surviving rows: a plain claim, so
+    // it writes no lease row of its own and the only rows behind the issue
+    // are the stale ones. It succeeds, and it mints a strictly greater epoch.
+    let minted = claim(workspace.path(), "worker-three", false)["claim_epoch"]
+        .as_i64()
+        .unwrap();
+    assert!(
+        minted > expired_epoch,
+        "the claim over the stale rows must mint a strictly greater epoch, not {minted} after {expired_epoch}"
+    );
+    assert_eq!(
+        shown_issue(workspace.path(), &target)["assignee"].as_str(),
+        Some("worker-three"),
+        "the claim must land on the issue carrying the history"
+    );
+    assert_eq!(
+        lease_history_seeding::lease_rows(workspace.path(), &target),
+        stale_rows,
+        "a plain claim must neither add a row nor disturb the surviving ones"
+    );
+    assert_eq!(
+        rival_live_token, minted,
+        "the collision this leg depends on: another issue's live token equals the fresh epoch"
+    );
+
+    // Both superseded epochs' credentials are refused on every mutation
+    // family about to succeed -- exit 4 from the credential gate, the claim
+    // and the feed untouched -- with the stale rows present throughout.
+    for superseded in [released_epoch, expired_epoch] {
+        let update = vec![
+            "update".to_string(),
+            target.clone(),
+            "--notes".to_string(),
+            "stale probe".to_string(),
+        ];
+        assert_superseded_credential_is_refused(
+            workspace.path(),
+            &target,
+            "update",
+            &update,
+            superseded,
+        );
+
+        let add = resource_mutation(&target, "add");
+        assert_superseded_credential_keeps_resource_keys(
+            workspace.path(),
+            &target,
+            "resource add",
+            &add,
+            superseded,
+        );
+
+        let resolve = vec![
+            "resolve".to_string(),
+            target.clone(),
+            "--attempt-id".to_string(),
+            format!("urn:needle:attempt:stale-epoch-{superseded}"),
+            "--outcome".to_string(),
+            "verified_success".to_string(),
+        ];
+        assert_superseded_credential_is_refused(
+            workspace.path(),
+            &target,
+            "resolve",
+            &resolve,
+            superseded,
+        );
+    }
+
+    // The minted epoch validates on every fenced mutation, stale rows and
+    // all. Update: exit 0 and the write committed -- notes read back, one
+    // revision bump, the claim kept as the tenure that made it.
+    let before = held_state(workspace.path(), &target);
+    run(
+        workspace.path(),
+        [
+            "update",
+            &target,
+            "--notes",
+            "landed over the stale rows",
+            "--fencing-token",
+            &minted.to_string(),
+        ],
+    );
+    let updated = held_state(workspace.path(), &target);
+    assert_eq!(
+        shown_issue(workspace.path(), &target)["notes"].as_str(),
+        Some("landed over the stale rows"),
+        "the update must have committed the notes it carried"
+    );
+    assert_eq!(
+        updated.1, "worker-three",
+        "the update must keep the successor's claim"
+    );
+    assert_eq!(
+        updated.2,
+        before.2 + 1,
+        "the update must bump the revision exactly once"
+    );
+    assert_eq!(
+        shown_issue(workspace.path(), &target)["claim_epoch"].as_i64(),
+        Some(minted),
+        "the update must leave the epoch it validated on standing"
+    );
+
+    // Resource-lock change: both verbs commit under the minted credential --
+    // the key set each leaves behind is the proof, with the claim unmoved.
+    let added: Vec<String> = serde_json::from_slice(
+        &run(
+            workspace.path(),
+            with_credential(resource_mutation(&target, "add"), &minted.to_string()),
+        )
+        .stdout,
+    )
+    .unwrap();
+    assert_eq!(
+        added,
+        vec!["gpu:0".to_string()],
+        "the add must report the set it committed"
+    );
+    assert_eq!(
+        resource_keys(workspace.path(), &target),
+        vec!["gpu:0".to_string()],
+        "the add must leave the lock readable back on the issue"
+    );
+    assert_eq!(
+        held_state(workspace.path(), &target),
+        updated,
+        "a resource declaration must not move the status, assignee, or revision"
+    );
+    let removed: Vec<String> = serde_json::from_slice(
+        &run(
+            workspace.path(),
+            with_credential(resource_mutation(&target, "remove"), &minted.to_string()),
+        )
+        .stdout,
+    )
+    .unwrap();
+    assert_eq!(
+        removed,
+        Vec::<String>::new(),
+        "the remove must report the emptied set"
+    );
+    assert!(
+        resource_keys(workspace.path(), &target).is_empty(),
+        "the remove must leave the lock gone from the issue"
+    );
+
+    // Attempt resolve: exit 0 with the receipt a first resolution emits, and
+    // the audit event published for the attempt it recorded.
+    let receipt: Value = serde_json::from_slice(
+        &run(
+            workspace.path(),
+            [
+                "resolve",
+                &target,
+                "--attempt-id",
+                "urn:needle:attempt:over-stale-rows",
+                "--outcome",
+                "verified_success",
+                "--fencing-token",
+                &minted.to_string(),
+                "--format",
+                "json",
+            ],
+        )
+        .stdout,
+    )
+    .unwrap();
+    assert_eq!(receipt["issue_id"].as_str(), Some(target.as_str()));
+    assert_eq!(
+        receipt["is_replay"], false,
+        "the resolve must be a first resolution, not a replay of a refused one"
+    );
+    let resolved_event = published_events(workspace.path(), &target)
+        .into_iter()
+        .rev()
+        .find(|event| event["kind"] == "attempt_resolved")
+        .expect("the resolve must publish an audit event");
+    assert_eq!(
+        resolved_event["detail"]["attempt_id"].as_str(),
+        Some("urn:needle:attempt:over-stale-rows"),
+        "the event must name the attempt that was resolved"
+    );
+    assert_eq!(
+        resolved_event["detail"]["outcome"].as_str(),
+        Some("verified_success"),
+        "the event must name the outcome that was recorded"
+    );
+
+    // And the history the whole leg validated over is still exactly what it
+    // was before the claim -- no mutation pruned, rewrote, or extended the
+    // rows -- and the rivals' rows are untouched by any of it.
+    assert_eq!(
+        lease_history_seeding::lease_rows(workspace.path(), &target),
+        stale_rows,
+        "the stale rows must survive every mutation that validated over them"
+    );
+    assert_eq!(
+        lease_history_seeding::lease_rows(workspace.path(), &other_two).len(),
+        3,
+        "the rotated rival's own history must be untouched by the target's leg"
+    );
+    assert_eq!(
+        lease_history_seeding::lease_rows(workspace.path(), &other_one).len(),
+        1,
+        "the other rival's live row must be untouched by the target's leg"
+    );
+}
+
 /// One of the four claimant-owned lifecycle mutations, as a `bead` argument
 /// vector carrying no credential -- the subset of [`claimant_mutations`] this
 /// module's lease sweep needs, without the attempt and resource-lock entries
@@ -742,10 +1632,42 @@ fn lifecycle_mutation(id: &str, label: &str) -> Vec<String> {
     }
 }
 
-/// An issue nobody holds is not fenced: the credential exists to name a
-/// tenure, and with no holder there is nothing to present against.
+/// The state of an issue nobody holds: status, assignee, revision.
+/// [`held_state`] unwraps the assignee, so it cannot read an unclaimed issue.
+fn unheld_state(workspace: &Path, id: &str) -> (String, Option<String>, i64) {
+    let issue = shown_issue(workspace, id);
+    (
+        issue["status"].as_str().unwrap().to_string(),
+        issue["assignee"].as_str().map(str::to_string),
+        issue["revision"].as_i64().unwrap(),
+    )
+}
+
+/// Lease rows the store holds for `id`. A row is the second credential
+/// dimension the fence can consult, so the credential-free arm is only honest
+/// when it is read straight off the store rather than inferred from the issue.
+fn lease_row_count(workspace: &Path, id: &str) -> i64 {
+    lease_history_seeding::lease_rows(workspace, id).len() as i64
+}
+
+/// The credential-free arm of the fence. An issue nobody holds accepts every
+/// claimant-owned mutation it is open to, with no credential of any kind: no
+/// `--fencing-token` on the command line and no lease row behind the issue.
+/// The claimed arm is pinned by
+/// `a_claimed_issue_rejects_every_credentialless_claimant_mutation` and its
+/// siblings; this is the complementary arm, and it is what a later tightening
+/// would break -- a fence that started reading the holder's absence as a
+/// missing credential would fail here without ever touching a claimed issue.
+///
+/// `release`, `reopen` and `resolve` are not in the sweep: an open, unassigned
+/// issue is not in a state they accept, so their status guards refuse them
+/// before the credential gate is reached and there is no credential-free
+/// acceptance of them to pin.
+///
+/// Every acceptance is proved by store state -- the status move, the revision
+/// bump, the key set, or the published event -- never by the exit code alone.
 #[test]
-fn an_unclaimed_issue_mutates_without_a_credential() {
+fn an_unclaimed_issue_accepts_every_claimant_mutation_with_no_credential() {
     let workspace = tempfile::tempdir().unwrap();
     run(workspace.path(), ["init", "--prefix", "epoch"]);
     let id =
@@ -754,26 +1676,200 @@ fn an_unclaimed_issue_mutates_without_a_credential() {
             .trim()
             .to_string();
 
+    let start = unheld_state(workspace.path(), &id);
+    assert_eq!(start.0, "open", "the sweep starts from an open issue");
+    assert_eq!(start.1, None, "the sweep starts from an unassigned issue");
+    assert_eq!(
+        lease_row_count(workspace.path(), &id),
+        0,
+        "the sweep starts with no lease row to present against"
+    );
+
+    // The feed opens with the create's own event; every count below is
+    // absolute, so that event is the extra one each length assertion carries.
+    let baseline = published_events(workspace.path(), &id);
+    assert_eq!(
+        baseline.len(),
+        1,
+        "the sweep starts from a feed holding only the create, got {baseline:?}"
+    );
+    assert_eq!(baseline[0]["kind"], "created");
+
+    // `update` is the mutation the fence pins hardest on a claimed issue, so
+    // it is the one proved hardest here: it lands, moves nothing but the
+    // revision, and publishes exactly one event.
     run(
         workspace.path(),
         ["update", &id, "--notes", "no holder yet"],
     );
-    run(workspace.path(), ["resource", "add", &id, "--key", "gpu:0"]);
-    assert_eq!(shown_issue(workspace.path(), &id)["assignee"], Value::Null);
+    let updated = unheld_state(workspace.path(), &id);
+    assert_eq!(
+        updated.0, "open",
+        "a credential-free update must not move the status"
+    );
+    assert_eq!(
+        updated.1, None,
+        "a credential-free update must not assign the issue"
+    );
+    assert_eq!(
+        updated.2,
+        start.2 + 1,
+        "a credential-free update must bump the revision exactly once"
+    );
+    assert_eq!(lease_row_count(workspace.path(), &id), 0);
+    let events = published_events(workspace.path(), &id);
+    assert_eq!(
+        events.len(),
+        2,
+        "a credential-free update must publish exactly one event, got {events:?}"
+    );
+    assert_eq!(events[1]["kind"], "updated");
 
-    // And once the claim is handed back the same holds again.
-    let epoch = claim(workspace.path(), "worker-one", false)["claim_epoch"]
+    // The resource-lock pair. Neither can be proved by a revision bump -- a
+    // declaration is scheduling metadata and does not touch the issue row --
+    // so each is proved by the key set it leaves behind plus the event it
+    // published, and the untouched revision is what keeps the close's later
+    // bump attributable to the close alone.
+    let added: Vec<String> = serde_json::from_slice(
+        &run(workspace.path(), ["resource", "add", &id, "--key", "gpu:0"]).stdout,
+    )
+    .unwrap();
+    assert_eq!(added, vec!["gpu:0".to_string()]);
+    let listed: Vec<String> =
+        serde_json::from_slice(&run(workspace.path(), ["resource", "list", &id, "--json"]).stdout)
+            .unwrap();
+    assert_eq!(
+        listed,
+        vec!["gpu:0".to_string()],
+        "the add must have committed"
+    );
+    assert_eq!(
+        unheld_state(workspace.path(), &id).2,
+        updated.2,
+        "a credential-free resource add must commit without bumping the revision"
+    );
+    let events = published_events(workspace.path(), &id);
+    assert_eq!(
+        events.len(),
+        3,
+        "a credential-free resource add must publish exactly one event, got {events:?}"
+    );
+    assert_eq!(events[2]["kind"], "resource_keys_added");
+    assert_eq!(
+        events[2]["detail"]["resource_keys"],
+        serde_json::json!(["gpu:0"])
+    );
+
+    let removed: Vec<String> = serde_json::from_slice(
+        &run(
+            workspace.path(),
+            ["resource", "remove", &id, "--key", "gpu:0"],
+        )
+        .stdout,
+    )
+    .unwrap();
+    assert_eq!(removed, Vec::<String>::new());
+    let listed: Vec<String> =
+        serde_json::from_slice(&run(workspace.path(), ["resource", "list", &id, "--json"]).stdout)
+            .unwrap();
+    assert!(listed.is_empty(), "the remove must have committed");
+    assert_eq!(
+        unheld_state(workspace.path(), &id).2,
+        updated.2,
+        "a credential-free resource remove must commit without bumping the revision"
+    );
+    let events = published_events(workspace.path(), &id);
+    assert_eq!(
+        events.len(),
+        4,
+        "a credential-free resource remove must publish exactly one event, got {events:?}"
+    );
+    assert_eq!(events[3]["kind"], "resource_keys_removed");
+    assert_eq!(events[3]["detail"]["resource_keys"], serde_json::json!([]));
+
+    // `close` ends the sweep the way it begins: no credential, and the issue
+    // stays unassigned through the transition. The closed event carries nulls
+    // for both credential fields rather than omitting them, so a reader of the
+    // change feed can tell an unclaimed close from a fenced one.
+    run(
+        workspace.path(),
+        ["close", &id, "--reason", "no holder needed"],
+    );
+    let closed = unheld_state(workspace.path(), &id);
+    assert_eq!(
+        closed.0, "closed",
+        "a credential-free close must close the issue"
+    );
+    assert_eq!(
+        closed.1, None,
+        "a credential-free close must leave it unassigned"
+    );
+    assert_eq!(
+        closed.2,
+        updated.2 + 1,
+        "a credential-free close must bump the revision exactly once"
+    );
+    assert_eq!(lease_row_count(workspace.path(), &id), 0);
+    let events = published_events(workspace.path(), &id);
+    assert_eq!(
+        events.len(),
+        5,
+        "a credential-free close must publish exactly one event, got {events:?}"
+    );
+    assert_eq!(events[4]["kind"], "closed");
+    assert_eq!(events[4]["detail"]["reason"], "no holder needed");
+    assert_eq!(events[4]["detail"]["claim_epoch"], Value::Null);
+    assert_eq!(events[4]["detail"]["presented_fencing_token"], Value::Null);
+
+    // And the arm holds the moment a claim is handed back, too -- on a fresh
+    // issue, since the one above is closed now. This leg takes its claim
+    // *leased*, so the release leaves a lease row behind: the fence follows
+    // the holder, not the history, and the leftover row must not be enough to
+    // start demanding a credential again.
+    let returned =
+        String::from_utf8(run(workspace.path(), ["create", "--title", "handed back"]).stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+    let claimed = claim(workspace.path(), "worker-one", true);
+    assert_eq!(
+        claimed["bead_id"].as_str(),
+        Some(returned.as_str()),
+        "the fresh issue is the only claimable work"
+    );
+    let epoch = claimed["claim_epoch"]
         .as_i64()
-        .unwrap();
-    run(
-        workspace.path(),
-        ["release", &id, "--fencing-token", &epoch.to_string()],
+        .expect("a leased claim mints an epoch");
+    assert!(
+        lease_row_count(workspace.path(), &returned) > 0,
+        "the leased claim must leave the row this leg is about"
     );
     run(
         workspace.path(),
-        ["update", &id, "--notes", "released again"],
+        ["release", &returned, "--fencing-token", &epoch.to_string()],
     );
-    assert_eq!(shown_issue(workspace.path(), &id)["assignee"], Value::Null);
+    let released = unheld_state(workspace.path(), &returned);
+    assert_eq!(released.0, "open");
+    assert_eq!(released.1, None);
+    assert!(
+        lease_row_count(workspace.path(), &returned) > 0,
+        "the lease row is history, not a fence"
+    );
+
+    run(
+        workspace.path(),
+        ["update", &returned, "--notes", "released again"],
+    );
+    let after = unheld_state(workspace.path(), &returned);
+    assert_eq!(
+        after.1, None,
+        "a credential-free update after release must not assign"
+    );
+    assert_eq!(
+        after.2,
+        released.2 + 1,
+        "a credential-free update must still land once the claim is handed back"
+    );
 }
 
 /// The fence is the last line of defence behind atomic claim selection, so it

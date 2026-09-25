@@ -6,6 +6,7 @@
 pub mod migrations;
 mod sqlite;
 
+pub(crate) use sqlite::RUNTIME_IGNORE_DIRS;
 pub use sqlite::{open_configured_connection, SqliteStore};
 
 use std::path::{Path, PathBuf};

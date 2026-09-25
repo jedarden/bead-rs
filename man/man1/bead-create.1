@@ -4,7 +4,7 @@
 .SH NAME
 bead create \- Create a new issue
 .SH SYNOPSIS
-\fBbead create\fR [\fB\-\-description\fR] [\fB\-\-priority\fR] [\fB\-\-issue\-type\fR] [\fB\-\-assignee\fR] [\fB\-\-label\fR] [\fB\-\-resource\-key\fR] [\fB\-\-unique\-ref\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-title\fR> 
+\fBbead create\fR [\fB\-\-description\fR] [\fB\-\-priority\fR] [\fB\-\-issue\-type\fR] [\fB\-\-assignee\fR] [\fB\-\-label\fR] [\fB\-\-resource\-key\fR] [\fB\-\-depends\-on\fR] [\fB\-\-unique\-ref\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-title\fR> 
 .SH DESCRIPTION
 Create a new issue in the workspace.
 .PP
@@ -43,6 +43,24 @@ RESOURCE KEYS:
   scheduling exclusion inside this native workspace. It is not a distributed
   lock. Claims acquire every declared key atomically; release, close, and
   expired leases return keys. Use `bead resource add|remove|list` after create.
+.PP
+PLANNING DEPENDENT WORK:
+  A bare `bead create` is claimable the instant it commits. If the new issue
+  is meant to wait on other work, declare that in the same transaction \-\-
+  never in a second command. `\-\-depends\-on BLOCKER` validates and attaches a
+  `blocks` edge inside the create transaction itself, so a missing blocker,
+  a self\-edge, or a cycle rolls the whole create back and the issue never
+  becomes visible without its graph. Repeat the flag for several blockers.
+.PP
+  For a whole planned graph (beads that reference each other, labels,
+  resource keys, staging assignments), use one manifest instead:
+.PP
+    bead manifest commit \-\-input plan.json
+.PP
+  `bead manifest dry\-run` reports the same delta without mutating anything.
+  Composing `create` and `dep` as two separate commands re\-opens the window
+  this flag exists to close: a worker can claim the new bead in the seconds
+  between them.
 .SH OPTIONS
 .TP
 \fB\-\-title\fR \fI<TITLE>\fR
@@ -65,6 +83,9 @@ Labels to add (can be specified multiple times)
 .TP
 \fB\-\-resource\-key\fR \fI<RESOURCE_KEYS>\fR
 Workspace\-local resource key (can be specified multiple times)
+.TP
+\fB\-\-depends\-on\fR \fI<BLOCKER>\fR
+Existing issue that must close before this one is claimable (can be specified multiple times). Validated and attached inside the create transaction: a blocker that does not exist, a self\-edge, or a cycle aborts the create, leaving no issue and no edge. Applied only when a new issue is created \-\- a \-\-unique\-ref replay of an existing bead never mutates that bead\*(Aqs graph
 .TP
 \fB\-\-unique\-ref\fR \fI<UNIQUE_REF>\fR
 Idempotency binding in NAMESPACE:KEY form

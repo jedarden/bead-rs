@@ -14,7 +14,9 @@ use crate::model::redaction::{
 };
 use crate::scan::{self, Disposition, Field, Mode, ScanConfig, Tier};
 use crate::service::checkpoint::{acquire_checkpoint_publication_lock, CheckpointPublicationLock};
-use crate::service::secret_diagnostics::{find_live_finding, LiveFindingLocation};
+use crate::service::secret_diagnostics::{
+    find_live_finding, find_retained_checkpoint_finding, LiveFindingLocation,
+};
 use crate::store::SqliteStore;
 use fs2::FileExt;
 use rusqlite::types::Value as SqlValue;
@@ -81,6 +83,7 @@ pub fn load_redaction_receipt(
 pub struct RedactionLocks {
     _maintenance: MaintenanceLock,
     publication: CheckpointPublicationLock,
+    checkpoint_dir: std::path::PathBuf,
 }
 
 impl RedactionLocks {
@@ -88,20 +91,23 @@ impl RedactionLocks {
     pub fn checkpoint_publication_lock(&self) -> &CheckpointPublicationLock {
         &self.publication
     }
+
+    fn checkpoint_dir(&self) -> &Path {
+        &self.checkpoint_dir
+    }
 }
 
 /// Acquire workspace-maintenance first, then checkpoint-publication.
 pub fn acquire_redaction_locks(workspace_root: &Path) -> Result<RedactionLocks, RedactionError> {
     let maintenance = acquire_maintenance_lock(&workspace_root.join(".beads"))?;
-    let publication = acquire_checkpoint_publication_lock(
-        &workspace_root.join(".beads/checkpoint"),
-    )
-    .map_err(|_| {
+    let checkpoint_dir = workspace_root.join(".beads/checkpoint");
+    let publication = acquire_checkpoint_publication_lock(&checkpoint_dir).map_err(|_| {
         RedactionError::Integrity("could not acquire checkpoint publication lock".to_string())
     })?;
     Ok(RedactionLocks {
         _maintenance: maintenance,
         publication,
+        checkpoint_dir,
     })
 }
 
@@ -125,14 +131,13 @@ pub fn redact_finding(
 /// publication locks remain held.
 pub fn redact_finding_holding(
     store: &mut SqliteStore,
-    _locks: &RedactionLocks,
+    locks: &RedactionLocks,
     fingerprint: &str,
     actor: &str,
     reason: &str,
 ) -> Result<RedactionOutcome, RedactionError> {
     validate_request(fingerprint, actor, reason)?;
-    let expected = find_live_finding(store.conn(), fingerprint)
-        .map_err(|_| integrity("could not scan live redaction targets"))?;
+    let expected = resolve_redaction_finding(store.conn(), locks.checkpoint_dir(), fingerprint)?;
     redact_in_transaction(
         store.conn(),
         fingerprint,
@@ -146,7 +151,7 @@ pub fn redact_finding_holding(
 /// Revalidate and describe one redaction without committing any change.
 pub fn preview_redaction_holding(
     store: &mut SqliteStore,
-    _locks: &RedactionLocks,
+    locks: &RedactionLocks,
     fingerprint: &str,
     actor: &str,
     reason: &str,
@@ -154,10 +159,12 @@ pub fn preview_redaction_holding(
     validate_request(fingerprint, actor, reason)?;
     let tx = Transaction::new_unchecked(store.conn(), TransactionBehavior::Immediate)
         .map_err(|_| integrity("could not open redaction preview transaction"))?;
-    let location = find_live_finding(&tx, fingerprint)
-        .map_err(|_| integrity("could not scan live redaction targets"))?
+    let location = resolve_redaction_finding(&tx, locks.checkpoint_dir(), fingerprint)?
         .ok_or_else(|| {
-            RedactionError::NotFound("no current live finding matches that fingerprint".to_string())
+            RedactionError::NotFound(
+                "no current live or retained checkpoint finding matches that fingerprint"
+                    .to_string(),
+            )
         })?;
     let location = canonicalize_event_target(&tx, fingerprint, location)?;
     let target = target_spec(location.table, location.field).ok_or_else(|| {
@@ -170,7 +177,7 @@ pub fn preview_redaction_holding(
     let finding = scan::scan(
         &ScanConfig::new(Mode::Advisory),
         &location.finding.selector,
-        &[Field::new(location.field, &current)],
+        &[Field::new(&location.finding.field_path, &current)],
     )
     .findings
     .into_iter()
@@ -221,7 +228,7 @@ pub fn preview_redaction_holding(
     let selector = FieldSelector {
         schema_ref: SCHEMA_REDACTION_FIELD_SELECTOR.to_string(),
         record_kind: location.table.to_string(),
-        origin_identity: location.finding.selector,
+        origin_identity: location.origin_identity,
         field_path: location.field.to_string(),
         byte_start: finding.start as i64,
         byte_length: (finding.end - finding.start) as i64,
@@ -239,6 +246,20 @@ pub fn preview_redaction_holding(
         replacement_marker: REDACTION_MARKER,
         previous_generation_reset: true,
     })
+}
+
+fn resolve_redaction_finding(
+    conn: &rusqlite::Connection,
+    checkpoint_dir: &Path,
+    fingerprint: &str,
+) -> Result<Option<LiveFindingLocation>, RedactionError> {
+    if let Some(location) = find_live_finding(conn, fingerprint)
+        .map_err(|_| integrity("could not scan live redaction targets"))?
+    {
+        return Ok(Some(location));
+    }
+    find_retained_checkpoint_finding(checkpoint_dir, fingerprint)
+        .map_err(|_| integrity("could not scan retained checkpoint redaction targets"))
 }
 
 fn validate_request(fingerprint: &str, actor: &str, reason: &str) -> Result<(), RedactionError> {
@@ -292,15 +313,17 @@ fn redact_in_transaction(
         });
     }
 
-    let location = find_live_finding(&tx, fingerprint)
+    let live_location = find_live_finding(&tx, fingerprint)
         .map_err(|_| integrity("could not scan live redaction targets"))?;
-    if let Some(expected) = expected {
-        let current = location.as_ref().ok_or_else(|| {
-            RedactionError::Conflict("finding changed before the redaction transaction".to_string())
-        })?;
+    let location = if let Some(expected) = expected {
+        let current = live_location.as_ref().unwrap_or(expected);
+        if expected.finding.fingerprint != fingerprint {
+            return Err(integrity("preflight redaction fingerprint changed"));
+        }
         if current.table != expected.table
             || current.field != expected.field
             || current.identity_values != expected.identity_values
+            || current.origin_identity != expected.origin_identity
             || current.finding.start != expected.finding.start
             || current.finding.end != expected.finding.end
         {
@@ -308,10 +331,15 @@ fn redact_in_transaction(
                 "finding selector changed before the redaction transaction".to_string(),
             ));
         }
-    }
-    let location = location.ok_or_else(|| {
-        RedactionError::NotFound("no current live finding matches that fingerprint".to_string())
-    })?;
+        current.clone()
+    } else {
+        live_location.ok_or_else(|| {
+            RedactionError::NotFound(
+                "no current live or retained checkpoint finding matches that fingerprint"
+                    .to_string(),
+            )
+        })?
+    };
     let location = canonicalize_event_target(&tx, fingerprint, location)?;
     let target = target_spec(location.table, location.field).ok_or_else(|| {
         RedactionError::Conflict(format!(
@@ -324,7 +352,7 @@ fn redact_in_transaction(
     let revalidated = scan::scan(
         &ScanConfig::new(Mode::Advisory),
         &location.finding.selector,
-        &[Field::new(location.field, &current)],
+        &[Field::new(&location.finding.field_path, &current)],
     )
     .findings
     .into_iter()
@@ -397,7 +425,7 @@ fn redact_in_transaction(
     let selector = FieldSelector {
         schema_ref: SCHEMA_REDACTION_FIELD_SELECTOR.to_string(),
         record_kind: location.table.to_string(),
-        origin_identity: location.finding.selector.clone(),
+        origin_identity: location.origin_identity.clone(),
         field_path: location.field.to_string(),
         byte_start: revalidated.start as i64,
         byte_length: (revalidated.end - revalidated.start) as i64,

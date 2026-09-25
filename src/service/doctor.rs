@@ -7,7 +7,6 @@ use crate::error::{Error, Result};
 use crate::store::{open_configured_connection, Store};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 /// Open-bead row: (id, title, priority, assignee, manual_blocked, created_at)
@@ -558,6 +557,74 @@ pub fn run_diagnostics_with_scopes(
                 });
             }
         }
+
+        // 6c. Declared inverted verification gates (R025, ADR-001)
+        match check_inverted_verification_gates(store) {
+            Ok(report) => {
+                if report.pairs.is_empty() {
+                    checks.push(DiagnosticCheck {
+                        name: "inverted_verification_gates".to_string(),
+                        status: DiagnosticStatus::Ok,
+                        message: "No inverted verification gates: no `blocks` edge has a blocker that also `verifies` the blocked issue".to_string(),
+                        scope: Some("dependencies".to_string()),
+                        details: Some(serde_json::json!({
+                            "count": 0,
+                            "gates": [],
+                        })),
+                    });
+                } else {
+                    // Rendered in the report's canonical (blocked, blocker)
+                    // order so two runs over the same graph byte-match.
+                    let rendered: Vec<String> = report
+                        .pairs
+                        .iter()
+                        .map(|(blocked, blocker)| {
+                            format!("{blocked} is blocked by {blocker}, which also verifies it")
+                        })
+                        .collect();
+                    let message = format!(
+                        "Found {} inverted verification gate(s): {}. The check is ordered before the work it checks; remove or re-orient one edge if unintended",
+                        report.pairs.len(),
+                        rendered.join("; ")
+                    );
+                    checks.push(DiagnosticCheck {
+                        name: "inverted_verification_gates".to_string(),
+                        status: DiagnosticStatus::Warning,
+                        message,
+                        scope: Some("dependencies".to_string()),
+                        details: Some(serde_json::json!({
+                            "count": report.pairs.len(),
+                            "gates": report
+                                .pairs
+                                .iter()
+                                .map(|(blocked, blocker)| {
+                                    serde_json::json!({
+                                        "blocked": blocked,
+                                        "blocker": blocker,
+                                        "reason_code": "inverted_verification_gate",
+                                    })
+                                })
+                                .collect::<Vec<_>>(),
+                            "remedy": "Remove or re-orient one of the two edges: `bead dep remove <BLOCKED> <BLOCKER> --kind blocks` or `--kind verifies`",
+                            "explanation": "A `blocks` edge whose blocker also carries a `verifies` edge to the same blocked issue orders the check before the work it checks. A deliberate baseline-first gate is structurally identical, so the finding is advisory and never enforced.",
+                        })),
+                    });
+                    has_warnings = true;
+                }
+            }
+            Err(e) => {
+                has_errors = true;
+                checks.push(DiagnosticCheck {
+                    name: "inverted_verification_gates".to_string(),
+                    status: DiagnosticStatus::Error,
+                    message: format!("Inverted verification gate check error: {}", e),
+                    scope: Some("dependencies".to_string()),
+                    details: Some(serde_json::json!({
+                        "error": e.to_string()
+                    })),
+                });
+            }
+        }
     }
 
     // Comments scope checks
@@ -689,6 +756,39 @@ pub fn run_diagnostics_with_scopes(
                     message: format!("Secret diagnostic failed: {error}"),
                     scope: Some("secrets".to_string()),
                     details: Some(serde_json::json!({"error": error.to_string()})),
+                });
+            }
+        }
+
+        // 2026-09-18 leak follow-up: worker stdout, database backups and
+        // bf-era exports under `.beads/` reached public history in four repos
+        // because init-era ignore files never named those directories. The
+        // scan above catches secrets bead-rs can see in its own state; this
+        // advisory catches the paths that leak *around* that state. Advisory
+        // only: rewriting a workspace's ignore file is the operator's call,
+        // exactly as for the assignee-held frontier (R035).
+        match check_runtime_dir_ignore_coverage(store) {
+            Ok(msg) => {
+                checks.push(DiagnosticCheck {
+                    name: "runtime_dir_ignore_coverage".to_string(),
+                    status: DiagnosticStatus::Ok,
+                    message: msg.clone(),
+                    scope: Some("secrets".to_string()),
+                    details: Some(serde_json::json!({
+                        "message": msg
+                    })),
+                });
+            }
+            Err(e) => {
+                has_warnings = true;
+                checks.push(DiagnosticCheck {
+                    name: "runtime_dir_ignore_coverage".to_string(),
+                    status: DiagnosticStatus::Warning,
+                    message: format!("Runtime directory ignore coverage warning: {}", e),
+                    scope: Some("secrets".to_string()),
+                    details: Some(serde_json::json!({
+                        "warning": e.to_string()
+                    })),
                 });
             }
         }
@@ -1385,14 +1485,20 @@ fn check_dependency_graph(store: &impl Store) -> Result<String> {
     let cycles = detect_dependency_cycles(&conn)?;
 
     if !cycles.is_empty() {
+        // Render each canonical cycle as a closed path (`a -> b -> a`) so the
+        // detail shows the whole loop, not just its closing edge.
+        let rendered: Vec<String> = cycles
+            .iter()
+            .map(|cycle| {
+                let mut closed = cycle.clone();
+                closed.push(cycle[0].clone());
+                closed.join(" -> ")
+            })
+            .collect();
         return Err(Error::Integrity(format!(
             "Found {} dependency cycles: {}",
             cycles.len(),
-            cycles
-                .iter()
-                .map(|c| c.join(" -> "))
-                .collect::<Vec<_>>()
-                .join("; ")
+            rendered.join("; ")
         )));
     }
 
@@ -1415,6 +1521,55 @@ fn check_dependency_graph(store: &impl Store) -> Result<String> {
         "Dependency graph OK: {} dependencies, {} blocked issues, no cycles",
         dep_count, blocked_count
     ))
+}
+
+/// Inverted verification gate report (R025, ADR-001)
+#[derive(Debug, Clone)]
+pub struct InvertedGateReport {
+    /// (blocked, blocker) pairs where a `blocks` edge and a `verifies` edge
+    /// share both endpoints: the blocker is declared to check the very work it
+    /// gates. Sorted blocked-then-blocker, so the report is deterministic
+    /// regardless of row order in the store.
+    pub pairs: Vec<(String, String)>,
+}
+
+/// Detect declared inverted verification gates (R025, ADR-001)
+///
+/// A `blocks` edge whose blocker also `verifies` its blocked bead states that
+/// the check must close before the work it checks may start -- an ordering no
+/// execution can satisfy. The pair is decidable exactly because the check
+/// relationship is declared by a `verifies` edge; issue titles are never
+/// inspected, matching the store's no-title-heuristics principle. Like R021's
+/// policy lint this is advisory: the edges stay legal, a deliberate
+/// "prove the baseline green first" gate is structurally identical to the
+/// error, and only the author can distinguish them.
+fn check_inverted_verification_gates(store: &impl Store) -> Result<InvertedGateReport> {
+    let config = store.get_workspace_config()?;
+    let db_path = config.root.join(".beads/beads.db");
+
+    let conn = open_configured_connection(&db_path)
+        .map_err(|e| Error::Integrity(format!("Failed to open database: {}", e)))?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT b.blocked_issue_id, b.blocker_issue_id
+             FROM dependencies b
+             JOIN dependencies v
+               ON b.blocked_issue_id = v.blocked_issue_id
+              AND b.blocker_issue_id = v.blocker_issue_id
+             WHERE b.kind = 'blocks' AND v.kind = 'verifies'",
+        )
+        .map_err(|e| Error::Integrity(format!("Failed to prepare inverted-gate query: {}", e)))?;
+
+    let mut pairs: Vec<(String, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|e| Error::Integrity(format!("Failed to query inverted gates: {}", e)))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    pairs.sort();
+
+    Ok(InvertedGateReport { pairs })
 }
 
 /// Check comments data integrity
@@ -1779,6 +1934,150 @@ fn check_temporary_files(store: &impl Store) -> Result<String> {
     }
 }
 
+/// Does one gitignore `line` carry an ignore rule for the directory `name`?
+///
+/// Returns `Some(true)` for a matching ignore pattern, `Some(false)` for a
+/// matching negation (an explicit `!name/` un-ignores the directory), and
+/// `None` when the line does not name the directory at all (blank lines,
+/// comments, patterns for other paths). Understands the anchored
+/// (`/name/`), glob-prefixed (`**/name/`) and subtree (`name/**`) spellings
+/// of the same rule. The matcher is deliberately narrow — it verifies that
+/// the runtime directories are *explicitly* listed, which is what `bead
+/// init` generates and what the advisory asks operators to restore — not a
+/// full gitignore engine.
+fn ignore_line_covers(line: &str, name: &str) -> Option<bool> {
+    let raw = line.trim_end();
+    if raw.is_empty() || raw.starts_with('#') {
+        return None;
+    }
+    let (negated, pattern) = match raw.strip_prefix('!') {
+        Some(rest) => (true, rest),
+        None => (false, raw),
+    };
+    // Strip the equivalent spellings step by step; each fallback is the
+    // result of the previous strip, never the original pattern.
+    let pattern = pattern.strip_prefix("**/").unwrap_or(pattern);
+    let pattern = pattern.strip_prefix('/').unwrap_or(pattern);
+    let pattern = pattern.strip_suffix('/').unwrap_or(pattern);
+    let pattern = pattern.strip_suffix("/**").unwrap_or(pattern);
+    (pattern == name).then_some(!negated)
+}
+
+/// Does `content` carry an ignore rule naming `name`?
+///
+/// A matching negation anywhere decides against coverage: git's
+/// last-match-wins ordering means an explicit `!name/` leaves the directory
+/// tracked-able, and an advisory must never read a leak risk as covered.
+fn ignore_content_covers(content: &str, name: &str) -> Option<bool> {
+    let mut coverage = None;
+    for line in content.lines() {
+        match ignore_line_covers(line, name) {
+            Some(false) => return Some(false),
+            Some(true) => coverage = Some(true),
+            None => {}
+        }
+    }
+    coverage
+}
+
+/// Advisory: are the `.beads/` runtime directories that carried worker
+/// stdout, database backups and bf-era exports into public history on
+/// 2026-09-18 (AgentScribe, screenferry, miroir, drawrace; a live Postgres
+/// password rode along in `.bf_history` exports) named by the workspace's
+/// ignore files?
+///
+/// `bead init` writes `.beads/.gitignore` only for brand-new workspaces and
+/// preserves any existing file byte-for-byte, so every workspace initialized
+/// before the leak set was extended stays under-covered indefinitely — the
+/// exact shape that leaked. This check cannot repair that (rewriting an
+/// operator's ignore file is not doctor's business); it can refuse to stay
+/// silent about it.
+///
+/// Coverage is decided against the generated file's own vocabulary via
+/// [`ignore_line_covers`], not by invoking git: doctor must diagnose broken
+/// workspaces where no repository or git binary is reachable, and the one
+/// wholesale case a per-directory matcher cannot see — a repository root
+/// `.gitignore` ignoring `.beads/` outright — is handled explicitly.
+fn check_runtime_dir_ignore_coverage(store: &impl Store) -> Result<String> {
+    let config = store.get_workspace_config()?;
+    let beads_dir = config.root.join(".beads");
+    let names = crate::store::RUNTIME_IGNORE_DIRS;
+
+    let listed: Vec<String> = names.iter().map(|name| format!("{name}/")).collect();
+    let present: Vec<&str> = names
+        .iter()
+        .copied()
+        .filter(|name| beads_dir.join(name).exists())
+        .collect();
+
+    // A repository that ignores `.beads/` wholesale needs no per-directory
+    // rules. (For a bead-rs workspace that root rule is itself wrong — the
+    // checkpoint must be tracked — but it is not a leak, and the reachability
+    // diagnostics already report untracked checkpoint files.)
+    if let Ok(root_ignore) = std::fs::read_to_string(config.root.join(".gitignore")) {
+        if ignore_content_covers(&root_ignore, ".beads").unwrap_or(false) {
+            return Ok(format!(
+                "Repository .gitignore ignores .beads/ wholesale; the runtime directories ({}) cannot reach git",
+                names.join(", ")
+            ));
+        }
+    }
+
+    let gitignore_path = beads_dir.join(".gitignore");
+    match std::fs::read_to_string(&gitignore_path) {
+        Ok(content) => {
+            let uncovered: Vec<&str> = names
+                .iter()
+                .copied()
+                .filter(|name| !ignore_content_covers(&content, name).unwrap_or(false))
+                .collect();
+            if uncovered.is_empty() {
+                Ok(format!(
+                    "All {} runtime directories are ignored by .beads/.gitignore: {}",
+                    names.len(),
+                    listed.join(", ")
+                ))
+            } else {
+                let uncovered_listed: Vec<String> =
+                    uncovered.iter().map(|name| format!("{name}/")).collect();
+                let leaking: Vec<String> = uncovered
+                    .iter()
+                    .filter(|name| present.contains(name))
+                    .map(|name| format!("{name}/"))
+                    .collect();
+                Err(Error::workspace(format!(
+                    ".beads/.gitignore does not ignore runtime directories: {}. \
+                     init writes the ignore file only for brand-new workspaces, so add \
+                     `<dir>/` lines for these by hand{}",
+                    uncovered_listed.join(", "),
+                    if leaking.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            " — {} currently present under .beads/ and on its way into the next `git add`",
+                            leaking.join(", ")
+                        )
+                    }
+                )))
+            }
+        }
+        Err(_) if present.is_empty() => Ok(
+            "No runtime directories present and no .beads/.gitignore to verify \
+             (init writes one only for brand-new workspaces)"
+                .to_string(),
+        ),
+        Err(_) => Err(Error::workspace(format!(
+            "Runtime directories present under .beads/ but no .beads/.gitignore ignores \
+             them: {}",
+            present
+                .iter()
+                .map(|name| format!("{name}/"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
 /// Check for issues held off the ready frontier by an assignee alone.
 ///
 /// An issue that is `open` **and** carries an assignee is not an active claim —
@@ -2049,16 +2348,29 @@ fn check_uuid_divergence(store: &impl Store) -> Result<String> {
     Ok("No UUID divergence detected".to_string())
 }
 
-/// Detect cycles in the dependency graph using DFS
+/// Detect cycles in the dependency graph over `blocks` edges.
+///
+/// Returns one canonical path per genuine cycle: rotated to begin at its
+/// lexicographically smallest member (the caller closes the loop when
+/// rendering), deduplicated, and ordered, so the report is a pure function of
+/// the edge set. Two properties the previous recursive DFS lost: it iterated
+/// a `HashSet`, so row order and hash randomization changed both the count
+/// and the paths between runs on the same store; and it returned early on the
+/// cycle-found path without unwinding its recursion stack, so stale stack
+/// entries misread downstream and cross edges into an already-reported cycle
+/// as additional phantom cycles, while truncating each real cycle to the two
+/// nodes of its closing edge.
 fn detect_dependency_cycles(conn: &rusqlite::Connection) -> Result<Vec<Vec<String>>> {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::{BTreeMap, BTreeSet};
 
-    // Build adjacency list
-    let mut adj_list: HashMap<String, Vec<String>> = HashMap::new();
-    let mut all_issues: HashSet<String> = HashSet::new();
-
+    // Cycle detection traverses only `blocks` edges: `relates_to` is
+    // informational and the native contract explicitly permits informational
+    // cycles, so it must never trip the integrity check even though it is
+    // still counted in the overall dependency statistics above.
     let mut stmt = conn
-        .prepare("SELECT blocked_issue_id, blocker_issue_id FROM dependencies")
+        .prepare(
+            "SELECT blocked_issue_id, blocker_issue_id FROM dependencies WHERE kind = 'blocks'",
+        )
         .map_err(|e| Error::Integrity(format!("Failed to prepare dependencies query: {}", e)))?;
 
     let deps: Vec<(String, String)> = stmt
@@ -2067,59 +2379,86 @@ fn detect_dependency_cycles(conn: &rusqlite::Connection) -> Result<Vec<Vec<Strin
         .filter_map(|r| r.ok())
         .collect();
 
+    // Sorted adjacency (blocked -> blocker). BTree containers keep every
+    // traversal below independent of insertion order and hash seeds.
+    let mut adj_list: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut nodes: BTreeSet<String> = BTreeSet::new();
     for (blocked, blocker) in deps {
         adj_list
             .entry(blocked.clone())
             .or_default()
-            .push(blocker.clone());
-        all_issues.insert(blocked);
-        all_issues.insert(blocker);
+            .insert(blocker.clone());
+        nodes.insert(blocked);
+        nodes.insert(blocker);
     }
 
-    let mut cycles = Vec::new();
-    let mut visited = HashSet::new();
-    let mut recursion_stack = HashSet::new();
+    // Iterative colored DFS. Color 0 (absent) = unvisited, 1 = on the current
+    // DFS path, 2 = fully explored. There is no recursion to leak: both the
+    // path and the per-node neighbor iterators are explicit stacks that are
+    // fully drained on every run.
+    let mut color: BTreeMap<String, u8> = BTreeMap::new();
+    let mut path: Vec<String> = Vec::new();
+    let mut frames: Vec<(String, std::collections::btree_set::IntoIter<String>)> = Vec::new();
+    // BTreeSet deduplicates canonical forms and fixes the report order, so a
+    // cycle is reported exactly once no matter which back-edge found it.
+    let mut found: BTreeSet<Vec<String>> = BTreeSet::new();
 
-    for issue in &all_issues {
-        if !visited.contains(issue) {
-            if let Some(cycle) =
-                dfs_cycle_check(issue, &adj_list, &mut visited, &mut recursion_stack)
-            {
-                cycles.push(cycle);
-            }
+    for root in &nodes {
+        if color.contains_key(root) {
+            continue;
         }
-    }
+        color.insert(root.clone(), 1);
+        path.push(root.clone());
+        let neighbors = adj_list.get(root).cloned().unwrap_or_default();
+        frames.push((root.clone(), neighbors.into_iter()));
 
-    Ok(cycles)
-}
-
-/// DFS helper for cycle detection
-fn dfs_cycle_check(
-    issue: &str,
-    adj_list: &HashMap<String, Vec<String>>,
-    visited: &mut HashSet<String>,
-    recursion_stack: &mut HashSet<String>,
-) -> Option<Vec<String>> {
-    visited.insert(issue.to_string());
-    recursion_stack.insert(issue.to_string());
-
-    if let Some(neighbors) = adj_list.get(issue) {
-        for neighbor in neighbors {
-            if !visited.contains(neighbor) {
-                if let Some(cycle) = dfs_cycle_check(neighbor, adj_list, visited, recursion_stack) {
-                    return Some(cycle);
+        while let Some(frame) = frames.last_mut() {
+            let next = frame.1.next();
+            match next {
+                Some(neighbor) => match color.get(&neighbor) {
+                    Some(1) => {
+                        // Back-edge: the cycle is the path slice from the
+                        // neighbor's position on the current path down to its
+                        // top. Rotate to the smallest member for a canonical
+                        // form that does not depend on where the walk entered
+                        // the cycle.
+                        let start = path
+                            .iter()
+                            .position(|n| n == &neighbor)
+                            .expect("gray neighbor is on the current path");
+                        let mut cycle: Vec<String> = path[start..].to_vec();
+                        let min = cycle
+                            .iter()
+                            .enumerate()
+                            .min_by_key(|(_, n)| n.as_str())
+                            .map(|(i, _)| i)
+                            .expect("cycle path is non-empty");
+                        cycle.rotate_left(min);
+                        found.insert(cycle);
+                    }
+                    // Fully explored: every cycle through this node was
+                    // already recorded while it was gray, so a downstream or
+                    // cross edge reaching it is never a new cycle.
+                    Some(2) => {}
+                    _ => {
+                        color.insert(neighbor.clone(), 1);
+                        path.push(neighbor.clone());
+                        let neighbors = adj_list.get(&neighbor).cloned().unwrap_or_default();
+                        frames.push((neighbor, neighbors.into_iter()));
+                    }
+                },
+                None => {
+                    // Done with this node: blacken it and unwind both stacks
+                    // on this, the only exit path per frame.
+                    let (node, _) = frames.pop().expect("checked non-empty");
+                    color.insert(node, 2);
+                    path.pop();
                 }
-            } else if recursion_stack.contains(neighbor) {
-                // Found a cycle
-                let mut cycle = vec![neighbor.clone()];
-                cycle.push(issue.to_string());
-                return Some(cycle);
             }
         }
     }
 
-    recursion_stack.remove(issue);
-    None
+    Ok(found.into_iter().collect())
 }
 
 /// Starvation check report
@@ -3307,4 +3646,68 @@ pub fn run_visibility_check(store: &impl Store) -> Result<VisibilityCheckReport>
         has_discrepancy,
         discrepancy_details,
     })
+}
+
+#[cfg(test)]
+mod runtime_ignore_coverage_tests {
+    use super::{ignore_content_covers, ignore_line_covers};
+
+    #[test]
+    fn generated_style_patterns_cover_the_directory() {
+        for line in [
+            "traces/",
+            "/traces/",
+            "traces",
+            "**/traces/",
+            "traces/**",
+            "traces  ",
+        ] {
+            assert_eq!(
+                ignore_line_covers(line, "traces"),
+                Some(true),
+                "line should cover: {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn comments_blanks_and_other_names_do_not_cover() {
+        assert_eq!(ignore_line_covers("# traces/", "traces"), None);
+        assert_eq!(ignore_line_covers("", "traces"), None);
+        assert_eq!(ignore_line_covers("   ", "traces"), None);
+        assert_eq!(ignore_line_covers("diagnostics/", "traces"), None);
+        assert_eq!(ignore_line_covers("traces-old/", "traces"), None);
+        assert_eq!(ignore_line_covers("*.db", "traces"), None);
+    }
+
+    #[test]
+    fn negation_un_covers_even_after_a_positive_rule() {
+        assert_eq!(ignore_line_covers("!traces/", "traces"), Some(false));
+        assert_eq!(
+            ignore_content_covers("traces/\n!traces/\n", "traces"),
+            Some(false),
+            "an explicit negation leaves the directory tracked-able"
+        );
+    }
+
+    #[test]
+    fn content_coverage_reports_presence_without_negation() {
+        assert_eq!(ignore_content_covers("*.db\nlogs/\n", "traces"), None);
+        assert_eq!(
+            ignore_content_covers("*.db\ntraces/\nlogs/\n", "traces"),
+            Some(true)
+        );
+        assert_eq!(ignore_content_covers("", "traces"), None);
+    }
+
+    #[test]
+    fn every_runtime_ignore_dir_is_self_covered_by_its_own_pattern() {
+        for name in crate::store::RUNTIME_IGNORE_DIRS {
+            assert_eq!(
+                ignore_line_covers(&format!("{name}/"), name),
+                Some(true),
+                "the generated pattern must cover its own directory: {name}"
+            );
+        }
+    }
 }

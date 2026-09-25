@@ -176,6 +176,48 @@ fn snapshot_checkpoint(checkpoint_dir: &Path) -> std::collections::BTreeMap<Stri
     out
 }
 
+/// A hermetic `git` invocation: no global or system config leaks in, and
+/// the identity never depends on the host.
+fn git(dir: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .args([
+            "-c",
+            "user.name=beadrs-test",
+            "-c",
+            "user.email=beadrs-test@invalid",
+        ])
+        .args(args)
+        .output()
+        .expect("git should be runnable in tests");
+    assert!(
+        out.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// ADR-017: `ready_to_commit` is true only when the checkpoint is
+/// internally consistent AND Git can reach every published file. These
+/// fixtures run outside any repository, so give the workspace one and
+/// commit the checkpoint right before asserting readiness. Idempotent:
+/// an unchanged checkpoint commits nothing new (`--allow-empty`). Only
+/// readiness assertions need this; internals-only assertions (dirty,
+/// root_verified, coverage) are gate-independent.
+fn commit_checkpoint(workspace: &Path) {
+    if !workspace.join(".git").exists() {
+        git(workspace, &["init", "-q"]);
+    }
+    git(workspace, &["add", ".beads/checkpoint"]);
+    git(
+        workspace,
+        &["commit", "--allow-empty", "-q", "-m", "checkpoint"],
+    );
+}
+
 /// Assert the whole-checkpoint invariants a torn or half-cleaned
 /// publication would break: the pointer selects a root that verifies, the
 /// checkpoint is ready to commit, no tombstone is unresolved, and the
@@ -183,6 +225,9 @@ fn snapshot_checkpoint(checkpoint_dir: &Path) -> std::collections::BTreeMap<Stri
 /// reference -- the tombstone set fully applied and the retained set
 /// bounded by `current.json` and `previous.json`.
 fn assert_intact_checkpoint(workspace: &Path, context: &str) {
+    // Reachability is part of readiness (ADR-017): publish the checkpoint
+    // to a fixture repository so "intact" includes "reachable".
+    commit_checkpoint(workspace);
     let report = status(workspace);
     assert_eq!(
         report["root_verified"],

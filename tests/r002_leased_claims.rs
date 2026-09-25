@@ -4,7 +4,9 @@
 //! renewals, and monotonically increasing fencing tokens for safe recovery from
 //! crashed or disconnected agents.
 
-use rusqlite::Connection;
+mod lease_history_seeding;
+
+use lease_history_seeding::lease_rows;
 use std::env;
 use std::path::PathBuf;
 use std::process::Command;
@@ -215,35 +217,12 @@ fn test_lease_renewal_preserves_historical_rows() {
     let second_result: serde_json::Value = serde_json::from_slice(&second_claim.stdout).unwrap();
     assert_eq!(second_result["bead_id"].as_str(), Some(issue_id.as_str()));
 
-    let read_lease_rows = || {
-        let conn = Connection::open(workspace.workspace_path.join(".beads/beads.db")).unwrap();
-        let mut statement = conn
-            .prepare(
-                "SELECT assignee, fencing_token, expires_at
-                 FROM leases
-                 WHERE issue_id = ?1
-                 ORDER BY fencing_token ASC",
-            )
-            .unwrap();
-        statement
-            .query_map([&issue_id], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })
-            .unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .unwrap()
-    };
-
-    let before_renewal = read_lease_rows();
+    let before_renewal = lease_rows(&workspace.workspace_path, &issue_id);
     assert_eq!(before_renewal.len(), 2);
-    assert_eq!(before_renewal[0].0, "alice");
-    assert_eq!(before_renewal[0].1, 1);
-    assert_eq!(before_renewal[1].0, "bob");
-    assert_eq!(before_renewal[1].1, 2);
+    assert_eq!(before_renewal[0].assignee, "alice");
+    assert_eq!(before_renewal[0].fencing_token, 1);
+    assert_eq!(before_renewal[1].assignee, "bob");
+    assert_eq!(before_renewal[1].fencing_token, 2);
 
     let renewal = workspace.run_bead(&[
         "claim",
@@ -262,12 +241,12 @@ fn test_lease_renewal_preserves_historical_rows() {
     let renewal_result: serde_json::Value = serde_json::from_slice(&renewal.stdout).unwrap();
     assert_eq!(renewal_result["lease"]["fencing_token"], 3);
 
-    let after_renewal = read_lease_rows();
+    let after_renewal = lease_rows(&workspace.workspace_path, &issue_id);
     assert_eq!(after_renewal.len(), 2);
     assert_eq!(after_renewal[0], before_renewal[0]);
-    assert_eq!(after_renewal[1].0, "bob");
-    assert_eq!(after_renewal[1].1, 3);
-    assert_ne!(after_renewal[1].2, before_renewal[1].2);
+    assert_eq!(after_renewal[1].assignee, "bob");
+    assert_eq!(after_renewal[1].fencing_token, 3);
+    assert_ne!(after_renewal[1].expires_at, before_renewal[1].expires_at);
 }
 
 #[test]

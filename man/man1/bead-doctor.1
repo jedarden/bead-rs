@@ -4,7 +4,7 @@
 .SH NAME
 bead doctor \- Diagnose workspace integrity and optionally perform repairs
 .SH SYNOPSIS
-\fBbead doctor\fR [\fB\-\-repair\fR] [\fB\-\-rehearse\fR] [\fB\-\-starvation\-check\fR] [\fB\-\-starvation\-recovery\fR] [\fB\-\-force\fR] [\fB\-\-scope\fR] [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBbead doctor\fR [\fB\-\-repair\fR] [\fB\-\-rehearse\fR] [\fB\-\-starvation\-check\fR] [\fB\-\-starvation\-recovery\fR] [\fB\-\-visibility\-check\fR] [\fB\-\-force\fR] [\fB\-\-scope\fR] [\fB\-\-json\fR] [\fB\-\-format\fR] [\fB\-h\fR|\fB\-\-help\fR] 
 .SH DESCRIPTION
 Perform read\-only integrity checks on the workspace.
 .PP
@@ -87,14 +87,30 @@ Run starvation check: diagnose beads that are open but not appearing in the read
 \fB\-\-starvation\-recovery\fR
 Run starvation recovery: automatically diagnose and repair common starvation causes
 .TP
+\fB\-\-visibility\-check\fR
+Run visibility check: compare open bead count against ready frontier query and log discrepancies
+.TP
 \fB\-\-force\fR
 Force mutations during starvation recovery (default: recommendation\-only)
 .TP
 \fB\-\-scope\fR \fI<SCOPE>\fR
-Diagnostic scopes: store, backup, schema, dependencies, comments, all (default: all)
+Diagnostic scopes: store, backup, schema, dependencies, comments, attempts, secrets, all (default: all)
 .TP
 \fB\-\-json\fR
 Output diagnostics in JSON format
+.TP
+\fB\-\-format\fR \fI<FORMAT>\fR
+Output format. `\-\-format json` is equivalent to `\-\-json` and is the stable secret\-diagnostics contract spelling
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+text
+.IP \(bu 2
+json
+.RE
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

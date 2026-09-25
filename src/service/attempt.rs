@@ -35,12 +35,83 @@ use crate::model::attempt::{
 use crate::service::lifecycle;
 use crate::service::scheduling::AttemptTier;
 use rand::Rng;
-use rusqlite::Transaction;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use serde::Serialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use time::OffsetDateTime;
+
+const ATTEMPT_SUMMARY_HISTORY_LIMIT: usize = 5;
+
+/// Compact evidence for one resolved attempt in an issue JSON projection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AttemptSummaryOutcome {
+    pub attempt_id: String,
+    pub outcome: String,
+    /// Resolution time, named for the projection rather than the underlying
+    /// attempt-outcome record's `created_at` storage field.
+    pub resolved_at: String,
+    pub actor: String,
+}
+
+/// Read-time summary of the durable attempt-outcome sequence for one issue.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AttemptSummary {
+    pub count: i64,
+    pub consecutive_failures: i64,
+    pub last_outcomes: Vec<AttemptSummaryOutcome>,
+}
+
+/// Derive the issue JSON attempt summary from durable outcome records.
+///
+/// `work_failure` is the only failure classification in the v1 outcome
+/// vocabulary. A verified success starts a new failure run; infrastructure,
+/// cancellation, and indeterminate outcomes neither increment nor reset it.
+/// The retained tail remains in chronological order so consumers can process
+/// it as an outcome sequence.
+pub fn get_attempt_summary(conn: &Connection, issue_id: &str) -> Result<AttemptSummary> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT attempt_id, outcome, created_at, actor
+         FROM attempt_outcomes
+         WHERE issue_id = ?1
+         ORDER BY created_at ASC, receipt_id ASC",
+    )?;
+
+    let outcomes = stmt.query_map([issue_id], |row| {
+        Ok(AttemptSummaryOutcome {
+            attempt_id: row.get(0)?,
+            outcome: row.get(1)?,
+            resolved_at: row.get(2)?,
+            actor: row.get(3)?,
+        })
+    })?;
+
+    let mut count = 0;
+    let mut consecutive_failures = 0;
+    let mut last_outcomes = VecDeque::with_capacity(ATTEMPT_SUMMARY_HISTORY_LIMIT);
+
+    for outcome in outcomes {
+        let outcome = outcome?;
+        count += 1;
+        match outcome.outcome.as_str() {
+            "verified_success" => consecutive_failures = 0,
+            "work_failure" => consecutive_failures += 1,
+            _ => {}
+        }
+
+        if last_outcomes.len() == ATTEMPT_SUMMARY_HISTORY_LIMIT {
+            last_outcomes.pop_front();
+        }
+        last_outcomes.push_back(outcome);
+    }
+
+    Ok(AttemptSummary {
+        count,
+        consecutive_failures,
+        last_outcomes: last_outcomes.into(),
+    })
+}
 
 /// Resolve an attempt with idempotent replay detection
 ///

@@ -49,6 +49,48 @@ fn run_flush(workspace: &Path) -> std::process::Output {
     run(workspace, &["sync", "flush-only"])
 }
 
+/// A hermetic `git` invocation: no global or system config leaks in, and
+/// the identity never depends on the host.
+fn git(dir: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .args([
+            "-c",
+            "user.name=beadrs-test",
+            "-c",
+            "user.email=beadrs-test@invalid",
+        ])
+        .args(args)
+        .output()
+        .expect("git should be runnable in tests");
+    assert!(
+        out.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// ADR-017: `ready_to_commit` is true only when the checkpoint is
+/// internally consistent AND Git can reach every published file. These
+/// fixtures run outside any repository, so give the workspace one and
+/// commit the checkpoint right before asserting readiness. Idempotent:
+/// an unchanged checkpoint commits nothing new (`--allow-empty`). Only
+/// readiness assertions need this; internals-only assertions (dirty,
+/// root_verified, coverage) are gate-independent.
+fn commit_checkpoint(workspace: &Path) {
+    if !workspace.join(".git").exists() {
+        git(workspace, &["init", "-q"]);
+    }
+    git(workspace, &["add", ".beads/checkpoint"]);
+    git(
+        workspace,
+        &["commit", "--allow-empty", "-q", "-m", "checkpoint"],
+    );
+}
+
 /// Read and parse `current.json` (or `previous.json`) from a checkpoint
 fn read_pointer(checkpoint_dir: &Path, name: &str) -> Value {
     let content = fs::read_to_string(checkpoint_dir.join(name)).unwrap();
@@ -273,7 +315,9 @@ fn status_reports_unresolved_tombstones_until_reapplied() {
     let checkpoint_dir = workspace.join(".beads/checkpoint");
 
     // `bead init` publishes an initial (empty) generation, so a fresh
-    // workspace already has a healthy, committable checkpoint.
+    // workspace already has a healthy, committable checkpoint -- once its
+    // Git handoff exists (ADR-017): commit it before asserting readiness.
+    commit_checkpoint(workspace);
     let status = run_status_json(workspace);
     assert_eq!(
         status.get("checkpoint_present").unwrap(),
@@ -295,6 +339,7 @@ fn status_reports_unresolved_tombstones_until_reapplied() {
     assert!(run_flush(workspace).status.success());
 
     // A healthy checkpoint is ready to commit
+    commit_checkpoint(workspace);
     let status = run_status_json(workspace);
     assert_eq!(status.get("ready_to_commit").unwrap(), &Value::Bool(true));
     assert!(status
@@ -349,6 +394,9 @@ fn status_reports_unresolved_tombstones_until_reapplied() {
         );
     }
 
+    // The applied-tombstone checkpoint is healthy again -- and reachable
+    // once its Git handoff catches up (ADR-017).
+    commit_checkpoint(workspace);
     let status = run_status_json(workspace);
     assert_eq!(status.get("ready_to_commit").unwrap(), &Value::Bool(true));
     assert!(status

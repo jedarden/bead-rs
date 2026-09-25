@@ -73,6 +73,8 @@ use crate::model::redaction::{
 };
 use crate::model::Issue;
 use crate::profile::ProfileLossReport;
+use crate::service::git::{self, GitReachability};
+use crate::service::git_stage;
 use crate::service::resource_locks::{
     acquire_issue_locks, declare_resource_keys, get_resource_keys, resource_keys_from_value,
 };
@@ -206,6 +208,7 @@ pub enum ModePolicy {
 /// ```json
 /// { "checkpoint": { "mode": "sharded",
 ///                   "auto_flush": true,
+///                   "auto_stage": true,
 ///                   "thresholds": { "version": 1, "max_monolith_issue_records": 4 } } }
 /// ```
 #[derive(Debug, Clone, Default)]
@@ -217,6 +220,10 @@ pub struct CheckpointConfig {
     /// Explicit post-commit publication setting (plan 6.2.1); `None` falls
     /// back to [`AUTO_FLUSH_COMPILED_DEFAULT`]
     pub auto_flush: Option<bool>,
+    /// Explicit post-publication Git index staging of the verified
+    /// checkpoint fileset (ADR-018); `None` falls back to
+    /// [`AUTO_STAGE_COMPILED_DEFAULT`]
+    pub auto_stage: Option<bool>,
 }
 
 /// Whether a mutating command publishes a checkpoint generation after its
@@ -233,11 +240,29 @@ pub struct CheckpointConfig {
 /// it meant as an opt-in before the flip.
 pub const AUTO_FLUSH_COMPILED_DEFAULT: bool = true;
 
+/// Whether a successful publication also stages the verified checkpoint
+/// fileset into the Git index when `.beads/config.json` does not say
+/// otherwise (ADR-018).
+///
+/// On by default: staging is the automatic half of the Git handoff, it is
+/// idempotent, it mutates no history, and it is what makes the committed
+/// pointer's referenced set always present in the tree. An explicit
+/// `"checkpoint": { "auto_stage": false }` in `.beads/config.json` is the
+/// durable opt-out; staging is additionally skipped outright in workspaces
+/// outside any Git repository, where there is no index to stage into.
+pub const AUTO_STAGE_COMPILED_DEFAULT: bool = true;
+
 impl CheckpointConfig {
     /// Resolve the post-commit publication setting: an explicit workspace
     /// value wins over [`AUTO_FLUSH_COMPILED_DEFAULT`]
     pub fn auto_flush_enabled(&self) -> bool {
         self.auto_flush.unwrap_or(AUTO_FLUSH_COMPILED_DEFAULT)
+    }
+
+    /// Resolve the post-publication staging setting: an explicit workspace
+    /// value wins over [`AUTO_STAGE_COMPILED_DEFAULT`]
+    pub fn auto_stage_enabled(&self) -> bool {
+        self.auto_stage.unwrap_or(AUTO_STAGE_COMPILED_DEFAULT)
     }
 }
 
@@ -277,6 +302,12 @@ pub fn load_checkpoint_config(beads_dir: &Path) -> Result<CheckpointConfig> {
     if let Some(auto_flush_value) = section.get("auto_flush") {
         config.auto_flush = Some(auto_flush_value.as_bool().ok_or_else(|| {
             anyhow!(".beads/config.json checkpoint.auto_flush must be a boolean")
+        })?);
+    }
+
+    if let Some(auto_stage_value) = section.get("auto_stage") {
+        config.auto_stage = Some(auto_stage_value.as_bool().ok_or_else(|| {
+            anyhow!(".beads/config.json checkpoint.auto_stage must be a boolean")
         })?);
     }
 
@@ -1019,11 +1050,15 @@ struct PointerRedactionReset {
 /// Checkpoint status for `bead sync status` (plan 6.2)
 ///
 /// `ready_to_commit` is the pre-commit gate: it holds only when the
-/// authoritative pointer verifies against its root object, the checkpoint
-/// covers the live event sequence, no pointer-declared tombstone is
-/// unresolved, the monolithic compatibility view (when applicable) agrees
-/// with the pointer-selected object, and the recorded checkpoint state
-/// agrees with the pointer.
+/// checkpoint is internally consistent -- the authoritative pointer
+/// verifies against its root object, the checkpoint covers the live event
+/// sequence, no pointer-declared tombstone is unresolved, the monolithic
+/// compatibility view (when applicable) agrees with the pointer-selected
+/// object, and the recorded checkpoint state agrees with the pointer --
+/// **and** Git can reach every published file (ADR-017). The internals
+/// verdict alone is preserved in `checkpoint_consistent`, which `sync
+/// flush-only`'s idempotent short-circuit keys on so publication never
+/// waits on the transport.
 #[derive(Debug, Clone, Serialize)]
 pub struct CheckpointStatusReport {
     pub checkpoint_present: bool,
@@ -1040,6 +1075,13 @@ pub struct CheckpointStatusReport {
     pub view_agrees: Option<bool>,
     pub unresolved_tombstones: Vec<String>,
     pub changed_paths: Vec<String>,
+    /// The checkpoint-internals verdict alone: pointer verified, coverage
+    /// aligned, tombstones resolved, view agrees, recorded state agrees.
+    /// Deliberately probe-independent (ADR-017): `sync flush-only`'s
+    /// idempotent short-circuit keys on this, so an uncommitted but
+    /// consistent checkpoint never re-publishes -- the coupling ADR-013
+    /// rejected for `ready_to_commit` stays rejected for publication.
+    pub checkpoint_consistent: bool,
     pub ready_to_commit: bool,
     pub not_ready_reasons: Vec<String>,
     /// The R027 sync relationship between the live store and the durable
@@ -1049,6 +1091,14 @@ pub struct CheckpointStatusReport {
     /// `aligned` and `behind` claim nothing about pointer health, which the
     /// fields above continue to report independently.
     pub relationship: String,
+    /// Read-only Git reachability of the published checkpoint (ADR-013):
+    /// which checkpoint files Git can currently reach, bucketed as
+    /// committed/staged/unstaged/untracked/ignored, or why Git could not
+    /// answer. `None` when no checkpoint is published -- nothing exists to
+    /// reach. The readiness gate is its one consumer (ADR-017): the gate
+    /// folds this verdict into `ready_to_commit`, while the probe itself
+    /// stays strictly read-only.
+    pub git_reachability: Option<GitReachability>,
 }
 
 /// Import result with F017 support
@@ -2010,6 +2060,39 @@ fn reject_archaeology_view(value: &serde_json::Value, path: &Path) -> Result<()>
     Ok(())
 }
 
+/// Schema identity carried by every record of an agent-guided rehydration
+/// reconciliation report (`research/specs/reconciliation-report-v1.md`).
+const RECONCILIATION_REPORT_SCHEMA_REF: &str = "urn:bead-rs:schema:reconciliation-report:v1";
+
+/// Refuse an agent-guided rehydration reconciliation report before the
+/// checkpoint reader reports an incidental record-level error. Rehydration
+/// produces native beads exclusively through public `bead` commands
+/// (ADR-002); the report it emits is a review artifact for humans and is
+/// never native store input, so a report handed to an import path is named
+/// explicitly instead of failing as malformed or unknown records.
+fn reject_reconciliation_report_view(value: &serde_json::Value, path: &Path) -> Result<()> {
+    let object = match value.as_object() {
+        Some(object) => object,
+        None => return Ok(()),
+    };
+    let carries_report_schema_ref = object.get("schema_ref").and_then(serde_json::Value::as_str)
+        == Some(RECONCILIATION_REPORT_SCHEMA_REF);
+    let carries_report_shape = matches!(
+        object
+            .get("record_type")
+            .and_then(serde_json::Value::as_str),
+        Some("header" | "entry")
+    ) && (object.contains_key("disposition")
+        || object.contains_key("source_repository"));
+    if carries_report_schema_ref || carries_report_shape {
+        bail!(
+            "Refusing reconciliation report {}: reports are review artifacts and are never native checkpoint input (ADR-002, research/specs/reconciliation-report-v1.md)",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 fn validate_sha256(hash: &str, field: &str) -> Result<()> {
     if hash.len() != 64
         || !hash
@@ -2492,6 +2575,7 @@ fn reject_archaeology_source_file(input_path: &Path) -> Result<()> {
     let mut deserializer = serde_json::Deserializer::from_reader(file);
     if let Ok(value) = serde_json::Value::deserialize(&mut deserializer) {
         reject_archaeology_view(&value, input_path)?;
+        reject_reconciliation_report_view(&value, input_path)?;
     }
     Ok(())
 }
@@ -2722,6 +2806,7 @@ fn stage_monolithic_checkpoint(input_path: &Path) -> Result<ForensicStaging> {
         let record: serde_json::Value = serde_json::from_str(&line)
             .map_err(|e| anyhow!("Line {}: malformed JSON: {}", line_num, e))?;
         reject_archaeology_view(&record, input_path)?;
+        reject_reconciliation_report_view(&record, input_path)?;
 
         // Check if this is a forensic record with record_type
         if let Some(record_type) = record.get("record_type").and_then(|v| v.as_str()) {
@@ -3193,6 +3278,7 @@ fn process_shard_file(
             )
         })?;
         reject_archaeology_view(&record, shard_path)?;
+        reject_reconciliation_report_view(&record, shard_path)?;
 
         let record_type = record
             .get("record_type")
@@ -7121,6 +7207,11 @@ fn publish_forensic_checkpoint_inner(
         publish_forensic_view(&corpus, &checkpoint_dir, scratch_dir)?;
         changed_paths.push("forensic.jsonl".to_string());
     }
+    // Whether this generation wrote the compatibility view: it is among the
+    // referenced paths in monolithic mode, and rewritten explicitly in the
+    // sharded redaction case above. The ADR-018 staging set needs to know,
+    // because the view is part of what one external Git commit must carry.
+    let view_written = changed_paths.iter().any(|path| path == "forensic.jsonl");
 
     // Update checkpoint pointers in a write transaction
     let root_hash = publication.root_hash;
@@ -7297,6 +7388,49 @@ fn publish_forensic_checkpoint_inner(
 
     tx.commit()?;
 
+    // The publication is durable; stage the fileset it made authoritative
+    // so the next Git commit carries a complete, consistent checkpoint
+    // (ADR-018). The set is exactly what one external Git commit must carry
+    // (plan 6.2): both pointers, every object the new generation
+    // references, every object the retained outgoing pointer still
+    // references, the compatibility view when this generation wrote one
+    // (it is among the referenced paths), and the removal of every
+    // tombstoned object Git tracks. The assembly draws on the same
+    // referenced and retained lists `sync status` reports on, so the index
+    // cannot quietly disagree with a set status called reachable.
+    // Deliberately best-effort -- a staging
+    // failure cannot fail the publication that already committed (the
+    // ADR-017 rule that publication keys on internals alone); the ordinary
+    // `sync status` reachability buckets surface whatever did not stage.
+    if config.auto_stage_enabled() {
+        let mut stage_candidates: Vec<String> = publication.referenced_paths.clone();
+        stage_candidates.extend(previous_files.iter().cloned());
+        stage_candidates.push("current.json".to_string());
+        if previous_pointer_path.exists() {
+            stage_candidates.push("previous.json".to_string());
+        }
+        if view_written {
+            stage_candidates.push("forensic.jsonl".to_string());
+        }
+        stage_candidates.sort();
+        stage_candidates.dedup();
+        let workspace_root = checkpoint_base.parent().unwrap_or(checkpoint_base);
+        if let Err(reason) = git_stage::stage_published_checkpoint(
+            workspace_root,
+            &checkpoint_dir,
+            &stage_candidates,
+            &deleted_paths_sorted,
+        ) {
+            eprintln!(
+                "checkpoint-publish: warning: staging the verified checkpoint \
+                 fileset failed: {}; the publication itself is durable, and the \
+                 next publication (or a hand-run `git add .beads/checkpoint`) \
+                 stages the fileset",
+                reason
+            );
+        }
+    }
+
     let checkpoint = ForensicFlushResult {
         mode,
         generation_id: generation_id.clone(),
@@ -7311,13 +7445,42 @@ fn publish_forensic_checkpoint_inner(
     Ok((checkpoint, published_receipt))
 }
 
+/// Apply the ADR-017 readiness gate to a fully populated report.
+///
+/// Records the internals verdict in `checkpoint_consistent` first, so
+/// `sync flush-only`'s idempotent short-circuit can key on it without
+/// consulting the transport; then folds the probe into `ready_to_commit`
+/// through the pure [`git::commit_readiness`] gate. This is the single
+/// point every return path of [`forensic_checkpoint_status`] exits
+/// through, so all three shapes carry the same contract.
+///
+/// Reports without a probe (`git_reachability: None`, i.e. no published
+/// checkpoint) pass through the gate unchanged: the internals verdict
+/// already names that gap, and there is nothing for Git to reach.
+fn gate_readiness(mut report: CheckpointStatusReport) -> Result<CheckpointStatusReport> {
+    report.checkpoint_consistent = report.not_ready_reasons.is_empty();
+    let (ready, reasons) = git::commit_readiness(
+        report.checkpoint_consistent,
+        std::mem::take(&mut report.not_ready_reasons),
+        report.git_reachability.as_ref(),
+    );
+    report.ready_to_commit = ready;
+    report.not_ready_reasons = reasons;
+    Ok(report)
+}
+
 /// Report forensic checkpoint status for `bead sync status` (plan 6.2)
 ///
 /// Reads the authoritative pointer, the root object it selects, the
 /// monolithic compatibility view, the recorded checkpoint state, and the
 /// live event sequence, then decides whether the checkpoint is ready to
 /// commit. Never mutates anything: repairing a not-ready checkpoint is a
-/// flush's job.
+/// flush's job. The published checkpoint's Git reachability (ADR-013) is
+/// reported alongside through a read-only probe; under ADR-017 it also
+/// feeds the `ready_to_commit` gate via [`git::commit_readiness`], while
+/// the probe itself stays read-only and `sync flush-only`'s idempotent
+/// short-circuit keeps keying on the internals verdict alone
+/// (`checkpoint_consistent`).
 pub fn forensic_checkpoint_status(
     store: &mut SqliteStore,
     checkpoint_base: &Path,
@@ -7353,12 +7516,24 @@ pub fn forensic_checkpoint_status(
     let checkpoint_dir = checkpoint_base.join("checkpoint");
     let pointer_path = checkpoint_dir.join("current.json");
 
+    // ADR-013: read-only Git reachability of whatever the checkpoint has
+    // published. Computed up front so every return path carries it; the
+    // probe stays read-only, and under ADR-017 `gate_readiness` is the one
+    // consumer of its verdict. With no published checkpoint there is
+    // nothing to reach, so the field stays `None` and the gate passes the
+    // internals verdict through unchanged -- `ready_to_commit: false`
+    // already names that gap.
+    let git_reachability = pointer_path.exists().then(|| {
+        let workspace_root = checkpoint_base.parent().unwrap_or(checkpoint_base);
+        git::inspect(workspace_root, git::CHECKPOINT_PATHSPEC)
+    });
+
     let pointer = if pointer_path.exists() {
         let content = std::fs::read_to_string(&pointer_path)?;
         match serde_json::from_str::<serde_json::Value>(&content) {
             Ok(pointer) => Some(pointer),
             Err(_) => {
-                return Ok(CheckpointStatusReport {
+                return gate_readiness(CheckpointStatusReport {
                     checkpoint_present: true,
                     mode: None,
                     generation_id: None,
@@ -7371,6 +7546,7 @@ pub fn forensic_checkpoint_status(
                     view_agrees: None,
                     unresolved_tombstones: Vec::new(),
                     changed_paths: Vec::new(),
+                    checkpoint_consistent: false,
                     ready_to_commit: false,
                     not_ready_reasons: vec!["current.json is unparseable".to_string()],
                     // A present-but-unparseable pointer is integrity damage,
@@ -7381,6 +7557,7 @@ pub fn forensic_checkpoint_status(
                         crate::service::reconcile::SyncRelationship::CoveredAheadIntegrityFailure
                             .as_str()
                             .to_string(),
+                    git_reachability,
                 });
             }
         }
@@ -7425,18 +7602,20 @@ pub fn forensic_checkpoint_status(
             .as_deref()
             .and_then(|json| serde_json::from_str::<Vec<String>>(json).ok())
             .unwrap_or_default(),
+        checkpoint_consistent: false,
         ready_to_commit: false,
         not_ready_reasons: Vec::new(),
         relationship: crate::service::reconcile::SyncRelationship::Absent
             .as_str()
             .to_string(),
+        git_reachability,
     };
 
     let Some(pointer) = pointer else {
         report
             .not_ready_reasons
             .push("no checkpoint published (run `bead sync flush-only`)".to_string());
-        return Ok(report);
+        return gate_readiness(report);
     };
 
     // Verify the root object the pointer selects
@@ -7553,8 +7732,10 @@ pub fn forensic_checkpoint_status(
     }
 
     report.relationship = relationship.as_str().to_string();
-    report.ready_to_commit = report.not_ready_reasons.is_empty();
-    Ok(report)
+    // ADR-017: the readiness gate runs on every exit path -- internals
+    // verdict into `checkpoint_consistent`, probe folded into
+    // `ready_to_commit`.
+    gate_readiness(report)
 }
 
 /// Publish monolithic forensic checkpoint
@@ -8457,7 +8638,10 @@ fn update_forensic_checkpoint_state(
 /// longer references -- so they are excluded. `current.json` itself is
 /// included because every publication rewrites it: it is replaced, never
 /// deleted.
-fn read_pointer_referenced_files(pointer_path: &Path) -> Result<HashSet<String>> {
+/// `pub(crate)`: the explicit commit command (ADR-019) reconstructs the
+/// verified fileset from the pointers alone at commit time, the same
+/// referenced set this function reads at publication time.
+pub(crate) fn read_pointer_referenced_files(pointer_path: &Path) -> Result<HashSet<String>> {
     let content = std::fs::read_to_string(pointer_path)?;
 
     if let Ok(pointer) = serde_json::from_str::<serde_json::Value>(&content) {

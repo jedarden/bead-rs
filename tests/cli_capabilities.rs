@@ -155,6 +155,8 @@ fn test_capabilities_native_profile() {
     assert!(commands.contains(&Value::String("claim".to_string())));
     assert!(commands.contains(&Value::String("create".to_string())));
     assert!(commands.contains(&Value::String("list".to_string())));
+    // The authoritative recovery verb must stay advertised (R036)
+    assert!(commands.contains(&Value::String("restore".to_string())));
 
     // Restore original directory before dropping temp
     std::env::set_current_dir(original_dir).unwrap();

@@ -1,22 +1,37 @@
 # bead-rs Current Product and Software Factory Plan
 
-Plan revision: 14
+Plan revision: 16
 
-As of: 2026-09-05
+As of: 2026-09-18
 
 Status owner: bead-rs maintainers
 
-Status: 0.2.4 is the latest tagged release; the checkout declares 0.2.6.
-Attempt resolution, secret rejection, and historical-redaction recovery are
-implemented on `main`, including the ruleset-v3 Garage credential-identifier
-extension. Exact-source release conformance remains open on the explicit gate
-defects recorded in sections 1.2, 6, and 7. Revision 14 makes the durable
+Status: v0.2.6 was tagged at `d9a32b3` and published as a GitHub release on
+2026-09-06 **ahead of its release evidence**: BR-T18 remains open, the
+CHANGELOG carries no 0.2.6 entry, and gates 11–14 have no recorded proof, so
+per this plan's own rule the tag is a mid-transition snapshot, not an
+evidenced release. Independent checks of the published x86_64 artifact
+(recorded in `beadrs-559d3bfe` notes) confirm checksum, exact-commit version
+string, enforce-mode rejection without value disclosure, ruleset-v3
+capability advertisement, and the `redact` surface. BR-T18 acceptance must
+either bind its evidence to this exact tag or supersede it with an evidenced
+cut. Attempt resolution, secret rejection, and historical-redaction recovery
+are implemented on `main`, including the ruleset-v3 Garage
+credential-identifier extension. Exact-source release conformance remains
+open on the explicit gate defects recorded in sections 1.2, 6, and 7. Revision 14 makes the durable
 claim-epoch transition and its NEEDLE consumer canary explicit as BR-T23
 through BR-T27 rather than leaving that release-blocking work implicit in
 other beads. BR-T28 captures the dispatch race discovered while materializing
 that graph and makes the existing transactional manifest path the required
 planner workflow: dependent work must not become claimable before its
 dependency and resource declarations commit.
+
+Revision 16 reconciles sections 0–8 with the audited bead store: it records
+tag v0.2.6 at `d9a32b3` as the latest tag, marks BR-T01's status-doc
+reconciliation closed (`beadrs-acbf030c`), credits the v0.2.6 tag with the
+ruleset-v3 contract and the `bead init` migration-report fix it already
+carries, and records that `historical-redaction-v1` no longer matches the
+hash accepted in the R038 record after commit `6448d87`.
 
 ## 0. How to read this plan
 
@@ -56,12 +71,16 @@ successful semantic mutations publish the Git-trackable checkpoint by default.
 The installed binary is `bead`, and `native-v1` plus `needle-v1` expose public
 process contracts.
 
-The latest tagged package is 0.2.4, edition 2024, MSRV 1.85. The current
-checkout declares package version 0.2.6 and the installed fleet binary reports
-0.2.6, but no matching tag is present in this checkout. The repository has
-continued to receive diagnostic, attempt-resolution, and starvation-recovery
-work after the tag; those checkout artifacts are not release evidence until
-their specifications, capabilities, tests, tag, and release report agree.
+The latest tag is v0.2.6 at `d9a32b3` (tagged 2026-09-05, present in this
+checkout and on origin); it matches the package version 0.2.6 declared in
+`Cargo.toml` and reported by the installed fleet binary. Edition 2024 and MSRV
+1.85 are unchanged. The tag went out ahead of its release evidence — BR-T18
+(`beadrs-559d3bfe`) remains open and gates 11–14 of section 7 have no recorded
+proof against it — so it is a mid-transition snapshot, not an evidenced
+release. The repository has continued to receive diagnostic,
+attempt-resolution, and starvation-recovery work after the tag with no version
+bump; those checkout artifacts are not release evidence until their
+specifications, capabilities, tests, tag, and release report agree.
 
 ### 1.1 Shipped capability baseline
 
@@ -107,18 +126,25 @@ and BR-T11 complete against one exact source commit and pinned binary.
 - Claim service layers accept some harness/model metadata internally, but the
   public CLI does not yet supply a durable attempt identity across claim and
   outcome.
-- The installed 0.2.6 development binary now advertises secret ruleset v3 and
-  historical redaction, but no tagged release carries that contract. The
-  motivating NEEDLE records have been redacted and their exposed credential
-  rotated; immutable Git history still requires rotation as containment.
+- Tag v0.2.6 (`d9a32b3`) and the installed development binary both advertise
+  secret ruleset v3 and historical redaction (`RULESET_VERSION = 3` in
+  `src/scan/rules.rs`; `src/model/redaction.rs`; `ruleset_version` and
+  `historical_redaction` in `src/service/capabilities.rs`). The contract is
+  now carried by a tag, but the tag predates its evidence: BR-T18's
+  conformance, packaging, and remediation gates remain open, so the capability
+  is tagged and implemented, not evidenced-release. The motivating NEEDLE
+  records have been redacted and their exposed credential rotated; immutable
+  Git history still requires rotation as containment.
 - Many integration suites create workspaces below the host temporary root and
   assume no unrelated ancestor `.beads` exists. They pass under a neutral
   temporary root but fail under the shared `/home/coding` layout. A shared
   fixture must opt into `--skip-foreign-workspace` only for deliberate test
   initialization; production discovery remains fail-closed.
-- `bead init` auto-migrates through `SqliteStore::with_path` before capturing
-  its prior schema version, so its pending-migration report is unreachable.
-  Exact-source `schema_upgrade_on_init` exposes the mismatch.
+- The `bead init` pending-migration report is fixed as of tag v0.2.6: commit
+  `d9a32b3` captures the prior schema version through a read-only connection
+  before `SqliteStore::with_path` auto-migrates, so init reports the applied
+  schema transition again. Dedicated migration-API conformance and release
+  evidence remain with BR-T22 (`beadrs-5c27b273`), which is still open.
 - Workspace probing was itself mutating because it used the auto-migrating
   connection path. ADR-016 and commit `36432b2` make probing observational;
   exact-source store discovery and all nine R036 tests pass.
@@ -277,9 +303,14 @@ profile rather than silently changing `native-v1` or `needle-v1`.
 
 ### 5.1 Exceptional historical redaction
 
-The normative `historical-redaction-v1` and `secret-rejection-v1` contracts were
-accepted at their exact submitted hashes in the R038 review record. They define
-a two-step, output-redacted flow:
+The R038 review record accepted `secret-rejection-v1` at hash
+`f6aa7639a8ef1dd5…`, which the current specification still matches. It
+accepted `historical-redaction-v1` at hash `72ebca0cadd54873…`, but commit
+`6448d87` (2026-09-13) amended that specification afterward with no
+superseding review, so its current content (`5658ac80cf959428…`) no longer
+matches the accepted hash: the acceptance record covers the submitted version
+only, and the amendment awaits re-acceptance. Together they define a
+two-step, output-redacted flow:
 
 1. `bead doctor --scope secrets --format json` scans every operator-supplied
    text field plus the current and retained recovery generations and returns
@@ -327,7 +358,7 @@ operator must stop; hand-editing SQLite or checkpoint JSON is never a fallback.
 
 | ID | Artifact(s) | Change | Acceptance evidence | Status |
 | --- | --- | --- | --- | --- |
-| BR-T01 | `docs/plan/plan.md`, ADR README, Marathon status docs | Re-baseline 0.2.4 reality; distinguish frozen Marathon evidence from later releases | Internal link/status audit; no retroactive ledger edits | current for plan/ADRs; status-doc reconciliation pending |
+| BR-T01 | `docs/plan/plan.md`, ADR README, Marathon status docs | Re-baseline 0.2.4 reality; distinguish frozen Marathon evidence from later releases | Internal link/status audit; no retroactive ledger edits | current for plan/ADRs; status-doc reconciliation closed 2026-08-31 (`beadrs-acbf030c`) |
 | BR-T02 | post-0.2.4 exclusion/starvation/watchdog code and help | Inventory behavior; retain read-only explanation; remove, disable, or normatively redesign heuristic mutation outside lease/fencing rules | Spec trace, atomic/audit tests, capability inventory parity | implemented; exhaustive event-contract gate remains in BR-T20 |
 | BR-T03 | `research/specs/attempt-outcome-v1.md` plus independent fixtures/review | Define portable receipt, canonical hashing, outcomes/actions, conflicts, events, and checkpoint form | Recorded independent approval and fixture hashes | accepted/current |
 | BR-T04 | model and public schema catalog | Add versioned attempt outcome request/receipt types and bounded metadata | schema validation and compatibility fixtures | implemented/current |

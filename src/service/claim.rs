@@ -12,7 +12,60 @@ use rusqlite::OptionalExtension;
 use rusqlite::Transaction;
 use serde_json::json;
 use std::collections::HashMap;
+use std::path::Path;
 use time::OffsetDateTime;
+
+/// Ordering for the native ready frontier.
+///
+/// `Fifo` is the long-standing default. `Attempts` preserves declared
+/// priority as the primary rank, then prefers beads with fewer consecutive
+/// work failures before applying the existing FIFO tie-breakers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ReadySort {
+    #[default]
+    Fifo,
+    Attempts,
+}
+
+/// Read the optional claim ordering from `.beads/config.json`.
+///
+/// Absence preserves FIFO exactly. The sole opt-in value is:
+///
+/// ```json
+/// { "claim": { "sort": "attempts" } }
+/// ```
+pub fn load_claim_ready_sort(beads_dir: &Path) -> Result<ReadySort> {
+    let config_path = beads_dir.join("config.json");
+    if !config_path.exists() {
+        return Ok(ReadySort::Fifo);
+    }
+
+    let raw = std::fs::read_to_string(&config_path).map_err(|msg| Error::Io {
+        path: config_path,
+        msg,
+    })?;
+    let parsed: serde_json::Value = serde_json::from_str(&raw).map_err(|error| {
+        Error::Internal(anyhow::anyhow!("Invalid .beads/config.json: {}", error))
+    })?;
+
+    let Some(sort) = parsed
+        .get("claim")
+        .filter(|section| !section.is_null())
+        .and_then(|section| section.get("sort"))
+    else {
+        return Ok(ReadySort::Fifo);
+    };
+
+    match sort.as_str() {
+        Some("attempts") => Ok(ReadySort::Attempts),
+        Some(other) => Err(Error::validation(format!(
+            ".beads/config.json claim.sort must be 'attempts', got '{other}'"
+        ))),
+        None => Err(Error::validation(
+            ".beads/config.json claim.sort must be a string",
+        )),
+    }
+}
 
 /// Claim result for JSON output
 #[derive(Debug, Clone, serde::Serialize)]
@@ -190,7 +243,7 @@ pub fn claim_issue(
     enforce_single_claim(tx, assignee, single_claim)?;
 
     // Find the next eligible issue using FIFO-v1 ranking
-    let eligible_issue = find_eligible_issue(tx)?;
+    let eligible_issue = find_eligible_issue(tx, ReadySort::Fifo)?;
 
     let issue_id = match eligible_issue {
         Some(id) => id,
@@ -287,6 +340,7 @@ pub struct EnhancedClaimResult {
 ///
 /// # Returns
 /// Enhanced claim result including lease information if applicable
+#[allow(dead_code)]
 pub fn claim_issue_with_lease(
     tx: &Transaction,
     assignee: &str,
@@ -294,6 +348,30 @@ pub fn claim_issue_with_lease(
     renew_lease: bool,
     fencing_token: Option<i64>,
     single_claim: bool,
+) -> Result<EnhancedClaimResult> {
+    claim_issue_with_lease_and_sort(
+        tx,
+        assignee,
+        lease_ttl_seconds,
+        renew_lease,
+        fencing_token,
+        single_claim,
+        ReadySort::Fifo,
+    )
+}
+
+/// Claim an issue with optional lease support and an explicit ready ordering.
+///
+/// This is the configured CLI path. Keeping [`claim_issue_with_lease`] as a
+/// FIFO wrapper preserves the existing public library API and its defaults.
+pub fn claim_issue_with_lease_and_sort(
+    tx: &Transaction,
+    assignee: &str,
+    lease_ttl_seconds: Option<u64>,
+    renew_lease: bool,
+    fencing_token: Option<i64>,
+    single_claim: bool,
+    ready_sort: ReadySort,
 ) -> Result<EnhancedClaimResult> {
     // Handle lease renewal if requested
     if renew_lease {
@@ -312,7 +390,7 @@ pub fn claim_issue_with_lease(
     enforce_single_claim(tx, assignee, single_claim)?;
 
     // Perform normal claim with optional lease creation
-    let eligible_issue = find_eligible_issue(tx)?;
+    let eligible_issue = find_eligible_issue(tx, ready_sort)?;
 
     let issue_id = match eligible_issue {
         Some(id) => id,
@@ -868,9 +946,10 @@ fn enforce_single_claim(tx: &Transaction, assignee: &str, single_claim: bool) ->
 /// - No unfinished 'blocks' dependencies
 ///
 /// Ranking: priority ASC, created_at ASC, id ASC
-fn find_eligible_issue(tx: &Transaction) -> Result<Option<String>> {
+fn find_eligible_issue(tx: &Transaction, ready_sort: ReadySort) -> Result<Option<String>> {
     // Use a subquery to exclude issues that have unfinished blockers
-    let query = r#"
+    let mut query = String::from(
+        r#"
         SELECT i.id
         FROM issues i
         WHERE i.base_status = 'open'
@@ -898,13 +977,20 @@ fn find_eligible_issue(tx: &Transaction) -> Result<Option<String>> {
                       AND active_lease.expires_at > :now
                 ))
           )
-        ORDER BY i.priority ASC, i.created_at ASC, i.id ASC
-        LIMIT 1
-    "#;
+    "#,
+    );
+
+    match ready_sort {
+        ReadySort::Fifo => query.push_str(" ORDER BY i.priority ASC, i.created_at ASC, i.id ASC"),
+        ReadySort::Attempts => query.push_str(
+            " ORDER BY i.priority ASC, i.consecutive_failures ASC, i.created_at ASC, i.id ASC",
+        ),
+    }
+    query.push_str(" LIMIT 1");
 
     let issue_id: Option<String> = tx
         .query_row(
-            query,
+            &query,
             rusqlite::named_params! {
                 ":now": crate::service::resource_locks::now_string()
             },

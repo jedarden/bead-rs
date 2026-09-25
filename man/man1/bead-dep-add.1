@@ -9,22 +9,31 @@ bead dep add \- Add a dependency edge
 Add a dependency relationship between two issues.
 .PP
 Creates a directional dependency edge from blocked issue to blocker issue.
-The \*(Aqblocks\*(Aq kind affects readiness; \*(Aqrelates_to\*(Aq does not affect readiness
-but allows tracking related work.
+The \*(Aqblocks\*(Aq kind affects readiness; \*(Aqrelates_to\*(Aq and \*(Aqverifies\*(Aq do not affect
+readiness but allow tracking related work.
 .PP
 EXAMPLES:
   bead dep add BLOCKED BLOCKER                       # Add blocks dependency
   bead dep add task\-1 task\-2 \-\-kind blocks            # Explicit blocks
   bead dep add feature\-a bug\-fix \-\-kind relates_to     # Non\-blocking relationship
+  bead dep add impl\-x check\-y \-\-kind verifies          # check\-y checks impl\-x\*(Aqs work
 .PP
 DEPENDENCY KINDS:
   \- blocks: BLOCKED is blocked until BLOCKER is closed (affects readiness)
   \- relates_to: Related issues without blocking semantics (cycles allowed)
+  \- verifies: BLOCKER checks the work BLOCKED performs (never affects readiness)
 .PP
 CYCLE DETECTION:
   \*(Aqblocks\*(Aq dependencies cannot create cycles.
   Adding an edge that creates a directed cycle will fail with exit code 4.
-  \*(Aqrelates_to\*(Aq edges can form cycles (no restriction).
+  \*(Aqrelates_to\*(Aq and \*(Aqverifies\*(Aq edges can form cycles (no restriction).
+.PP
+INVERTED VERIFICATION GATES:
+  A `blocks` edge whose blocker also `verifies` the blocked issue orders the
+  check before the work it checks, which no execution can satisfy. `bead
+  doctor \-\-scope dependencies` reports each such pair as an advisory warning;
+  the edges stay legal because a deliberate baseline\-first gate looks
+  identical. The relationship is never inferred from issue titles.
 .PP
 READINESS IMPACT:
   Only \*(Aqblocks\*(Aq dependencies affect ready frontier:
@@ -43,7 +52,7 @@ ORIENTATION:
 .SH OPTIONS
 .TP
 \fB\-\-kind\fR \fI<KIND>\fR [default: blocks]
-Dependency kind (default: blocks)
+Dependency kind: blocks, relates_to, or verifies (default: blocks)
 .TP
 \fB\-\-condition\fR \fI<CONDITION>\fR
 Conditional dependency expression as JSON (optional)

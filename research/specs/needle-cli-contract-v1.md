@@ -61,6 +61,35 @@ The workspace contains `.beads/`. `issues.jsonl` is the portable checkpoint.
 The native database filename may be `beads.db` for initial NEEDLE health-check
 compatibility, but consumers must not use its schema as an API.
 
+## Sync status Git reachability
+
+`bead sync status` reports whether Git can reach each published file under
+`.beads/checkpoint`. The text form starts with `Git: STATUS`, then prints the
+`committed`, `staged`, `unstaged`, `untracked`, and `ignored` groups in that
+order. Each group carries its file count followed by every workspace-relative
+path in the group, including when a path has both a staged and an unstaged
+disposition. Empty groups still print their zero count.
+
+When Git cannot answer, the text form prints the single line
+`Git: unavailable: WHY` instead of the groups. A missing `git` binary and a
+workspace outside a Git repository are availability results, not command
+failures: `sync status` still exits 0. The JSON form mirrors this contract in
+`git_reachability`, with `status`, optional `unavailable_reason`, and arrays
+named for the five groups. `git_reachability` is `null` when no checkpoint has
+been published.
+
+Readiness is gated on reachability (ADR-017): `ready_to_commit` is true only
+when the checkpoint is internally consistent AND Git can reach every
+published file. Anything staged, unstaged, untracked, or ignored under
+`.beads/checkpoint` holds the verdict at false, with each pending bucket and
+its paths named in `not_ready_reasons`; an unavailable probe is likewise
+explicitly not ready, carrying the probe's own explanation — never a silent
+yes. No published checkpoint does not gate: the internals verdict already
+names that gap. `checkpoint_consistent` in the JSON carries the
+internals-only verdict for consumers that must not depend on the transport —
+`sync flush-only`'s idempotent short-circuit keys on it, so an
+uncommitted-but-consistent checkpoint publishes nothing on a re-flush.
+
 ## Capability handshake extension
 
 The native integration adds:

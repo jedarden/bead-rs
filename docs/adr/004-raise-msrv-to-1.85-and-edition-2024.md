@@ -92,6 +92,38 @@ interval. All reports had zero busy failures and zero claim conflicts; 34 were
 `completed` and six were the contractually valid `resource_limited` result.
 SQLite 3.53.2 was reported consistently. No budget re-record was required.
 
+### Lockfile rotation and benchmark recheck (2026-09-21)
+
+A second `cargo update` rotation (tracked under `beadrs-031f2fe5`, landed
+2026-09-17 in `55d67472`) moved two of the table above off their
+2026-08-22 resolutions while staying within the same manifest ranges:
+`clap`/`clap_builder`/`clap_lex` to `4.6.7` and `uuid` to `1.26.1`, plus
+roughly 25 transitive dependencies. `rusqlite` (`0.40.2`), `clap_mangen`
+(`0.3.3`), `time` (`0.3.45`), `tempfile` (`3.27.0`), `assert_cmd` (`2.2.2`),
+and `fs2` (`0.4.3`) were unchanged. Man pages were regenerated from the
+clap 4.6.7 command tree and verified byte-identical across repeated
+generation.
+
+This rotation is the refresh this ADR deferred the section-3.5.10 rerun to
+(tracked under `beadrs-80893a18`). The same 40-report smoke matrix — 100 and
+1,000 beads × five dataset families × four workloads, 5-second warmup,
+1-second measured interval, seed 42 — was rerun against the rotated
+lockfile. All 40 processes completed with zero busy failures and zero claim
+conflicts; 34 lanes were `completed` and the same six lanes as the
+2026-08-22 recheck were the contractually valid `resource_limited` result
+(100/1,000 chains-mixed and diamonds-mixed, plus 1,000 wide-DAG claim-close
+and mixed). SQLite remained 3.53.2. The recorded budget — zero busy/conflict
+failures and the same completed/resource-limited split — holds; no
+regression was found and no new bead was filed.
+
+Reproducing this rerun surfaced one real defect, now fixed alongside it: the
+`mixed` workload's close-then-reopen action called `lifecycle::reopen_issue`
+with no fencing token, which fails closed under the claim-epoch credential
+check added since the harness was written. Every `mixed`-workload lane
+except one failed with `Claim-epoch credential required` until the harness
+was updated to pass the epoch it had just minted, matching the other
+release/close call sites in the same file.
+
 A future MSRV advance requires a plan revision citing a new ADR or an
 explicit revision of this one; the floor never moves silently.
 

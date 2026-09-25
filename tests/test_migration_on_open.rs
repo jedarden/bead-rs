@@ -9,15 +9,17 @@ fn test_with_path_applies_pending_migrations() {
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("test.db");
 
-    // Start from a structurally valid store, then remove exactly the latest
-    // additive migration. A version row on an otherwise empty database is
-    // not a valid historical schema and can fail for reasons unrelated to
-    // opening/migration behavior.
+    // Start from a structurally valid store, then remove the claim_epoch
+    // migration (17) plus every later row, so the runner sees pending work.
+    // A version row on an otherwise empty database is not a valid historical
+    // schema and can fail for reasons unrelated to opening/migration
+    // behavior. Later migrations re-apply idempotently: migration 18's
+    // dependencies rebuild copies an already-widened table onto itself.
     drop(SqliteStore::with_path(&db_path).unwrap());
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     conn.execute_batch(
         "ALTER TABLE issues DROP COLUMN claim_epoch;
-         DELETE FROM schema_migrations WHERE version = 17;",
+         DELETE FROM schema_migrations WHERE version >= 17;",
     )
     .unwrap();
     drop(conn);

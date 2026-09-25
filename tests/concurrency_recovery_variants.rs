@@ -208,6 +208,50 @@ fn status(variant: &Variant, workspace: &Path) -> serde_json::Value {
     .unwrap()
 }
 
+/// ADR-017: `ready_to_commit` is true only when the checkpoint is
+/// internally consistent AND Git can reach every published file. These
+/// fixtures run outside any repository, so give the workspace one and
+/// commit the checkpoint right before asserting readiness. Idempotent: an
+/// unchanged checkpoint commits nothing new (`--allow-empty`). System git
+/// with a hermetic config: identity never depends on the host.
+fn commit_checkpoint(workspace: &Path) {
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .current_dir(workspace)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .args([
+                "-c",
+                "user.name=beadrs-test",
+                "-c",
+                "user.email=beadrs-test@invalid",
+            ])
+            .args(args)
+            .output()
+            .expect("git should be runnable in tests")
+    };
+    if !workspace.join(".git").exists() {
+        let init = git(&["init", "-q"]);
+        assert!(
+            init.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&init.stderr)
+        );
+    }
+    let add = git(&["add", ".beads/checkpoint"]);
+    assert!(
+        add.status.success(),
+        "git add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    let commit = git(&["commit", "--allow-empty", "-q", "-m", "checkpoint"]);
+    assert!(
+        commit.status.success(),
+        "git commit failed: {}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+}
+
 /// Ids listed by `bead list`, in listing order
 fn list_ids(variant: &Variant, workspace: &Path) -> Vec<String> {
     String::from_utf8_lossy(&variant.run_ok(&["list"], workspace).stdout)
@@ -636,6 +680,9 @@ fn concurrent_replays_into_one_target_admit_one_winner_and_exact_once_state() {
         assert_eq!(clean_refusals, replayers - 1);
 
         assert_replayed_like_source(variant, &source, target.path());
+        // Reachability is part of readiness (ADR-017); commit the replayed
+        // checkpoint before asserting it.
+        commit_checkpoint(target.path());
         let report = status(variant, target.path());
         assert_eq!(
             report["live_sequence"], report["covered_sequence"],
@@ -804,6 +851,9 @@ fn suppressed_publication_falls_behind_then_explicit_flush_recovers() {
         );
 
         variant.run_ok(&["sync", "flush-only"], ws.path());
+        // Reachability is part of readiness (ADR-017); commit the recovered
+        // checkpoint before asserting it.
+        commit_checkpoint(ws.path());
         let report = status(variant, ws.path());
         assert_eq!(
             report["covered_sequence"], report["live_sequence"],
@@ -898,6 +948,9 @@ fn publication_failure_splits_without_rollback_then_recovers() {
         );
 
         variant.run_ok(&["sync", "flush-only"], ws.path());
+        // Reachability is part of readiness (ADR-017); commit the recovered
+        // checkpoint before asserting it.
+        commit_checkpoint(ws.path());
         let report = status(variant, ws.path());
         assert_eq!(
             report["covered_sequence"], report["live_sequence"],
@@ -938,6 +991,9 @@ fn corrupted_pointer_is_reported_and_republish_recovers() {
         );
 
         variant.run_ok(&["sync", "flush-only"], ws.path());
+        // Reachability is part of readiness (ADR-017); commit the rebuilt
+        // checkpoint before asserting it.
+        commit_checkpoint(ws.path());
         let report = status(variant, ws.path());
         assert_eq!(
             report["root_verified"],

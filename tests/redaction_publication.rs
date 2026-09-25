@@ -57,6 +57,37 @@ fn finding(root: &Path) -> String {
         .fingerprint
 }
 
+fn checkpoint_description_finding(root: &Path, generation: &str) -> Value {
+    let output = bead(root)
+        .args(["doctor", "--scope", "secrets", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let diagnostics: Value = serde_json::from_slice(&output.stdout).unwrap();
+    diagnostics["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["name"] == "secret_scan")
+        .unwrap()["details"]["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|finding| {
+            finding["selector"].as_str().is_some_and(|selector| {
+                selector.starts_with(&format!("checkpoint:{generation}:record:"))
+            }) && finding["field_path"] == "record.issue.description"
+                && finding["rule_id"] == "aws-access-key-id"
+                && finding["disposition"] == "confirmed"
+        })
+        .cloned()
+        .expect("checkpoint issue description must have a blocking finding")
+}
+
 fn force_mode(root: &Path, mode: &str) {
     let path = root.join(".beads/config.json");
     let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -270,6 +301,169 @@ fn monolithic_redaction_resets_the_retained_generation_set() {
 #[test]
 fn sharded_redaction_resets_the_retained_generation_set() {
     assert_publication("sharded");
+}
+
+#[test]
+fn retained_checkpoint_issue_fingerprint_redacts_live_description() {
+    for (mode, generation) in [("monolithic", "current"), ("sharded", "previous")] {
+        let workspace = temp_workspace(&format!("checkpoint-fingerprint-{mode}-{generation}"));
+        force_mode(workspace.path(), mode);
+        let secret = shaped_value();
+        insert_issue(
+            workspace.path(),
+            "redact-checkpoint-fingerprint",
+            &format!("before {secret} after"),
+        );
+        bead(workspace.path())
+            .args(["sync", "flush-only"])
+            .assert()
+            .success();
+        if generation == "previous" {
+            bead(workspace.path())
+                .args(["create", "--title", "advance checkpoint generation"])
+                .assert()
+                .success();
+        }
+
+        let finding = checkpoint_description_finding(workspace.path(), generation);
+        let fingerprint = finding["fingerprint"].as_str().unwrap();
+        assert!(finding["selector"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("checkpoint:{generation}:record:")));
+
+        let preview = bead(workspace.path())
+            .args([
+                "redact",
+                "--finding",
+                fingerprint,
+                "--actor",
+                "publication-test",
+                "--reason",
+                "remove checkpoint-selected fixture",
+                "--dry-run",
+                "--json",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            preview.status.success(),
+            "{}",
+            String::from_utf8_lossy(&preview.stderr)
+        );
+        assert!(!preview
+            .stdout
+            .windows(secret.len())
+            .any(|window| window == secret.as_bytes()));
+        let preview: Value = serde_json::from_slice(&preview.stdout).unwrap();
+        assert_eq!(preview["finding_fingerprint"], fingerprint);
+        assert_eq!(preview["selector"]["field_path"], "description");
+        assert!(preview["selector"]["origin_identity"]
+            .as_str()
+            .unwrap()
+            .starts_with("live:issues:"));
+
+        let redaction = bead(workspace.path())
+            .args([
+                "redact",
+                "--finding",
+                fingerprint,
+                "--actor",
+                "publication-test",
+                "--reason",
+                "remove checkpoint-selected fixture",
+                "--json",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            redaction.status.success(),
+            "{}",
+            String::from_utf8_lossy(&redaction.stderr)
+        );
+        assert!(!redaction
+            .stdout
+            .windows(secret.len())
+            .any(|window| window == secret.as_bytes()));
+        let receipt: Value = serde_json::from_slice(&redaction.stdout).unwrap();
+        assert_eq!(receipt["finding_fingerprint"], fingerprint);
+        assert_eq!(receipt["publication_state"], "published");
+        assert_eq!(receipt["selector"]["field_path"], "description");
+
+        let conn = rusqlite::Connection::open(database(workspace.path())).unwrap();
+        let description: String = conn
+            .query_row(
+                "SELECT description FROM issues WHERE id = 'redact-checkpoint-fingerprint'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(description, format!("before {REDACTION_MARKER} after"));
+
+        let mut checkpoint_bytes = Vec::new();
+        read_tree(
+            &workspace.path().join(".beads/checkpoint"),
+            &mut checkpoint_bytes,
+        );
+        assert!(!checkpoint_bytes
+            .windows(secret.len())
+            .any(|window| window == secret.as_bytes()));
+    }
+}
+
+#[test]
+fn stale_checkpoint_fingerprint_conflicts_without_redacting_live_description() {
+    let workspace = temp_workspace("stale-checkpoint-fingerprint");
+    let secret = shaped_value();
+    insert_issue(
+        workspace.path(),
+        "stale-checkpoint-fingerprint",
+        &format!("before {secret} after"),
+    );
+    bead(workspace.path())
+        .args(["sync", "flush-only"])
+        .assert()
+        .success();
+    let finding = checkpoint_description_finding(workspace.path(), "current");
+    let fingerprint = finding["fingerprint"].as_str().unwrap();
+
+    let conn = rusqlite::Connection::open(database(workspace.path())).unwrap();
+    conn.execute(
+        "UPDATE issues SET description = 'changed before redaction' \
+         WHERE id = 'stale-checkpoint-fingerprint'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let redaction = bead(workspace.path())
+        .args([
+            "redact",
+            "--finding",
+            fingerprint,
+            "--actor",
+            "publication-test",
+            "--reason",
+            "reject stale checkpoint selector",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(redaction.status.code(), Some(4));
+    assert!(!redaction
+        .stderr
+        .windows(secret.len())
+        .any(|window| window == secret.as_bytes()));
+    let conn = rusqlite::Connection::open(database(workspace.path())).unwrap();
+    let state: (String, i64) = conn
+        .query_row(
+            "SELECT description, (SELECT COUNT(*) FROM redaction_receipts) \
+             FROM issues WHERE id = 'stale-checkpoint-fingerprint'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(state, ("changed before redaction".to_string(), 0));
 }
 
 #[test]

@@ -780,6 +780,49 @@ fn registry() -> Vec<RegisteredCommand> {
                 ]
             },
         },
+        // Classification re-verified against the `sync commit` call site on
+        // committed main (2026-09-20): the command only hands the already
+        // published checkpoint fileset to `git commit` and refuses a dirty
+        // store, so it opens no store transaction of its own.
+        RegisteredCommand {
+            path: "bead sync commit",
+            class: NonMutating,
+            reason: "creates the Git commit that carries the already-verified \
+                     checkpoint fileset (ADR-019); Git-level publication only -- \
+                     the store, its events, and the published checkpoint are \
+                     untouched, which is why the command refuses a dirty store",
+            invoke: |f| {
+                // `sync commit` refuses a workspace that no Git repository
+                // encloses, so give this sweep's fixture one (with an
+                // identity, since the commit it makes is a real `git
+                // commit`), and publish first: the command requires a clean
+                // checkpoint. Neither setup step appends a store event.
+                let git_ok = |args: &[&str]| {
+                    let out = std::process::Command::new("git")
+                        .arg("-C")
+                        .arg(f.workspace.as_os_str())
+                        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                        .args(args)
+                        .output()
+                        .expect("git should be runnable in tests");
+                    assert!(
+                        out.status.success(),
+                        "fixture git {:?} failed: {}",
+                        args,
+                        String::from_utf8_lossy(&out.stderr)
+                    );
+                };
+                bead(&f.workspace)
+                    .args(["sync", "flush-only"])
+                    .assert()
+                    .success();
+                git_ok(&["init", "--quiet"]);
+                git_ok(&["config", "user.name", "beadrs-contract"]);
+                git_ok(&["config", "user.email", "beadrs-contract@invalid"]);
+                vec!["sync".into(), "commit".into()]
+            },
+        },
         RegisteredCommand {
             path: "bead manifest commit",
             class: Mutating,

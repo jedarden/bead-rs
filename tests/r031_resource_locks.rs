@@ -37,6 +37,58 @@ fn workspace() -> TempDir {
     temp
 }
 
+fn resource_state(workspace: &Path, issue: &str) -> (String, String, i64, Vec<String>, i64) {
+    let shown = run(workspace, &["show", issue, "--json"]);
+    assert!(shown.status.success());
+    let shown: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    let issue_json = &shown.as_array().unwrap()[0];
+
+    let listed = run(workspace, &["resource", "list", issue, "--json"]);
+    assert!(listed.status.success());
+    let keys: Vec<String> = serde_json::from_slice(&listed.stdout).unwrap();
+
+    let conn = Connection::open(workspace.join(".beads/beads.db")).unwrap();
+    let event_count = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE issue_id = ?1",
+            [issue],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    (
+        issue_json["status"].as_str().unwrap().to_string(),
+        issue_json["assignee"].as_str().unwrap().to_string(),
+        issue_json["revision"].as_i64().unwrap(),
+        keys,
+        event_count,
+    )
+}
+
+fn assert_resource_fence_conflict(
+    workspace: &Path,
+    args: &[&str],
+    expected: &(String, String, i64, Vec<String>, i64),
+    issue: &str,
+) {
+    let output = run(workspace, args);
+    assert_eq!(
+        output.status.code(),
+        Some(4),
+        "expected credential conflict, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Claim-epoch credential"),
+        "resource mutation must be rejected by the claim fence"
+    );
+    assert_eq!(
+        &resource_state(workspace, issue),
+        expected,
+        "a rejected resource mutation must not change issue, keys, revision, or events"
+    );
+}
+
 #[test]
 #[serial]
 fn conflicting_ready_work_is_skipped_and_why_reports_reason() {
@@ -148,6 +200,121 @@ fn resource_commands_normalize_and_close_releases_keys() {
     assert!(claimed_other.status.success());
     let claimed_other: serde_json::Value = serde_json::from_slice(&claimed_other.stdout).unwrap();
     assert_eq!(claimed_other["bead_id"].as_str(), Some(other.as_str()));
+}
+
+#[test]
+#[serial]
+fn claimed_resource_mutations_require_the_current_claim_epoch() {
+    let temp = workspace();
+    let issue = create(temp.path(), "fenced resource mutation", &[]);
+
+    let first_claim = run(temp.path(), &["claim", "--assignee", "worker-1", "--json"]);
+    assert!(first_claim.status.success());
+    let first_claim: serde_json::Value = serde_json::from_slice(&first_claim.stdout).unwrap();
+    let first_epoch = first_claim["claim_epoch"].as_i64().unwrap().to_string();
+
+    let before_add = resource_state(temp.path(), &issue);
+    assert_resource_fence_conflict(
+        temp.path(),
+        &["resource", "add", &issue, "--key", "gpu:0"],
+        &before_add,
+        &issue,
+    );
+
+    let add = run(
+        temp.path(),
+        &[
+            "resource",
+            "add",
+            &issue,
+            "--key",
+            "gpu:0",
+            "--fencing-token",
+            &first_epoch,
+        ],
+    );
+    assert!(add.status.success());
+
+    let before_remove = resource_state(temp.path(), &issue);
+    assert_eq!(before_remove.3, vec!["gpu:0"]);
+    assert_resource_fence_conflict(
+        temp.path(),
+        &["resource", "remove", &issue, "--key", "gpu:0"],
+        &before_remove,
+        &issue,
+    );
+
+    let released = run(
+        temp.path(),
+        &["release", &issue, "--fencing-token", &first_epoch],
+    );
+    assert!(released.status.success());
+    let second_claim = run(temp.path(), &["claim", "--assignee", "worker-2", "--json"]);
+    assert!(second_claim.status.success());
+    let second_claim: serde_json::Value = serde_json::from_slice(&second_claim.stdout).unwrap();
+    let second_epoch = second_claim["claim_epoch"].as_i64().unwrap().to_string();
+    assert!(second_epoch.parse::<i64>().unwrap() > first_epoch.parse::<i64>().unwrap());
+
+    let before_stale_remove = resource_state(temp.path(), &issue);
+    assert_resource_fence_conflict(
+        temp.path(),
+        &[
+            "resource",
+            "remove",
+            &issue,
+            "--key",
+            "gpu:0",
+            "--fencing-token",
+            &first_epoch,
+        ],
+        &before_stale_remove,
+        &issue,
+    );
+
+    let remove = run(
+        temp.path(),
+        &[
+            "resource",
+            "remove",
+            &issue,
+            "--key",
+            "gpu:0",
+            "--fencing-token",
+            &second_epoch,
+        ],
+    );
+    assert!(remove.status.success());
+
+    let before_stale_add = resource_state(temp.path(), &issue);
+    assert_resource_fence_conflict(
+        temp.path(),
+        &[
+            "resource",
+            "add",
+            &issue,
+            "--key",
+            "gpu:0",
+            "--fencing-token",
+            &first_epoch,
+        ],
+        &before_stale_add,
+        &issue,
+    );
+
+    let add_current = run(
+        temp.path(),
+        &[
+            "resource",
+            "add",
+            &issue,
+            "--key",
+            "gpu:0",
+            "--fencing-token",
+            &second_epoch,
+        ],
+    );
+    assert!(add_current.status.success());
+    assert_eq!(resource_state(temp.path(), &issue).3, vec!["gpu:0"]);
 }
 
 #[test]

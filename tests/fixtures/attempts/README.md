@@ -8,11 +8,8 @@ This directory contains checkpoint test fixtures for the attempt-resolution feat
 # Validate fixtures
 ./tests/fixtures/attempts/validate.sh
 
-# Run round-trip tests
-cargo test --test attempt_outcome_round_trip
-
-# Run capability detection tests
-cargo test --test pinned_binary_capability
+# Run the fixture conformance suite directly
+cargo test --test checkpoint_fixture_conformance
 ```
 
 ## Directory Structure
@@ -21,12 +18,15 @@ cargo test --test pinned_binary_capability
 attempts/
 ├── old/                           # Pre-attempt-resolution format
 │   ├── checkpoint.jsonl          # Old-format checkpoint (3 issues)
-│   └── current.json              # Old manifest (no attempt_outcome_count)
+│   ├── current.json              # Old monolithic pointer (no attempt_outcome_count)
+│   └── sharded/                  # Content-addressed pre-feature checkpoint set
 ├── new/                           # With attempt-resolution feature
-│   ├── checkpoint.jsonl          # New-format checkpoint (3 issues + 2 attempt_outcomes)
-│   └── current.json              # New manifest (attempt_outcome_count: 2)
+│   ├── checkpoint.jsonl          # New-format checkpoint (3 issues + 16 outcomes)
+│   ├── current.json              # New monolithic pointer (attempt_outcome_count: 16)
+│   └── sharded/                  # Content-addressed post-feature checkpoint set
 ├── FORMAT_DIFFERENCES.md         # Detailed format comparison
 ├── VALIDATION_REPORT.md          # Validation results and coverage
+├── generate_sharded.sh           # Rebuilds both content-addressed fixtures
 ├── README.md                      # This file
 └── validate.sh                    # Fixture validation script
 ```
@@ -50,7 +50,7 @@ See `FORMAT_DIFFERENCES.md` for detailed comparison.
 Each attempt outcome record includes:
 
 **Required Fields:**
-- `schema_ref`: Schema identifier (urn:bead-rs:schema:attempt-outcome:native-v1)
+- `$schema` (legacy input alias `schema_ref`): Schema identifier (urn:bead-rs:schema:attempt-outcome:native-v1)
 - `attempt_id`: Unique attempt identifier
 - `issue_id`: Related issue ID
 - `outcome`: Classification (verified_success, work_failure, infrastructure_failure, cancelled, indeterminate)
@@ -74,13 +74,21 @@ Each attempt outcome record includes:
 
 These fixtures support:
 
-1. **Capability Detection Tests** (`pinned_binary_capability.rs`)
+1. **Fixture Conformance Tests** (`checkpoint_fixture_conformance.rs`)
+   - Old/new format boundary in monolithic and sharded layouts
+   - All five outcome values and all five resolution action values
+   - All 15 valid outcome/action combinations
+   - Create, update, close, reopen, claim, and release event coverage
+   - Pointer counts, shard roles, byte lengths, record counts, and SHA-256 identities
+   - Restore of all four fixtures into empty workspaces
+
+2. **Capability Detection Tests** (`pinned_binary_capability.rs`)
    - Pre-feature binaries lack attempt_outcome support
    - Feature-enabled binaries report attempt_outcome capability
    - `bead resolve` command availability
    - `bead why` attempt information display
 
-2. **Checkpoint Round-Trip Tests** (`attempt_outcome_round_trip.rs`)
+3. **Checkpoint Round-Trip Tests** (`attempt_outcome_round_trip.rs`)
    - Monolithic mode export/import
    - Sharded mode export/import
    - Conflicting duplicate detection
@@ -98,6 +106,8 @@ All fixtures have been validated for:
 - ✅ Enum value validity
 - ✅ Outcome-action combination correctness
 - ✅ Evidence reference format
+- ✅ Monolithic active-root SHA-256 integrity
+- ✅ Sharded manifest and object content addressing
 
 See `VALIDATION_REPORT.md` for detailed validation results.
 
@@ -116,6 +126,10 @@ Update these fixtures when:
 - New attempt outcome fields are added
 - Outcome-action combinations are modified
 - Test requirements expand
+
+Run `generate_sharded.sh` after changing the generated lifecycle or sharded
+fixture corpus. It uses the pinned pre-feature binary for `old/sharded` and the
+current binary for `new/sharded`.
 
 ## Implementation Reference
 

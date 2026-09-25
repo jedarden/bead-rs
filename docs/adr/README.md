@@ -51,3 +51,6 @@ Use the template in `000-template.md` for new ADRs. Each ADR should include:
 | [014](014-hard-reject-secret-bearing-mutations.md) | Hard-reject mutations that would publish a detectable secret | Accepted | 2026-09-03 |
 | [015](015-audited-historical-redaction.md) | Audited historical redaction over hand-edited recovery artifacts | Accepted | 2026-09-03 |
 | [016](016-observational-workspace-probes.md) | Keep workspace probes observational | Accepted | 2026-09-04 |
+| [017](017-gate-ready-to-commit-on-git-reachability.md) | Gate `ready_to_commit` on Git reachability | Accepted | 2026-09-13 |
+| [018](018-auto-stage-published-checkpoint-fileset.md) | Auto-Stage the Published Checkpoint Fileset | Accepted | 2026-09-13 |
+| [019](019-explicit-sync-commit-command.md) | The Explicit `sync commit` Command | Accepted | 2026-09-14 |

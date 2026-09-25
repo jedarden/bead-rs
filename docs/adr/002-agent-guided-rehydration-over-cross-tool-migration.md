@@ -128,6 +128,7 @@ hidden legacy parser remains.
 ## Related
 
 - `docs/plan/plan.md` sections 5, 6, 11, and 15
+- `research/specs/reconciliation-report-v1.md`
 - `research/specs/schema-identification-v1.md`
 - `research/specs/needle-cli-contract-v1.md`
 

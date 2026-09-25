@@ -1,0 +1,96 @@
+{
+  "created_at": "2026-09-05T12:27:36.48295775Z",
+  "event_count": 11,
+  "event_shards": [
+    {
+      "byte_length": 3670,
+      "origin_range": {
+        "first": [
+          "c62380e3-cc45-fc7f-1317-625bba5ff8cc",
+          1
+        ],
+        "last": [
+          "c62380e3-cc45-fc7f-1317-625bba5ff8cc",
+          11
+        ]
+      },
+      "path": "objects/30d6adfa32eb7b062ff0dbeb736b8c61c8b295272e93d35203b750cd2e711789.jsonl",
+      "record_count": 11,
+      "role": "events",
+      "sealed": false,
+      "sequence_range": [
+        1,
+        11
+      ],
+      "sha256": "30d6adfa32eb7b062ff0dbeb736b8c61c8b295272e93d35203b750cd2e711789"
+    }
+  ],
+  "format": "checkpoint-set-v1",
+  "issue_count": 2,
+  "issue_partition": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "a",
+    "b",
+    "c",
+    "d",
+    "e",
+    "f"
+  ],
+  "issue_shards": [
+    {
+      "byte_length": 412,
+      "id_prefix": "2",
+      "path": "objects/0998f9d0e43b89630d4074c0fa936629fb8708606531bdb66efda67f14958f06.jsonl",
+      "record_count": 1,
+      "role": "issues",
+      "sha256": "0998f9d0e43b89630d4074c0fa936629fb8708606531bdb66efda67f14958f06"
+    },
+    {
+      "byte_length": 423,
+      "id_prefix": "f",
+      "path": "objects/b2e6293a45e425514f5345df99848839a8e1e3a127022d836b45818212f1434d.jsonl",
+      "record_count": 1,
+      "role": "issues",
+      "sha256": "b2e6293a45e425514f5345df99848839a8e1e3a127022d836b45818212f1434d"
+    }
+  ],
+  "max_local_ingestion_sequence": 11,
+  "origins": [
+    {
+      "event_count": 11,
+      "max_sequence": 11,
+      "min_sequence": 1,
+      "objects": [
+        "objects/30d6adfa32eb7b062ff0dbeb736b8c61c8b295272e93d35203b750cd2e711789.jsonl"
+      ],
+      "origin_store_uuid": "c62380e3-cc45-fc7f-1317-625bba5ff8cc"
+    }
+  ],
+  "partition_algorithm": "sha256-hex-prefix",
+  "partition_thresholds": {
+    "max_event_object_bytes": 67108864,
+    "max_event_object_events": 100000,
+    "max_monolith_issue_records": 50000,
+    "max_monolith_total_bytes": 67108864,
+    "max_record_line_bytes": 8388608,
+    "max_shard_bytes": 52428800,
+    "max_shard_issue_records": 10000,
+    "version": 1
+  },
+  "profile": "native-v1",
+  "receipt_count": 0,
+  "receipt_shards": [],
+  "schema_version": 1,
+  "snapshot_sequence": 11,
+  "store_uuid": "c62380e3-cc45-fc7f-1317-625bba5ff8cc",
+  "total_record_count": 13
+}

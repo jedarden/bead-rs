@@ -726,6 +726,11 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
 
     // Parse scheduling policy
     let policy = SchedulingPolicy::from_string(&opts.policy)?;
+    let ready_sort = if matches!(policy, SchedulingPolicy::FifoV1) {
+        service::load_claim_ready_sort(&config.root.join(".beads"))?
+    } else {
+        service::ReadySort::Fifo
+    };
 
     // Snapshot eligibility before the claim so the --why trace explains the
     // decision as it was made (read-only; the claim below is the only
@@ -742,13 +747,14 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
     // Perform claim based on policy
     let (enhanced_result, claim_result) = if matches!(policy, SchedulingPolicy::FifoV1) {
         // Use existing FIFO claim for backward compatibility
-        let enhanced = service::claim_issue_with_lease(
+        let enhanced = service::claim_issue_with_lease_and_sort(
             &tx,
             &opts.assignee,
             opts.lease_ttl,
             opts.renew_lease,
             opts.fencing_token,
             opts.single_claim,
+            ready_sort,
         )?;
 
         let claim = ClaimResult {
@@ -1016,7 +1022,12 @@ fn cmd_list(opts: cli::ListOptions) -> Result<()> {
     };
 
     // Get issues
-    let issues = service::list_issues(
+    let ready_sort = if opts.sort.as_deref() == Some("attempts") {
+        service::ReadySort::Attempts
+    } else {
+        service::ReadySort::Fifo
+    };
+    let issues = service::list_issues_with_sort(
         &conn,
         status_filter,
         opts.assignee.as_deref(),
@@ -1024,6 +1035,7 @@ fn cmd_list(opts: cli::ListOptions) -> Result<()> {
         blocked_only,
         opts.limit,
         opts.verbose,
+        ready_sort,
     )?;
 
     // Output results
@@ -1037,11 +1049,13 @@ fn cmd_list(opts: cli::ListOptions) -> Result<()> {
                 let dependencies = load_dependencies(&conn, &issue.id)?;
                 let labels = load_labels(&conn, &issue.id)?;
                 let comments = load_comments(&conn, &issue.id, &opts.comments)?;
+                let attempts = service::get_attempt_summary(&conn, &issue.id)?;
                 let output = serde_json::to_string(&to_needle_json(
                     &issue,
                     &dependencies,
                     &labels,
                     &comments,
+                    &attempts,
                 ))
                 .map_err(|e| {
                     Error::Internal(anyhow::anyhow!("Failed to serialize issue: {}", e))
@@ -1103,12 +1117,15 @@ fn cmd_show(opts: cli::ShowOptions) -> Result<()> {
 
     // Output results
     if opts.json {
+        // Derive compact attempt evidence from the durable outcome sequence.
+        let attempts = service::get_attempt_summary(&conn, &opts.id)?;
         // Emit as one-element array for NEEDLE v1 compatibility
         let output = serde_json::to_string(&vec![to_needle_json(
             &issue,
             &dependencies,
             &labels,
             &comments,
+            &attempts,
         )])
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to serialize issue: {}", e)))?;
         println!("{}", output);
@@ -1386,8 +1403,23 @@ fn cmd_resolve(opts: cli::ResolveOptions) -> Result<()> {
         harness_version: opts.harness_version.clone(),
     };
 
-    // Execute resolution in transaction
-    let mut tx = conn.unchecked_transaction()?;
+    // Execute resolution in a transaction taken IMMEDIATE -- before
+    // `resolve_attempt` reads the issue row -- so the claim-epoch credential
+    // the resolver validates and the resolution that credential authorizes
+    // (receipt, tier, lifecycle action, audit event) are one atomic unit on
+    // one serialized state. A deferred transaction would not give that: it
+    // takes its read snapshot at the first SELECT and only reaches for the
+    // write lock at the first INSERT, so a claim transition that commits in
+    // between separates the credential check from the resolution it
+    // authorizes. Under WAL -- this store's journal mode -- that separation
+    // surfaces as SQLITE_BUSY_SNAPSHOT rather than as silent skew, and
+    // `busy_timeout` cannot absorb it, because the transaction has to be
+    // restarted from its read rather than merely waited on. The caller would
+    // see a transient-looking error where the fence is defined to report a
+    // clean claim-epoch conflict. Taking the write lock at BEGIN makes a
+    // concurrent claim wait instead. The lifecycle mutations open their
+    // transactions the same way.
+    let mut tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
     let result = service::resolve_attempt(&mut tx, &workspace_uuid, request);
 
     // Handle errors with proper exit codes
@@ -1416,7 +1448,9 @@ fn cmd_resolve(opts: cli::ResolveOptions) -> Result<()> {
             Ok(())
         }
         Err(e) => {
-            // Rollback the transaction
+            // Dropping the uncommitted transaction rolls back everything the
+            // refused resolve touched, so a refused resolve exits with the
+            // store exactly as the resolver found it.
             drop(tx);
 
             // Map attempt errors to proper exit codes
@@ -1549,6 +1583,18 @@ fn cmd_dep(cmd: cli::DepCommand) -> Result<()> {
     }
 }
 
+/// Render the relationship a dependency kind asserts between BLOCKED and
+/// BLOCKER in the `dep add` success message. `verifies` (R025, ADR-001)
+/// declares the blocker checks the blocked issue's work; it never affects
+/// readiness.
+fn dependency_phrase(kind: &str) -> &'static str {
+    match kind {
+        "blocks" => "blocked by",
+        "verifies" => "verified by",
+        _ => "related to",
+    }
+}
+
 fn cmd_dep_add(opts: cli::DepAddOptions) -> Result<()> {
     // Discover workspace
     let config = store::WorkspaceConfig::discover()?
@@ -1601,22 +1647,14 @@ fn cmd_dep_add(opts: cli::DepAddOptions) -> Result<()> {
         println!(
             "Added conditional dependency: {} {} {} (when condition met)",
             opts.blocked,
-            if opts.kind == "blocks" {
-                "blocked by"
-            } else {
-                "related to"
-            },
+            dependency_phrase(&opts.kind),
             opts.blocker
         );
     } else {
         println!(
             "Added dependency: {} {} {}",
             opts.blocked,
-            if opts.kind == "blocks" {
-                "blocked by"
-            } else {
-                "related to"
-            },
+            dependency_phrase(&opts.kind),
             opts.blocker
         );
     }
@@ -1935,6 +1973,7 @@ fn cmd_sync(cmd: cli::SyncCommand) -> Result<()> {
         cli::SyncCommand::FlushOnly(opts) => cmd_sync_flush_only(opts),
         cli::SyncCommand::ImportOnly(opts) => cmd_sync_import_only(opts),
         cli::SyncCommand::Reconcile(opts) => cmd_sync_reconcile(opts),
+        cli::SyncCommand::Commit(opts) => cmd_sync_commit(opts),
         cli::SyncCommand::Status(opts) => cmd_sync_status(opts),
         cli::SyncCommand::Diff(opts) => cmd_sync_diff(opts),
         cli::SyncCommand::Bisect(opts) => cmd_sync_bisect(opts),
@@ -2051,7 +2090,12 @@ fn cmd_sync_flush_only(opts: cli::SyncFlushOptions) -> Result<()> {
             )));
         }
 
-        if !report.dirty && report.ready_to_commit {
+        // ADR-017: the idempotent short-circuit keys on the internals
+        // verdict alone (`checkpoint_consistent`), not the compound
+        // `ready_to_commit`. Publication must never wait on the transport:
+        // an uncommitted-but-consistent checkpoint publishes nothing here,
+        // exactly the coupling ADR-013 rejected folding into this field.
+        if !report.dirty && report.checkpoint_consistent {
             eprintln!("Checkpoint already current:");
             if let Some(mode) = &report.mode {
                 eprintln!("  Mode: {}", mode);
@@ -2250,6 +2294,62 @@ fn cmd_sync_reconcile(opts: cli::SyncReconcileOptions) -> Result<()> {
     Ok(())
 }
 
+fn cmd_sync_commit(opts: cli::SyncCommitOptions) -> Result<()> {
+    // Discover workspace
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    // Open database connection
+    let db_path = config.database_path();
+    let conn = store::open_configured_connection(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    let mut store = store::SqliteStore::from_conn(conn);
+    let checkpoint_base = config.root.join(".beads");
+
+    let report = service::git_commit::commit_verified_checkpoint(
+        &mut store,
+        &checkpoint_base,
+        opts.message.as_deref(),
+        opts.dry_run,
+    )?;
+
+    if report.dry_run {
+        if report.committed {
+            println!("Dry-run sync commit: a commit would be created.");
+        } else {
+            println!("Dry-run sync commit: nothing to commit.");
+        }
+    } else if report.committed {
+        println!("Committed checkpoint:");
+    } else {
+        println!("Checkpoint already committed; nothing to do.");
+    }
+    if let Some(branch) = &report.branch {
+        println!("  Branch: {}", branch);
+    }
+    if let Some(commit) = &report.commit {
+        println!("  Commit: {}", commit);
+    }
+    if let Some(generation) = &report.generation_id {
+        println!("  Generation: {}", generation);
+    }
+    if !report.staged.is_empty() {
+        println!("  Files committed: {}", report.staged.len());
+        for path in &report.staged {
+            println!("    {}", path);
+        }
+    }
+    if !report.removed.is_empty() {
+        println!("  Removals committed: {}", report.removed.len());
+        for path in &report.removed {
+            println!("    {}", path);
+        }
+    }
+
+    Ok(())
+}
+
 fn cmd_sync_status(opts: cli::SyncStatusOptions) -> Result<()> {
     // Discover workspace
     let config = store::WorkspaceConfig::discover()?
@@ -2312,6 +2412,34 @@ fn cmd_sync_status(opts: cli::SyncStatusOptions) -> Result<()> {
             );
             for path in &report.unresolved_tombstones {
                 println!("    {}", path);
+            }
+            // ADR-013: read-only Git reachability of the published
+            // checkpoint. The probe itself enforces nothing; under ADR-017
+            // its verdict is folded into the `ready_to_commit` line below
+            // (a consistent checkpoint Git cannot reach reads NO with the
+            // pending paths named), and is absent when no checkpoint is
+            // published.
+            if let Some(reach) = &report.git_reachability {
+                match &reach.unavailable_reason {
+                    Some(reason) => {
+                        println!("  Git: unavailable: {}", reason);
+                    }
+                    None => {
+                        println!("  Git: {}", reach.status);
+                        for (bucket, paths) in [
+                            ("committed", &reach.committed),
+                            ("staged", &reach.staged),
+                            ("unstaged", &reach.unstaged),
+                            ("untracked", &reach.untracked),
+                            ("ignored", &reach.ignored),
+                        ] {
+                            println!("    {}: {}", bucket, paths.len());
+                            for path in paths {
+                                println!("      {}", path);
+                            }
+                        }
+                    }
+                }
             }
             if report.ready_to_commit {
                 println!("  Ready to commit: yes");
@@ -2998,6 +3126,7 @@ fn to_needle_json(
     dependencies: &[serde_json::Value],
     labels: &[String],
     comments: &[serde_json::Value],
+    attempts: &service::AttemptSummary,
 ) -> serde_json::Value {
     let status_str = match issue.base_status {
         model::BaseStatus::Open => "open",
@@ -3030,6 +3159,7 @@ fn to_needle_json(
         "created_at": issue.created_at,
         "updated_at": issue.updated_at,
         "labels": labels,
+        "attempts": attempts,
         "revision": issue.revision.unwrap_or(1)
     });
 

@@ -25,8 +25,11 @@ to atomically assign work.
 SQLite (.beads/beads.db) is the authoritative live state and is not committed.
 The checkpoint under .beads/checkpoint/ is the portable, durable copy and is
 what Git tracks; every successful mutation publishes it automatically after its
-transaction commits, so it is never silently behind the database. `bead sync
-flush-only` remains an explicit idempotent check, and `--no-auto-flush` or
+transaction commits, so it is never silently behind the database. Each
+publication also stages the fileset it verified into the Git index (ADR-018),
+so the next commit carries a complete checkpoint however it is invoked;
+`checkpoint.auto_stage` in .beads/config.json suppresses that staging. `bead
+sync flush-only` remains an explicit idempotent check, and `--no-auto-flush` or
 `checkpoint.auto_flush` in .beads/config.json suppresses automatic publication,
 leaving the checkpoint to be flushed by hand.
 
@@ -152,11 +155,13 @@ attempt-outcome-v1 specification with exactly-once semantics."
         long_about = "Destroy exactly one sensitive byte range selected by a current secret-scanner fingerprint.
 
 The command never accepts or prints the matched value. A new redaction requires
---finding, --actor, and --reason; the service revalidates the fingerprint under
-the maintenance and checkpoint-publication locks, replaces only that range with
-the fixed bead-rs marker, records a nonsecret receipt, and publishes a sanitized
-checkpoint generation set. Publication is mandatory even when workspace
-automatic publication is disabled.
+--finding, --actor, and --reason. Fingerprints from either live rows or retained
+current/previous checkpoint issue records are accepted. The service derives the
+live row from a checkpoint record and revalidates the fingerprint against those
+live bytes under the maintenance and checkpoint-publication locks, replaces only
+that range with the fixed bead-rs marker, records a nonsecret receipt, and
+publishes a sanitized checkpoint generation set. Publication is mandatory even
+when workspace automatic publication is disabled.
 
 If publication fails after the SQLite redaction commits, no semantic mutation is
 repeated. Resume the recorded receipt with `bead redact --resume RECEIPT_ID`.
@@ -212,10 +217,10 @@ are not distributed locks and do not coordinate different stores.
 
 An edge is written blocked-first: `bead dep add <BLOCKED> <BLOCKER>` means
 BLOCKER must close before BLOCKED can become ready. `blocks` edges affect the
-ready frontier and may not form cycles; `relates_to` edges are informational
-only and may.
+ready frontier and may not form cycles; `relates_to` and `verifies` edges are
+informational only and may.
 
-  bead dep add <BLOCKED> <BLOCKER> [--kind blocks|relates_to]
+  bead dep add <BLOCKED> <BLOCKER> [--kind blocks|relates_to|verifies]
   bead dep remove <BLOCKED> <BLOCKER> [--kind KIND]"
     )]
     Dep(DepCommand),
@@ -574,14 +579,16 @@ pub struct CreateOptions {
     long_about = "List issues with optional filtering and comment projection.
 
 Supports filtering by status, assignee, ready frontier, and manual block. Uses claim
-ordering (priority ASC, created_at ASC, id ASC) for deterministic results.
-Ready frontier uses the same ordering as 'bead claim' but is read-only and
-does not reserve work.
+ordering (priority ASC, created_at ASC, id ASC) for deterministic results by
+default. Ready frontier uses the same ordering as 'bead claim' but is read-only
+and does not reserve work. With '--ready --sort attempts', consecutive failures
+order beads within each priority tier before the FIFO tie-breakers.
 
 EXAMPLES:
   bead list --json --limit 10                      # First 10 issues as JSON
   bead list --status open --assignee alice        # Open issues assigned to alice
   bead list --ready --limit 5                      # Next 5 ready candidates
+  bead list --ready --sort attempts --limit 5      # Prefer fresh work within priority
   bead list --blocked                               # Manually blocked open issues
   bead list --comments unresolved --json --limit 20  # Issues with unresolved comments
 
@@ -590,6 +597,7 @@ FILTERS:
                     (Special case: 'blocked' is an alias for --blocked)
   --assignee NAME   Filter by assignee (exact match)
   --ready           Show only ready frontier issues (open, unassigned, not blocked)
+  --sort attempts   Within each priority, show fewer consecutive failures first
   --blocked         Show only manually blocked open issues
   --limit N         Maximum results (0-999999, default: 100)
 
@@ -620,6 +628,16 @@ pub struct ListOptions {
     /// Show only ready frontier issues
     #[arg(long)]
     pub ready: bool,
+
+    /// Ready-frontier ordering: attempts prefers fewer consecutive failures
+    /// within each priority tier, then retains the FIFO tie-breakers
+    #[arg(
+        long,
+        value_name = "ORDER",
+        value_parser = ["attempts"],
+        requires = "ready"
+    )]
+    pub sort: Option<String>,
 
     /// Show only manually blocked open issues
     #[arg(long)]
@@ -698,7 +716,9 @@ pub struct ShowOptions {
 
 Claim performs server-side selection from ready issues (open, unassigned,
 not manually blocked, no unfinished blockers) using fifo-v1 policy:
-priority ASC, created_at ASC, id ASC.
+priority ASC, created_at ASC, id ASC. A workspace may set
+'{\"claim\":{\"sort\":\"attempts\"}}' in .beads/config.json to prefer fewer
+consecutive failures within each priority tier before the FIFO tie-breakers.
 
 Selection and assignment occur in one atomic transaction. With no eligible
 issues, returns exit code 0 and an empty result ({} in JSON mode).
@@ -1113,7 +1133,7 @@ pub struct ReopenOptions {
         .args(["finding", "resume"])
 ))]
 pub struct RedactOptions {
-    /// Fingerprint reported by `bead doctor --scope secrets --format json`
+    /// Live or retained-checkpoint fingerprint reported by secret diagnostics
     #[arg(long, value_name = "FINGERPRINT")]
     pub finding: Option<String>,
 
@@ -1290,8 +1310,11 @@ ATOMICITY:
 GIT INTEGRATION:
   Mutations publish automatically; run 'bead sync flush-only' before committing
   the repository as an explicit idempotent check that the checkpoint is current.
-  bead-rs never runs Git commands itself. Recover with the named-generation
-  verifier: 'bead restore --source .beads/checkpoint --generation <GEN> --actor <WHO>'."
+  bead-rs never mutates Git state; its only Git interaction is the
+  read-only reachability report in 'bead sync status' (ADR-013), whose
+  verdict the status readiness line folds in (ADR-017). Recover with the
+  named-generation verifier: 'bead restore --source .beads/checkpoint
+  --generation <GEN> --actor <WHO>'."
     )]
     FlushOnly(SyncFlushOptions),
 
@@ -1396,8 +1419,10 @@ QUALIFICATION:
   - the recorded checkpoint state does not claim more history than the
     live store holds
   Any other checkpoint-ahead-of-live shape is an integrity failure and is
-  refused without mutation. bead-rs never runs Git; it observes the store
-  relationship, not the transport that produced it.
+  refused without mutation. bead-rs never mutates Git; it observes the
+  store relationship, not the transport that produced it (the one read-only
+  Git interaction anywhere in bead-rs is `sync status`'s reachability
+  report, ADR-013).
 
 PUBLICATION:
   Reconcile never publishes a checkpoint generation by its own action. Under
@@ -1425,6 +1450,59 @@ WORKFLOW:
     )]
     Reconcile(SyncReconcileOptions),
 
+    /// Commit the published checkpoint with a bead-only pathspec (ADR-019)
+    #[command(
+        name = "commit",
+        about = "Commit the published checkpoint with a bead-only pathspec",
+        long_about = "Stage the verified checkpoint fileset and commit exactly it (ADR-019).
+
+The follow-on to auto-staging (ADR-018): publication stages the verified
+fileset into the index, and this command assembles the commit that carries
+it. The commit is recorded with a pathspec of exactly the checkpoint files
+the current generation makes authoritative -- both pointers, every object
+either pointer still references, the compatibility view when one exists,
+and the removal of every tombstoned object Git tracks. A pathspec commit
+ignores every other staged path, so on a shared checkout another worker's
+staging is left staged and untouched, never swept into checkpoint history.
+
+GATES (each refuses before the index or history is touched, naming its
+remedy):
+  - no checkpoint published        -> `bead sync flush-only`
+  - checkpoint dirty (live ahead)  -> `bead sync flush-only` first
+  - checkpoint remote-advanced     -> `bead sync reconcile --actor <WHO>`
+  - covered-ahead integrity failure -> `bead doctor`
+  - internally inconsistent        -> `bead sync flush-only` / `bead doctor`
+  - detached HEAD                  -> check out a branch first
+  - ignore rules exclude checkpoint files -> amend the ignore rule
+  - a referenced file is missing from disk -> the checkpoint is damaged
+
+COMMITTING IS POLICY: the command never bypasses pre-commit gates (no
+--no-verify -- a hook that rejects the commit rejects it here too), never
+creates branches, and never pushes. Automatic committing on every mutation
+was considered and rejected: a pre-commit gate must be able to hold the
+commit, and branch, history shape, and message are the operator's
+decisions. This command removes only the mechanical mistakes -- the
+omitted untracked object, the stale hand-typed pathspec, the shared-index
+sweep.
+
+IDEMPOTENCE: against a consistent checkpoint whose verified set Git
+already reaches, the command commits nothing and exits 0.
+
+EXAMPLES:
+  bead sync commit                                      # conventional message
+  bead sync commit --message \"sync beads before rebase\"  # explicit message
+  bead sync commit --dry-run                            # report, touch nothing
+
+EXIT CODES:
+  0 - Committed, or nothing to commit (checkpoint already committed)
+  2 - Refused: absent/dirty/inconsistent checkpoint, detached HEAD,
+      Git unavailable, or ignored checkpoint files
+  4 - Refused: the checkpoint is remote-advanced
+  5 - Refused: covered-ahead integrity failure, damaged checkpoint, or
+      staging failure"
+    )]
+    Commit(SyncCommitOptions),
+
     /// Report checkpoint status and readiness to commit
     #[command(
         name = "status",
@@ -1437,18 +1515,25 @@ reapplies no changes, and lists any pointer-declared tombstones that are
 still unresolved on disk.
 
 READINESS:
-  ready_to_commit holds only when every check passes:
+  ready_to_commit holds only when every check passes AND Git can reach
+  every published file (ADR-017):
   - the pointer's root object exists and hashes to the declared SHA-256
   - the checkpoint covers the live event sequence (not dirty)
   - no pointer-declared tombstone remains on disk
   - the forensic.jsonl view is byte-identical to the root object
   - the recorded checkpoint state agrees with the pointer
+  - the Git reachability probe reports every published file committed
+    (anything staged, unstaged, untracked, or ignored names its paths in
+    the reasons; probe unavailability is explicit, never a silent yes)
 
-  Under the automatic publication default a not-ready checkpoint means
-  publication was suppressed by `--no-auto-flush` or checkpoint.auto_flush,
-  or failed after a committed mutation. Repository automation must treat a
-  not-ready checkpoint as a failed pre-commit gate: run `bead sync
-  flush-only` and include every reported changed path in the same Git commit.
+  `checkpoint_consistent` carries the internals verdict alone, without the
+  Git gate. Under the automatic publication default a not-ready checkpoint
+  means publication was suppressed by `--no-auto-flush` or
+  checkpoint.auto_flush, failed after a committed mutation, or the
+  checkpoint has not reached its Git commit yet. Repository automation
+  must treat a not-ready checkpoint as a failed pre-commit gate: run
+  `bead sync flush-only` and include every reported changed path in the
+  same Git commit.
 
 EXAMPLES:
   bead sync status                     # Human-readable summary
@@ -1458,7 +1543,8 @@ OUTPUT:
   --format json prints one JSON object with checkpoint_present, mode,
   generation_id, live_sequence, covered_sequence, relationship, dirty,
   root_path, root_hash, root_verified, view_agrees, unresolved_tombstones,
-  changed_paths, ready_to_commit, and not_ready_reasons.
+  changed_paths, checkpoint_consistent, ready_to_commit,
+  not_ready_reasons, and git_reachability.
 
 RELATIONSHIP (R027):
   The sync relationship between the live store and the durable checkpoint:
@@ -1466,7 +1552,22 @@ RELATIONSHIP (R027):
   aligned, remote-advanced (a pulled checkpoint is a verified superset ahead
   of the live store; run `bead sync reconcile --actor <you>`), or
   covered-ahead-integrity-failure (the checkpoint is ahead but failed its
-  qualification; the first failed qualifier is named in the reasons)."
+  qualification; the first failed qualifier is named in the reasons).
+
+GIT REACHABILITY (ADR-013, ADR-017):
+  One read-only Git probe reports whether the published checkpoint has
+  actually reached Git: which files are committed, staged, unstaged,
+  untracked, or ignored (excluded by ignore rules -- the one shape the
+  Git handoff can never heal), or why Git could not answer (no repository
+  above the workspace, no git binary). The probe itself stays strictly
+  read-only: no command refuses, retries, or mutates because of it. Its
+  verdict feeds the `ready_to_commit` gate (ADR-017) -- a consistent,
+  verified checkpoint Git cannot reach reads NO with the pending paths
+  named, and an unavailable probe reads NO with the probe's own
+  explanation -- while `sync flush-only`'s idempotent short-circuit keeps
+  keying on `checkpoint_consistent` alone, so publication never waits on
+  the transport. Absent when no checkpoint is published (see
+  docs/adr/017-gate-ready-to-commit-on-git-reachability.md)."
     )]
     Status(SyncStatusOptions),
 
@@ -1621,6 +1722,19 @@ pub struct SyncReconcileOptions {
     pub actor: String,
 
     /// Perform dry-run validation without mutating the live store
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+/// Options for the explicit checkpoint commit (ADR-019)
+#[derive(Parser, Debug)]
+pub struct SyncCommitOptions {
+    /// Commit message; the default names the published generation
+    #[arg(long, short = 'm')]
+    pub message: Option<String>,
+
+    /// Report what would be staged and committed without touching the
+    /// index or history
     #[arg(long)]
     pub dry_run: bool,
 }
@@ -1814,22 +1928,31 @@ pub enum DepCommand {
         long_about = "Add a dependency relationship between two issues.
 
 Creates a directional dependency edge from blocked issue to blocker issue.
-The 'blocks' kind affects readiness; 'relates_to' does not affect readiness
-but allows tracking related work.
+The 'blocks' kind affects readiness; 'relates_to' and 'verifies' do not affect
+readiness but allow tracking related work.
 
 EXAMPLES:
   bead dep add BLOCKED BLOCKER                       # Add blocks dependency
   bead dep add task-1 task-2 --kind blocks            # Explicit blocks
   bead dep add feature-a bug-fix --kind relates_to     # Non-blocking relationship
+  bead dep add impl-x check-y --kind verifies          # check-y checks impl-x's work
 
 DEPENDENCY KINDS:
   - blocks: BLOCKED is blocked until BLOCKER is closed (affects readiness)
   - relates_to: Related issues without blocking semantics (cycles allowed)
+  - verifies: BLOCKER checks the work BLOCKED performs (never affects readiness)
 
 CYCLE DETECTION:
   'blocks' dependencies cannot create cycles.
   Adding an edge that creates a directed cycle will fail with exit code 4.
-  'relates_to' edges can form cycles (no restriction).
+  'relates_to' and 'verifies' edges can form cycles (no restriction).
+
+INVERTED VERIFICATION GATES:
+  A `blocks` edge whose blocker also `verifies` the blocked issue orders the
+  check before the work it checks, which no execution can satisfy. `bead
+  doctor --scope dependencies` reports each such pair as an advisory warning;
+  the edges stay legal because a deliberate baseline-first gate looks
+  identical. The relationship is never inferred from issue titles.
 
 READINESS IMPACT:
   Only 'blocks' dependencies affect ready frontier:
@@ -1860,6 +1983,7 @@ EXAMPLES:
   bead dep remove BLOCKED BLOCKER                    # Remove all dependencies
   bead dep remove task-1 task-2 --kind blocks        # Remove specific kind
   bead dep remove feature-a bug-fix --kind relates_to # Remove relates_to edge
+  bead dep remove impl-x check-y --kind verifies      # Remove verifies edge
 
 IDEMPOTENCY:
   Removing a non-existent dependency succeeds without error.
@@ -1881,7 +2005,7 @@ pub struct DepAddOptions {
     pub blocked: String,
     /// Blocker issue ID
     pub blocker: String,
-    /// Dependency kind (default: blocks)
+    /// Dependency kind: blocks, relates_to, or verifies (default: blocks)
     #[arg(long, default_value = "blocks")]
     pub kind: String,
     /// Conditional dependency expression as JSON (optional)
@@ -2047,6 +2171,9 @@ CAPABILITY INFORMATION:
   - Complete command inventory
   - auto_flush: reports that this binary publishes a checkpoint
     generation after every successful semantic mutation
+  - auto_stage: reports that this binary stages the published
+    checkpoint fileset into the Git index after every successful
+    publication (ADR-018)
 
 AUTO_FLUSH:
   The additive auto_flush field reports the compiled default, not
@@ -2056,6 +2183,14 @@ AUTO_FLUSH:
   present and true under the automatic default. Consumers that require
   a current checkpoint must still read `bead sync --status`, which
   remains the only authority on whether this workspace is clean.
+
+AUTO_STAGE:
+  The additive auto_stage field (ADR-018) reports the compiled default,
+  not workspace state: a workspace that disables staging through
+  checkpoint.auto_stage changes what the binary does, never what it
+  advertises. The field is present and true under the automatic
+  default. Staging runs only after the publication transaction has
+  committed, so a staging failure can never un-publish a mutation.
 
 PROFILES:
   - native-v1: Full native capabilities (default)
@@ -2068,6 +2203,11 @@ SCHEMA CATALOG:
   - validate: Schema available for 'bead schema show'
   - consume: Operations accepting this document type
   - emit: Operations producing this document type
+  Every catalog identity resolves through 'bead schema show' and is
+  explainable through 'bead schema explain' (the field-guide entry's emit
+  names that command). consume and emit values name operations, or the
+  checkpoint-set-v1 durable fileset tag for documents carried in the
+  checkpoint fileset rather than emitted by a single command.
 
 Use this command for capability negotiation and feature detection."
 )]
@@ -2091,7 +2231,37 @@ pub enum SchemaCommand {
     Show(SchemaShowOptions),
     #[command(
         about = "Explain a public schema",
-        long_about = "Explain an exact public schema identity as deterministic typed JSON or Markdown.\n\nThe explanation describes ownership, transport, supported operations, and the schema's public members."
+        long_about = "Explain an exact public schema identity as deterministic typed JSON or Markdown.
+
+The explanation describes ownership, transport, supported operations, and the
+schema's public members. The command is read-only and workspace-independent:
+it resolves against the same immutable catalog that `bead capabilities`
+reports and never opens a workspace.
+
+IDENTITY RESOLUTION:
+  - SCHEMA_REF must byte-match an exact catalog identity; discover every
+    explainable identity with `bead schema list`
+  - The issue, event, and provenance-receipt identities share one native
+    field guide that describes all three documents together
+  - Every other catalog identity returns a concise explanation of that one
+    schema alone
+  - The response carries the field-guide artifact identity in schema_ref and
+    names the requested identity in describes_schema_refs
+
+FORMATS:
+  - json (default): the typed explanation value
+  - markdown: a deterministic rendering of that same value (fixed section
+    order, LF line endings, no generated timestamp)
+
+EXIT CODES:
+  - 0 on success
+  - 2 for an unknown identity or an unsupported --format value
+
+EXAMPLES:
+  bead schema explain urn:bead-rs:schema:issue:native-v1                    # Native field guide as typed JSON
+  bead schema explain urn:bead-rs:schema:issue:native-v1 --format markdown  # The same guide rendered as Markdown
+  bead schema explain urn:bead-rs:schema:checkpoint-pointer:native-v1       # Concise explanation of one schema
+  bead schema list                                                          # Discover every explainable identity"
     )]
     Explain(SchemaExplainOptions),
 }

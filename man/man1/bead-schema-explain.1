@@ -8,7 +8,35 @@ bead schema explain \- Explain a public schema
 .SH DESCRIPTION
 Explain an exact public schema identity as deterministic typed JSON or Markdown.
 .PP
-The explanation describes ownership, transport, supported operations, and the schema\*(Aqs public members.
+The explanation describes ownership, transport, supported operations, and the
+schema\*(Aqs public members. The command is read\-only and workspace\-independent:
+it resolves against the same immutable catalog that `bead capabilities`
+reports and never opens a workspace.
+.PP
+IDENTITY RESOLUTION:
+  \- SCHEMA_REF must byte\-match an exact catalog identity; discover every
+    explainable identity with `bead schema list`
+  \- The issue, event, and provenance\-receipt identities share one native
+    field guide that describes all three documents together
+  \- Every other catalog identity returns a concise explanation of that one
+    schema alone
+  \- The response carries the field\-guide artifact identity in schema_ref and
+    names the requested identity in describes_schema_refs
+.PP
+FORMATS:
+  \- json (default): the typed explanation value
+  \- markdown: a deterministic rendering of that same value (fixed section
+    order, LF line endings, no generated timestamp)
+.PP
+EXIT CODES:
+  \- 0 on success
+  \- 2 for an unknown identity or an unsupported \-\-format value
+.PP
+EXAMPLES:
+  bead schema explain urn:bead\-rs:schema:issue:native\-v1                    # Native field guide as typed JSON
+  bead schema explain urn:bead\-rs:schema:issue:native\-v1 \-\-format markdown  # The same guide rendered as Markdown
+  bead schema explain urn:bead\-rs:schema:checkpoint\-pointer:native\-v1       # Concise explanation of one schema
+  bead schema list                                                          # Discover every explainable identity
 .SH OPTIONS
 .TP
 \fB\-\-format\fR \fI<FORMAT>\fR [default: json]
