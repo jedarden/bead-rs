@@ -116,10 +116,10 @@ fn capability_absence_degrades_gracefully() {
     );
     assert!(!harness.command_exists("resolve").unwrap());
     assert!(
-        !harness
+        harness
             .unrecognized_subcommand("resolve")
             .unwrap()
-            .is_none(),
+            .is_some(),
         "framework should classify resolve as unrecognized on this variant"
     );
 
