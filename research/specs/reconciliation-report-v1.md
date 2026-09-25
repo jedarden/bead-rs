@@ -148,7 +148,9 @@ suspicious: the disagreement is itself a finding for review.
 Entry order is not significant and should follow source order. Batching
 a large migration produces one report per batch, each with its own
 header; combining batches into a single report is a mechanical rewrite
-that must recompute the header and keep `source_id` unique.
+that must recompute the header and keep `source_id` unique. The
+segmentation, restart, and combination procedure is specified in
+`research/specs/rehydration-batching-v1.md`.
 
 ## Relationship to native store input
 
@@ -191,6 +193,44 @@ Implementation item 5):
    entry; only then repeat against the real destination or accept the
    run.
 
+## Resuming a run across sessions
+
+A large migration cannot assume one agent session. The format is
+designed so a resumed session inherits the prior session's decisions
+instead of re-deriving them, without extending the schema: everything
+below follows from the extension-field rule above plus the destination
+store's own reference bindings.
+
+Two durable records cooperate, and they are deliberately independent:
+
+1. **The partial report is the decision ledger.** Every entry already
+   present is a decided disposition. A resumed session must carry each
+   decided entry forward unchanged — same disposition, `target_bead`,
+   `merged_into`, and `rationale` — and must not re-derive it. Only an
+   `unresolved` entry may be rewritten, and only to settle it after
+   review, as required above.
+2. **The destination store's unique-reference bindings are the
+   creation ledger.** Every `native` disposition is created with
+   `bead create --unique-ref <source_tracker>:<source_id>` (R032), so
+   what the store actually accepted is queryable with
+   `bead ref find --namespace <source_tracker> --value <source_id>`
+   independently of any report file. The two ledgers bracket every
+   interruption window: an entry written but not yet created is
+   decided-but-pending, and a create that committed after the last
+   report write is found by the lookup instead of being lost.
+
+A report resumes the same run only when its header repeats the
+original run's `source_repository`, `source_commit`, `source_tracker`,
+and `destination_workspace`. A source commit that moved starts a new
+run, not a resumed one; rehydrating from a moved source is handled
+per commit, each report recording the commit it read.
+
+Recommended extension fields, all optional — validators must ignore
+them, rewriters must preserve them: `batch_id`, `batch_index`, and
+`batch_total` in the header; `batch_id`, `recorded_at`, and
+`decided_by` per entry. The batching and restart procedure that uses
+them is specified in `research/specs/rehydration-batching-v1.md`.
+
 ## Validation and conformance
 
 A conforming report parses and validates under the in-repository
@@ -209,6 +249,8 @@ handed to `bead sync import-only` in restore-into-empty and merge modes.
 ## Related
 
 - `docs/adr/002-agent-guided-rehydration-over-cross-tool-migration.md`
+- `docs/adr/008-no-title-similarity-duplicate-detection.md`
+- `research/specs/rehydration-batching-v1.md`
 - `research/specs/schema-identification-v1.md`
 - `research/specs/native-field-guide-v1.md`
 - `docs/plan/plan.md` section 6 (agent-guided rehydration)
