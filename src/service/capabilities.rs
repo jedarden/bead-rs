@@ -25,6 +25,13 @@ pub struct Capabilities {
     pub priorities: Priorities,
     /// Valid status values
     pub statuses: Vec<String>,
+    /// Dependency kinds accepted for native mutation. `blocks` gates
+    /// readiness; `relates_to` and `verifies` (R025, ADR-001) never do.
+    ///
+    /// This is the native `dep add --kind` vocabulary, not the interchange
+    /// set: interchange preserves foreign kinds, which stay outside this
+    /// published enum by design.
+    pub dependency_kinds: Vec<String>,
     /// Supported checkpoint modes
     pub checkpoint_modes: Vec<String>,
     /// Supported checkpoint formats
@@ -198,6 +205,11 @@ pub fn generate_capabilities_with_secret_mode(
             "deferred".to_string(),
             "in_progress".to_string(),
             "open".to_string(),
+        ],
+        dependency_kinds: vec![
+            "blocks".to_string(),
+            "relates_to".to_string(),
+            "verifies".to_string(),
         ],
         checkpoint_modes: vec!["monolithic".to_string(), "sharded".to_string()],
         checkpoint_formats: vec![

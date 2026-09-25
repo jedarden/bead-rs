@@ -308,6 +308,7 @@ fn names(kind: &str) -> &'static [&'static str] {
             "atomic_claim",
             "priorities",
             "statuses",
+            "dependency_kinds",
             "checkpoint_modes",
             "checkpoint_formats",
             "logical_revision",
@@ -641,6 +642,12 @@ fn property_schema(kind: &str, name: &str) -> Value {
         | ("capabilities", "auto_stage")
         | ("capabilities", "attempt_summary") => {
             json!({"type":"boolean"})
+        }
+        // The native dependency write set, the same posture as the
+        // audit-event kind enum above: interchange keeps foreign kinds
+        // preservable, and those stay outside the published enum by design.
+        ("capabilities", "dependency_kinds") => {
+            json!({"type":"array", "items":{"type":"string", "enum":["blocks","relates_to","verifies"]}})
         }
         ("capabilities", "statuses")
         | ("capabilities", "checkpoint_modes")
@@ -3009,6 +3016,20 @@ fn field_semantics(document: &str, name: &str) -> FieldSemantics {
                 "blocked and ready are derived views, never advertised statuses",
             ],
             common_mistake: "Expecting blocked or ready here.",
+        },
+        ("capabilities", "dependency_kinds") => FieldSemantics {
+            ownership: "system",
+            operations: &["capabilities"],
+            has_default: false,
+            default: Value::Null,
+            example: json!(["blocks","relates_to","verifies"]),
+            invariants: &[
+                "the vocabulary `dep add --kind` accepts, sorted",
+                "blocks gates readiness; relates_to and verifies never do",
+                "interchange preserves foreign kinds outside this set",
+            ],
+            common_mistake:
+                "Treating a verifies edge as a readiness gate; only blocks gates eligibility.",
         },
         ("capabilities", "checkpoint_modes") => FieldSemantics {
             ownership: "system",

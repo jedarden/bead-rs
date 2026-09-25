@@ -12,7 +12,12 @@
 //! - an inverted verification gate -- a `blocks` edge whose blocker also
 //!   `verifies` the blocked bead -- is diagnosed from the declared edge and
 //!   only from it. Titles are never inspected, the edges stay legal, and the
-//!   doctor report is advisory (warning status, exit 0) and deterministic.
+//!   doctor report is advisory (warning status, exit 0) and deterministic;
+//! - the declared edge feeds the R023 `why` explanation and the published
+//!   capabilities document: `why` answers "why is this blocked?" with the
+//!   distinct `blocked_by_verifier` code and a `verifies_blocked_issue`
+//!   flag on the blocker detail, and `capabilities` advertises the
+//!   three-kind vocabulary.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -455,6 +460,131 @@ fn dry_run_accepts_verifies_kind() {
         stdout.contains("\"verifies\""),
         "dry-run echoes the kind: {stdout}"
     );
+}
+
+/// `why --json` for one bead: a single JSON object.
+fn why_json(workspace: &Path, id: &str) -> Value {
+    let output = run(workspace, &["why", "--id", id, "--json"]);
+    assert!(output.status.success(), "why --json failed: {output:?}");
+    serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim())
+        .expect("why --json must emit valid JSON")
+}
+
+/// The legitimate "prove the baseline is green first" gate (ADR-001).
+///
+/// A deliberate baseline-first ordering is structurally identical to the
+/// accidental inversion -- the same `verifies` edge and the same `blocks`
+/// edge on the same pair -- and only the author knows which one they meant.
+/// The diagnosis must therefore stay advisory for the deliberate reading
+/// too: both edges insert cleanly, the doctor reports the pair as a
+/// warning while the run itself stays green, and the gate keeps gating.
+#[test]
+fn baseline_first_gate_is_reported_but_stays_legal() {
+    let workspace = setup("base");
+    let work = create(workspace.path(), "Add tilde expansion helper");
+    let baseline = create(
+        workspace.path(),
+        "Prove the baseline is green before any work lands",
+    );
+
+    // The deliberate authoring order: declare the check relationship,
+    // then order the check ahead of the work it checks.
+    dep_add(workspace.path(), &work, &baseline, "verifies")
+        .assert_ok("declaring the check relationship");
+    dep_add(workspace.path(), &work, &baseline, "blocks")
+        .assert_ok("the deliberate gate must insert, not reject");
+
+    // Advisory posture: a warning, never an error (doctor_dependencies
+    // already asserts the doctor exits 0).
+    let report = doctor_dependencies(workspace.path());
+    let check = inverted_gate_check(&report);
+    assert_eq!(check["status"], "warning");
+    assert!(
+        !report["has_errors"].as_bool().unwrap_or(true),
+        "a deliberate baseline-first gate must not raise doctor errors"
+    );
+
+    // Advisory never means inert: the gate still gates, so the work waits
+    // for its baseline.
+    let ready = list_ready(workspace.path());
+    assert!(
+        !ready.contains(&work),
+        "the gated work stays off the ready frontier, got: {ready:?}"
+    );
+}
+
+/// `why` answers "why is this blocked?" with the verifier (R023 + R025).
+///
+/// With both edges declared, the reason codes carry the distinct
+/// `blocked_by_verifier` code and the blocker detail carries
+/// `verifies_blocked_issue: true` -- the answer that tells the reader
+/// something may be wrong, which an ordinary unfinished-blocker code
+/// cannot name. The contrast pair proves both key on the declared edge:
+/// the same `blocks` edge without a `verifies` twin reports neither.
+#[test]
+fn why_names_a_blocking_verifier() {
+    let workspace = setup("why");
+    let inverted = create_inverted_pair(workspace.path(), 0);
+
+    let why = why_json(workspace.path(), &inverted.blocked);
+    let codes = why["reasons"]
+        .as_array()
+        .expect("why --json carries reason codes");
+    assert!(
+        codes.iter().any(|code| code == "blocked_by_verifier"),
+        "reason codes must name the blocking verifier, got: {codes:?}"
+    );
+    let blockers = why["blockers"]["active_blockers"]
+        .as_array()
+        .expect("why --json carries active blockers");
+    assert_eq!(blockers.len(), 1, "one declared blocker");
+    assert_eq!(
+        blockers[0]["verifies_blocked_issue"], true,
+        "the declared check relationship must surface on the blocker detail"
+    );
+
+    // Contrast: the same gate shape with no declared check relationship.
+    let plain_work = create(workspace.path(), "Add second helper");
+    let plain_gate = create(workspace.path(), "Run the second lint");
+    dep_add(workspace.path(), &plain_work, &plain_gate, "blocks")
+        .assert_ok("plain blocks add");
+
+    let plain = why_json(workspace.path(), &plain_work);
+    let plain_codes = plain["reasons"]
+        .as_array()
+        .expect("why --json carries reason codes");
+    assert!(
+        !plain_codes
+            .iter()
+            .any(|code| code == "blocked_by_verifier"),
+        "the code requires the declared edge, got: {plain_codes:?}"
+    );
+    let plain_blockers = plain["blockers"]["active_blockers"]
+        .as_array()
+        .expect("why --json carries active blockers");
+    assert_eq!(
+        plain_blockers[0]["verifies_blocked_issue"], false,
+        "an ordinary blocker is never flagged; titles are not consulted"
+    );
+}
+
+/// The capabilities document advertises the declared kind vocabulary.
+///
+/// The published member is the native mutation set (`dep add --kind`),
+/// not the interchange set: interchange keeps foreign kinds preservable
+/// outside this enum by design.
+#[test]
+fn capabilities_advertise_the_declared_kinds() {
+    let workspace = setup("cap");
+    let output = run(workspace.path(), &["capabilities"]);
+    assert!(output.status.success(), "capabilities failed: {output:?}");
+    let caps: Value = serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim())
+        .expect("capabilities must emit valid JSON");
+    let kinds = caps["dependency_kinds"]
+        .as_array()
+        .expect("capabilities advertises dependency_kinds");
+    let names: Vec<&str> = kinds.iter().filter_map(|k| k.as_str()).collect();
+    assert_eq!(names, vec!["blocks", "relates_to", "verifies"]);
 }
 
 /// Small helper: assert the command succeeded, naming `what` on failure.
