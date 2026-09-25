@@ -5,7 +5,11 @@
 //! blockers, claim-ranking factors, and legal next operations.
 //!
 //! Reuses domain evaluators and reason codes from R001 (decision traces) and
-//! R019 (intelligent scheduling) to ensure consistency across all diagnostic interfaces.
+//! R019 (intelligent scheduling) to ensure consistency across all diagnostic
+//! interfaces, and reports the R025 declared-verification dimension: a blocker
+//! that also `verifies` the blocked bead surfaces as the distinct
+//! `blocked_by_verifier` code, because "blocked by the bead that verifies it"
+//! is the answer that tells the reader something may be wrong.
 
 use crate::error::{Error, Result};
 use crate::service::claim::ReasonCode;
@@ -101,6 +105,12 @@ pub struct BlockerDetail {
 
     /// Condition explanation (if conditional)
     pub condition_explanation: Option<String>,
+
+    /// Whether this blocker also carries a `verifies` edge to the blocked
+    /// issue (R025, ADR-001) -- the inverted-verification-gate shape: the
+    /// bead that checks the work also gates it. Declared edges only; titles
+    /// are never consulted.
+    pub verifies_blocked_issue: bool,
 }
 
 /// Claim ranking factors explaining why this issue ranks where it does
@@ -330,6 +340,11 @@ fn analyze_blockers(conn: &Connection, issue_id: &str) -> Result<BlockerAnalysis
     // Get all blockers (both active and inactive)
     let blockers = get_dependencies(conn, issue_id, Some("blocks"))?;
 
+    // Which of them also declare that they verify this issue (R025, ADR-001):
+    // a `blocks` edge whose blocker appears here is the inverted-gate shape,
+    // and the explanation must say so rather than report an ordinary blocker.
+    let verifying = verifying_blocker_ids(conn, issue_id)?;
+
     let mut active_blockers = Vec::new();
     let mut total_count = 0;
     let mut has_inactive_conditional = false;
@@ -354,6 +369,7 @@ fn analyze_blockers(conn: &Connection, issue_id: &str) -> Result<BlockerAnalysis
                     .condition
                     .as_ref()
                     .map(|c| format!("Condition: {}", c)),
+                verifies_blocked_issue: verifying.contains(&blocker.blocker_issue_id),
             });
         } else if blocker.condition.is_some() {
             // Inactive conditional blocker
@@ -613,6 +629,16 @@ fn build_reason_codes(
         if blockers.active_blocker_count > 0 {
             reasons.push(ReasonCode::HasUnfinishedBlockers);
         }
+        if blockers
+            .active_blockers
+            .iter()
+            .any(|b| b.verifies_blocked_issue)
+        {
+            // The distinct R025 code: "blocked by the bead that verifies it"
+            // identifies the fault that an ordinary unfinished-blocker code
+            // cannot name.
+            reasons.push(ReasonCode::BlockedByVerifier);
+        }
         if issue.manual_blocked != 0 {
             reasons.push(ReasonCode::ManuallyBlocked);
         }
@@ -691,6 +717,27 @@ fn get_dependencies(
     }
 
     Ok(dependencies)
+}
+
+/// Blocker IDs carrying a `verifies` edge to `issue_id` (R025, ADR-001).
+///
+/// The declared check relationship is what makes the inverted-gate shape
+/// decidable: a `blocks` edge whose blocker also appears here orders the
+/// check before the work it checks. Titles are never read.
+fn verifying_blocker_ids(
+    conn: &Connection,
+    issue_id: &str,
+) -> Result<std::collections::HashSet<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT blocker_issue_id FROM dependencies
+         WHERE blocked_issue_id = ?1 AND kind = 'verifies'",
+    )?;
+    let rows = stmt.query_map([issue_id], |row| row.get::<_, String>(0))?;
+    let mut ids = std::collections::HashSet::new();
+    for row in rows {
+        ids.insert(row?);
+    }
+    Ok(ids)
 }
 
 /// Get attempt information for an issue

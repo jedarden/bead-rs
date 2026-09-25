@@ -106,6 +106,16 @@ pub enum ReasonCode {
     /// Issue has unfinished blocker dependencies
     HasUnfinishedBlockers,
 
+    /// An active blocker also carries a `verifies` edge to this issue
+    /// (R025, ADR-001): the bead that checks the work also gates it, the
+    /// inverted-verification-gate shape. Reported as its own code because
+    /// "blocked by the bead that verifies it" is the answer that identifies
+    /// the fault; the gate stays legal, since a deliberate baseline-first
+    /// ordering is structurally identical.
+    ///
+    /// Serializes as `blocked_by_verifier`.
+    BlockedByVerifier,
+
     /// Issue is not in open status (e.g., closed, in_progress, deferred)
     NotOpenStatus,
 

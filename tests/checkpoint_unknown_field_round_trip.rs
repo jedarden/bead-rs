@@ -23,6 +23,12 @@
 //!   lost pointer addresses both generations to byte-identical roots, so
 //!   the HashMap-backed re-projection cannot leak iteration order into the
 //!   published bytes
+//! * differently ordered input: the same payload with every JSON object's
+//!   keys reversed -- issue records, record wrappers, and objects nested
+//!   inside unknown-field values alike -- imports into identical
+//!   `issue_extensions` rows and re-projects byte-identical canonical issue
+//!   records by separate `bead` processes, with the provenance receipt
+//!   (which records the source bytes) the only line allowed to differ
 //! * the full export×import chain: fixture → restore → monolithic flush →
 //!   restore → sharded flush → restore, payload intact at the far end
 //! * merge semantics: insert into a fresh workspace, replace when the
@@ -905,4 +911,169 @@ fn malformed_resource_keys_projection_is_rejected_not_preserved() {
     .assert()
     .failure()
     .stderr(predicate::str::contains("resource_keys"));
+}
+
+// ---- differently ordered input ---------------------------------------------
+
+/// Append `value` to `out` as compact JSON text with every object's keys in
+/// the reverse of the canonical (sorted) order -- recursively, so objects
+/// nested inside arrays and inside unknown-field values are reordered too.
+/// The checkpoint format must not be able to tell the result from the
+/// canonical serialization.
+fn write_reordered(value: &Value, out: &mut String) {
+    match value {
+        Value::Object(map) => {
+            out.push('{');
+            for (index, (key, nested)) in map.iter().rev().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                out.push_str(&serde_json::to_string(key).unwrap());
+                out.push(':');
+                write_reordered(nested, out);
+            }
+            out.push('}');
+        }
+        Value::Array(items) => {
+            out.push('[');
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                write_reordered(item, out);
+            }
+            out.push(']');
+        }
+        scalar => out.push_str(&serde_json::to_string(scalar).unwrap()),
+    }
+}
+
+/// A monolithic checkpoint carrying the exact fixture payload with every
+/// JSON object's keys in reverse order -- the record wrappers, the issue
+/// objects, and every object nested inside an unknown-field value. Unlike
+/// `staged_variant`, the rewrite must not go through
+/// `serde_json::to_string`: that canonicalizes key order, and a variant
+/// indistinguishable from the fixture would make the ordering tests below
+/// vacuous.
+fn reordered_variant() -> (TempDir, PathBuf) {
+    let records = read_jsonl(&fixture_dir().join("checkpoint.jsonl"));
+    let mut lines = Vec::new();
+    for record in &records {
+        let mut line = String::new();
+        write_reordered(record, &mut line);
+        lines.push(line);
+    }
+
+    // The rewrite must genuinely change the key order while preserving the
+    // parsed content, or the tests consuming this variant prove nothing.
+    for (reordered, record) in lines.iter().zip(&records) {
+        assert_ne!(
+            reordered,
+            &serde_json::to_string(record).unwrap(),
+            "the reordered rewrite did not change the canonical serialization"
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(reordered).unwrap(),
+            *record,
+            "the reordered rewrite changed the record's parsed content"
+        );
+    }
+
+    let dir = TempDir::new().unwrap();
+    let mut body = lines.join("\n");
+    body.push('\n');
+    fs::write(dir.path().join("checkpoint.jsonl"), &body).unwrap();
+    let source = dir.path().join("checkpoint.jsonl");
+    (dir, source)
+}
+
+/// A checkpoint whose objects are keyed differently -- a rewriting tool, a
+/// foreign producer, or a hand-edited file may all emit non-canonical key
+/// order -- must import into exactly the extension rows the canonical
+/// fixture produces: same keys, same values, same scalar types, same
+/// nesting, nothing dropped and nothing rewritten.
+#[test]
+fn differently_ordered_input_imports_identically() {
+    let (_dir, source) = reordered_variant();
+    let workspace = restore(&source);
+
+    let expected = expected_extensions(&fixture_issue_records());
+    assert_extensions_match(workspace.path(), &expected, "reordered input");
+    assert_projections_restored(workspace.path());
+}
+
+/// Restore `source` into a fresh workspace, republish it monolithically,
+/// and return the published generation's raw JSONL lines.
+fn flushed_generation_lines(source: &Path) -> Vec<String> {
+    let workspace = restore(source);
+    set_checkpoint_config(workspace.path(), json!({ "auto_flush": false }));
+    let checkpoint_dir = workspace.path().join(".beads/checkpoint");
+    // A freshly restored store is already current, so flush-only alone
+    // would be a no-op; lose the pointer the way an interrupted publication
+    // loses one (plan 6.2.1 item 8) to force a genuine re-publication.
+    let _ = fs::remove_file(checkpoint_dir.join("current.json"));
+    bead(workspace.path(), &["sync", "flush-only"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Flushed forensic checkpoint:"));
+    let pointer = read_pointer(checkpoint_dir.join("current.json"));
+    let root = pointer["active_root"]["path"].as_str().unwrap().to_string();
+    fs::read_to_string(checkpoint_dir.join(root))
+        .unwrap()
+        .lines()
+        .map(|line| line.to_string())
+        .collect()
+}
+
+/// Key order is not semantic in the checkpoint format, so a store imported
+/// from differently ordered input must re-project the same canonical issue
+/// records a store imported from the committed fixture re-projects. The
+/// lines are compared as published BYTES, and the two stores are imported
+/// by separate `bead` processes, so this is where a HashMap iteration order
+/// leaking through the re-projection would surface: the in-process
+/// republication test above shares one hasher seed between its two flushes
+/// and cannot.
+///
+/// The one line allowed to differ is the provenance receipt: it records the
+/// byte hash of the source the store was restored from, which legitimately
+/// differs between byte-different (but semantically identical) inputs.
+/// Asserting that divergence is bounded to exactly that record is what
+/// separates "the receipt noted a different source" from "the payload was
+/// rewritten".
+#[test]
+fn differently_ordered_input_reprojects_the_canonical_issue_records() {
+    let canonical = flushed_generation_lines(&fixture_dir().join("checkpoint.jsonl"));
+    let (_dir, source) = reordered_variant();
+    let reordered = flushed_generation_lines(&source);
+
+    assert_eq!(
+        canonical.len(),
+        reordered.len(),
+        "both generations carry the same record count"
+    );
+    for (index, (canonical_line, reordered_line)) in canonical.iter().zip(&reordered).enumerate() {
+        if canonical_line != reordered_line {
+            let record: Value = serde_json::from_str(canonical_line).unwrap();
+            assert_eq!(
+                record["record_type"], "provenance_receipt",
+                "line {index} diverged between a canonical-input store and a \
+                 reordered-input store; only the provenance receipt may \
+                 differ, anything else is the payload being rewritten"
+            );
+        }
+    }
+
+    let issue_lines = |lines: &[String]| {
+        lines
+            .iter()
+            .filter(|line| serde_json::from_str::<Value>(line).unwrap()["record_type"] == "issue")
+            .cloned()
+            .collect::<Vec<String>>()
+    };
+    assert_eq!(
+        issue_lines(&canonical),
+        issue_lines(&reordered),
+        "the re-projected issue records must republish byte-identically \
+         regardless of the input's key order"
+    );
 }
