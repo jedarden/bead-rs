@@ -546,17 +546,14 @@ fn why_names_a_blocking_verifier() {
     // Contrast: the same gate shape with no declared check relationship.
     let plain_work = create(workspace.path(), "Add second helper");
     let plain_gate = create(workspace.path(), "Run the second lint");
-    dep_add(workspace.path(), &plain_work, &plain_gate, "blocks")
-        .assert_ok("plain blocks add");
+    dep_add(workspace.path(), &plain_work, &plain_gate, "blocks").assert_ok("plain blocks add");
 
     let plain = why_json(workspace.path(), &plain_work);
     let plain_codes = plain["reasons"]
         .as_array()
         .expect("why --json carries reason codes");
     assert!(
-        !plain_codes
-            .iter()
-            .any(|code| code == "blocked_by_verifier"),
+        !plain_codes.iter().any(|code| code == "blocked_by_verifier"),
         "the code requires the declared edge, got: {plain_codes:?}"
     );
     let plain_blockers = plain["blockers"]["active_blockers"]

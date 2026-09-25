@@ -629,7 +629,11 @@ fn build_reason_codes(
         if blockers.active_blocker_count > 0 {
             reasons.push(ReasonCode::HasUnfinishedBlockers);
         }
-        if blockers.active_blockers.iter().any(|b| b.verifies_blocked_issue) {
+        if blockers
+            .active_blockers
+            .iter()
+            .any(|b| b.verifies_blocked_issue)
+        {
             // The distinct R025 code: "blocked by the bead that verifies it"
             // identifies the fault that an ordinary unfinished-blocker code
             // cannot name.
