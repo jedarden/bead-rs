@@ -85,3 +85,7 @@ cargo test --test checkpoint_unknown_field_round_trip
   store must address byte-identical roots), the full export×import chain,
   merge insert/replace/retain semantics, and the known-projection boundary
   (`resource_keys` is validated, not preserved blindly).
+- `tests/checkpoint_restore_unknown_fields.rs` — the same payload through
+  the R036 `bead restore` recovery command: monolithic and sharded
+  generations into empty targets, and the `--allow-non-empty` override
+  replacing prior semantic state.
