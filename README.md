@@ -1,6 +1,6 @@
 # bead-rs
 
-[![iad-ci](https://img.shields.io/github/checks-status/jedarden/bead-rs/main?label=iad-ci)](https://github.com/jedarden/bead-rs/commits/main)
+[![CI](https://img.shields.io/badge/CI-Argo_Workflows_iad--ci-EF7B4D?logo=argo&logoColor=white)](https://argo-ci.ardenone.com/workflows/argo-workflows)
 
 `bead-rs` is a clean-room Rust task-coordination system for agent fleets. It
 keeps a dependency graph of work items ("beads") in SQLite, hands out exactly
