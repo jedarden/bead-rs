@@ -22,9 +22,18 @@ use std::fs;
 use std::path::Path;
 use std::process::Output;
 
+/// A hermetic `bead` invocation. `run` scrubs global and system git config,
+/// which leaves the commit `sync commit` assembles with no identity to author
+/// it — so the identity travels in the environment, which the scrub does not
+/// touch. This pins the same host-independent contract the [`git`] helper
+/// enforces with its `-c user.*` flags.
 fn bead(workspace: &Path) -> Command {
     let mut cmd = Command::cargo_bin("bead").unwrap();
     cmd.current_dir(workspace);
+    cmd.env("GIT_AUTHOR_NAME", "beadrs-test");
+    cmd.env("GIT_AUTHOR_EMAIL", "beadrs-test@invalid");
+    cmd.env("GIT_COMMITTER_NAME", "beadrs-test");
+    cmd.env("GIT_COMMITTER_EMAIL", "beadrs-test@invalid");
     cmd
 }
 
