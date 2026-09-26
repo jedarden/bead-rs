@@ -462,6 +462,91 @@ fn dry_run_accepts_verifies_kind() {
     );
 }
 
+/// The human message carries a bounded sample; the machine details stay
+/// complete.
+///
+/// With more inverted pairs than the message bound (5, the same bound the
+/// ready-frontier and attempt-tier checks use), the message renders exactly
+/// five pair descriptions plus an `(and N more)` tail, while
+/// `details.gates` still lists every declared pair in canonical
+/// (blocked, blocker) order with the count naming the total. A bounded
+/// sample keeps the finding readable on a store carrying the field-evidenced
+/// 21-edge pileup; the bound must never cost a machine consumer a pair.
+#[test]
+fn message_carries_bounded_sample_details_stay_complete() {
+    let workspace = setup("bnd");
+    let total = 7;
+    let created: Vec<(String, String)> = (0..total)
+        .map(|n| {
+            let pair = create_inverted_pair(workspace.path(), n);
+            (pair.blocked, pair.blocker)
+        })
+        .collect();
+
+    let report = doctor_dependencies(workspace.path());
+    let check = inverted_gate_check(&report);
+    assert_eq!(check["status"], "warning");
+
+    // Canonical (blocked, blocker) order, computed independently of the
+    // report so the prefix property below is not self-fulfilling.
+    let mut canonical = created.clone();
+    canonical.sort();
+
+    let message = check["message"].as_str().unwrap();
+    assert_eq!(
+        message.matches("which also verifies it").count(),
+        5,
+        "the message renders exactly the five-pair sample, got: {message}"
+    );
+    assert!(
+        message.contains("(and 2 more)"),
+        "the message names the pairs beyond the sample, got: {message}"
+    );
+    assert!(
+        message.contains("Found 7 inverted verification gate(s)"),
+        "the message names the full count, got: {message}"
+    );
+
+    // The sample is a prefix of the canonical order, not an arbitrary five:
+    // every pair within the bound is named in full, and no pair beyond it is.
+    let render = |(blocked, blocker): &(String, String)| {
+        format!("{blocked} is blocked by {blocker}, which also verifies it")
+    };
+    for pair in canonical.iter().take(5) {
+        assert!(
+            message.contains(&render(pair)),
+            "the sample names canonical pair {pair:?}, got: {message}"
+        );
+    }
+    for pair in canonical.iter().skip(5) {
+        assert!(
+            !message.contains(&render(pair)),
+            "no pair beyond the bound enters the sample, got: {message}"
+        );
+    }
+
+    let gates = check["details"]["gates"].as_array().unwrap();
+    assert_eq!(
+        gates.len(),
+        total,
+        "details keep every pair despite the message bound"
+    );
+    assert_eq!(check["details"]["count"], total, "count names the total");
+
+    // The machine list is the complete canonical order -- identical to the
+    // independently sorted declared pairs, bound or no bound.
+    let pairs: Vec<(String, String)> = gates
+        .iter()
+        .map(|g| {
+            (
+                g["blocked"].as_str().unwrap().to_string(),
+                g["blocker"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(pairs, canonical, "details carry the full canonical order");
+}
+
 /// `why --json` for one bead: a single JSON object.
 fn why_json(workspace: &Path, id: &str) -> Value {
     let output = run(workspace, &["why", "--id", id, "--json"]);

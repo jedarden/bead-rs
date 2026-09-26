@@ -574,18 +574,33 @@ pub fn run_diagnostics_with_scopes(
                     });
                 } else {
                     // Rendered in the report's canonical (blocked, blocker)
-                    // order so two runs over the same graph byte-match.
-                    let rendered: Vec<String> = report
+                    // order so two runs over the same graph byte-match. The
+                    // human message carries a bounded sample -- 5, the same
+                    // bound the ready-frontier and attempt-tier checks use --
+                    // so a store carrying the field-evidenced 21-edge pileup
+                    // renders a readable finding; `details.gates` stays the
+                    // complete canonical list, so machine consumers never
+                    // lose a pair to the bound.
+                    const SAMPLE_LIMIT: usize = 5;
+                    let mut sample = report
                         .pairs
                         .iter()
+                        .take(SAMPLE_LIMIT)
                         .map(|(blocked, blocker)| {
                             format!("{blocked} is blocked by {blocker}, which also verifies it")
                         })
-                        .collect();
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    if report.pairs.len() > SAMPLE_LIMIT {
+                        sample.push_str(&format!(
+                            " (and {} more)",
+                            report.pairs.len() - SAMPLE_LIMIT
+                        ));
+                    }
                     let message = format!(
                         "Found {} inverted verification gate(s): {}. The check is ordered before the work it checks; remove or re-orient one edge if unintended",
                         report.pairs.len(),
-                        rendered.join("; ")
+                        sample
                     );
                     checks.push(DiagnosticCheck {
                         name: "inverted_verification_gates".to_string(),

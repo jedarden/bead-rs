@@ -1,8 +1,8 @@
 # bead-rs Current Product and Software Factory Plan
 
-Plan revision: 16
+Plan revision: 17
 
-As of: 2026-09-18
+As of: 2026-09-26
 
 Status owner: bead-rs maintainers
 
@@ -33,6 +33,19 @@ ruleset-v3 contract and the `bead init` migration-report fix it already
 carries, and records that `historical-redaction-v1` no longer matches the
 hash accepted in the R038 record after commit `6448d87`.
 
+Revision 17 accepts ADR-001, the last decision still sitting at Proposed, and
+records R025 as implemented: migration 18 widens the `dependencies.kind` CHECK
+constraint to the three-kind vocabulary (`blocks`, `relates_to`, `verifies`),
+`bead dep add --kind verifies` declares the check relationship, the
+dependencies doctor scope reports inverted verification gates — a `blocks`
+edge whose blocker also `verifies` the blocked bead — as an advisory warning
+with a bounded five-pair message sample and a complete machine-readable
+`details.gates` list, `why` answers with the distinct `blocked_by_verifier`
+reason code, and `capabilities` advertises the declared kinds. Section 3.4's
+kind table is updated to the three-kind set. The conformance suite is
+`tests/verifies_edges.rs` and the concurrency suite is
+`tests/verifies_concurrency.rs`.
+
 ## 0. How to read this plan
 
 Sections 0–8 are the current normative product and transition plan. The former
@@ -58,6 +71,7 @@ This revision accepts:
 - [ADR-010: Store attempt facts, not learning or orchestration policy](../adr/010-store-attempt-facts-not-learning-policy.md)
 - [ADR-011: Resolve an attempt and its lifecycle transition atomically](../adr/011-atomic-idempotent-attempt-resolution.md)
 - [ADR-012: Roll out attempt resolution through versioned capabilities](../adr/012-capability-gated-attempt-contract-rollout.md)
+- [ADR-001: Diagnose inverted verification gates from a declared edge kind, not from issue titles](../adr/001-declared-verification-edges-over-title-heuristics.md) (accepted in revision 17)
 - [ADR-014: Hard-reject mutations that would publish a detectable secret](../adr/014-hard-reject-secret-bearing-mutations.md)
 - [ADR-015: Audited historical redaction over hand-edited recovery artifacts](../adr/015-audited-historical-redaction.md)
 - [ADR-016: Keep workspace probes observational](../adr/016-observational-workspace-probes.md)
@@ -803,11 +817,22 @@ appropriate rather than silently changing assignment under that lifecycle.
 
 Every edge is canonicalized as `(blocked_issue_id, blocker_issue_id, kind)`.
 Both IDs must exist. Self-edges are invalid. Duplicate adds and removal of an
-absent edge succeed idempotently. Version 0.1 supports `blocks` and
-`relates_to`; only `blocks` affects readiness.
+absent edge succeed idempotently. The native kind vocabulary is `blocks`,
+`relates_to`, and `verifies` (ADR-001, implemented as R025): a `verifies`
+edge from V to I declares that V checks the work I performs. Version 0.1
+shipped the first two kinds; only `blocks` affects readiness, and unknown
+kinds stay preservable for interchange while failing closed for native
+mutation, as R018 requires of unknown schemas.
 
 Reject a `blocks` edge if it creates a directed cycle, with detection and
-insertion in the same transaction. `relates_to` cycles are allowed.
+insertion in the same transaction. `relates_to` and `verifies` cycles are
+allowed. An inverted verification gate — a `blocks` edge whose blocker also
+`verifies` its blocked bead — is accepted at insert time like any other legal
+acyclic edge and diagnosed instead by the dependencies doctor scope as an
+advisory warning with a bounded message sample: a deliberate
+"prove the baseline green first" gate is structurally identical, so only the
+author can distinguish intent. The relationship is declared, never inferred
+from issue titles.
 
 An issue is ready exactly when it is base `open`, not manually blocked,
 unassigned, and has no unfinished `blocks` blocker. A blocker is unfinished

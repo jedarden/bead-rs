@@ -1,6 +1,6 @@
 # ADR-001: Diagnose Inverted Verification Gates From a Declared Edge Kind, Not From Issue Titles
 
-**Status**: Proposed
+**Status**: Accepted
 
 **Date**: 2026-08-12
 
