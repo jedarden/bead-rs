@@ -43,8 +43,12 @@ with a bounded five-pair message sample and a complete machine-readable
 `details.gates` list, `why` answers with the distinct `blocked_by_verifier`
 reason code, and `capabilities` advertises the declared kinds. Section 3.4's
 kind table is updated to the three-kind set. The conformance suite is
-`tests/verifies_edges.rs` and the concurrency suite is
-`tests/verifies_concurrency.rs`.
+`tests/verifies_edges.rs`, the concurrency suite is
+`tests/verifies_concurrency.rs`, and the edge-shape fixtures are
+`tests/fixtures/verifies/` driven by `tests/verifies_fixtures.rs`, pinning
+both gate shapes, the title-inference guard, the `verifies` ring, and kind
+coexistence as data. The normative record is
+`research/specs/verification-edges-v1.md`.
 
 ## 0. How to read this plan
 
