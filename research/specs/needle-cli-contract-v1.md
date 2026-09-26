@@ -36,6 +36,24 @@ implementation.
 | Check | `doctor` | Human-readable lines; warnings begin `WARN ` |
 | Repair | `doctor --repair` | Repairs only diagnosed conditions; repaired lines begin `FIXED ` |
 
+## Dependency kinds
+
+`--kind` on `dep add` accepts `blocks`, `relates_to`, or `verifies`, and
+`capabilities` advertises the same set as `dependency_kinds`. Only `blocks`
+affects eligibility, so the required result in the table above is unchanged.
+`relates_to` and `verifies` never change readiness, and cycles among
+non-`blocks` edges are accepted; a `blocks` edge that would close a directed
+cycle is still rejected, as is any self-edge.
+
+`verifies` (ADR-001) declares that BLOCKER checks the work BLOCKED performs. A
+`blocks` edge whose blocker also carries a `verifies` edge to the same blocked
+bead is legal at insert and is never rejected; `doctor` reports each such pair
+as an advisory warning that names the remedy (`bead dep remove BLOCKED BLOCKER
+--kind blocks` or `--kind verifies`). The relationship is taken only from the
+declared edge — titles are never inspected. Declared kinds survive the
+checkpoint round trip verbatim; unknown kinds stay preservable in the
+checkpoint but fail closed for native mutation.
+
 ## Issue JSON minimum
 
 NEEDLE requires `id`, `title`, `description`, `priority`, `status`, `assignee`,
