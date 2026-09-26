@@ -83,10 +83,13 @@ RUN curl -fsSL "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/x8
         -o /tmp/rustup-init \
     && echo "${RUSTUP_INIT_SHA256}  /tmp/rustup-init" | sha256sum -c - \
     && chmod +x /tmp/rustup-init \
+    # --component is repeatable; one flag carrying two names makes rustup-init
+    # abort with an unexpected-argument error, which is how the first 1.0.0
+    # build (2026-09-26) died before it could push anything.
     && /tmp/rustup-init -y --no-modify-path \
         --default-toolchain "${RUST_STABLE}" \
         --profile minimal \
-        --component clippy rustfmt \
+        --component clippy --component rustfmt \
     && rustup toolchain install "${RUST_MSRV}" --profile minimal \
     && rustup target add --toolchain "${RUST_STABLE}" \
         x86_64-unknown-linux-gnu \
