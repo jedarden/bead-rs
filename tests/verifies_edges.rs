@@ -462,6 +462,70 @@ fn dry_run_accepts_verifies_kind() {
     );
 }
 
+/// The manifest surface accepts the declared kind too: a v1 `dep_add` op
+/// carrying `"kind": "verifies"` passes dry-run without mutating and lands
+/// through commit with its kind, exactly like the interactive command --
+/// the manifest executes each op through the command's own in-transaction
+/// path, so it admits whatever vocabulary `dep add` admits.
+#[test]
+fn manifest_accepts_the_declared_verifies_kind() {
+    let workspace = setup("man");
+    let impl_id = create(workspace.path(), "Implement the exporter flag");
+    let check_id = create(workspace.path(), "Verify the exporter flag");
+
+    let manifest = workspace.path().join("verifies-manifest.json");
+    std::fs::write(
+        &manifest,
+        format!(
+            r#"{{"manifest_version": 1, "operations": [
+                {{"op": "dep_add", "blocked": "{impl_id}", "blocker": "{check_id}", "kind": "verifies"}}
+            ]}}"#
+        ),
+    )
+    .expect("manifest write");
+    let input = manifest.to_str().unwrap();
+
+    let dry_run = run(
+        workspace.path(),
+        &["manifest", "dry-run", "--input", input, "--format", "json"],
+    );
+    assert!(
+        dry_run.status.success(),
+        "manifest dry-run accepts verifies: {:?}",
+        String::from_utf8_lossy(&dry_run.stderr)
+    );
+    // The delta report names the declared kind itself, so a caller auditing
+    // the plan sees the relationship, not merely a green exit.
+    let report: Value = serde_json::from_str(String::from_utf8_lossy(&dry_run.stdout).trim())
+        .expect("manifest dry-run --format json must emit valid JSON");
+    assert_eq!(report["dry_run"], true, "the report names its own mode");
+    assert_eq!(report["semantic_changes"], 1, "the edge is the one delta");
+    let entry = &report["results"][0];
+    assert_eq!(entry["op"], "dep_add");
+    assert_eq!(entry["kind"], "verifies", "the delta echoes the kind");
+    assert_eq!(entry["semantic_change"], true);
+
+    assert!(
+        dependencies_of(workspace.path(), &impl_id).is_empty(),
+        "dry-run reports the delta without leaving the edge behind"
+    );
+
+    let commit = run(workspace.path(), &["manifest", "commit", "--input", input]);
+    assert!(
+        commit.status.success(),
+        "manifest commit accepts verifies: {:?}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+    let edge = dependencies_of(workspace.path(), &impl_id)
+        .into_iter()
+        .find(|d| d["blocker"] == check_id.as_str())
+        .expect("committed manifest carries the edge");
+    assert_eq!(
+        edge["kind"], "verifies",
+        "kind lands through the manifest verbatim"
+    );
+}
+
 /// The human message carries a bounded sample; the machine details stay
 /// complete.
 ///
