@@ -1156,6 +1156,64 @@ mod tests {
     }
 
     #[test]
+    fn test_cycle_rejection_still_fires_for_a_pair_that_is_also_an_inversion() {
+        let (mut store, _temp) = test_store();
+        create_test_issue(&mut store, "impl-1", "Implementation Issue");
+        create_test_issue(&mut store, "check-1", "Verification Issue");
+
+        // Seed the inversion: the declared check relationship plus the gate
+        // that orders the check before the work it checks.
+        add_dependency(&mut store, "impl-1", "check-1", "verifies", None).unwrap();
+        add_dependency(&mut store, "impl-1", "check-1", "blocks", None).unwrap();
+
+        // The opposite `blocks` edge closes a two-node ring, making the pair
+        // simultaneously a cycle and an inversion. The advisory diagnosis
+        // never buys the edge a pass: cycle detection keys on `blocks` edges
+        // alone and rejects exactly as it would without the `verifies` twin.
+        let result = add_dependency(&mut store, "check-1", "impl-1", "blocks", None);
+        match result {
+            Err(Error::Conflict(message)) => {
+                assert!(
+                    message.contains("cycle"),
+                    "rejection must name the cycle, got: {message}"
+                );
+            }
+            other => panic!("expected a cycle conflict, got: {other:?}"),
+        }
+
+        // The rejection commits nothing: exactly the two seeded edges remain.
+        let conn = store.conn();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM dependencies", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 2, "the rejected edge leaves the seeded pair alone");
+
+        // Contrast on the same pair: the opposite `verifies` edge is still
+        // accepted, pinning that the rejection keys on the ring-closing
+        // `blocks` kind alone -- never on the pair being declared, and never
+        // on the advisory inversion diagnosis.
+        add_dependency(&mut store, "check-1", "impl-1", "verifies", None)
+            .expect("a reverse verifies edge never closes a blocks cycle");
+        let count: i64 = store
+            .conn()
+            .query_row("SELECT COUNT(*) FROM dependencies", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 3, "the reverse verifies edge commits");
+        // The accepted third edge is the declared check relationship in the
+        // opposite direction: two `verifies` rows, one per direction, beside
+        // the single seeded `blocks` gate.
+        let verifies: i64 = store
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM dependencies WHERE kind = 'verifies'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(verifies, 2, "both verifies directions committed");
+    }
+
+    #[test]
     fn test_dfs_has_path_direct() {
         let (mut store, _temp) = test_store();
         create_test_issue(&mut store, "issue-1", "Issue 1");

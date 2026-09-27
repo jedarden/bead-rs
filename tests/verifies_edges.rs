@@ -338,6 +338,69 @@ fn verifies_cycles_are_permitted() {
     );
 }
 
+/// A two-node pair that is simultaneously a cycle and an inversion.
+///
+/// The measured evidence behind ADR-001 included two-node rings that were
+/// both at once: once the declared check relationship and its gate sit on a
+/// pair, the opposite `blocks` edge would close a two-node cycle. The
+/// advisory diagnosis never buys that edge a pass -- cycle detection keys on
+/// `blocks` edges alone, so the ring-closing gate is rejected exactly as it
+/// would be without the `verifies` twin, and the seeded edges (and the
+/// doctor's warning about them) survive the rejection untouched.
+#[test]
+fn cycle_rejection_still_fires_on_a_pair_that_is_also_an_inversion() {
+    let workspace = setup("cinv");
+    let pair = create_inverted_pair(workspace.path(), 4);
+
+    // The seeded pair is an inversion: advisory warning, never an error
+    // (doctor_dependencies already asserts the doctor exits 0).
+    let report = doctor_dependencies(workspace.path());
+    assert_eq!(inverted_gate_check(&report)["status"], "warning");
+
+    // Closing the ring must still be rejected, by name and by exit code:
+    // a cycle is a conflict (exit 4), not an advisory warning.
+    let output = dep_add(workspace.path(), &pair.blocker, &pair.blocked, "blocks");
+    assert_eq!(
+        output.status.code(),
+        Some(4),
+        "the ring-closing blocks edge must be rejected as a conflict: {output:?}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cycle"),
+        "rejection must name the cycle, got: {stderr}"
+    );
+
+    // The rejection commits nothing: the seeded edges remain, the cycle
+    // check stays clean, and the advisory warning is unchanged -- the
+    // affected ids and the remediating edge survive the failed mutation.
+    let deps = dependencies_of(workspace.path(), &pair.blocked);
+    assert_eq!(deps.len(), 2, "only the seeded pair remains");
+    let report = doctor_dependencies(workspace.path());
+    let graph = report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "dependency_graph")
+        .expect("dependency_graph check present");
+    assert_eq!(graph["status"], "ok");
+    let check = inverted_gate_check(&report);
+    assert_eq!(check["status"], "warning");
+    // The posture is unchanged too: still advisory (warnings, no errors) --
+    // a rejected mutation leaves neither a hard failure nor a silent graph.
+    assert_eq!(report["has_warnings"].as_bool(), Some(true));
+    assert_eq!(report["has_errors"].as_bool(), Some(false));
+    let gates = check["details"]["gates"].as_array().unwrap();
+    assert_eq!(gates.len(), 1, "exactly the seeded pair is reported");
+    assert_eq!(gates[0]["blocked"], pair.blocked.as_str());
+    assert_eq!(gates[0]["blocker"], pair.blocker.as_str());
+    let remedy = check["details"]["remedy"].as_str().unwrap();
+    assert!(
+        remedy.contains("dep remove") && remedy.contains("--kind"),
+        "the remedy names the edge to remove, got: {remedy}"
+    );
+}
+
 /// An inverted gate is never rejected at insert time: both edges commit, and
 /// the doctor reports the pair as an advisory warning while exiting 0.
 #[test]
