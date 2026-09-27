@@ -1,0 +1,11 @@
+# Pin clippy's MSRV to the package's own rust-version (Cargo.toml).
+#
+# clippy resolves its config by walking the ancestor chain of the working
+# directory for the first clippy.toml. A git-archive extraction under /tmp
+# therefore inherits whatever stray config sits there — on 2026-09-27 a
+# /tmp/clippy.toml from an unrelated project (msrv = "1.78") failed
+# `cargo clippy --all-targets -- -D warnings` on LazyLock (1.80) and
+# is_none_or (1.82) usage this crate's rust-version = "1.85" allows, while
+# cargo check stayed green. Shipping this file ends the upward walk so
+# extraction-based verification sees this crate's declared MSRV.
+msrv = "1.85"

@@ -111,6 +111,16 @@ while [[ "$probe" != "/" ]]; do
 done
 export TMPDIR="$TEST_TMPDIR"
 
+# Pin clippy's config search to this tree. clippy walks the ancestor chain
+# of the working directory for clippy.toml, so a stray config above a
+# checkout or extraction (a /tmp/clippy.toml from an unrelated project was
+# found poisoning extractions on 2026-09-27 — the same debris shape as the
+# /tmp/.beads directory handled above) overrides this crate's MSRV and
+# fails MSRV-aware lints on code the declared rust-version allows. The
+# repo-root clippy.toml handles the normal case; CLIPPY_CONF_DIR keeps the
+# run hermetic even in a tree where that file is absent.
+export CLIPPY_CONF_DIR="$ROOT"
+
 cleanup() {
 	if [[ -d "$TEST_TMPDIR" ]]; then
 		rm -rf "$TEST_TMPDIR"
