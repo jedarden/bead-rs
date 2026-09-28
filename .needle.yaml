@@ -1,2 +1,33 @@
 bead_cli:
   backend: bead-rs
+
+# A declared `gates:` block always wins over the language default, so this
+# replaces `default_rust` (Cargo.toml detection) for this workspace.
+#
+# Same check as the builtin, different execution mode — and the mode is the
+# point. The builtin runs `cargo check --all-targets --quiet` in a clean
+# archive extraction of the captured revision (~16 min cold at
+# CARGO_BUILD_JOBS=2) and then requires the shared checkout's HEAD to be
+# bit-identical across that whole window (GateSubject::verify_current,
+# NEEDLE src/validation/mod.rs). This workspace's own maintenance automation
+# commits .beads/checkpoint residue every few minutes whenever the fleet is
+# active (318 such commits in the 24h to 2026-09-28), so the HEAD-equality
+# precondition almost never holds: 34 consecutive "workspace HEAD changed"
+# gate errors degraded the workspace and blocked ordinary dispatch
+# (beadrs-a10601a1). Run against the shared checkout the same check takes
+# ~13s on the warm target dir and carries no HEAD-stability precondition.
+#
+# Hermetic verification is not lost: closure still runs
+# scripts/definition-of-done.sh (fmt + clippy + test) in a clean extraction
+# of the committed HEAD, independently re-run by NEEDLE before a close is
+# honoured. A transient compile break from another worker's in-flight edits
+# can fail this gate for one closure — a released bead retries, which is
+# strictly cheaper than a workspace-wide dispatch blackout.
+#
+# `needle gates` shows how this block resolves for the workspace; it should
+# list exactly one workspace-run command gate and no language default.
+gates:
+  - type: command
+    commands:
+      - cargo check --all-targets --quiet
+    run_in: workspace
