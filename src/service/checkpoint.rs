@@ -2093,12 +2093,15 @@ fn reject_reconciliation_report_view(value: &serde_json::Value, path: &Path) -> 
     Ok(())
 }
 
-fn validate_sha256(hash: &str, field: &str) -> Result<()> {
-    if hash.len() != 64
-        || !hash
+fn is_sha256_digest(hash: &str) -> bool {
+    hash.len() == 64
+        && hash
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
+}
+
+fn validate_sha256(hash: &str, field: &str) -> Result<()> {
+    if !is_sha256_digest(hash) {
         bail!(
             "Unverified restore source: {} must be a lowercase 64-character SHA-256 digest",
             field
@@ -2768,6 +2771,75 @@ fn stage_redaction_record(
     Ok(true)
 }
 
+/// Source identity for an interchange input that declares no store of its
+/// own. The prefix names the bare `issues-jsonl-v1` shape the input
+/// arrived in; the suffix is the leading hex of its content hash, so the
+/// identity is stable across re-imports of the same file yet distinct per
+/// input, and it can never collide with a real store's UUIDv4. The slice is
+/// safe because `input_hash` is always the full 64-character SHA-256 hex
+/// digest of the staged bytes.
+fn bare_interchange_source_uuid(input_hash: &str) -> String {
+    debug_assert!(
+        is_sha256_digest(input_hash),
+        "the source identity is cut from a full SHA-256 digest, got {input_hash}"
+    );
+    format!("issues-jsonl-v1-{}", &input_hash[..16])
+}
+
+/// The reconstructed source identity for a legacy bare-interchange merge
+/// receipt, if it is one. The pre-fix merge writer stamped
+/// `staging.store_uuid`, which the bare issue-only stager left empty, so the
+/// merge receipts it published name no source store at all — accepted
+/// silently at import, then fatal at recovery, because
+/// `validate_forensic_receipts` refuses any receipt with an empty required
+/// field. Such a receipt still carries the bare input's content hash in its
+/// `source_root_sha256`, so the identity the fixed stager stamps for the
+/// same input is reconstructible from the receipt alone, and
+/// `receipt_sha256` does not cover `source_store_uuid`, so rewriting it
+/// leaves the receipt's hash contract intact. Narrow on purpose: a merge
+/// receipt with a present-but-malformed root hash stays broken and keeps
+/// failing validation loudly.
+fn healed_bare_interchange_source(
+    kind: &str,
+    source_store_uuid: &str,
+    source_root_sha256: &str,
+) -> Option<String> {
+    if kind == "merge"
+        && source_store_uuid.trim().is_empty()
+        && is_sha256_digest(source_root_sha256)
+    {
+        Some(bare_interchange_source_uuid(source_root_sha256))
+    } else {
+        None
+    }
+}
+
+/// Rewrite one receipt's source slot in place when it carries the legacy
+/// bare-interchange merge shape. Operates on the individual fields so both
+/// receipt shapes — the serialized checkpoint record and the row read back
+/// from the store — heal through the same decision.
+fn heal_bare_interchange_source_slot(kind: &str, source: &mut String, source_root_sha256: &str) {
+    if let Some(healed) = healed_bare_interchange_source(kind, source, source_root_sha256) {
+        *source = healed;
+    }
+}
+
+/// Rewrite legacy bare-interchange merge receipts staged from a checkpoint:
+/// every later generation a poisoned workspace publishes carries the empty
+/// source identity its pre-fix merge wrote, so staging — not validation —
+/// is where the shape must be recognized, or the workspace would stay
+/// unrestorable forever. Healed receipts activate into the target store and
+/// are published again under the identity they should have carried.
+fn heal_legacy_bare_interchange_receipts(receipts: &mut [SerializedReceipt]) {
+    for receipt in receipts.iter_mut() {
+        heal_bare_interchange_source_slot(
+            &receipt.kind,
+            &mut receipt.source_store_uuid,
+            &receipt.source_root_sha256,
+        );
+    }
+}
+
 /// Stage monolithic checkpoint from JSONL file
 fn stage_monolithic_checkpoint(input_path: &Path) -> Result<ForensicStaging> {
     let file = File::open(input_path)?;
@@ -2993,6 +3065,24 @@ fn stage_monolithic_checkpoint(input_path: &Path) -> Result<ForensicStaging> {
         store_uuid = first_receipt.target_store_uuid.clone();
     }
 
+    // The bare issue-only interchange shape carries no store identity to
+    // copy: no events, no receipts. Everything an import does with
+    // `staging.store_uuid` would otherwise run on an empty string: the merge
+    // receipt's source — rejected by `validate_forensic_receipts` on every
+    // later restore of every generation the target publishes, so silent at
+    // import time and fatal at recovery — plus the restore receipt's source
+    // and target, and, on the restore-into-empty path, the recovering
+    // workspace's own identity, which `execute_restore_into_empty` adopts
+    // into the workspace row and `checkpoint_state`. Stamp a deterministic
+    // identity derived from the input content instead, so the same
+    // interchange file always imports under the same source identity and
+    // the full input hash remains on the receipt's `source_root_sha256`.
+    if store_uuid.trim().is_empty() {
+        store_uuid = bare_interchange_source_uuid(&input_hash);
+    }
+
+    heal_legacy_bare_interchange_receipts(&mut receipts);
+
     // Get snapshot sequence from events
     if let Some(last_event) = events.last() {
         snapshot_sequence = last_event.origin_event_sequence;
@@ -3210,6 +3300,7 @@ fn stage_sharded_checkpoint(pointer_path: &Path) -> Result<ForensicStaging> {
             .cmp(&(b.origin_store_uuid.as_str(), b.origin_event_sequence))
     });
     receipts.sort_by(|a, b| a.receipt_id.cmp(&b.receipt_id));
+    heal_legacy_bare_interchange_receipts(&mut receipts);
     attempt_outcomes.sort_by(|a, b| a.receipt_id.cmp(&b.receipt_id));
     redaction.ensure_unique_identities()?;
     redaction.sort();
@@ -5886,6 +5977,16 @@ fn create_merge_summary(tx: &Transaction, staging: &ForensicStaging, actor: &str
 }
 
 /// Create merge receipt
+///
+/// The source is `staging.store_uuid`, so it is only as good as the stager's
+/// identity extraction. A forensic checkpoint carries its store's identity in
+/// its events or receipts; the bare issue-only interchange shape carries
+/// neither, which used to leave this field empty — silently accepted at
+/// import, then fatal at recovery, because `validate_forensic_receipts`
+/// refuses any receipt with an empty required field. The stager now stamps a
+/// deterministic identity derived from the input content when extraction
+/// finds nothing (`bare_interchange_source_uuid`), so every receipt this
+/// function publishes names a real source.
 fn create_merge_receipt(
     tx: &Transaction,
     staging: &ForensicStaging,
@@ -9029,6 +9130,19 @@ fn read_all_provenance_receipts(tx: &Transaction) -> Result<Vec<ProvenanceReceip
         receipts.push(receipt);
     }
 
+    // The store of a workspace poisoned before the bare-interchange fix
+    // still holds the legacy merge receipt, and flushing republishes
+    // whatever is read here — heal the shape so the workspace's next
+    // generation stops carrying the empty source identity even before it
+    // is restored once (which repairs the stored row through staging).
+    for receipt in receipts.iter_mut() {
+        heal_bare_interchange_source_slot(
+            &receipt.kind,
+            &mut receipt.source_store_uuid,
+            &receipt.source_root_sha256,
+        );
+    }
+
     Ok(receipts)
 }
 
@@ -10207,6 +10321,178 @@ mod tests {
         assert!(
             !enumerated.iter().any(|p| p.contains("publish.lock")),
             "tombstone enumeration must not see the lock file, got {enumerated:?}"
+        );
+    }
+
+    /// The bare-interchange source identity is deterministic per input and
+    /// structurally distinct from any real store identity: the same bytes
+    /// always merge under the same source, different inputs never share one
+    /// (within the leading 16 hex the identity is cut from), and the hex-only
+    /// suffix keeps the tagged identity out of the dashed 36-hex UUID space
+    /// every real store identity lives in (`SqliteStore::generate_uuid`).
+    #[test]
+    fn bare_interchange_source_uuid_is_stable_and_distinct() {
+        let hash_a = "a".repeat(64);
+        let hash_b = "b".repeat(64);
+
+        let identity_a = bare_interchange_source_uuid(&hash_a);
+        assert_eq!(
+            identity_a,
+            bare_interchange_source_uuid(&hash_a),
+            "the same input must always merge under the same source identity"
+        );
+        assert_eq!(
+            identity_a,
+            format!("issues-jsonl-v1-{}", &hash_a[..16]),
+            "the identity is the shape tag plus the input hash's leading hex"
+        );
+
+        assert_ne!(
+            bare_interchange_source_uuid(&hash_a),
+            bare_interchange_source_uuid(&hash_b),
+            "different inputs must not share a source identity"
+        );
+
+        let suffix = &identity_a["issues-jsonl-v1-".len()..];
+        assert_eq!(suffix.len(), 16, "the identity suffix is 16 characters");
+        assert!(
+            suffix.chars().all(|c| c.is_ascii_hexdigit()),
+            "the identity suffix must be hex, got {suffix}"
+        );
+
+        // The doc comment above promises the identity can never collide with
+        // a real store's identity; pin that by shape, not by example — real
+        // stores generate dashed 36-hex UUIDs, and the tagged hex-suffix form
+        // never parses as one. (`Uuid::parse_str` also accepts the undashed
+        // 32-hex simple form, so length alone would not settle it.)
+        assert!(
+            uuid::Uuid::parse_str(&identity_a).is_err(),
+            "the identity must not parse as the UUID shape real stores use, \
+             got {identity_a}"
+        );
+        assert!(
+            uuid::Uuid::parse_str("1c4f5d56-dcff-cbc5-ddf9-c536653c45f4").is_ok(),
+            "real store identities are UUID-parseable, or the contrast \
+             above would not mean anything"
+        );
+    }
+
+    /// Only the exact legacy shape may heal: a merge receipt with an empty
+    /// source and a well-formed root hash reconstructs the identity the
+    /// fixed stager stamps for the same input, while receipts from other
+    /// kinds, receipts that already name a source, and receipts whose root
+    /// hash is not a usable digest all pass through untouched.
+    #[test]
+    fn heals_only_the_legacy_bare_interchange_merge_shape() {
+        let root = "c".repeat(64);
+        let healed = healed_bare_interchange_source("merge", "", &root);
+        assert_eq!(
+            healed.as_deref(),
+            Some(format!("issues-jsonl-v1-{}", &root[..16])).as_deref(),
+            "an empty-source merge receipt heals to the derived identity"
+        );
+
+        assert_eq!(
+            healed_bare_interchange_source("merge", "   ", &root).as_deref(),
+            healed.as_deref(),
+            "whitespace-only sources are the same legacy shape"
+        );
+        assert_eq!(
+            healed_bare_interchange_source("merge", "1c4f5d56-dcff-cbc5-ddf9-c536653c45f4", &root),
+            None,
+            "a receipt that already names a source must not be rewritten"
+        );
+        assert_eq!(
+            healed_bare_interchange_source("restore", "", &root),
+            None,
+            "only merge receipts carry the bare-interchange shape"
+        );
+        assert_eq!(
+            healed_bare_interchange_source("merge", "", ""),
+            None,
+            "a receipt without a root hash cannot be reconstructed"
+        );
+        assert_eq!(
+            healed_bare_interchange_source("merge", "", &"C".repeat(64)),
+            None,
+            "the root hash must be a lowercase digest to heal"
+        );
+        assert_eq!(
+            healed_bare_interchange_source("merge", "", &"g".repeat(64)),
+            None,
+            "the root hash must be hex to heal"
+        );
+    }
+
+    /// The store of a workspace poisoned before the bare-interchange fix
+    /// still holds the legacy merge receipt, and every flush republishes
+    /// whatever this read returns — so the read itself must heal the shape,
+    /// or a workspace that keeps flushing without ever restoring would pass
+    /// the empty source identity to every generation it publishes.
+    #[test]
+    fn read_all_provenance_receipts_heals_a_legacy_bare_interchange_merge_row() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::store::migrations::apply_migrations(&conn).unwrap();
+
+        let root_hash = "d".repeat(64);
+        let counts_json = serde_json::to_string(&ReceiptCounts {
+            issues: 0,
+            events: 0,
+            provenance_receipts: 0,
+        })
+        .unwrap();
+        for (receipt_id, kind, source) in [
+            ("merge-legacy-poisoned", "merge", ""),
+            (
+                "restore-real-store",
+                "restore",
+                "1c4f5d56-dcff-cbc5-ddf9-c536653c45f4",
+            ),
+        ] {
+            conn.execute(
+                "INSERT INTO provenance_receipts (
+                    receipt_id, schema_ref, kind, source_store_uuid, target_store_uuid,
+                    source_root_sha256, actor, created_at, counts_json, result,
+                    summary_event_identity, receipt_sha256
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                rusqlite::params![
+                    receipt_id,
+                    "urn:bead-rs:schema:provenance-receipt:native-v1",
+                    kind,
+                    source,
+                    "1c4f5d56-dcff-cbc5-ddf9-c536653c45f4",
+                    root_hash,
+                    "tester",
+                    "2026-09-27T12:00:00Z",
+                    counts_json,
+                    "success",
+                    None::<String>,
+                    "0".repeat(64),
+                ],
+            )
+            .unwrap();
+        }
+
+        let tx = conn.transaction().unwrap();
+        let receipts = read_all_provenance_receipts(&tx).unwrap();
+
+        let merge = receipts
+            .iter()
+            .find(|receipt| receipt.receipt_id == "merge-legacy-poisoned")
+            .expect("the poisoned merge row must be read back");
+        assert_eq!(
+            merge.source_store_uuid,
+            format!("issues-jsonl-v1-{}", &root_hash[..16]),
+            "the legacy merge row must read back under its derived identity"
+        );
+
+        let restore = receipts
+            .iter()
+            .find(|receipt| receipt.receipt_id == "restore-real-store")
+            .expect("the real receipt must be read back");
+        assert_eq!(
+            restore.source_store_uuid, "1c4f5d56-dcff-cbc5-ddf9-c536653c45f4",
+            "a receipt that already names a source must read back untouched"
         );
     }
 }
