@@ -15,12 +15,16 @@
 //!   the payload intact — the R036 verified `bead restore` and the
 //!   lower-level `sync import-only --restore-into-empty`
 //! * the legs chain: publish → restore → republish (other mode) → import →
-//!   republish → restore, with the payload diffed after every hop
+//!   republish → restore, with the payload diffed after every hop — and
+//!   every publication also diffed straight from its own hash-verified
+//!   on-disk objects, so a publisher and a recovery agreeing on one loss
+//!   could not mask it
 //! * the bare `.beads/issues.jsonl` interchange shape (`sync flush-only
 //!   --output`, one `Issue` per line, unknown fields flattened at the top
 //!   level) round-trips back through `sync import-only` in both the
-//!   restore-into-empty and merge modes, and from the restore-into-empty
-//!   store back into a verified checkpoint generation
+//!   restore-into-empty and merge modes, and the rebuilt store's own
+//!   publication carries the payload verbatim in its hash-verified
+//!   objects
 //! * a preservation failure is loud and publishes nothing: when stored
 //!   extension state cannot be re-projected, every publication path exits
 //!   nonzero naming the field, and the checkpoint pointer, objects, and
@@ -37,6 +41,7 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -125,13 +130,15 @@ fn sharded_config() -> Value {
     json!({ "auto_flush": false, "mode": "sharded" })
 }
 
-fn read_jsonl(path: &Path) -> Vec<Value> {
-    fs::read_to_string(path)
-        .unwrap()
-        .lines()
+fn parse_jsonl(text: &str) -> Vec<Value> {
+    text.lines()
         .filter(|line| !line.trim().is_empty())
         .map(|line| serde_json::from_str(line).unwrap())
         .collect()
+}
+
+fn read_jsonl(path: &Path) -> Vec<Value> {
+    parse_jsonl(&fs::read_to_string(path).unwrap())
 }
 
 fn read_pointer(path: impl AsRef<Path>) -> Value {
@@ -420,6 +427,124 @@ fn assert_both_recoveries(workspace: &Path, label: &str) {
     );
 }
 
+/// One content-addressed object of a published generation, read and
+/// verified against the hash published for it — either the pointer's
+/// `active_root.sha256` or a manifest shard's `sha256`. The publisher
+/// names objects by content, so a byte off means a broken generation.
+fn verified_object(checkpoint_dir: &Path, relative: &str, sha256: &str) -> Vec<u8> {
+    let bytes = fs::read(checkpoint_dir.join(relative))
+        .unwrap_or_else(|error| panic!("published object {relative} must be readable: {error}"));
+    assert_eq!(
+        format!("{:x}", Sha256::digest(&bytes)),
+        sha256,
+        "published object {relative} does not match the hash published for it"
+    );
+    bytes
+}
+
+/// The unknown fields a published generation carries, keyed by issue ID,
+/// read straight from the generation's on-disk objects — the bytes the
+/// publisher actually wrote, hash-verified against what the pointer and
+/// manifest publish for them. This check is independent of every recovery
+/// command: the recovery legs could only catch a payload the publisher
+/// shrank if recovery did not drop the very same field, and a publisher
+/// and a recovery agreeing on one loss would pass every store-level
+/// comparison while the published generation silently shipped without the
+/// field. In the monolithic mode the active root is the full record
+/// stream; in the sharded mode it is a checkpoint-set manifest whose
+/// `issue_shards` name the objects the issues were partitioned into.
+fn published_issue_payload(
+    workspace: &Path,
+    pointer: &Value,
+) -> HashMap<String, serde_json::Map<String, Value>> {
+    let checkpoint_dir = workspace.join(".beads/checkpoint");
+    let root = pointer["active_root"]
+        .as_object()
+        .expect("the pointer names its active root");
+    let root_path = root["path"]
+        .as_str()
+        .expect("the active root names its path");
+    let root_sha256 = root["sha256"]
+        .as_str()
+        .expect("the active root names its content hash");
+
+    let issue_records: Vec<Value> = match pointer["mode"].as_str() {
+        Some("monolithic") => {
+            let records = parse_jsonl(
+                std::str::from_utf8(&verified_object(&checkpoint_dir, root_path, root_sha256))
+                    .expect("the record stream is UTF-8"),
+            );
+            assert_eq!(
+                records.len(),
+                pointer["total_record_count"].as_u64().unwrap() as usize,
+                "the monolithic root must be the full record stream the pointer counts"
+            );
+            records
+                .into_iter()
+                .filter(|record| record["record_type"] == "issue")
+                .map(|record| record["issue"].clone())
+                .collect()
+        }
+        Some("sharded") => {
+            let manifest: Value =
+                serde_json::from_slice(&verified_object(&checkpoint_dir, root_path, root_sha256))
+                    .expect("the sharded active root must be a JSON manifest");
+            assert_eq!(
+                manifest["format"], "checkpoint-set-v1",
+                "the sharded active root must be a checkpoint-set manifest"
+            );
+            let mut issues = Vec::new();
+            for shard in manifest["issue_shards"]
+                .as_array()
+                .expect("the manifest names its issue shards")
+            {
+                let shard_path = shard["path"].as_str().expect("each shard names its path");
+                let shard_records = parse_jsonl(
+                    std::str::from_utf8(&verified_object(
+                        &checkpoint_dir,
+                        shard_path,
+                        shard["sha256"]
+                            .as_str()
+                            .expect("each shard names its content hash"),
+                    ))
+                    .expect("the shard is UTF-8"),
+                );
+                assert_eq!(
+                    shard_records.len(),
+                    shard["record_count"].as_u64().unwrap() as usize,
+                    "shard {shard_path} must carry the record count its manifest publishes"
+                );
+                for record in shard_records {
+                    assert_eq!(
+                        record["record_type"], "issue",
+                        "issue shards must carry only issue records, got shard {shard_path}"
+                    );
+                    issues.push(record["issue"].clone());
+                }
+            }
+            issues
+        }
+        other => panic!("unknown checkpoint mode {other:?}"),
+    };
+
+    assert_eq!(
+        issue_records.len(),
+        pointer["issue_count"].as_u64().unwrap() as usize,
+        "the publication must carry every issue the pointer counts"
+    );
+    let mut payload = HashMap::new();
+    for issue in &issue_records {
+        payload.insert(
+            issue["id"]
+                .as_str()
+                .expect("each issue names its id")
+                .to_string(),
+            unknown_fields_of(issue),
+        );
+    }
+    payload
+}
+
 // ---- the publish x recover x mode matrix -----------------------------------
 
 /// Each checkpoint mode publishes a generation that both recovery commands
@@ -437,6 +562,10 @@ fn published_generations_recover_losslessly_in_both_modes() {
             pointer["mode"], mode,
             "the flush must publish in the configured mode"
         );
+        assert_payload_exact(
+            &published_issue_payload(workspace.path(), &pointer),
+            &format!("{mode} publication"),
+        );
         assert_both_recoveries(workspace.path(), &format!("{mode} publication"));
     }
 }
@@ -450,9 +579,15 @@ fn published_generations_recover_losslessly_in_both_modes() {
 fn alternating_chain_crosses_every_command_and_both_modes() {
     let expected = expected_extensions(&fixture_issue_records());
 
-    // Generation 1: monolithic publication of the fixture payload.
+    // Generation 1: monolithic publication of the fixture payload — itself
+    // a rebuilt store's publication, the seed having been imported from the
+    // committed fixture checkpoint.
     let first = seeded_workspace();
-    publish(first.path(), monolithic_config(), "chain gen 1");
+    let pointer = publish(first.path(), monolithic_config(), "chain gen 1");
+    assert_payload_exact(
+        &published_issue_payload(first.path(), &pointer),
+        "chain gen 1 (seeded store's monolithic publication)",
+    );
     let (second, report) = verified_restore(
         first.path().join(".beads/checkpoint").as_path(),
         "unknown-field-conformance",
@@ -467,6 +602,10 @@ fn alternating_chain_crosses_every_command_and_both_modes() {
     // Generation 2: the restored store republishes shardedly.
     let pointer = publish(second.path(), sharded_config(), "chain gen 2");
     assert_eq!(pointer["mode"], "sharded");
+    assert_payload_exact(
+        &published_issue_payload(second.path(), &pointer),
+        "chain gen 2 (restored store's sharded publication)",
+    );
     let third = import_restore(
         second.path().join(".beads/checkpoint").as_path(),
         "unknown-field-conformance",
@@ -478,7 +617,11 @@ fn alternating_chain_crosses_every_command_and_both_modes() {
     );
 
     // Generation 3: republish monolithically, recover with bead restore.
-    publish(third.path(), monolithic_config(), "chain gen 3");
+    let pointer = publish(third.path(), monolithic_config(), "chain gen 3");
+    assert_payload_exact(
+        &published_issue_payload(third.path(), &pointer),
+        "chain gen 3 (imported store's monolithic publication)",
+    );
     let (fourth, report) = verified_restore(
         third.path().join(".beads/checkpoint").as_path(),
         "unknown-field-conformance",
@@ -509,7 +652,11 @@ fn issues_jsonl_interchange_carries_unknown_fields_both_ways() {
     // file at the workspace root (the --output path is resolved against the
     // workspace root and must stay outside .beads/).
     let workspace = seeded_workspace();
-    publish(workspace.path(), monolithic_config(), "interchange source");
+    let source_pointer = publish(workspace.path(), monolithic_config(), "interchange source");
+    assert_payload_exact(
+        &published_issue_payload(workspace.path(), &source_pointer),
+        "interchange source publication",
+    );
     let interchange = workspace.path().join("issues.jsonl");
     bead(
         workspace.path(),
@@ -547,7 +694,7 @@ fn issues_jsonl_interchange_carries_unknown_fields_both_ways() {
 
     // Interchange back in: both import modes rebuild the payload exactly.
     let source = interchange.to_str().unwrap().to_string();
-    let mut return_leg_store: Option<TempDir> = None;
+    let mut rebuilt_stores: HashMap<&str, TempDir> = HashMap::new();
     for (mode, extra) in [
         ("restore-into-empty", "--restore-into-empty"),
         ("merge", "--merge"),
@@ -572,39 +719,52 @@ fn issues_jsonl_interchange_carries_unknown_fields_both_ways() {
             &read_extensions(workspace.path()),
             &format!("issues.jsonl interchange import ({mode})"),
         );
-        // The bead-named recovery import seeds the return leg below. The
-        // merge-mode store cannot: its merge receipt is stamped with an
-        // empty source_store_uuid (the bare interchange shape carries no
-        // store identity to copy), and every generation it publishes
-        // afterwards fails receipt validation on restore with "Integrity
-        // error: Provenance receipt 'merge-...' has invalid required
-        // fields" — a recoverability defect of the merge-receipt writer,
-        // not an unknown-field loss, tracked on beadrs-68e50219. The
-        // merged store's payload itself is asserted complete above.
-        if mode == "restore-into-empty" {
-            return_leg_store = Some(workspace);
-        }
+        rebuilt_stores.insert(mode, workspace);
     }
-    let interchange_store = return_leg_store.expect("the restore-into-empty leg ran");
+    let interchange_store = rebuilt_stores
+        .remove("restore-into-empty")
+        .expect("the restore-into-empty leg ran");
+    let merged_store = rebuilt_stores.remove("merge").expect("the merge leg ran");
 
     // The return leg: a store rebuilt from the bare interchange file
-    // publishes a verified checkpoint generation that `bead restore`
-    // rebuilds with the payload intact — checkpoint to issues.jsonl and
-    // back to checkpoint without loss.
+    // publishes a generation whose on-disk, hash-verified objects carry
+    // the payload verbatim — checkpoint to issues.jsonl and back to
+    // checkpoint without loss. The leg stops at the publication itself,
+    // on purpose: the bare shape carries no store identity, so a store
+    // rebuilt from it has none, and until the beadrs-68e50219 fix lands,
+    // every generation such a store publishes fails `bead restore`'s
+    // pointer validation ("Unverified restore source: pointer store_uuid
+    // is empty") — a recoverability defect of the bare-import stager, not
+    // an unknown-field loss, and not this file's contract to pin: pinning
+    // the refusal here would have to be unpinned by that fix. Whether
+    // those generations restore is owned by beadrs-68e50219; the payload
+    // is asserted complete in the store above and on disk here.
     let pointer = publish(
         interchange_store.path(),
         sharded_config(),
         "interchange return leg",
     );
     assert_eq!(pointer["mode"], "sharded");
-    let (restored, _report) = verified_restore(
-        interchange_store.path().join(".beads/checkpoint").as_path(),
-        "unknown-field-conformance",
+    assert_payload_exact(
+        &published_issue_payload(interchange_store.path(), &pointer),
+        "interchange return leg publication",
     );
-    assert_eq!(
-        read_extensions(restored.path()),
-        expected,
-        "checkpoint -> issues.jsonl -> checkpoint: payload not preserved"
+
+    // The merged store publishes just as faithfully: flush writes
+    // generations without validating receipts, so its generation's
+    // hash-verified objects must carry the payload verbatim too — the
+    // publication contract is this file's even where the recovery of the
+    // generation is beadrs-68e50219's. (Same stop at publication, same
+    // reason.)
+    let pointer = publish(
+        merged_store.path(),
+        monolithic_config(),
+        "merge-mode publication",
+    );
+    assert_eq!(pointer["mode"], "monolithic");
+    assert_payload_exact(
+        &published_issue_payload(merged_store.path(), &pointer),
+        "merge-mode publication of the interchange payload",
     );
 }
 
