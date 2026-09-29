@@ -5,9 +5,9 @@
 //! import/export round trips." The other unknown-field suites pin single
 //! levels or single legs; this one walks a payload through every level the
 //! checkpoint format can carry -- issue, event, dependency edge, external
-//! reference, structured data envelope, resource key, provenance receipt,
-//! and the `current.json` pointer itself -- across three published
-//! generations connected by the native recovery path
+//! reference, structured data envelope, resource key, attempt outcome,
+//! provenance receipt, and the `current.json` pointer itself -- across
+//! three published generations connected by the native recovery path
 //! (`sync import-only --restore-into-empty`), and then through the two
 //! paths that rewrite historical records: the stale-event merge replay
 //! (`--merge` of a log the destination already holds) and historical
@@ -120,6 +120,28 @@ const KNOWN_DATA_ENVELOPE_KEYS: [&str; 2] = ["schema_ref", "value"];
 /// extensions.
 const KNOWN_RESOURCE_KEY_ENTRY_KEYS: [&str; 1] = ["resource_key"];
 
+/// Every key a serialized attempt-outcome record may carry beside its
+/// additive extensions (`AttemptOutcomeRecord`).
+const KNOWN_ATTEMPT_OUTCOME_KEYS: [&str; 17] = [
+    "$schema",
+    "attempt_id",
+    "issue_id",
+    "outcome",
+    "action",
+    "reason",
+    "canonical_request_hash",
+    "resulting_issue_revision",
+    "resulting_state",
+    "resulting_attempt_tier",
+    "receipt_id",
+    "actor",
+    "created_at",
+    "evidence_refs",
+    "model",
+    "harness",
+    "harness_version",
+];
+
 /// Every top-level key a generation pointer may carry beside its additive
 /// extensions (src/service/checkpoint.rs `POINTER_KNOWN_KEYS`).
 const KNOWN_POINTER_KEYS: [&str; 19] = [
@@ -182,6 +204,10 @@ fn data_payload() -> Value {
 
 fn resource_key_payload() -> Value {
     json!({ "future_exclusive_until": "2026-12-01T00:00:00Z" })
+}
+
+fn attempt_outcome_payload() -> Value {
+    json!({ "future_telemetry": { "gpus": ["0", "1"], "gate": { "sampled": false } } })
 }
 
 fn receipt_payload() -> Value {
@@ -387,6 +413,43 @@ fn set_resource_key_extension(workspace: &Path, issue_id: &str, payload: &Value)
     assert_eq!(changed, 1, "the resource key must exist to be seeded");
 }
 
+/// Seed an attempt-outcome row carrying unknown fields, and return the
+/// attempt id whose exported record must carry them.
+fn insert_extended_attempt_outcome(workspace: &Path, issue_id: &str, payload: &Value) -> String {
+    let attempt_id = String::from("urn:needle:attempt:generations-001");
+    let conn = open_db(workspace);
+    conn.execute(
+        "INSERT INTO attempt_outcomes (
+            receipt_id, attempt_id, issue_id, outcome, action, reason,
+            canonical_request_hash, prior_attempt_tier, resulting_attempt_tier,
+            resulting_issue_revision, actor, created_at, evidence_refs_json,
+            model, harness, harness_version, resulting_state, extensions_json
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+        rusqlite::params![
+            "ao-generations-001",
+            &attempt_id,
+            issue_id,
+            "verified_success",
+            "none",
+            "generation conformance attempt",
+            "generations-canonical-request-hash",
+            0i64,
+            0i64,
+            0i64,
+            "ufk-worker",
+            "2026-09-29T00:00:00Z",
+            r#"["s3:logs/generations.tar.gz"]"#,
+            "glm-5.3-flash",
+            "needle",
+            "1.0.0",
+            "open",
+            serde_json::to_string(payload).unwrap(),
+        ],
+    )
+    .unwrap();
+    attempt_id
+}
+
 /// Seed the provenance receipt's unknown fields and return the receipt ID
 /// whose exported record must carry them.
 fn extend_single_receipt(workspace: &Path, payload: &Value) -> String {
@@ -521,6 +584,15 @@ fn extended_event(records: &[Value]) -> &Value {
     carriers[0]
 }
 
+/// The exported attempt-outcome record carrying the seeded payload.
+fn extended_attempt_outcome<'a>(records: &'a [Value], attempt_id: &str) -> &'a Value {
+    records_of_type(records, "attempt_outcome")
+        .into_iter()
+        .map(|record| &record["attempt_outcome"])
+        .find(|outcome| outcome["attempt_id"].as_str() == Some(attempt_id))
+        .unwrap_or_else(|| panic!("attempt outcome {attempt_id} missing from generation"))
+}
+
 /// Identity of an exported event: the two fields every later generation
 /// must reproduce for the rewritten records to stay the same record.
 fn event_identity(event: &Value) -> (String, i64) {
@@ -559,6 +631,7 @@ struct Generations {
     generation_3: Vec<Value>,
     issue_a: String,
     issue_b: String,
+    attempt_id: String,
     receipt_with_extensions: String,
     extended_event_identity: (String, i64),
 }
@@ -625,6 +698,8 @@ fn build_generations() -> Generations {
     insert_external_reference(source.path(), &issue_a, &reference_payload());
     insert_issue_data(source.path(), &issue_a, &data_payload());
     set_resource_key_extension(source.path(), &issue_a, &resource_key_payload());
+    let attempt_id =
+        insert_extended_attempt_outcome(source.path(), &issue_a, &attempt_outcome_payload());
 
     flush(source.path());
     let generation_1 = active_generation_records(source.path());
@@ -690,6 +765,14 @@ fn build_generations() -> Generations {
             &[&issue_a],
         ),
         resource_key_payload()
+    );
+    assert_eq!(
+        stored_extensions(
+            restored.path(),
+            "SELECT extensions_json FROM attempt_outcomes WHERE attempt_id = ?1",
+            &[attempt_id.as_str()],
+        ),
+        attempt_outcome_payload()
     );
     let pointer_state = stored_extensions(
         restored.path(),
@@ -784,6 +867,7 @@ fn build_generations() -> Generations {
         generation_3,
         issue_a,
         issue_b,
+        attempt_id,
         receipt_with_extensions,
         extended_event_identity,
     }
@@ -839,6 +923,13 @@ fn assert_levels_preserved(generation: &[Value], first: &Generations, event_wide
         unknown_members(resource_key, &KNOWN_RESOURCE_KEY_ENTRY_KEYS),
         object_of(&resource_key_payload()),
         "resource-key unknown fields must survive parse-equal"
+    );
+
+    let outcome = extended_attempt_outcome(generation, &first.attempt_id);
+    assert_eq!(
+        unknown_members(outcome, &KNOWN_ATTEMPT_OUTCOME_KEYS),
+        object_of(&attempt_outcome_payload()),
+        "attempt-outcome unknown fields must survive parse-equal"
     );
 
     let event = extended_event(generation);
@@ -1069,6 +1160,19 @@ fn drop_event_extension(records: &mut [Value], identity: &(String, i64), key: &s
     remove_member(&mut event["event"], key);
 }
 
+fn drop_attempt_outcome_extension(records: &mut [Value], attempt_id: &str, key: &str) {
+    let outcome = records
+        .iter_mut()
+        .find(|record| {
+            record["record_type"] == "attempt_outcome"
+                && record["attempt_outcome"]["attempt_id"].as_str() == Some(attempt_id)
+        })
+        .unwrap_or_else(|| {
+            panic!("attempt outcome {attempt_id} missing from the generation under mutation")
+        });
+    remove_member(&mut outcome["attempt_outcome"], key);
+}
+
 fn drop_receipt_extension(records: &mut [Value], receipt_id: &str, key: &str) {
     let receipt = records
         .iter_mut()
@@ -1167,6 +1271,12 @@ fn a_dropped_unknown_field_fails_the_preservation_assertions() {
     let mut mutated = generations.generation_1.clone();
     drop_resource_key_extension(&mut mutated, &generations.issue_a, "future_exclusive_until");
     assert_drop_trips_assertion("resource-key", "resource-key unknown fields", || {
+        assert_levels_preserved(&mutated, &generations, false)
+    });
+
+    let mut mutated = generations.generation_1.clone();
+    drop_attempt_outcome_extension(&mut mutated, &generations.attempt_id, "future_telemetry");
+    assert_drop_trips_assertion("attempt-outcome", "attempt-outcome unknown fields", || {
         assert_levels_preserved(&mutated, &generations, false)
     });
 
