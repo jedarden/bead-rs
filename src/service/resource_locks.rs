@@ -70,6 +70,12 @@ where
 }
 
 /// Validate the JSON projection used by checkpoint import.
+///
+/// A bare string is the v1 entry form. An object entry is the
+/// extension-capable form a newer producer may write: its `resource_key`
+/// member is the identity — validated and normalized like any other key —
+/// and everything beside it rides the per-key extension column, so only the
+/// identity concerns validation here.
 pub fn resource_keys_from_value(value: &Value) -> Result<Vec<String>> {
     let array = value.as_array().ok_or_else(|| {
         Error::validation(format!(
@@ -80,12 +86,25 @@ pub fn resource_keys_from_value(value: &Value) -> Result<Vec<String>> {
     let keys = array
         .iter()
         .map(|value| {
-            value.as_str().map(str::to_string).ok_or_else(|| {
-                Error::validation(format!(
-                    "{} must contain only strings",
-                    RESOURCE_KEYS_EXTENSION
-                ))
-            })
+            if let Some(key) = value.as_str() {
+                return Ok(key.to_string());
+            }
+            if let Some(object) = value.as_object() {
+                return object
+                    .get("resource_key")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .ok_or_else(|| {
+                        Error::validation(format!(
+                            "{} object entries require a string 'resource_key'",
+                            RESOURCE_KEYS_EXTENSION
+                        ))
+                    });
+            }
+            Err(Error::validation(format!(
+                "{} must contain only strings or objects with a 'resource_key'",
+                RESOURCE_KEYS_EXTENSION
+            )))
         })
         .collect::<Result<Vec<_>>>()?;
     normalize_resource_keys(keys)

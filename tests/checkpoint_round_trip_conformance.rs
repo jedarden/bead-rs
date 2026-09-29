@@ -1343,12 +1343,14 @@ fn test_checkpoint_merge_replaces_projected_collections_when_present() {
     )
     .unwrap();
     conn.execute(
-        "INSERT INTO issue_data VALUES (?1, 'old', 'urn:test:old', '{\"old\":true}')",
+        "INSERT INTO issue_data (issue_id, namespace, schema_ref, value)
+         VALUES (?1, 'old', 'urn:test:old', '{\"old\":true}')",
         [&id],
     )
     .unwrap();
     conn.execute(
-        "INSERT INTO external_references VALUES (?1, 'tracker', 'source-id', 'old-1')",
+        "INSERT INTO external_references (issue_id, namespace, key, value)
+         VALUES (?1, 'tracker', 'source-id', 'old-1')",
         [&id],
     )
     .unwrap();

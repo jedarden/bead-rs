@@ -7,7 +7,7 @@ use rusqlite::{Connection, Result as SqliteResult, Transaction, TransactionBehav
 use sha2::{Digest, Sha256};
 
 /// Current migration version
-pub const CURRENT_VERSION: i64 = 18;
+pub const CURRENT_VERSION: i64 = 19;
 
 /// Whether the store has already reached [`CURRENT_VERSION`].
 ///
@@ -124,33 +124,41 @@ fn is_safe_add_column_replay(
     statement: &str,
     error: &rusqlite::Error,
 ) -> SqliteResult<bool> {
-    let expected = match version {
-        15 => ("attempt_outcomes", "resulting_state"),
-        17 => ("issues", "claim_epoch"),
+    // One (table, column) pair per ADD COLUMN statement the migration may
+    // emit. Migration 19 adds eight nullable TEXT columns, so its entry is a
+    // list rather than the single pair the one-column migrations carry.
+    let expected: &[(&str, &str)] = match version {
+        15 => &[("attempt_outcomes", "resulting_state")],
+        17 => &[("issues", "claim_epoch")],
+        19 => &[
+            ("events", "extensions_json"),
+            ("provenance_receipts", "extensions_json"),
+            ("dependencies", "extensions_json"),
+            ("external_references", "extensions_json"),
+            ("issue_data", "extensions_json"),
+            ("issue_resource_keys", "extensions_json"),
+            ("attempt_outcomes", "extensions_json"),
+            ("checkpoint_state", "pointer_extensions_json"),
+        ],
         _ => return Ok(false),
     };
 
     let normalized = statement.split_whitespace().collect::<Vec<_>>().join(" ");
-    let expected_statement = format!("ALTER TABLE {} ADD COLUMN {} ", expected.0, expected.1);
-    if !normalized.starts_with(&expected_statement)
-        || !error.to_string().contains("duplicate column name")
-    {
+    if !error.to_string().contains("duplicate column name") {
         return Ok(false);
     }
 
-    let present = match expected.0 {
-        "attempt_outcomes" => tx.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('attempt_outcomes') WHERE name = ?1",
-            [expected.1],
-            |row| row.get::<_, i64>(0),
-        )?,
-        "issues" => tx.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('issues') WHERE name = ?1",
-            [expected.1],
-            |row| row.get::<_, i64>(0),
-        )?,
-        _ => 0,
+    let Some((table, column)) = expected.iter().find(|(table, column)| {
+        normalized.starts_with(&format!("ALTER TABLE {table} ADD COLUMN {column} "))
+    }) else {
+        return Ok(false);
     };
+
+    let present: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+        [table, column],
+        |row| row.get::<_, i64>(0),
+    )?;
     Ok(present == 1)
 }
 
@@ -175,6 +183,7 @@ fn get_migration(version: i64) -> Migration {
         16 => migration_16(),
         17 => migration_17(),
         18 => migration_18(),
+        19 => migration_19(),
         v => panic!("Unknown migration version: {}", v),
     }
 }
@@ -1033,6 +1042,39 @@ CREATE INDEX IF NOT EXISTS dependencies_condition ON dependencies (condition);
 }
 
 /// Calculate SHA-256 checksum of a migration
+/// Migration 19: unknown-field extension columns for checkpoint records
+///
+/// AGENTS.md requires unknown JSON fields to survive import/export round
+/// trips. Issue-level extensions already had `issue_extensions`; these
+/// nullable columns give the remaining checkpoint-carried records somewhere
+/// to keep the fields a newer producer attached to them. NULL means the
+/// record carries no unknown fields, so existing rows read back exactly as
+/// a pre-extensions writer landed them.
+///
+/// `issue_resource_keys.extensions_json` marks a resource-key entry that a
+/// producer wrote as an object rather than a bare string: the identity stays
+/// in `resource_key`, everything else re-projects from here.
+///
+/// `checkpoint_state.pointer_extensions_json` holds unknown top-level
+/// current.json keys carried across generations, so a restore-into-empty (whose
+/// target checkpoint directory starts empty) still re-publishes them.
+fn migration_19() -> Migration {
+    let sql = r#"
+ALTER TABLE events ADD COLUMN extensions_json TEXT;
+ALTER TABLE provenance_receipts ADD COLUMN extensions_json TEXT;
+ALTER TABLE dependencies ADD COLUMN extensions_json TEXT;
+ALTER TABLE external_references ADD COLUMN extensions_json TEXT;
+ALTER TABLE issue_data ADD COLUMN extensions_json TEXT;
+ALTER TABLE issue_resource_keys ADD COLUMN extensions_json TEXT;
+ALTER TABLE attempt_outcomes ADD COLUMN extensions_json TEXT;
+ALTER TABLE checkpoint_state ADD COLUMN pointer_extensions_json TEXT;
+"#;
+
+    Migration {
+        sql: sql.to_string(),
+    }
+}
+
 fn migration_checksum(sql: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(sql.as_bytes());

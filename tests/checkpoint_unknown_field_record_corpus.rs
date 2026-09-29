@@ -12,11 +12,24 @@
 //!
 //! Where unknown fields live is part of the contract, not an omission:
 //! `Issue` carries the `#[serde(flatten)]` extensions catch-all persisted in
-//! `issue_extensions` (src/model.rs, src/service/checkpoint.rs), while event
-//! and provenance-receipt records have no extension capacity. For those kinds
-//! the conformance obligation is exact, lossless preservation of their known
-//! fields -- never a re-projected or reinterpreted stray key -- which these
-//! tests pin as well.
+//! `issue_extensions` (src/model.rs, src/service/checkpoint.rs), and every
+//! other checkpoint-carried record kind keeps its own additive-field map
+//! (`RecordExtensions`).
+//!
+//! The corpus therefore has two halves. The three-generation corpus below is
+//! built entirely from public commands, so its event and provenance-receipt
+//! records carry no unknown fields -- for those records the obligation
+//! pinned there is exact, lossless preservation of their known fields, never
+//! a re-projected or reinterpreted stray key.
+//! `published_checkpoint_carries_unknown_fields_at_every_object_level` is
+//! the other half: it seeds a distinct, clearly-opaque payload at every
+//! object level a checkpoint can carry -- issue, event, dependency edge,
+//! external reference, structured-data envelope, resource key, attempt
+//! outcome, provenance receipt, and the `current.json` generation pointer --
+//! and requires an explicitly flushed publication to physically contain
+//! every one of them, across the restore hop that contributes the receipt
+//! level. Walking the extension-bearing forms across successive generations
+//! is checkpoint_unknown_field_generation_conformance.rs.
 //!
 //! Corpus construction (all public commands, no fixture files):
 //!
@@ -78,8 +91,9 @@ const KNOWN_ISSUE_KEYS: [&str; 24] = [
 ];
 
 /// Every key a serialized event record may carry (src/service/checkpoint.rs
-/// `EventRecord`). The record has no extension catch-all, so an export that
-/// re-projects anything else onto it is reinterpreting the stream.
+/// `EventRecord`), additive extensions included. These corpus records carry
+/// none, so an export that re-projects anything else onto them is
+/// reinterpreting the stream.
 const KNOWN_EVENT_KEYS: [&str; 8] = [
     "$schema",
     "origin_store_uuid",
@@ -92,7 +106,8 @@ const KNOWN_EVENT_KEYS: [&str; 8] = [
 ];
 
 /// Every key a serialized provenance receipt may carry
-/// (`ProvenanceReceipt`), likewise with no extension capacity.
+/// (`ProvenanceReceipt`), additive extensions included; these corpus
+/// receipts carry none.
 const KNOWN_RECEIPT_KEYS: [&str; 12] = [
     "$schema",
     "receipt_id",
@@ -107,6 +122,76 @@ const KNOWN_RECEIPT_KEYS: [&str; 12] = [
     "summary_event_identity",
     "receipt_sha256",
 ];
+
+/// Every key an exported attempt-outcome record may carry beside its
+/// additive extensions (src/service/checkpoint.rs `AttemptOutcomeRecord`).
+const KNOWN_ATTEMPT_OUTCOME_KEYS: [&str; 17] = [
+    "$schema",
+    "attempt_id",
+    "issue_id",
+    "outcome",
+    "action",
+    "reason",
+    "canonical_request_hash",
+    "resulting_issue_revision",
+    "resulting_state",
+    "resulting_attempt_tier",
+    "receipt_id",
+    "actor",
+    "created_at",
+    "evidence_refs",
+    "model",
+    "harness",
+    "harness_version",
+];
+
+/// Every key a projected dependency-edge entry may carry beside its
+/// additive extensions.
+const KNOWN_DEPENDENCY_ENTRY_KEYS: [&str; 2] = ["blocker", "kind"];
+
+/// Every key a projected external-reference entry may carry beside its
+/// additive extensions.
+const KNOWN_REFERENCE_ENTRY_KEYS: [&str; 4] = ["namespace", "key", "value", "unique_ref"];
+
+/// Every key a structured-data envelope may carry beside its additive
+/// extensions.
+const KNOWN_DATA_ENVELOPE_KEYS: [&str; 2] = ["schema_ref", "value"];
+
+/// Every key a projected resource-key entry may carry beside its additive
+/// extensions.
+const KNOWN_RESOURCE_KEY_ENTRY_KEYS: [&str; 1] = ["resource_key"];
+
+/// Every top-level key a generation pointer may carry beside its additive
+/// extensions (src/service/checkpoint.rs `POINTER_KNOWN_KEYS`).
+const KNOWN_POINTER_KEYS: [&str; 19] = [
+    "schema_version",
+    "generation_id",
+    "mode",
+    "store_uuid",
+    "snapshot_sequence",
+    "active_root",
+    "added_paths",
+    "replaced_paths",
+    "deleted_paths",
+    "issue_count",
+    "event_count",
+    "receipt_count",
+    "attempt_outcome_count",
+    "redaction_record_count",
+    "total_record_count",
+    "created_at",
+    "redaction_epoch_id",
+    "previous_generation_reset",
+    "superseded_generations",
+];
+
+/// The event-level extension key the all-levels corpus seeds; the exported
+/// event is located by carrying it.
+const EVENT_EXTENSION_KEY: &str = "future_event_trace";
+
+/// The pointer-level extension key the all-levels corpus seeds into a
+/// published `current.json` and requires the next flush to re-project.
+const POINTER_EXTENSION_KEY: &str = "future_pointer_lineage";
 
 /// The unknown-field payload carried by the corpus issue marked
 /// "payload A": the shapes a preservation contract can get wrong, two of
@@ -782,11 +867,13 @@ fn relationships_survive_all_three_generations() {
     }
 }
 
-/// The boundary of the contract: event and receipt records have no
-/// extension capacity, so their exports must confine themselves to the
-/// known key set. A key appearing there is a re-projected or reinterpreted
+/// The boundary of the three-generation corpus: its event and receipt
+/// records were built entirely from public commands, so they carry no
+/// unknown fields and their exports must confine themselves to the known
+/// key set. A key appearing there is a re-projected or reinterpreted
 /// stray, which is exactly the silent interpretation this suite exists to
-/// rule out.
+/// rule out. (Record kinds that do have extension capacity are exercised
+/// with seeded payloads by the all-levels corpus below.)
 #[test]
 fn non_issue_records_carry_no_unknown_fields() {
     let corpus = build_corpus();
@@ -800,8 +887,9 @@ fn non_issue_records_carry_no_unknown_fields() {
             for key in record["event"].as_object().unwrap().keys() {
                 assert!(
                     KNOWN_EVENT_KEYS.contains(&key.as_str()),
-                    "{label}: event record carries unknown key {key:?}; events \
-                     have no extension capacity, so this is a re-projection"
+                    "{label}: event record carries unknown key {key:?}; these \
+                     corpus events carry no extensions, so this is a \
+                     re-projection"
                 );
             }
         }
@@ -810,10 +898,572 @@ fn non_issue_records_carry_no_unknown_fields() {
                 assert!(
                     KNOWN_RECEIPT_KEYS.contains(&key.as_str()),
                     "{label}: receipt record carries unknown key {key:?}; \
-                     receipts have no extension capacity, so this is a \
+                     these corpus receipts carry no extensions, so this is a \
                      re-projection"
                 );
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// The all-levels corpus
+//
+// The three-generation corpus above is built entirely from public commands,
+// so its only unknown fields are issue-level ones: no CLI produces an
+// unknown field on any record kind. The corpus below seeds every remaining
+// level the way a newer producer would have left it -- direct store writes
+// and a hand-edited published pointer -- then requires explicitly flushed
+// publications to carry all of them at once.
+// ---------------------------------------------------------------------------
+
+/// Distinct, clearly-opaque unknown-field payloads, one per object level a
+/// checkpoint can carry. Every payload nests an object and an array -- the
+/// shapes a projection can flatten, stringify, or reorder -- and no two
+/// levels share a key, so a payload surfacing at the wrong level fails the
+/// exact-map assertion loudly.
+fn issue_level_payload() -> Value {
+    serde_json::json!({
+        "future_issue_signal": { "routes": ["iad", "ord"], "gate": { "open": false } }
+    })
+}
+
+fn event_level_payload() -> Value {
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        EVENT_EXTENSION_KEY.to_string(),
+        serde_json::json!({ "spans": ["s1", "s2"], "gate": { "sampled": true } }),
+    );
+    Value::Object(payload)
+}
+
+fn dependency_level_payload() -> Value {
+    serde_json::json!({
+        "future_edge_weight": { "lanes": [1, 2], "gate": { "soft": true } }
+    })
+}
+
+fn reference_level_payload() -> Value {
+    serde_json::json!({
+        "future_ref_visibility": { "audiences": ["audit", "ops"], "gate": { "internal": true } }
+    })
+}
+
+fn data_level_payload() -> Value {
+    serde_json::json!({
+        "future_envelope_etag": { "digests": ["a", "b"], "gate": { "weak": false } }
+    })
+}
+
+fn resource_key_level_payload() -> Value {
+    serde_json::json!({
+        "future_key_exclusivity": { "windows": ["2026-12-01"], "gate": { "hard": true } }
+    })
+}
+
+fn attempt_outcome_level_payload() -> Value {
+    serde_json::json!({
+        "future_telemetry": { "gpus": ["0", "1"], "gate": { "sampled": false } }
+    })
+}
+
+fn receipt_level_payload() -> Value {
+    serde_json::json!({
+        "future_receipt_signature": { "keys": ["pk-1"], "gate": { "sealed": true } }
+    })
+}
+
+/// The pointer-level unknown value a newer producer would leave in a
+/// published `current.json`.
+fn pointer_extension_value() -> Value {
+    serde_json::json!({ "parents": ["gen-1"], "gate": { "sealed": false } })
+}
+
+fn pointer_level_payload() -> Value {
+    let mut payload = serde_json::Map::new();
+    payload.insert(POINTER_EXTENSION_KEY.to_string(), pointer_extension_value());
+    Value::Object(payload)
+}
+
+/// Every extension key the corpus seeds, taken from the payloads themselves
+/// so the physical-containment sweep can never drift from what is seeded.
+/// The receipt key only exists once the restore has contributed its level,
+/// and the pointer key only once a flush has re-projected it.
+fn all_level_extension_keys(receipt_level: bool, pointer_level: bool) -> Vec<String> {
+    let mut payloads = vec![
+        issue_level_payload(),
+        event_level_payload(),
+        dependency_level_payload(),
+        reference_level_payload(),
+        data_level_payload(),
+        resource_key_level_payload(),
+        attempt_outcome_level_payload(),
+    ];
+    if receipt_level {
+        payloads.push(receipt_level_payload());
+    }
+    let mut keys: Vec<String> = payloads
+        .iter()
+        .flat_map(|payload| payload.as_object().unwrap().keys().cloned())
+        .collect();
+    if pointer_level {
+        keys.extend(pointer_level_payload().as_object().unwrap().keys().cloned());
+    }
+    keys
+}
+
+/// Seed the event-level unknown fields on the store's earliest event, the
+/// way a newer producer's row would carry them.
+fn set_first_event_extension(workspace: &Path, payload: &Value) {
+    let conn = rusqlite::Connection::open(workspace.join(".beads/beads.db")).unwrap();
+    let sequence: i64 = conn
+        .query_row(
+            "SELECT sequence FROM events ORDER BY sequence ASC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    conn.execute(
+        "UPDATE events SET extensions_json = ?1 WHERE sequence = ?2",
+        rusqlite::params![serde_json::to_string(payload).unwrap(), sequence],
+    )
+    .unwrap();
+}
+
+/// Seed the unknown fields of one dependency edge.
+fn set_dependency_extension(workspace: &Path, blocked: &str, blocker: &str, payload: &Value) {
+    let conn = rusqlite::Connection::open(workspace.join(".beads/beads.db")).unwrap();
+    let changed = conn
+        .execute(
+            "UPDATE dependencies SET extensions_json = ?1
+             WHERE blocked_issue_id = ?2 AND blocker_issue_id = ?3",
+            rusqlite::params![serde_json::to_string(payload).unwrap(), blocked, blocker],
+        )
+        .unwrap();
+    assert_eq!(changed, 1, "the dependency edge must exist to be seeded");
+}
+
+/// Insert an external reference carrying unknown fields.
+fn insert_extended_external_reference(workspace: &Path, issue_id: &str, payload: &Value) {
+    let conn = rusqlite::Connection::open(workspace.join(".beads/beads.db")).unwrap();
+    conn.execute(
+        "INSERT INTO external_references (issue_id, namespace, key, value, extensions_json)
+         VALUES (?1, 'future-tracker', 'src-id', 'src-value-1', ?2)",
+        rusqlite::params![issue_id, serde_json::to_string(payload).unwrap()],
+    )
+    .unwrap();
+}
+
+/// Insert a structured-data envelope carrying unknown fields.
+fn insert_extended_issue_data(workspace: &Path, issue_id: &str, payload: &Value) {
+    let conn = rusqlite::Connection::open(workspace.join(".beads/beads.db")).unwrap();
+    conn.execute(
+        "INSERT INTO issue_data (issue_id, namespace, schema_ref, value, extensions_json)
+         VALUES (?1, 'future-config', 'urn:test:future', '{\"region\":\"iad\"}', ?2)",
+        rusqlite::params![issue_id, serde_json::to_string(payload).unwrap()],
+    )
+    .unwrap();
+}
+
+/// Seed the unknown fields of the issue's declared resource key, turning it
+/// into the extension-capable object form a newer producer writes.
+fn set_resource_key_extension(workspace: &Path, issue_id: &str, payload: &Value) {
+    let conn = rusqlite::Connection::open(workspace.join(".beads/beads.db")).unwrap();
+    let changed = conn
+        .execute(
+            "UPDATE issue_resource_keys SET extensions_json = ?1
+             WHERE issue_id = ?2 AND resource_key = 'gpu:0'",
+            rusqlite::params![serde_json::to_string(payload).unwrap(), issue_id],
+        )
+        .unwrap();
+    assert_eq!(changed, 1, "the resource key must exist to be seeded");
+}
+
+/// Insert an attempt outcome carrying unknown fields; returns its attempt
+/// identity, which locates the exported record.
+fn insert_extended_attempt_outcome(workspace: &Path, issue_id: &str, payload: &Value) -> String {
+    let conn = rusqlite::Connection::open(workspace.join(".beads/beads.db")).unwrap();
+    let attempt_id = String::from("urn:needle:attempt:all-levels-001");
+    conn.execute(
+        "INSERT INTO attempt_outcomes (
+            receipt_id, attempt_id, issue_id, outcome, action, reason,
+            canonical_request_hash, prior_attempt_tier, resulting_attempt_tier,
+            resulting_issue_revision, actor, created_at, evidence_refs_json,
+            model, harness, harness_version, resulting_state, extensions_json
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+        rusqlite::params![
+            "ao-all-levels-001",
+            &attempt_id,
+            issue_id,
+            "verified_success",
+            "none",
+            "all-levels corpus attempt",
+            "all-levels-canonical-request-hash",
+            0i64,
+            0i64,
+            0i64,
+            "corpus-worker",
+            "2026-09-29T00:00:00Z",
+            r#"["s3:logs/all-levels.tar.gz"]"#,
+            "glm-5.3-flash",
+            "needle",
+            "1.0.0",
+            "open",
+            serde_json::to_string(payload).unwrap(),
+        ],
+    )
+    .unwrap();
+    attempt_id
+}
+
+/// Seed the provenance receipt's unknown fields and return the receipt ID
+/// whose exported record must carry them.
+fn extend_single_receipt(workspace: &Path, payload: &Value) -> String {
+    let conn = rusqlite::Connection::open(workspace.join(".beads/beads.db")).unwrap();
+    let receipt_id: String = conn
+        .query_row("SELECT receipt_id FROM provenance_receipts", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    conn.execute(
+        "UPDATE provenance_receipts SET extensions_json = ?1 WHERE receipt_id = ?2",
+        rusqlite::params![serde_json::to_string(payload).unwrap(), &receipt_id],
+    )
+    .unwrap();
+    receipt_id
+}
+
+/// Add the pointer-level unknown key to the published `current.json`, the
+/// way a newer producer's republish would have left it behind.
+fn seed_pointer_extension(workspace: &Path) {
+    let path = workspace.join(".beads/checkpoint/current.json");
+    let mut pointer: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    pointer
+        .as_object_mut()
+        .unwrap()
+        .insert(POINTER_EXTENSION_KEY.to_string(), pointer_extension_value());
+    fs::write(&path, serde_json::to_string_pretty(&pointer).unwrap()).unwrap();
+}
+
+/// The unknown members of one exported object: every key beyond the known
+/// native ones. Parse-equality of this map against its seeded payload is
+/// the preservation assertion -- loss, rewrapping, and reinterpretation all
+/// fail it.
+fn unknown_members(value: &Value, known: &[&str]) -> serde_json::Map<String, Value> {
+    value
+        .as_object()
+        .unwrap()
+        .iter()
+        .filter(|(key, _)| !known.contains(&key.as_str()))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
+}
+
+fn object_of(payload: &Value) -> serde_json::Map<String, Value> {
+    payload.as_object().unwrap().clone()
+}
+
+/// The exported event carrying the seeded event extension: exactly one.
+fn extended_event(records: &[Value]) -> &Value {
+    let carriers: Vec<&Value> = records_of_type(records, "event")
+        .into_iter()
+        .map(|record| &record["event"])
+        .filter(|event| event.get(EVENT_EXTENSION_KEY).is_some())
+        .collect();
+    assert_eq!(
+        carriers.len(),
+        1,
+        "exactly one event must carry the seeded event extension"
+    );
+    carriers[0]
+}
+
+/// The exported attempt-outcome record carrying the seeded payload,
+/// located by its attempt identity.
+fn extended_attempt_outcome<'a>(records: &'a [Value], attempt_id: &str) -> &'a Value {
+    records_of_type(records, "attempt_outcome")
+        .into_iter()
+        .map(|record| &record["attempt_outcome"])
+        .find(|outcome| outcome["attempt_id"].as_str() == Some(attempt_id))
+        .unwrap_or_else(|| panic!("attempt outcome {attempt_id} missing from generation"))
+}
+
+/// Every record-carried level must surface parse-equal on exactly its own
+/// exported object: the issue's own unknown fields, each embedded entry's
+/// unknown fields, the event's, and the attempt outcome's -- with a clean
+/// control issue proving routing is per record, never per store.
+fn assert_record_levels(
+    records: &[Value],
+    issue_a: &str,
+    issue_b: &str,
+    attempt_id: &str,
+    label: &str,
+) {
+    let issues: Vec<&Value> = records_of_type(records, "issue")
+        .into_iter()
+        .map(|record| &record["issue"])
+        .collect();
+
+    let issue = issues
+        .iter()
+        .find(|issue| issue["id"].as_str() == Some(issue_a))
+        .unwrap_or_else(|| panic!("{label}: issue {issue_a} missing from generation"));
+    let control = issues
+        .iter()
+        .find(|issue| issue["id"].as_str() == Some(issue_b))
+        .unwrap_or_else(|| panic!("{label}: issue {issue_b} missing from generation"));
+
+    assert_eq!(
+        unknown_members(issue, &KNOWN_ISSUE_KEYS),
+        object_of(&issue_level_payload()),
+        "{label}: issue-level unknown fields must survive parse-equal"
+    );
+    assert!(
+        unknown_members(control, &KNOWN_ISSUE_KEYS).is_empty(),
+        "{label}: the control issue must carry no unknown fields"
+    );
+
+    let edge = issue["dependencies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["blocker"].as_str() == Some(issue_b))
+        .unwrap_or_else(|| panic!("{label}: dependency edge missing from generation"));
+    assert_eq!(
+        unknown_members(edge, &KNOWN_DEPENDENCY_ENTRY_KEYS),
+        object_of(&dependency_level_payload()),
+        "{label}: dependency-edge unknown fields must survive parse-equal"
+    );
+
+    let reference = issue["external_references"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["key"] == "src-id")
+        .unwrap_or_else(|| panic!("{label}: external reference missing from generation"));
+    assert_eq!(
+        unknown_members(reference, &KNOWN_REFERENCE_ENTRY_KEYS),
+        object_of(&reference_level_payload()),
+        "{label}: external-reference unknown fields must survive parse-equal"
+    );
+
+    let envelope = &issue["data"]["future-config"];
+    assert_eq!(
+        unknown_members(envelope, &KNOWN_DATA_ENVELOPE_KEYS),
+        object_of(&data_level_payload()),
+        "{label}: structured-data envelope unknown fields must survive \
+         parse-equal"
+    );
+
+    let resource_key = issue["resource_keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["resource_key"] == "gpu:0")
+        .unwrap_or_else(|| panic!("{label}: resource-key entry missing from generation"));
+    assert_eq!(
+        unknown_members(resource_key, &KNOWN_RESOURCE_KEY_ENTRY_KEYS),
+        object_of(&resource_key_level_payload()),
+        "{label}: resource-key unknown fields must survive parse-equal"
+    );
+
+    assert_eq!(
+        unknown_members(extended_event(records), &KNOWN_EVENT_KEYS),
+        object_of(&event_level_payload()),
+        "{label}: event-level unknown fields must survive parse-equal"
+    );
+    assert_eq!(
+        unknown_members(
+            extended_attempt_outcome(records, attempt_id),
+            &KNOWN_ATTEMPT_OUTCOME_KEYS
+        ),
+        object_of(&attempt_outcome_level_payload()),
+        "{label}: attempt-outcome unknown fields must survive parse-equal"
+    );
+}
+
+/// The provenance receipt carrying seeded unknown fields must keep them
+/// parse-equal and alone at its level.
+fn assert_receipt_level(generation: &[Value], receipt_id: &str, label: &str) {
+    let receipt = records_of_type(generation, "provenance_receipt")
+        .into_iter()
+        .map(|record| &record["provenance_receipt"])
+        .find(|receipt| receipt["receipt_id"].as_str() == Some(receipt_id))
+        .unwrap_or_else(|| panic!("{label}: receipt {receipt_id} missing from generation"));
+    assert_eq!(
+        unknown_members(receipt, &KNOWN_RECEIPT_KEYS),
+        object_of(&receipt_level_payload()),
+        "{label}: receipt-level unknown fields must survive parse-equal"
+    );
+}
+
+/// The published pointer must re-project its seeded unknown key, and only
+/// that one.
+fn assert_pointer_level(workspace: &Path, label: &str) {
+    let pointer = read_pointer(workspace.join(".beads/checkpoint/current.json"));
+    assert_eq!(
+        unknown_members(&pointer, &KNOWN_POINTER_KEYS),
+        object_of(&pointer_level_payload()),
+        "{label}: pointer must re-project its seeded unknown key verbatim"
+    );
+}
+
+/// Every file the active published generation physically occupies: the
+/// monolithic root, or the manifest-referenced shards.
+fn published_generation_files(workspace: &Path) -> Vec<std::path::PathBuf> {
+    let checkpoint_dir = workspace.join(".beads/checkpoint");
+    let pointer = read_pointer(checkpoint_dir.join("current.json"));
+    let root = checkpoint_dir.join(pointer["active_root"]["path"].as_str().unwrap());
+
+    if pointer["mode"] == "sharded" {
+        let manifest = read_pointer(&root);
+        let mut paths = vec![root];
+        for family in [
+            "issue_shards",
+            "event_shards",
+            "receipt_shards",
+            "attempt_outcome_shards",
+        ] {
+            for shard in manifest[family].as_array().unwrap() {
+                paths.push(checkpoint_dir.join(shard["path"].as_str().unwrap()));
+            }
+        }
+        paths
+    } else {
+        vec![root]
+    }
+}
+
+/// The published checkpoint's bytes must physically contain every seeded
+/// extension key -- present in the JSON on disk, not merely derivable from
+/// the store. The pointer file counts: it is part of the published
+/// checkpoint.
+fn assert_extensions_physically_published(workspace: &Path, keys: &[String], label: &str) {
+    let mut raw = published_generation_files(workspace)
+        .iter()
+        .map(|path| fs::read_to_string(path).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
+    raw.push_str(&fs::read_to_string(workspace.join(".beads/checkpoint/current.json")).unwrap());
+    for key in keys {
+        assert!(
+            raw.contains(&format!("\"{key}\"")),
+            "{label}: published checkpoint bytes contain no {key:?}"
+        );
+    }
+}
+
+/// Publish a store carrying unknown fields at every object level a
+/// checkpoint defines -- issue, event, dependency edge, external reference,
+/// structured-data envelope, resource key, attempt outcome, provenance
+/// receipt, and the `current.json` generation pointer -- via explicit
+/// `sync flush-only` publications, and require the published checkpoint to
+/// physically contain every one of them.
+///
+/// The restore hop contributes the receipt level: restoring the source
+/// generation writes a provenance receipt into the restored store, the seed
+/// lands on that receipt, and the next explicit flush publishes it. The
+/// pointer level is a newer producer's key left in the published
+/// `current.json`; the next explicit flush must re-project it.
+#[test]
+fn published_checkpoint_carries_unknown_fields_at_every_object_level() {
+    // -- source workspace: every level a store carries before a restore ----
+    let source = TempDir::new().unwrap();
+    init_workspace(source.path());
+    suppress_auto_flush(source.path());
+
+    let issue_a = create_issue(source.path(), "all-levels payload A — record-level seeds");
+    let issue_b = create_issue(source.path(), "all-levels payload B — edge target");
+
+    bead(
+        source.path(),
+        &["dep", "add", &issue_a, &issue_b, "--kind", "blocks"],
+    )
+    .assert()
+    .success();
+    bead(
+        source.path(),
+        &["resource", "add", &issue_a, "--key", "gpu:0"],
+    )
+    .assert()
+    .success();
+
+    insert_unknown_fields(source.path(), &issue_a, &issue_level_payload());
+    set_first_event_extension(source.path(), &event_level_payload());
+    set_dependency_extension(
+        source.path(),
+        &issue_a,
+        &issue_b,
+        &dependency_level_payload(),
+    );
+    insert_extended_external_reference(source.path(), &issue_a, &reference_level_payload());
+    insert_extended_issue_data(source.path(), &issue_a, &data_level_payload());
+    set_resource_key_extension(source.path(), &issue_a, &resource_key_level_payload());
+    let attempt_id =
+        insert_extended_attempt_outcome(source.path(), &issue_a, &attempt_outcome_level_payload());
+
+    let generation_1 = flush_and_read_generation(source.path());
+
+    assert_record_levels(
+        &generation_1,
+        &issue_a,
+        &issue_b,
+        &attempt_id,
+        "generation 1",
+    );
+    assert_extensions_physically_published(
+        source.path(),
+        &all_level_extension_keys(false, false),
+        "generation 1",
+    );
+
+    // -- corpus workspace: the restore contributes the receipt level -------
+    let generation_1_path = {
+        let checkpoint_dir = source.path().join(".beads/checkpoint");
+        let pointer = read_pointer(checkpoint_dir.join("current.json"));
+        checkpoint_dir.join(pointer["active_root"]["path"].as_str().unwrap())
+    };
+    let corpus = restore_into_empty(&generation_1_path, "all-levels-restore", 2);
+
+    // The restore receipt must be in the store before the corpus flush, and
+    // the seeded payload must ride the receipt the next publication exports.
+    let receipt_id = extend_single_receipt(corpus.path(), &receipt_level_payload());
+    create_issue(
+        corpus.path(),
+        "all-levels probe 1 — dirties the restored store",
+    );
+    let generation_2 = flush_and_read_generation(corpus.path());
+
+    assert_record_levels(
+        &generation_2,
+        &issue_a,
+        &issue_b,
+        &attempt_id,
+        "generation 2",
+    );
+    assert_receipt_level(&generation_2, &receipt_id, "generation 2");
+
+    // The pointer level: a newer producer's key left in the published
+    // pointer, which the next explicit flush must re-project.
+    seed_pointer_extension(corpus.path());
+    create_issue(
+        corpus.path(),
+        "all-levels probe 2 — forces the pointer republish",
+    );
+    let generation_3 = flush_and_read_generation(corpus.path());
+
+    assert_record_levels(
+        &generation_3,
+        &issue_a,
+        &issue_b,
+        &attempt_id,
+        "generation 3",
+    );
+    assert_receipt_level(&generation_3, &receipt_id, "generation 3");
+    assert_pointer_level(corpus.path(), "generation 3");
+    assert_extensions_physically_published(
+        corpus.path(),
+        &all_level_extension_keys(true, true),
+        "generation 3",
+    );
 }

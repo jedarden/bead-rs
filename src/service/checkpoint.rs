@@ -76,18 +76,123 @@ use crate::profile::ProfileLossReport;
 use crate::service::git::{self, GitReachability};
 use crate::service::git_stage;
 use crate::service::resource_locks::{
-    acquire_issue_locks, declare_resource_keys, get_resource_keys, resource_keys_from_value,
+    acquire_issue_locks, declare_resource_keys, resource_keys_from_value,
 };
 use crate::store::SqliteStore;
 use anyhow::{anyhow, bail, Result};
 use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Opaque additive fields a newer writer attached to a checkpoint record.
+///
+/// AGENTS.md requires unknown JSON fields to survive import/export round
+/// trips. Every checkpoint-carried record that is not an issue (issues keep
+/// their own `issue_extensions` store) captures the keys it does not know in
+/// one of these maps through `#[serde(flatten)]`, persists them in a
+/// nullable `extensions_json` column, and re-projects them verbatim on
+/// export. Like the redaction extension maps this generalizes, extensions
+/// carry no native semantics, are excluded from every canonical identity and
+/// content hash the writer computes, and are bounded so a hostile checkpoint
+/// cannot balloon the store. The map is ordered so two publications of the
+/// same store stay byte-identical.
+pub type RecordExtensions = BTreeMap<String, serde_json::Value>;
+
+/// Longest serialized form of one record's additive fields.
+const MAX_RECORD_EXTENSION_BYTES: usize = 4 * 1024 * 1024;
+
+/// Reject additive-field maps this reader refuses to preserve: oversized, or
+/// holding a key that collides with a field the record projects natively.
+///
+/// Collisions cannot arise from deserialization (flatten only receives the
+/// keys no named field claimed), but import paths that build records by hand
+/// out of a raw JSON object — dependency edges, reference entries — can hand
+/// one together, and silently dropping a collided key would be exactly the
+/// loss this module exists to prevent.
+pub(crate) fn validate_record_extensions(
+    extensions: &RecordExtensions,
+    known_keys: &[&str],
+    label: &str,
+) -> Result<()> {
+    for key in known_keys {
+        if extensions.contains_key(*key) {
+            bail!(
+                "{}: extension field {:?} collides with a known record field",
+                label,
+                key
+            );
+        }
+    }
+    let encoded = serde_json::to_vec(extensions)
+        .map_err(|error| anyhow!("{} extensions cannot be encoded: {}", label, error))?;
+    if encoded.len() > MAX_RECORD_EXTENSION_BYTES {
+        bail!(
+            "{} extensions exceed the {} byte preservation budget",
+            label,
+            MAX_RECORD_EXTENSION_BYTES
+        );
+    }
+    Ok(())
+}
+
+/// Encode an extension map for its `extensions_json` column. `NULL` — not an
+/// empty JSON object — means "no unknown fields", so rows written before the
+/// column existed read back exactly as a pre-extensions writer landed them.
+pub(crate) fn encode_record_extensions(extensions: &RecordExtensions) -> Option<String> {
+    if extensions.is_empty() {
+        return None;
+    }
+    Some(serde_json::to_string(extensions).expect("extension map is valid JSON"))
+}
+
+/// Decode an `extensions_json` column value, tolerating `NULL` and treating a
+/// non-object payload as an integrity error rather than dropping it.
+pub(crate) fn decode_record_extensions(
+    raw: Option<String>,
+    label: &str,
+) -> Result<RecordExtensions> {
+    let Some(raw) = raw else {
+        return Ok(RecordExtensions::new());
+    };
+    let value: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|error| anyhow!("{} has undecodable extensions_json: {}", label, error))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| anyhow!("{} extensions_json is not a JSON object", label))?;
+    Ok(object.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+}
+
+/// Parse one entry of a projected `dependencies` array: the v1 envelope's
+/// `blocker` (required) and `kind` (defaulted), plus every key this reader
+/// does not know preserved opaquely for re-projection.
+fn parse_dependency_entry(
+    dep_obj: &serde_json::Map<String, serde_json::Value>,
+    label: &str,
+) -> Result<(String, String, RecordExtensions)> {
+    let Some(blocker) = dep_obj.get("blocker").and_then(|v| v.as_str()) else {
+        bail!("{}: dependency missing blocker", label);
+    };
+    let blocker = blocker.to_string();
+    let kind = dep_obj
+        .get("kind")
+        .and_then(|v| v.as_str())
+        .unwrap_or("blocks")
+        .to_string();
+    let mut extensions = RecordExtensions::new();
+    for (key, value) in dep_obj {
+        if key == "blocker" || key == "kind" {
+            continue;
+        }
+        extensions.insert(key.clone(), value.clone());
+    }
+    validate_record_extensions(&extensions, &["blocker", "kind"], label)?;
+    Ok((blocker, kind, extensions))
+}
 
 /// Checkpoint mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -601,7 +706,7 @@ fn serialize_corpus(
         let issue_dependencies: Vec<_> = graph_data
             .dependencies
             .iter()
-            .filter(|(blocked, _, _)| blocked == &issue.id)
+            .filter(|dep| dep.blocked == issue.id)
             .collect();
         let issue_labels: Vec<_> = graph_data
             .labels
@@ -891,6 +996,50 @@ pub struct EventRecord {
     pub time: String,
     #[serde(default)]
     pub detail: serde_json::Value,
+    /// Additive fields written by a newer schema version, preserved opaquely.
+    #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extensions: RecordExtensions,
+}
+
+/// One dependency edge as carried by a checkpoint record.
+///
+/// `(blocked, blocker, kind)` is the identity the store keys edges on; the
+/// extension map holds the additive entry fields a newer producer attached
+/// to the projected `dependencies` array entry, which the v1 projection's
+/// `{blocker, kind}` envelope has no columns for.
+///
+/// Ordering is identity-major: `Ord` compares `(blocked, blocker, kind)` and
+/// never the extension map, so canonical corpus order is a property of edge
+/// identity — which the graph's uniqueness constraint makes unique — never of
+/// what a newer producer attached to it. JSON values have no total order, and
+/// inventing one for tie-breaking that cannot arise would only make two
+/// equal-identity edges compare differently across writers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SerializedDependency {
+    /// The issue whose `dependencies` array projects this edge.
+    pub blocked: String,
+    /// The issue the edge points at.
+    pub blocker: String,
+    /// Relationship kind (`blocks`, `relates_to`, ...).
+    pub kind: String,
+    /// Additive entry fields a newer producer attached, preserved opaquely.
+    pub extensions: RecordExtensions,
+}
+
+impl Ord for SerializedDependency {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (&self.blocked, &self.blocker, &self.kind).cmp(&(
+            &other.blocked,
+            &other.blocker,
+            &other.kind,
+        ))
+    }
+}
+
+impl PartialOrd for SerializedDependency {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 /// Dependency and label graph data for checkpoint serialization
@@ -899,9 +1048,9 @@ pub struct EventRecord {
 /// organized for efficient lookup during checkpoint serialization.
 #[derive(Debug, Clone)]
 pub struct IssueGraphData {
-    /// All dependency edges as (blocked_id, blocker_id, kind) tuples
+    /// All dependency edges
     /// Sorted by blocker_id, kind, then blocked_id for canonical ordering
-    pub dependencies: Vec<(String, String, String)>,
+    pub dependencies: Vec<SerializedDependency>,
     /// All label assignments as (issue_id, label) tuples
     /// Sorted by issue_id, then label for canonical ordering
     pub labels: Vec<(String, String)>,
@@ -923,6 +1072,12 @@ pub struct ProvenanceReceipt {
     pub result: String,
     pub summary_event_identity: Option<String>,
     pub receipt_sha256: String,
+    /// Additive fields written by a newer schema version, preserved opaquely.
+    /// Deliberately outside `receipt_sha256`, whose canonical recipe covers
+    /// the v1 fields only, so a receipt augmented by a newer writer still
+    /// verifies against the hash its original producer published.
+    #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extensions: RecordExtensions,
 }
 
 /// Fork receipt for R028 fork operations (bead sync fork)
@@ -1004,6 +1159,9 @@ pub struct AttemptOutcomeRecord {
     /// Harness version for telemetry
     #[serde(skip_serializing_if = "Option::is_none")]
     pub harness_version: Option<String>,
+    /// Additive fields written by a newer schema version, preserved opaquely.
+    #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extensions: RecordExtensions,
 }
 
 /// Counts recorded in provenance receipts
@@ -1156,8 +1314,8 @@ pub struct ReceiptPreview {
 #[allow(dead_code)]
 pub struct ImportStaging {
     pub issues: Vec<Issue>,
-    pub dependencies: Vec<(String, String, String)>, // (blocked, blocker, kind)
-    pub labels: Vec<(String, String)>,               // (issue_id, label)
+    pub dependencies: Vec<SerializedDependency>,
+    pub labels: Vec<(String, String)>, // (issue_id, label)
     pub input_hash: String,
     pub issue_count: usize,
     pub diagnostics: Option<ImportDiagnostics>,
@@ -1171,8 +1329,8 @@ const MAX_DIAGNOSTIC_FAILURES: usize = 100;
 #[allow(dead_code)]
 pub struct ForensicStaging {
     pub issues: Vec<Issue>,
-    pub dependencies: Vec<(String, String, String)>, // (blocked, blocker, kind)
-    pub labels: Vec<(String, String)>,               // (issue_id, label)
+    pub dependencies: Vec<SerializedDependency>,
+    pub labels: Vec<(String, String)>, // (issue_id, label)
     pub events: Vec<SerializedEvent>,
     pub receipts: Vec<SerializedReceipt>,
     pub attempt_outcomes: Vec<AttemptOutcomeRecord>,
@@ -1186,6 +1344,11 @@ pub struct ForensicStaging {
     pub receipt_count: usize,
     pub attempt_outcome_count: usize,
     pub redaction_record_count: usize,
+    /// Unknown top-level fields of the generation pointer this staging read,
+    /// carried into checkpoint_state on restore so the next publication
+    /// re-projects them. Empty for a bare interchange file, which names no
+    /// pointer.
+    pub pointer_extensions: RecordExtensions,
 }
 
 /// Serialized event for forensic import
@@ -1207,6 +1370,9 @@ pub struct SerializedEvent {
     pub time: String,
     #[serde(rename = "detail")]
     pub detail: serde_json::Value,
+    /// Additive fields written by a newer schema version, preserved opaquely.
+    #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extensions: RecordExtensions,
 }
 
 /// Serialized provenance receipt for forensic import
@@ -1236,6 +1402,11 @@ pub struct SerializedReceipt {
     pub summary_event_identity: Option<String>,
     #[serde(rename = "receipt_sha256")]
     pub receipt_sha256: String,
+    /// Additive fields written by a newer schema version, preserved opaquely.
+    /// Outside `receipt_sha256`'s canonical recipe for the same reason as on
+    /// the native form.
+    #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extensions: RecordExtensions,
 }
 
 /// Full import result with receipt support
@@ -1725,12 +1896,13 @@ fn get_import_result(
     let receipt: Option<SerializedReceipt> = conn
         .query_row(
             "SELECT receipt_id, kind, source_store_uuid, target_store_uuid,
-                    source_root_sha256, actor, created_at, result
+                    source_root_sha256, actor, created_at, result, extensions_json
              FROM provenance_receipts
              WHERE target_store_uuid = ?1
              ORDER BY created_at DESC LIMIT 1",
             [store_uuid],
             |row| {
+                let extensions_json: Option<String> = row.get(8)?;
                 Ok(SerializedReceipt {
                     schema_ref: "urn:bead-rs:schema:provenance-receipt:native-v1".to_string(),
                     receipt_id: row.get(0)?,
@@ -1748,6 +1920,12 @@ fn get_import_result(
                     result: row.get(7)?,
                     summary_event_identity: None,
                     receipt_sha256: String::new(),
+                    // Best-effort projection for the import summary: a
+                    // receipt whose stored additive fields cannot decode
+                    // still reports, with its extensions empty. The export
+                    // path is where decode failures are loud.
+                    extensions: decode_record_extensions(extensions_json, "import receipt")
+                        .unwrap_or_default(),
                 })
             },
         )
@@ -2631,9 +2809,18 @@ fn stage_pointer_checkpoint(pointer_path: &Path) -> Result<ForensicStaging> {
                 staging.snapshot_sequence = seq;
             }
 
+            // Whatever this pointer carries beside its known keys rides into
+            // the staging, so the restore that consumes it can re-project the
+            // fields on its next publication.
+            staging.pointer_extensions = pointer_extensions_of(&pointer);
+
             Ok(staging)
         }
-        "sharded" => stage_sharded_checkpoint(pointer_path),
+        "sharded" => {
+            let mut staging = stage_sharded_checkpoint(pointer_path)?;
+            staging.pointer_extensions = pointer_extensions_of(&pointer);
+            Ok(staging)
+        }
         other => bail!("Unknown checkpoint mode in pointer: {}", other),
     }
 }
@@ -2911,21 +3098,15 @@ fn stage_monolithic_checkpoint(input_path: &Path) -> Result<ForensicStaging> {
                                 anyhow!("Line {}: dependency must be an object", line_num)
                             })?;
 
-                            let blocked = issue.id.clone();
-                            let blocker = dep_obj
-                                .get("blocker")
-                                .and_then(|v| v.as_str())
-                                .ok_or_else(|| {
-                                    anyhow!("Line {}: dependency missing blocker", line_num)
-                                })?
-                                .to_string();
-                            let kind = dep_obj
-                                .get("kind")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("blocks")
-                                .to_string();
+                            let (blocker, kind, extensions) =
+                                parse_dependency_entry(dep_obj, &format!("Line {}", line_num))?;
 
-                            dependencies.push((blocked, blocker, kind));
+                            dependencies.push(SerializedDependency {
+                                blocked: issue.id.clone(),
+                                blocker,
+                                kind,
+                                extensions,
+                            });
                         }
                     }
 
@@ -3027,19 +3208,15 @@ fn stage_monolithic_checkpoint(input_path: &Path) -> Result<ForensicStaging> {
                         anyhow!("Line {}: dependency must be an object", line_num)
                     })?;
 
-                    let blocked = issue.id.clone();
-                    let blocker = dep_obj
-                        .get("blocker")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| anyhow!("Line {}: dependency missing blocker", line_num))?
-                        .to_string();
-                    let kind = dep_obj
-                        .get("kind")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("blocks")
-                        .to_string();
+                    let (blocker, kind, extensions) =
+                        parse_dependency_entry(dep_obj, &format!("Line {}", line_num))?;
 
-                    dependencies.push((blocked, blocker, kind));
+                    dependencies.push(SerializedDependency {
+                        blocked: issue.id.clone(),
+                        blocker,
+                        kind,
+                        extensions,
+                    });
                 }
             }
 
@@ -3105,6 +3282,9 @@ fn stage_monolithic_checkpoint(input_path: &Path) -> Result<ForensicStaging> {
         attempt_outcome_count: seen_attempt_ids.len(),
         redaction: redaction.clone(),
         redaction_record_count: redaction.len(),
+        // A bare monolithic file names no pointer; a pointer-staged monolith
+        // gets its pointer extensions assigned by stage_pointer_checkpoint.
+        pointer_extensions: RecordExtensions::new(),
     })
 }
 
@@ -3323,6 +3503,9 @@ fn stage_sharded_checkpoint(pointer_path: &Path) -> Result<ForensicStaging> {
         event_count: seen_event_identities.len(),
         receipt_count: seen_receipt_ids.len(),
         attempt_outcome_count: seen_attempt_ids.len(),
+        // Assigned from the parsed pointer by stage_pointer_checkpoint, which
+        // already holds the pointer value this function re-read from disk.
+        pointer_extensions: RecordExtensions::new(),
     })
 }
 
@@ -3429,25 +3612,17 @@ fn process_shard_file(
                             )
                         })?;
 
-                        let blocked = issue.id.clone();
-                        let blocker = dep_obj
-                            .get("blocker")
-                            .and_then(|v| v.as_str())
-                            .ok_or_else(|| {
-                                anyhow!(
-                                    "{} line {}: dependency missing blocker",
-                                    shard_path.display(),
-                                    line_num
-                                )
-                            })?
-                            .to_string();
-                        let kind = dep_obj
-                            .get("kind")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("blocks")
-                            .to_string();
+                        let (blocker, kind, extensions) = parse_dependency_entry(
+                            dep_obj,
+                            &format!("{} line {}", shard_path.display(), line_num),
+                        )?;
 
-                        shard_data.dependencies.push((blocked, blocker, kind));
+                        shard_data.dependencies.push(SerializedDependency {
+                            blocked: issue.id.clone(),
+                            blocker,
+                            kind,
+                            extensions,
+                        });
                     }
                 }
 
@@ -3582,7 +3757,7 @@ fn process_shard_file(
 #[derive(Debug, Default)]
 struct ShardData {
     issues: Vec<Issue>,
-    dependencies: Vec<(String, String, String)>,
+    dependencies: Vec<SerializedDependency>,
     labels: Vec<(String, String)>,
     events: Vec<SerializedEvent>,
     receipts: Vec<SerializedReceipt>,
@@ -3948,14 +4123,12 @@ fn validate_canonical_ordering(staging: &ForensicStaging) -> Result<()> {
 }
 
 /// Validate dependencies
-fn validate_dependencies(
-    dependencies: &[(String, String, String)],
-    issues: &[Issue],
-) -> Result<()> {
+fn validate_dependencies(dependencies: &[SerializedDependency], issues: &[Issue]) -> Result<()> {
     let issue_ids: HashSet<&String> = issues.iter().map(|i| &i.id).collect();
 
     // Check all referenced issues exist and no self-edges
-    for (blocked, blocker, _kind) in dependencies {
+    for edge in dependencies {
+        let (blocked, blocker) = (&edge.blocked, &edge.blocker);
         if !issue_ids.contains(blocked) {
             bail!(
                 "Dependency references non-existent blocked issue: {}",
@@ -3979,7 +4152,8 @@ fn validate_dependencies(
 
     // Check for cycles using DFS
     let mut adj: HashMap<String, Vec<String>> = HashMap::new();
-    for (blocked, blocker, kind) in dependencies {
+    for edge in dependencies {
+        let (blocked, blocker, kind) = (&edge.blocked, &edge.blocker, &edge.kind);
         if kind == "blocks" {
             adj.entry(blocker.clone())
                 .or_default()
@@ -4717,6 +4891,11 @@ fn execute_restore_into_empty(
     // "Sequence mismatch: pointer=N, database=0" on every recovered clone.
     // This must upsert: a freshly initialized workspace has no checkpoint_state
     // row at all, so a bare UPDATE silently affects zero rows.
+    // The restored pointer's unknown top-level fields ride into
+    // checkpoint_state first, so the next publication in this workspace
+    // re-projects them even though a restore-into-empty target's checkpoint
+    // directory started empty.
+    store_pointer_extensions(&tx, &staging.pointer_extensions)?;
     tx.execute(
         "INSERT INTO checkpoint_state (id, covered_event_sequence, store_uuid, updated_at)
          VALUES (1, ?1, ?2, ?3)
@@ -4932,11 +5111,23 @@ fn import_issues(tx: &Transaction, staging: &ForensicStaging) -> Result<usize> {
 
 /// Import dependencies into database
 fn import_dependencies(tx: &Transaction, staging: &ForensicStaging) -> Result<()> {
-    for (blocked, blocker, kind) in &staging.dependencies {
+    for edge in &staging.dependencies {
+        // The edge identity is immutable, but its extension map is not part
+        // of that identity: a staged edge carrying additive fields a live
+        // row (or an earlier import) lacks refreshes them, and a staged edge
+        // with none never erases what is already stored.
         tx.execute(
-            "INSERT OR IGNORE INTO dependencies (blocked_issue_id, blocker_issue_id, kind)
-             VALUES (?1, ?2, ?3)",
-            params![blocked, blocker, kind],
+            "INSERT INTO dependencies (blocked_issue_id, blocker_issue_id, kind, extensions_json)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (blocked_issue_id, blocker_issue_id, kind) DO UPDATE
+             SET extensions_json = excluded.extensions_json
+             WHERE excluded.extensions_json IS NOT NULL",
+            params![
+                edge.blocked,
+                edge.blocker,
+                edge.kind,
+                encode_record_extensions(&edge.extensions)
+            ],
         )?;
     }
     Ok(())
@@ -4965,13 +5156,31 @@ fn import_events(tx: &Transaction, staging: &ForensicStaging) -> Result<()> {
             |row| row.get(0),
         )?;
         if already_imported {
+            // A stale replay of an event the destination already holds never
+            // rewrites recorded history: identity fields stay as first
+            // imported. It may only refresh the additive fields a newer
+            // producer attached, which carry no native semantics and are
+            // outside the event identity, and only ever widen — a replay
+            // carrying no extension map never erases one already stored.
+            let encoded = encode_record_extensions(&event.extensions);
+            if encoded.is_some() {
+                tx.execute(
+                    "UPDATE events SET extensions_json = ?1
+                     WHERE origin_store_uuid = ?2 AND origin_event_sequence = ?3",
+                    params![
+                        encoded,
+                        &event.origin_store_uuid,
+                        event.origin_event_sequence
+                    ],
+                )?;
+            }
             continue;
         }
         tx.execute(
             "INSERT INTO events (
                 issue_id, kind, actor, time, detail,
-                origin_store_uuid, origin_event_sequence
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                origin_store_uuid, origin_event_sequence, extensions_json
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 &event.issue_id,
                 &event.kind,
@@ -4980,6 +5189,7 @@ fn import_events(tx: &Transaction, staging: &ForensicStaging) -> Result<()> {
                 &event.detail.to_string(),
                 &event.origin_store_uuid,
                 &event.origin_event_sequence,
+                encode_record_extensions(&event.extensions),
             ],
         )?;
     }
@@ -5041,6 +5251,16 @@ fn import_receipts(tx: &Transaction, staging: &ForensicStaging) -> Result<()> {
                     receipt.receipt_id
                 );
             }
+            // Byte-equivalent replay: identity fields match, so only the
+            // additive fields may differ. Widen to whatever the replay
+            // carries; never erase what an earlier import already stored.
+            let encoded = encode_record_extensions(&receipt.extensions);
+            if encoded.is_some() {
+                tx.execute(
+                    "UPDATE provenance_receipts SET extensions_json = ?1 WHERE receipt_id = ?2",
+                    params![encoded, &receipt.receipt_id],
+                )?;
+            }
             continue;
         }
 
@@ -5048,8 +5268,8 @@ fn import_receipts(tx: &Transaction, staging: &ForensicStaging) -> Result<()> {
             "INSERT INTO provenance_receipts (
                 receipt_id, schema_ref, kind, source_store_uuid, target_store_uuid,
                 source_root_sha256, actor, created_at, counts_json, result,
-                summary_event_identity, receipt_sha256
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                summary_event_identity, receipt_sha256, extensions_json
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 &receipt.receipt_id,
                 &receipt.schema_ref,
@@ -5063,6 +5283,7 @@ fn import_receipts(tx: &Transaction, staging: &ForensicStaging) -> Result<()> {
                 &receipt.result,
                 &receipt.summary_event_identity,
                 &receipt.receipt_sha256,
+                encode_record_extensions(&receipt.extensions),
             ],
         )?;
     }
@@ -5139,6 +5360,16 @@ fn import_attempt_outcomes(tx: &Transaction, staging: &ForensicStaging) -> Resul
                     outcome.receipt_id
                 );
             }
+            // Byte-equivalent replay: identity fields match, so only the
+            // additive fields may differ. Widen to whatever the replay
+            // carries; never erase what an earlier import already stored.
+            let encoded = encode_record_extensions(&outcome.extensions);
+            if encoded.is_some() {
+                tx.execute(
+                    "UPDATE attempt_outcomes SET extensions_json = ?1 WHERE receipt_id = ?2",
+                    params![encoded, &outcome.receipt_id],
+                )?;
+            }
             continue;
         }
 
@@ -5150,8 +5381,8 @@ fn import_attempt_outcomes(tx: &Transaction, staging: &ForensicStaging) -> Resul
                 receipt_id, attempt_id, issue_id, outcome, action, reason,
                 canonical_request_hash, prior_attempt_tier, resulting_attempt_tier,
                 resulting_issue_revision, actor, created_at, evidence_refs_json,
-                model, harness, harness_version, resulting_state
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                model, harness, harness_version, resulting_state, extensions_json
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 &outcome.receipt_id,
                 &outcome.attempt_id,
@@ -5170,6 +5401,7 @@ fn import_attempt_outcomes(tx: &Transaction, staging: &ForensicStaging) -> Resul
                 &outcome.harness,
                 &outcome.harness_version,
                 &outcome.resulting_state,
+                encode_record_extensions(&outcome.extensions),
             ],
         )?;
     }
@@ -5551,6 +5783,9 @@ fn create_restore_receipt(
         result: "success".to_string(),
         summary_event_identity: summary_event_sequence.map(|sequence| format!("local-{sequence}")),
         receipt_sha256: receipt_hash,
+        // A receipt this writer synthesizes carries no additive fields; the
+        // corpus receipts staged from the input keep their own.
+        extensions: RecordExtensions::new(),
     };
 
     // Store receipt in database
@@ -5804,11 +6039,32 @@ fn import_issue_data(tx: &Transaction, issue: &Issue) -> Result<()> {
                 namespace
             )
         })?;
+        // Every envelope key this reader does not project natively is an
+        // additive field from a newer producer: preserved opaquely so the
+        // next export re-projects it instead of silently dropping it.
+        let mut extensions = RecordExtensions::new();
+        for (key, entry_value) in envelope {
+            if key == "schema_ref" || key == "value" {
+                continue;
+            }
+            extensions.insert(key.clone(), entry_value.clone());
+        }
+        validate_record_extensions(
+            &extensions,
+            &["schema_ref", "value"],
+            &format!("issue '{}' data namespace '{}'", issue.id, namespace),
+        )?;
         let value = serde_json::to_string(value)?;
         tx.execute(
-            "INSERT INTO issue_data (issue_id, namespace, schema_ref, value)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![&issue.id, namespace, schema_ref, value],
+            "INSERT INTO issue_data (issue_id, namespace, schema_ref, value, extensions_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                &issue.id,
+                namespace,
+                schema_ref,
+                value,
+                encode_record_extensions(&extensions)
+            ],
         )?;
     }
 
@@ -5828,6 +6084,41 @@ fn import_resource_keys(tx: &Transaction, issue: &Issue) -> Result<()> {
     };
     let keys = resource_keys_from_value(value)?;
     declare_resource_keys(tx, &issue.id, &keys)?;
+    // Object-form entries carry additive fields beside their identity. The
+    // declaration above stored the normalized identities; this re-attaches
+    // whatever a newer producer wrapped around them, matched on the
+    // normalized identity, so the next export re-projects it.
+    if let Some(entries) = value.as_array() {
+        for entry in entries {
+            let Some(object) = entry.as_object() else {
+                continue;
+            };
+            let Some(identity) = object.get("resource_key").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let mut extensions = RecordExtensions::new();
+            for (key, entry_value) in object {
+                if key == "resource_key" {
+                    continue;
+                }
+                extensions.insert(key.clone(), entry_value.clone());
+            }
+            validate_record_extensions(
+                &extensions,
+                &["resource_key"],
+                &format!("issue '{}' resource key", issue.id),
+            )?;
+            let encoded = encode_record_extensions(&extensions);
+            if encoded.is_some() {
+                let normalized = crate::service::resource_locks::normalize_resource_key(identity)?;
+                tx.execute(
+                    "UPDATE issue_resource_keys SET extensions_json = ?1
+                     WHERE issue_id = ?2 AND resource_key = ?3",
+                    params![encoded, &issue.id, normalized],
+                )?;
+            }
+        }
+    }
     if issue.base_status == crate::model::BaseStatus::InProgress && issue.assignee.is_some() {
         acquire_issue_locks(tx, &issue.id, None)?;
     }
@@ -5873,14 +6164,30 @@ fn import_external_references(tx: &Transaction, issue: &Issue) -> Result<()> {
             .get("unique_ref")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
+        // Every reference key this reader does not project natively is an
+        // additive field from a newer producer, carried opaquely across
+        // generations like the issue-level extension store above it.
+        let mut extensions = RecordExtensions::new();
+        for (key, entry_value) in reference {
+            if key == "namespace" || key == "key" || key == "value" || key == "unique_ref" {
+                continue;
+            }
+            extensions.insert(key.clone(), entry_value.clone());
+        }
+        validate_record_extensions(
+            &extensions,
+            &["namespace", "key", "value", "unique_ref"],
+            &format!("issue '{}' external reference", issue.id),
+        )?;
         tx.execute(
-            "INSERT INTO external_references (issue_id, namespace, key, value)
-             VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO external_references (issue_id, namespace, key, value, extensions_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
                 &issue.id,
                 member("namespace")?,
                 member("key")?,
-                member("value")?
+                member("value")?,
+                encode_record_extensions(&extensions)
             ],
         )?;
         if is_unique {
@@ -6034,6 +6341,9 @@ fn create_merge_receipt(
         result: "success".to_string(),
         summary_event_identity: Some(format!("local-{}", activation_sequence)),
         receipt_sha256: receipt_hash,
+        // A receipt this writer synthesizes carries no additive fields; the
+        // corpus receipts staged from the input keep their own.
+        extensions: RecordExtensions::new(),
     };
 
     // Store receipt in database
@@ -6144,17 +6454,15 @@ fn stage_import(input_path: &Path, _profile: &str) -> Result<ImportStaging> {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| anyhow!("Line {}: missing blocked issue ID", line_num))?;
 
-                let blocker = dep_obj
-                    .get("blocker")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| anyhow!("Line {}: dependency missing 'blocker'", line_num))?;
+                let (blocker, kind, extensions) =
+                    parse_dependency_entry(dep_obj, &format!("Line {}", line_num))?;
 
-                let kind = dep_obj
-                    .get("kind")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("blocks");
-
-                dependencies.push((blocked.to_string(), blocker.to_string(), kind.to_string()));
+                dependencies.push(SerializedDependency {
+                    blocked: blocked.to_string(),
+                    blocker,
+                    kind,
+                    extensions,
+                });
             }
         }
 
@@ -6400,7 +6708,20 @@ fn stage_import_with_diagnostics(input_path: &Path, _profile: &str) -> ImportSta
                     .and_then(|v| v.as_str())
                     .unwrap_or("blocks");
 
-                dependencies.push((id.to_string(), blocker.to_string(), kind.to_string()));
+                let mut extensions = RecordExtensions::new();
+                for (key, value) in dep_obj {
+                    if key == "blocker" || key == "kind" {
+                        continue;
+                    }
+                    extensions.insert(key.clone(), value.clone());
+                }
+
+                dependencies.push(SerializedDependency {
+                    blocked: id.to_string(),
+                    blocker: blocker.to_string(),
+                    kind: kind.to_string(),
+                    extensions,
+                });
             }
         }
 
@@ -6451,7 +6772,8 @@ fn validate_import(staging: &mut ImportStaging, _dry_run: bool) -> Result<()> {
         });
 
     // Validate dependencies
-    for (idx, (blocked, blocker, _kind)) in staging.dependencies.iter().enumerate() {
+    for (idx, edge) in staging.dependencies.iter().enumerate() {
+        let (blocked, blocker) = (&edge.blocked, &edge.blocker);
         // Both endpoints must exist
         if !issue_ids.contains(blocked)
             && diagnostics.validation_failures.len() < MAX_DIAGNOSTIC_FAILURES
@@ -6552,7 +6874,8 @@ fn has_any_cycle(staging: &ImportStaging) -> Result<bool> {
     let mut adj: HashMap<String, Vec<String>> = HashMap::new();
     let mut all_nodes: HashSet<String> = HashSet::new();
 
-    for (blocked, blocker, kind) in &staging.dependencies {
+    for edge in &staging.dependencies {
+        let (blocked, blocker, kind) = (&edge.blocked, &edge.blocker, &edge.kind);
         if kind == "blocks" {
             adj.entry(blocker.clone())
                 .or_default()
@@ -6608,11 +6931,11 @@ fn has_cycle(staging: &ImportStaging, start: &str, from: &str) -> Result<bool> {
 
     // Build adjacency list for blocks dependencies
     let mut adj: HashMap<String, Vec<String>> = HashMap::new();
-    for (blocked, blocker, kind) in &staging.dependencies {
-        if kind == "blocks" {
-            adj.entry(blocker.clone())
+    for edge in &staging.dependencies {
+        if edge.kind == "blocks" {
+            adj.entry(edge.blocker.clone())
                 .or_default()
-                .push(blocked.clone());
+                .push(edge.blocked.clone());
         }
     }
 
@@ -6741,11 +7064,16 @@ fn activate_import(store: &mut SqliteStore, staging: &ImportStaging) -> Result<(
     }
 
     // Insert dependencies
-    for (blocked, blocker, kind) in &staging.dependencies {
+    for edge in &staging.dependencies {
         tx.execute(
-            "INSERT INTO dependencies (blocked_issue_id, blocker_issue_id, kind)
-             VALUES (?1, ?2, ?3)",
-            params![blocked, blocker, kind],
+            "INSERT INTO dependencies (blocked_issue_id, blocker_issue_id, kind, extensions_json)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                edge.blocked,
+                edge.blocker,
+                edge.kind,
+                encode_record_extensions(&edge.extensions)
+            ],
         )?;
     }
 
@@ -7320,6 +7648,20 @@ fn publish_forensic_checkpoint_inner(
     let conn = store.conn();
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
 
+    // Carry additive top-level pointer fields into this generation: the union
+    // of what checkpoint_state holds (where a restore staged the restored
+    // pointer's unknown fields, so a restore-into-empty target whose
+    // checkpoint directory started empty still republishes them) and what the
+    // outgoing published pointer carries. Read before current.json is
+    // replaced below; a fresh workspace contributes nothing on either side.
+    let carried_pointer_extensions = {
+        let mut extensions = read_stored_pointer_extensions(&tx)?;
+        for (key, value) in read_published_pointer_extensions(&checkpoint_dir)? {
+            extensions.insert(key, value);
+        }
+        extensions
+    };
+
     // Preserve old pointer as previous.json using atomic rename
     let current_pointer_path = checkpoint_dir.join("current.json");
     let previous_pointer_path = checkpoint_dir.join("previous.json");
@@ -7439,6 +7781,7 @@ fn publish_forensic_checkpoint_inner(
                 epoch_id: request.epoch_id.clone(),
                 superseded_generations: superseded_generations.clone(),
             }),
+        extensions: carried_pointer_extensions.clone(),
     };
     write_current_pointer(&current_pointer_path, &pointer_config, scratch_dir)?;
     changed_paths.push("current.json".to_string());
@@ -7474,6 +7817,7 @@ fn publish_forensic_checkpoint_inner(
         covered_sequence: current_sequence,
         changed_paths: changed_paths.clone(),
         store_uuid: store_uuid.clone(),
+        pointer_extensions_json: encode_record_extensions(&carried_pointer_extensions),
     };
     update_forensic_checkpoint_state(&tx, &state_config)?;
 
@@ -8581,8 +8925,8 @@ fn publish_sharded_checkpoint(
 /// specified in plan.md Section 6.1.
 fn build_enriched_issue_object<'a>(
     issue: &Issue,
-    dependencies: Vec<&'a (String, String, String)>, // (blocked, blocker, kind)
-    labels: Vec<&'a (String, String)>,               // (issue_id, label)
+    dependencies: Vec<&'a SerializedDependency>,
+    labels: Vec<&'a (String, String)>, // (issue_id, label)
 ) -> Result<serde_json::Value> {
     let issue_value = serde_json::to_value(issue)?;
     let mut issue_obj = issue_value
@@ -8590,11 +8934,22 @@ fn build_enriched_issue_object<'a>(
         .ok_or_else(|| anyhow!("Failed to convert issue to JSON object"))?
         .clone();
 
-    // Embed dependencies array if non-empty, already in canonical order
+    // Embed dependencies array if non-empty, already in canonical order.
+    // Each entry re-projects the v1 `{blocker, kind}` envelope plus whatever
+    // additive fields the edge carried in, so an unknown per-edge field
+    // survives every generation.
     if !dependencies.is_empty() {
         let deps_array: Vec<serde_json::Value> = dependencies
             .into_iter()
-            .map(|(_, blocker, kind)| serde_json::json!({"blocker": blocker, "kind": kind}))
+            .map(|edge| {
+                let mut entry = serde_json::Map::new();
+                entry.insert("blocker".to_string(), serde_json::json!(edge.blocker));
+                entry.insert("kind".to_string(), serde_json::json!(edge.kind));
+                for (key, value) in &edge.extensions {
+                    entry.insert(key.clone(), value.clone());
+                }
+                serde_json::Value::Object(entry)
+            })
             .collect();
         issue_obj.insert(
             "dependencies".to_string(),
@@ -8612,6 +8967,98 @@ fn build_enriched_issue_object<'a>(
     }
 
     Ok(serde_json::Value::Object(issue_obj))
+}
+
+/// Top-level pointer keys this writer projects natively.
+///
+/// Everything else a published `current.json` carries is an additive field
+/// from a newer producer and must survive every republish and restore.
+const POINTER_KNOWN_KEYS: &[&str] = &[
+    "schema_version",
+    "generation_id",
+    "mode",
+    "store_uuid",
+    "snapshot_sequence",
+    "active_root",
+    "added_paths",
+    "replaced_paths",
+    "deleted_paths",
+    "issue_count",
+    "event_count",
+    "receipt_count",
+    "attempt_outcome_count",
+    "redaction_record_count",
+    "total_record_count",
+    "created_at",
+    "redaction_epoch_id",
+    "previous_generation_reset",
+    "superseded_generations",
+];
+
+/// Extract a pointer's unknown top-level fields.
+fn pointer_extensions_of(pointer: &serde_json::Value) -> RecordExtensions {
+    let mut extensions = RecordExtensions::new();
+    if let Some(object) = pointer.as_object() {
+        for (key, value) in object {
+            if !POINTER_KNOWN_KEYS.contains(&key.as_str()) {
+                extensions.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    extensions
+}
+
+/// Read the unknown top-level fields of a checkpoint directory's generation
+/// pointer. A missing pointer — a fresh workspace — carries nothing.
+fn read_published_pointer_extensions(checkpoint_dir: &Path) -> Result<RecordExtensions> {
+    let pointer_path = checkpoint_dir.join("current.json");
+    let content = match std::fs::read_to_string(&pointer_path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(RecordExtensions::new());
+        }
+        Err(error) => return Err(anyhow!("cannot read {}: {}", pointer_path.display(), error)),
+    };
+    let pointer: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|error| anyhow!("cannot parse {}: {}", pointer_path.display(), error))?;
+    Ok(pointer_extensions_of(&pointer))
+}
+
+/// The pointer extensions currently recorded in checkpoint_state, empty when
+/// the row or the column is absent.
+fn read_stored_pointer_extensions(tx: &Transaction) -> Result<RecordExtensions> {
+    // The inner Option is the column: a store migrated from before the
+    // extension columns holds NULL there, which `.optional()` — which only
+    // covers the missing *row* — would otherwise surface as an
+    // InvalidColumnType error on every publication.
+    let row: Option<Option<String>> = tx
+        .query_row(
+            "SELECT pointer_extensions_json FROM checkpoint_state WHERE id = 1",
+            [],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?;
+    decode_record_extensions(row.flatten(), "checkpoint_state pointer extensions")
+}
+
+/// Union additively-carried pointer fields into checkpoint_state so the next
+/// publication in this workspace re-projects them even though a
+/// restore-into-empty target's checkpoint directory started empty.
+fn store_pointer_extensions(tx: &Transaction, staged: &RecordExtensions) -> Result<()> {
+    let mut extensions = read_stored_pointer_extensions(tx)?;
+    for (key, value) in staged {
+        extensions.insert(key.clone(), value.clone());
+    }
+    tx.execute(
+        "INSERT OR IGNORE INTO checkpoint_state (id, last_interchange_hash, covered_event_sequence, store_uuid, updated_at)
+         VALUES (1, '', 0, '', ?1)",
+        [&format_rfc3339(SystemTime::now())],
+    )?;
+    tx.execute(
+        "UPDATE checkpoint_state SET pointer_extensions_json = ?1 WHERE id = 1",
+        params![encode_record_extensions(&extensions)],
+    )?;
+    Ok(())
 }
 
 /// Write current.json pointer
@@ -8657,6 +9104,18 @@ fn write_current_pointer(
             "superseded_generations".to_string(),
             serde_json::to_value(&reset.superseded_generations)?,
         );
+    }
+
+    // Re-project additive top-level fields carried in from an earlier
+    // generation or a restored pointer, so a newer producer's keys survive
+    // this writer's republish untouched.
+    if !config.extensions.is_empty() {
+        let object = pointer
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("checkpoint pointer is not an object"))?;
+        for (key, value) in &config.extensions {
+            object.insert(key.clone(), value.clone());
+        }
     }
 
     let scratch_tag =
@@ -8715,7 +9174,8 @@ fn update_forensic_checkpoint_state(
              covered_event_sequence = ?5,
              changed_paths_json = ?6,
              store_uuid = ?7,
-             updated_at = ?8
+             updated_at = ?8,
+             pointer_extensions_json = ?9
          WHERE id = 1",
         params![
             &config.generation_id,
@@ -8725,7 +9185,8 @@ fn update_forensic_checkpoint_state(
             config.covered_sequence,
             changed_paths_json,
             &config.store_uuid,
-            updated_at
+            updated_at,
+            config.pointer_extensions_json
         ],
     )?;
 
@@ -8898,7 +9359,8 @@ pub(crate) fn read_all_events(conn: &rusqlite::Connection) -> Result<Vec<EventRe
 
     let mut stmt = conn.prepare(
         "SELECT sequence, issue_id, kind, actor, time, detail,
-                origin_store_uuid, origin_event_sequence, event_sha256, local_ingestion_sequence
+                origin_store_uuid, origin_event_sequence, event_sha256, local_ingestion_sequence,
+                extensions_json
          FROM events
          ORDER BY sequence ASC",
     )?;
@@ -8915,6 +9377,7 @@ pub(crate) fn read_all_events(conn: &rusqlite::Connection) -> Result<Vec<EventRe
             row.get::<_, Option<i64>>("origin_event_sequence")?,
             row.get::<_, Option<String>>("event_sha256")?,
             row.get::<_, Option<i64>>("local_ingestion_sequence")?,
+            row.get::<_, Option<String>>("extensions_json")?,
         ))
     })?;
 
@@ -8930,6 +9393,7 @@ pub(crate) fn read_all_events(conn: &rusqlite::Connection) -> Result<Vec<EventRe
             origin_event_sequence,
             _event_sha256,
             _local_ingestion_sequence,
+            extensions_json,
         ) = row?;
 
         // Preserve complete imported identities verbatim. Locally-created
@@ -8946,6 +9410,7 @@ pub(crate) fn read_all_events(conn: &rusqlite::Connection) -> Result<Vec<EventRe
             sequence,
         );
 
+        let event_extensions_label = format!("event {origin_store_uuid}/{origin_event_sequence}");
         let event = EventRecord {
             schema_ref: "urn:bead-rs:schema:event:native-v1".to_string(),
             origin_store_uuid,
@@ -8955,6 +9420,7 @@ pub(crate) fn read_all_events(conn: &rusqlite::Connection) -> Result<Vec<EventRe
             actor: actor.unwrap_or("system".to_string()),
             time,
             detail: serde_json::from_str(&detail).unwrap_or_default(),
+            extensions: decode_record_extensions(extensions_json, &event_extensions_label)?,
         };
 
         events.push(event);
@@ -9073,7 +9539,8 @@ fn read_all_provenance_receipts(tx: &Transaction) -> Result<Vec<ProvenanceReceip
 
     let mut stmt = tx.prepare(
         "SELECT receipt_id, schema_ref, kind, source_store_uuid, target_store_uuid,
-                source_root_sha256, actor, created_at, counts_json, result, summary_event_identity, receipt_sha256
+                source_root_sha256, actor, created_at, counts_json, result, summary_event_identity, receipt_sha256,
+                extensions_json
          FROM provenance_receipts"
     )?;
 
@@ -9091,6 +9558,7 @@ fn read_all_provenance_receipts(tx: &Transaction) -> Result<Vec<ProvenanceReceip
             row.get::<_, String>("result")?,
             row.get::<_, Option<String>>("summary_event_identity")?,
             row.get::<_, String>("receipt_sha256")?,
+            row.get::<_, Option<String>>("extensions_json")?,
         ))
     })?;
 
@@ -9108,10 +9576,12 @@ fn read_all_provenance_receipts(tx: &Transaction) -> Result<Vec<ProvenanceReceip
             result,
             summary_event_identity,
             receipt_sha256,
+            extensions_json,
         ) = row?;
 
         let counts: ReceiptCounts = serde_json::from_str(&counts_json)?;
 
+        let receipt_extensions_label = format!("receipt {receipt_id}");
         let receipt = ProvenanceReceipt {
             schema_ref,
             receipt_id,
@@ -9125,6 +9595,7 @@ fn read_all_provenance_receipts(tx: &Transaction) -> Result<Vec<ProvenanceReceip
             result,
             summary_event_identity,
             receipt_sha256,
+            extensions: decode_record_extensions(extensions_json, &receipt_extensions_label)?,
         };
 
         receipts.push(receipt);
@@ -9172,7 +9643,7 @@ fn read_all_attempt_outcomes(tx: &Transaction) -> Result<Vec<AttemptOutcomeRecor
         "SELECT receipt_id, attempt_id, issue_id, outcome, action, reason,
                 canonical_request_hash, prior_attempt_tier, resulting_attempt_tier,
                 resulting_issue_revision, actor, created_at, evidence_refs_json,
-                model, harness, harness_version, resulting_state
+                model, harness, harness_version, resulting_state, extensions_json
          FROM attempt_outcomes",
     )?;
 
@@ -9195,6 +9666,7 @@ fn read_all_attempt_outcomes(tx: &Transaction) -> Result<Vec<AttemptOutcomeRecor
             row.get::<_, Option<String>>("harness")?,
             row.get::<_, Option<String>>("harness_version")?,
             row.get::<_, String>("resulting_state")?,
+            row.get::<_, Option<String>>("extensions_json")?,
         ))
     })?;
 
@@ -9217,6 +9689,7 @@ fn read_all_attempt_outcomes(tx: &Transaction) -> Result<Vec<AttemptOutcomeRecor
             harness,
             harness_version,
             stored_resulting_state,
+            extensions_json,
         ) = row?;
 
         let evidence_refs: Vec<String> =
@@ -9239,6 +9712,7 @@ fn read_all_attempt_outcomes(tx: &Transaction) -> Result<Vec<AttemptOutcomeRecor
             stored_resulting_state
         };
 
+        let outcome_extensions_label = format!("attempt outcome {receipt_id}");
         let record = AttemptOutcomeRecord {
             schema_ref: crate::model::attempt::SCHEMA_ATTEMPT_OUTCOME.to_string(),
             attempt_id,
@@ -9257,6 +9731,7 @@ fn read_all_attempt_outcomes(tx: &Transaction) -> Result<Vec<AttemptOutcomeRecor
             model,
             harness,
             harness_version,
+            extensions: decode_record_extensions(extensions_json, &outcome_extensions_label)?,
         };
 
         outcomes.push(record);
@@ -9623,6 +10098,9 @@ struct PointerConfig {
     replaced_paths: Vec<String>,
     deleted_paths: Vec<String>,
     redaction_reset: Option<PointerRedactionReset>,
+    /// Additive top-level pointer fields carried in from an earlier
+    /// generation or a restored pointer, re-projected verbatim on publish.
+    extensions: RecordExtensions,
 }
 
 /// Configuration for forensic checkpoint state update
@@ -9635,6 +10113,9 @@ struct CheckpointStateConfig {
     covered_sequence: i64,
     changed_paths: Vec<String>,
     store_uuid: String,
+    /// Additive top-level pointer fields this publication re-projects, kept
+    /// in the store so a restore-into-empty still republishes them.
+    pointer_extensions_json: Option<String>,
 }
 
 /// Simple MD5 hash for generation IDs
@@ -9648,11 +10129,11 @@ fn md5_compute(data: &str) -> String {
 ///
 /// Returns dependencies sorted by blocker_id, kind, then blocked_id as specified in
 /// plan.md Section 6.1 for deterministic serialization.
-fn read_all_dependencies(tx: &Transaction) -> Result<Vec<(String, String, String)>> {
+fn read_all_dependencies(tx: &Transaction) -> Result<Vec<SerializedDependency>> {
     let mut dependencies = Vec::new();
 
     let mut stmt = tx.prepare(
-        "SELECT blocked_issue_id, blocker_issue_id, kind
+        "SELECT blocked_issue_id, blocker_issue_id, kind, extensions_json
          FROM dependencies
          ORDER BY blocker_issue_id ASC, kind ASC, blocked_issue_id ASC",
     )?;
@@ -9662,12 +10143,22 @@ fn read_all_dependencies(tx: &Transaction) -> Result<Vec<(String, String, String
             row.get::<_, String>("blocked_issue_id")?,
             row.get::<_, String>("blocker_issue_id")?,
             row.get::<_, String>("kind")?,
+            row.get::<_, Option<String>>("extensions_json")?,
         ))
     })?;
 
     for row in rows {
-        let (blocked, blocker, kind) = row?;
-        dependencies.push((blocked, blocker, kind));
+        let (blocked, blocker, kind, extensions_json) = row?;
+        let extensions = decode_record_extensions(
+            extensions_json,
+            &format!("dependency {} -> {}", blocked, blocker),
+        )?;
+        dependencies.push(SerializedDependency {
+            blocked,
+            blocker,
+            kind,
+            extensions,
+        });
     }
 
     Ok(dependencies)
@@ -9774,7 +10265,7 @@ fn read_all_issues(tx: &Transaction) -> Result<Vec<Issue>> {
 
         let mut references = Vec::new();
         let mut reference_stmt = tx.prepare(
-            "SELECT namespace, key, value,
+            "SELECT namespace, key, value, extensions_json,
                     EXISTS(
                         SELECT 1 FROM unique_reference_bindings binding
                         WHERE binding.namespace = external_references.namespace
@@ -9793,10 +10284,22 @@ fn read_all_issues(tx: &Transaction) -> Result<Vec<Issue>> {
             if row.get::<_, bool>("is_unique")? {
                 reference["unique_ref"] = serde_json::Value::Bool(true);
             }
-            Ok(reference)
+            Ok((reference, row.get::<_, Option<String>>("extensions_json")?))
         })?;
         for reference in reference_rows {
-            references.push(reference?);
+            let (mut reference, extensions_json) = reference?;
+            // Re-project the additive fields a newer producer attached to
+            // this reference beside its v1 envelope.
+            let extensions = decode_record_extensions(
+                extensions_json,
+                &format!("external reference on issue {}", id),
+            )?;
+            if let Some(object) = reference.as_object_mut() {
+                for (key, value) in extensions {
+                    object.insert(key, value);
+                }
+            }
+            references.push(reference);
         }
         extensions.insert(
             "external_references".to_string(),
@@ -9823,23 +10326,43 @@ fn read_all_issues(tx: &Transaction) -> Result<Vec<Issue>> {
         }
         extensions.insert("comments".to_string(), serde_json::Value::Array(comments));
 
-        let resource_keys = get_resource_keys(tx, &id)?;
-        if !resource_keys.is_empty() {
+        let mut resource_key_entries = Vec::new();
+        let mut key_stmt = tx.prepare(
+            "SELECT resource_key, extensions_json FROM issue_resource_keys
+             WHERE issue_id = ?1 ORDER BY resource_key ASC",
+        )?;
+        let key_rows = key_stmt.query_map([&id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })?;
+        for key_row in key_rows {
+            let (key, extensions_json) = key_row?;
+            let extensions = decode_record_extensions(
+                extensions_json,
+                &format!("resource key '{}' on issue {}", key, id),
+            )?;
+            if extensions.is_empty() {
+                // A plain declaration keeps the v1 string form.
+                resource_key_entries.push(serde_json::Value::String(key));
+            } else {
+                let mut object = serde_json::Map::new();
+                object.insert("resource_key".to_string(), serde_json::Value::String(key));
+                for (entry_key, entry_value) in extensions {
+                    object.insert(entry_key, entry_value);
+                }
+                resource_key_entries.push(serde_json::Value::Object(object));
+            }
+        }
+        if !resource_key_entries.is_empty() {
             extensions.insert(
                 "resource_keys".to_string(),
-                serde_json::Value::Array(
-                    resource_keys
-                        .into_iter()
-                        .map(serde_json::Value::String)
-                        .collect(),
-                ),
+                serde_json::Value::Array(resource_key_entries),
             );
         }
 
         // Convert to Issue model
         let mut data = serde_json::Map::new();
         let mut data_stmt = tx.prepare(
-            "SELECT namespace, schema_ref, value FROM issue_data
+            "SELECT namespace, schema_ref, value, extensions_json FROM issue_data
              WHERE issue_id = ?1 ORDER BY namespace",
         )?;
         let data_rows = data_stmt.query_map([&id], |row| {
@@ -9847,10 +10370,11 @@ fn read_all_issues(tx: &Transaction) -> Result<Vec<Issue>> {
                 row.get::<_, String>("namespace")?,
                 row.get::<_, String>("schema_ref")?,
                 row.get::<_, String>("value")?,
+                row.get::<_, Option<String>>("extensions_json")?,
             ))
         })?;
         for data_row in data_rows {
-            let (namespace, schema_ref, value) = data_row?;
+            let (namespace, schema_ref, value, extensions_json) = data_row?;
             let value: serde_json::Value = serde_json::from_str(&value).map_err(|error| {
                 anyhow!(
                     "Failed to parse data namespace '{}' for issue '{}': {}",
@@ -9859,10 +10383,19 @@ fn read_all_issues(tx: &Transaction) -> Result<Vec<Issue>> {
                     error
                 )
             })?;
-            data.insert(
-                namespace,
-                serde_json::json!({"schema_ref": schema_ref, "value": value}),
-            );
+            // Re-project the additive envelope fields a newer producer
+            // attached beside the v1 {schema_ref, value} pair.
+            let mut envelope = serde_json::Map::new();
+            envelope.insert("schema_ref".to_string(), serde_json::json!(schema_ref));
+            envelope.insert("value".to_string(), value);
+            let extensions = decode_record_extensions(
+                extensions_json,
+                &format!("data namespace '{}' on issue {}", namespace, id),
+            )?;
+            for (key, entry_value) in extensions {
+                envelope.insert(key, entry_value);
+            }
+            data.insert(namespace, serde_json::Value::Object(envelope));
         }
 
         let issue = Issue {
@@ -10036,6 +10569,7 @@ mod tests {
                 result: "success".to_string(),
                 summary_event_identity: None,
                 receipt_sha256: "0".repeat(64),
+                extensions: RecordExtensions::new(),
             }]
         } else {
             Vec::new()
@@ -10053,6 +10587,7 @@ mod tests {
                 actor: Some("tester".to_string()),
                 time: "2026-08-22T00:00:00Z".to_string(),
                 detail: serde_json::json!({}),
+                extensions: RecordExtensions::new(),
             }],
             receipts,
             attempt_outcomes: Vec::new(),
@@ -10066,6 +10601,7 @@ mod tests {
             attempt_outcome_count: 0,
             redaction: RedactionRecords::default(),
             redaction_record_count: 0,
+            pointer_extensions: RecordExtensions::new(),
         }
     }
 
