@@ -739,9 +739,20 @@ CREATE TABLE IF NOT EXISTS provenance_receipts_new (
     receipt_sha256 TEXT NOT NULL
 );
 
--- Copy existing data to new table
+-- Copy existing data to new table. The columns are named rather than taken
+-- with SELECT * because migration 19 additively widens this table: replaying
+-- this migration from a rolled-back ledger (the crash boundary
+-- is_safe_add_column_replay recovers from) can meet a table that already
+-- carries extensions_json, and a positional * would supply the extra value to
+-- a narrower new table and fail the copy outright.
 INSERT INTO provenance_receipts_new
-SELECT * FROM provenance_receipts;
+    (receipt_id, schema_ref, kind, source_store_uuid, target_store_uuid,
+     source_root_sha256, actor, created_at, counts_json, result,
+     summary_event_identity, receipt_sha256)
+SELECT receipt_id, schema_ref, kind, source_store_uuid, target_store_uuid,
+       source_root_sha256, actor, created_at, counts_json, result,
+       summary_event_identity, receipt_sha256
+FROM provenance_receipts;
 
 -- Drop old table and rename new one
 DROP TABLE provenance_receipts;
