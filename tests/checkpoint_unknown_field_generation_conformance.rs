@@ -21,13 +21,17 @@
 //! them must be stable, so a silent reinterpretation cannot hide as a
 //! payload change.
 //!
-//! The merge replay is exercised in both directions the contract allows:
-//! replaying a log whose events carry an extra additive field must widen
-//! the stored map, and replaying a log stripped of additive fields must
-//! never erase what earlier generations stored. Redaction is exercised on
-//! the extension-bearing event itself: the rewrite replaces the field's
-//! bytes and its integrity hash, and the unknown fields riding beside them
-//! must survive untouched into the next published generation.
+//! The merge replay is exercised across all three outcomes the contract
+//! allows for events carrying unknown extensions: replaying the log the
+//! destination already holds must land exactly where it started
+//! (idempotent); a newer producer's wider map -- the seeded value grown,
+//! plus an additive key beside it -- must replace the stored map outright
+//! (widen); and a replay stripped of additive fields, the rendering of an
+//! older producer who never knew the keys, must never erase what earlier
+//! generations stored (strip/narrow). Redaction is exercised on the
+//! extension-bearing event itself: the rewrite replaces the field's bytes
+//! and its integrity hash, and the unknown fields riding beside them must
+//! survive untouched into the next published generation.
 //!
 //! The comparison is only worth what it catches, so a closing negative
 //! test deliberately drops each level's seeded extension from a published
@@ -170,8 +174,10 @@ const KNOWN_POINTER_KEYS: [&str; 19] = [
 /// by hand and required to ride every later generation.
 const POINTER_EXTENSION_KEY: &str = "future_pointer_key";
 
-/// The event extension key the widened merge replay adds on top of the
-/// seeded payload, and which the stripped replay must not cause to erase.
+/// The additive event key the widened merge replay writes beside the seeded
+/// one, and which the stripped replay must not cause to erase. Widening is
+/// not only additive: `widened_event_payload` also grows the seeded key's
+/// own value, and that wider value must replace the stored one outright.
 const EVENT_WIDEN_KEY: &str = "future_tier_replayed";
 
 fn issue_payload() -> Value {
@@ -183,6 +189,19 @@ fn issue_payload() -> Value {
 
 fn event_payload() -> Value {
     json!({ "future_tier": { "level": 3, "path": ["x", "y"] } })
+}
+
+/// The exact map a newer producer replays for the seeded event: the seeded
+/// key carrying a wider value -- nested shapes only a later writer would
+/// add -- plus the additive `EVENT_WIDEN_KEY` beside it. It is both the
+/// widen replay's input and the map the store must hold afterwards: the
+/// wider value replaces the older one outright, and the stripped replay
+/// must not roll either key back.
+fn widened_event_payload() -> Value {
+    let mut payload = event_payload();
+    payload["future_tier"]["widened"] = json!({ "by": "replay-ufk", "gates": [true, null] });
+    payload[EVENT_WIDEN_KEY] = json!("widened by replay");
+    payload
 }
 
 /// Like the record corpus's payloads, every store-record payload below
@@ -482,6 +501,18 @@ fn stored_extensions(workspace: &Path, query: &str, params: &[&str]) -> Value {
     }
 }
 
+/// The seeded event's stored extension map: the row the restore wrote and
+/// each replay outcome below rewrites. Exactly one extension-bearing row
+/// exists for the origin store, as the corpus seeds it.
+fn stored_event_extensions(workspace: &Path, identity: &(String, i64)) -> Value {
+    stored_extensions(
+        workspace,
+        "SELECT extensions_json FROM events
+         WHERE origin_store_uuid = ?1 AND extensions_json IS NOT NULL",
+        &[&identity.0],
+    )
+}
+
 /// Add the unknown top-level pointer key to a workspace's published
 /// `current.json`, the way a newer producer's republish would have left it.
 fn seed_pointer_extension(workspace: &Path) {
@@ -649,8 +680,8 @@ impl Generations {
 ///    to prove the same workspace re-projects the pointer key.
 /// 2. restored workspace: restore-into-empty of the source's checkpoint
 ///    directory (pointer staging, so the pointer key rides), the restore
-///    receipt seeded, the stale-event merge replay exercised idempotently,
-///    widened, and stripped; generation 2.
+///    receipt seeded, the stale-event merge replay exercised through all
+///    three outcomes -- idempotent, widen, strip/narrow; generation 2.
 /// 3. round-tripped workspace: restore-into-empty one hop further;
 ///    generation 3.
 fn build_generations() -> Generations {
@@ -722,12 +753,7 @@ fn build_generations() -> Generations {
 
     // Every record-level seed must have landed in the restored store's own
     // columns, and the pointer key in checkpoint_state.
-    let event_extensions = stored_extensions(
-        restored.path(),
-        "SELECT extensions_json FROM events
-         WHERE origin_store_uuid = ?1 AND extensions_json IS NOT NULL",
-        &[&extended_event_identity.0],
-    );
+    let event_extensions = stored_event_extensions(restored.path(), &extended_event_identity);
     assert_eq!(
         event_extensions.get("future_tier"),
         Some(&event_payload()["future_tier"]),
@@ -787,23 +813,57 @@ fn build_generations() -> Generations {
 
     let receipt_with_extensions = extend_single_receipt(restored.path(), &receipt_payload());
 
-    // -- stale-event merge replay, three directions ---------------------------
+    // -- stale-event merge replay: all three replay outcomes ------------------
     let replay_log = source_checkpoint.join("forensic.jsonl");
-    merge_replay(restored.path(), &replay_log, "ufk-replay");
 
+    // Idempotent: the destination replays the log it restored from, whose
+    // producer value is exactly what it stores. The replay's event map is
+    // non-empty, so the refresh branch runs and must land precisely where
+    // it started -- asserted immediately, because the widen and strip
+    // replays below rewrite the same map and would mask an idempotent
+    // replay that erased instead of refreshed.
+    merge_replay(restored.path(), &replay_log, "ufk-replay");
+    let after_idempotent = stored_event_extensions(restored.path(), &extended_event_identity);
+    assert_eq!(
+        after_idempotent,
+        event_payload(),
+        "an idempotent replay must leave the stored extension map exactly as stored: {after_idempotent}"
+    );
+
+    // Widen: a newer producer replays the extension-bearing event with a
+    // wider map -- the seeded key's value grown by shapes only a later
+    // writer would add, plus an additive key beside it. The replay replaces
+    // the stored map wholesale, so the wider value must replace the older
+    // one outright: never a merge that keeps the stale value, never an
+    // erasure of the key, never an error.
     let widened = tempfile::Builder::new()
         .prefix("ufk-widened-")
         .suffix(".jsonl")
         .tempfile_in("/var/tmp")
         .unwrap();
     edited_forensic_log(&replay_log, widened.path(), |event| {
-        event
-            .as_object_mut()
-            .unwrap()
-            .insert(EVENT_WIDEN_KEY.to_string(), json!("widened by replay"));
+        let object = event.as_object_mut().unwrap();
+        if !object.contains_key("future_tier") {
+            return; // a newer producer re-writes only the extension-bearing event
+        }
+        for (key, value) in widened_event_payload().as_object().unwrap() {
+            object.insert(key.clone(), value.clone());
+        }
     });
     merge_replay(restored.path(), widened.path(), "ufk-replay-widen");
+    let after_widen = stored_event_extensions(restored.path(), &extended_event_identity);
+    assert_eq!(
+        after_widen,
+        widened_event_payload(),
+        "a newer producer's wider extension value must replace the stored one: {after_widen}"
+    );
 
+    // Strip/narrow: the same log as an older producer would have written it
+    // -- every additive field stripped, because that writer never knew the
+    // keys. Its event maps are empty, so the replay must skip the refresh
+    // entirely and leave both generations' fields exactly as the widen left
+    // them; a would-be erasure of either key, or any value change, fails
+    // this comparison.
     let stripped = tempfile::Builder::new()
         .prefix("ufk-stripped-")
         .suffix(".jsonl")
@@ -822,18 +882,10 @@ fn build_generations() -> Generations {
         }
     });
     merge_replay(restored.path(), stripped.path(), "ufk-replay-strip");
-
-    // The widened key survived the strip replay: a replay carrying no
-    // extension map never erases one already stored.
-    let after_strip = stored_extensions(
-        restored.path(),
-        "SELECT extensions_json FROM events
-         WHERE origin_store_uuid = ?1 AND extensions_json IS NOT NULL",
-        &[&extended_event_identity.0],
-    );
-    assert!(
-        after_strip.get(EVENT_WIDEN_KEY).is_some(),
-        "a stripped replay must not erase stored extensions: {after_strip}"
+    let after_strip = stored_event_extensions(restored.path(), &extended_event_identity);
+    assert_eq!(
+        after_strip, after_widen,
+        "a stripped replay must not erase what earlier generations stored: {after_strip}"
     );
 
     create_issue(restored.path(), "generation probe 2 — forces the export");
@@ -938,14 +990,15 @@ fn assert_levels_preserved(generation: &[Value], first: &Generations, event_wide
         first.extended_event_identity,
         "the extension-bearing event must keep its wire identity across generations"
     );
-    let mut expected_event = object_of(&event_payload());
-    if event_widened {
-        expected_event.insert(EVENT_WIDEN_KEY.to_string(), json!("widened by replay"));
-    }
+    let expected_event = if event_widened {
+        object_of(&widened_event_payload())
+    } else {
+        object_of(&event_payload())
+    };
     assert_eq!(
         unknown_members(event, &KNOWN_EVENT_KEYS),
         expected_event,
-        "event-level unknown fields must survive parse-equal (and keep replay widenings)"
+        "event-level unknown fields must survive parse-equal (and keep the replay's widened map)"
     );
 }
 
@@ -1157,18 +1210,36 @@ fn drop_resource_key_extension(records: &mut [Value], issue_id: &str, key: &str)
     remove_member(entry, key);
 }
 
-fn drop_event_extension(records: &mut [Value], identity: &(String, i64), key: &str) {
-    let event = records
+/// The mutable exported event record carrying the seeded payload.
+fn extended_event_mut<'a>(records: &'a mut [Value], identity: &(String, i64)) -> &'a mut Value {
+    records
         .iter_mut()
         .find(|record| {
             record["record_type"] == "event"
                 && record["event"]["origin_store_uuid"] == identity.0.as_str()
                 && record["event"]["origin_event_sequence"] == identity.1
         })
-        .unwrap_or_else(|| {
-            panic!("the seeded event is missing from the generation under mutation")
-        });
-    remove_member(&mut event["event"], key);
+        .map(|record| &mut record["event"])
+        .unwrap_or_else(|| panic!("the seeded event is missing from the generation under mutation"))
+}
+
+fn drop_event_extension(records: &mut [Value], identity: &(String, i64), key: &str) {
+    remove_member(extended_event_mut(records, identity), key);
+}
+
+/// Overwrite one member of the extension-bearing event in place: the
+/// narrowing a stale replay would have performed -- a wider value rolled
+/// back to an older producer's -- without removing the key.
+fn narrow_event_extension(
+    records: &mut [Value],
+    identity: &(String, i64),
+    key: &str,
+    value: Value,
+) {
+    extended_event_mut(records, identity)
+        .as_object_mut()
+        .unwrap()
+        .insert(key.to_string(), value);
 }
 
 fn drop_attempt_outcome_extension(records: &mut [Value], attempt_id: &str, key: &str) {
@@ -1208,11 +1279,11 @@ fn panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
 }
 
 /// Run one preservation assertion over a generation whose extension was
-/// deliberately dropped, and require the drop -- with the assertion naming
-/// its level -- to be what tripped it. The panic hook is muted only across
-/// the expected panic; a wrongly-shaped failure still fails the test
-/// through the message comparison.
-fn assert_drop_trips_assertion(label: &str, expected_message: &str, check: impl FnOnce()) {
+/// deliberately dropped or narrowed, and require that mutation -- with the
+/// assertion naming its level -- to be what tripped it. The panic hook is
+/// muted only across the expected panic; a wrongly-shaped failure still
+/// fails the test through the message comparison.
+fn assert_mutation_trips_assertion(label: &str, expected_message: &str, check: impl FnOnce()) {
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(check));
@@ -1220,7 +1291,7 @@ fn assert_drop_trips_assertion(label: &str, expected_message: &str, check: impl 
 
     let message = match outcome {
         Err(payload) => panic_payload_message(payload),
-        Ok(()) => panic!("dropping the {label} extension must fail the preservation assertion"),
+        Ok(()) => panic!("mutating the {label} extension must fail the preservation assertion"),
     };
     assert!(
         message.contains(expected_message),
@@ -1230,10 +1301,12 @@ fn assert_drop_trips_assertion(label: &str, expected_message: &str, check: impl 
 
 /// The negative half of the contract: for every object level the corpus
 /// seeds, remove that level's extension from a published generation and
-/// require the comparison to panic naming the loss. Each drop goes through
-/// helpers that refuse to remove nothing, and the pristine generations
-/// clear the same assertions just before, so the drop is the only possible
-/// trigger -- a future edit that silently neuters an assertion fails here.
+/// require the comparison to panic naming the loss; for the replayed event,
+/// also narrow the widened value back to the older producer's, since that
+/// is the erasure a stale replay would actually perform. The pristine
+/// generations clear the same assertions just before, so the mutation is
+/// the only possible trigger -- a future edit that silently neuters an
+/// assertion fails here.
 #[test]
 fn a_dropped_unknown_field_fails_the_preservation_assertions() {
     let generations = build_generations();
@@ -1248,7 +1321,7 @@ fn a_dropped_unknown_field_fails_the_preservation_assertions() {
 
     let mut mutated = generations.generation_1.clone();
     drop_issue_extension(&mut mutated, &generations.issue_a, "future_priority_signal");
-    assert_drop_trips_assertion("issue", "issue-level unknown fields", || {
+    assert_mutation_trips_assertion("issue", "issue-level unknown fields", || {
         assert_levels_preserved(&mutated, &generations, false)
     });
 
@@ -1259,13 +1332,13 @@ fn a_dropped_unknown_field_fails_the_preservation_assertions() {
         &generations.issue_b,
         "future_weight",
     );
-    assert_drop_trips_assertion("dependency", "dependency-entry unknown fields", || {
+    assert_mutation_trips_assertion("dependency", "dependency-entry unknown fields", || {
         assert_levels_preserved(&mutated, &generations, false)
     });
 
     let mut mutated = generations.generation_1.clone();
     drop_reference_extension(&mut mutated, &generations.issue_a, "future_visibility");
-    assert_drop_trips_assertion(
+    assert_mutation_trips_assertion(
         "external-reference",
         "external-reference unknown fields",
         || assert_levels_preserved(&mutated, &generations, false),
@@ -1273,7 +1346,7 @@ fn a_dropped_unknown_field_fails_the_preservation_assertions() {
 
     let mut mutated = generations.generation_1.clone();
     drop_data_extension(&mut mutated, &generations.issue_a, "future_etag");
-    assert_drop_trips_assertion(
+    assert_mutation_trips_assertion(
         "structured-data",
         "structured-data envelope unknown fields",
         || assert_levels_preserved(&mutated, &generations, false),
@@ -1281,13 +1354,13 @@ fn a_dropped_unknown_field_fails_the_preservation_assertions() {
 
     let mut mutated = generations.generation_1.clone();
     drop_resource_key_extension(&mut mutated, &generations.issue_a, "future_exclusive_until");
-    assert_drop_trips_assertion("resource-key", "resource-key unknown fields", || {
+    assert_mutation_trips_assertion("resource-key", "resource-key unknown fields", || {
         assert_levels_preserved(&mutated, &generations, false)
     });
 
     let mut mutated = generations.generation_1.clone();
     drop_attempt_outcome_extension(&mut mutated, &generations.attempt_id, "future_telemetry");
-    assert_drop_trips_assertion("attempt-outcome", "attempt-outcome unknown fields", || {
+    assert_mutation_trips_assertion("attempt-outcome", "attempt-outcome unknown fields", || {
         assert_levels_preserved(&mutated, &generations, false)
     });
 
@@ -1299,7 +1372,7 @@ fn a_dropped_unknown_field_fails_the_preservation_assertions() {
         &generations.extended_event_identity,
         "future_tier",
     );
-    assert_drop_trips_assertion(
+    assert_mutation_trips_assertion(
         "event",
         "exactly one event must carry the seeded payload",
         || assert_levels_preserved(&mutated, &generations, false),
@@ -1314,7 +1387,25 @@ fn a_dropped_unknown_field_fails_the_preservation_assertions() {
         &generations.extended_event_identity,
         EVENT_WIDEN_KEY,
     );
-    assert_drop_trips_assertion(
+    assert_mutation_trips_assertion(
+        "event",
+        "event-level unknown fields must survive parse-equal",
+        || assert_levels_preserved(&mutated, &generations, true),
+    );
+
+    // The other would-be erasure the replay contract forbids is not a
+    // missing key but the widened value narrowed back to the older
+    // producer's seeded one. The event still carries the seeded key, so the
+    // locator passes and the loss must surface the same way: a parse-equal
+    // mismatch on the surviving map.
+    let mut mutated = generations.generation_2.clone();
+    narrow_event_extension(
+        &mut mutated,
+        &generations.extended_event_identity,
+        "future_tier",
+        event_payload()["future_tier"].clone(),
+    );
+    assert_mutation_trips_assertion(
         "event",
         "event-level unknown fields must survive parse-equal",
         || assert_levels_preserved(&mutated, &generations, true),
@@ -1326,7 +1417,7 @@ fn a_dropped_unknown_field_fails_the_preservation_assertions() {
         &generations.receipt_with_extensions,
         "future_signed_by",
     );
-    assert_drop_trips_assertion("receipt", "receipt-level unknown fields", || {
+    assert_mutation_trips_assertion("receipt", "receipt-level unknown fields", || {
         assert_receipt_extension(&mutated, &generations.receipt_with_extensions)
     });
 
@@ -1339,7 +1430,7 @@ fn a_dropped_unknown_field_fails_the_preservation_assertions() {
         Some(pointer_extension_value()),
         "the pointer extension must be present to be dropped"
     );
-    assert_drop_trips_assertion("pointer", "pointer must re-project", || {
+    assert_mutation_trips_assertion("pointer", "pointer must re-project", || {
         assert_pointer_extension(&pointer, "deliberately dropped")
     });
 }
