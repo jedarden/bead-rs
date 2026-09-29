@@ -203,7 +203,7 @@ fn data_payload() -> Value {
 }
 
 fn resource_key_payload() -> Value {
-    json!({ "future_exclusive_until": "2026-12-01T00:00:00Z" })
+    json!({ "future_exclusive_until": { "windows": ["2026-12-01"], "gate": { "hard": true } } })
 }
 
 fn attempt_outcome_payload() -> Value {
@@ -211,7 +211,7 @@ fn attempt_outcome_payload() -> Value {
 }
 
 fn receipt_payload() -> Value {
-    json!({ "future_signed_by": "pk-11" })
+    json!({ "future_signed_by": { "keys": ["pk-11"], "gate": { "sealed": true } } })
 }
 
 fn pointer_extension_value() -> Value {
