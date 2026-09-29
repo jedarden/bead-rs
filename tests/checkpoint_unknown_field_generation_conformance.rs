@@ -1077,10 +1077,21 @@ fn redaction_rewrite_preserves_unknown_fields_on_the_rewritten_event() {
     assert_receipt_extension(&generation_4, &generations.receipt_with_extensions);
 
     let rewritten = extended_event(&generation_4);
-    assert!(
-        rewritten["detail"].to_string().contains(REDACTION_MARKER),
-        "the event must actually have been redacted: {}",
+    // The documented marker semantics (historical-redaction-v1 §3): the
+    // matched value is replaced with the fixed marker and no other byte of
+    // the field changes -- the JSON envelope around the secret survives
+    // intact, just as the extension keys beside it did above.
+    assert_eq!(
+        rewritten["detail"],
+        json!({ "credential": REDACTION_MARKER }),
+        "redaction must replace the value and change no other byte: {}",
         rewritten["detail"]
+    );
+    assert!(
+        !serde_json::to_string(&generation_4)
+            .unwrap()
+            .contains(&secret),
+        "the redacted bytes must not survive anywhere in the published generation"
     );
 }
 
