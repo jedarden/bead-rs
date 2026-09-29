@@ -28,6 +28,12 @@
 //! the extension-bearing event itself: the rewrite replaces the field's
 //! bytes and its integrity hash, and the unknown fields riding beside them
 //! must survive untouched into the next published generation.
+//!
+//! The comparison is only worth what it catches, so a closing negative
+//! test deliberately drops each level's seeded extension from a published
+//! generation and requires the comparison to trip naming that level -- the
+//! preservation assertions are proven able to fail, not merely able to
+//! pass.
 
 use assert_cmd::Command;
 use bead_rs::model::redaction::REDACTION_MARKER;
@@ -980,4 +986,234 @@ fn redaction_rewrite_preserves_unknown_fields_on_the_rewritten_event() {
         "the event must actually have been redacted: {}",
         rewritten["detail"]
     );
+}
+
+/// Remove one member from an object, refusing to continue when the member
+/// was never there: a mutation that removes nothing would let a vacuous
+/// failure masquerade as coverage.
+fn remove_member(object: &mut Value, key: &str) {
+    if object
+        .as_object_mut()
+        .expect("the mutated position must be a JSON object")
+        .remove(key)
+        .is_none()
+    {
+        panic!("extension key {key} was absent; the deliberate drop would be vacuous");
+    }
+}
+
+/// The mutable issue record carrying the seeded payloads.
+fn issue_record_mut<'a>(records: &'a mut [Value], issue_id: &str) -> &'a mut Value {
+    let record = records
+        .iter_mut()
+        .find(|record| record["record_type"] == "issue" && record["issue"]["id"] == issue_id)
+        .unwrap_or_else(|| panic!("issue {issue_id} missing from the generation under mutation"));
+    &mut record["issue"]
+}
+
+fn drop_issue_extension(records: &mut [Value], issue_id: &str, key: &str) {
+    remove_member(issue_record_mut(records, issue_id), key);
+}
+
+fn drop_dependency_extension(records: &mut [Value], blocked: &str, blocker: &str, key: &str) {
+    let edge = issue_record_mut(records, blocked)["dependencies"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|entry| entry["blocker"] == blocker)
+        .unwrap_or_else(|| panic!("the dependency edge to {blocker} is missing"));
+    remove_member(edge, key);
+}
+
+fn drop_reference_extension(records: &mut [Value], issue_id: &str, key: &str) {
+    let reference = issue_record_mut(records, issue_id)["external_references"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|entry| entry["key"] == "src-id")
+        .unwrap_or_else(|| panic!("the seeded external reference is missing"));
+    remove_member(reference, key);
+}
+
+fn drop_data_extension(records: &mut [Value], issue_id: &str, key: &str) {
+    let envelope = &mut issue_record_mut(records, issue_id)["data"]["future-config"];
+    remove_member(envelope, key);
+}
+
+fn drop_resource_key_extension(records: &mut [Value], issue_id: &str, key: &str) {
+    let entry = issue_record_mut(records, issue_id)["resource_keys"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|entry| entry["resource_key"] == "gpu:0")
+        .unwrap_or_else(|| panic!("the seeded resource key entry is missing"));
+    remove_member(entry, key);
+}
+
+fn drop_event_extension(records: &mut [Value], identity: &(String, i64), key: &str) {
+    let event = records
+        .iter_mut()
+        .find(|record| {
+            record["record_type"] == "event"
+                && record["event"]["origin_store_uuid"] == identity.0.as_str()
+                && record["event"]["origin_event_sequence"] == identity.1
+        })
+        .unwrap_or_else(|| {
+            panic!("the seeded event is missing from the generation under mutation")
+        });
+    remove_member(&mut event["event"], key);
+}
+
+fn drop_receipt_extension(records: &mut [Value], receipt_id: &str, key: &str) {
+    let receipt = records
+        .iter_mut()
+        .find(|record| {
+            record["record_type"] == "provenance_receipt"
+                && record["provenance_receipt"]["receipt_id"] == receipt_id
+        })
+        .unwrap_or_else(|| {
+            panic!("receipt {receipt_id} missing from the generation under mutation")
+        });
+    remove_member(&mut receipt["provenance_receipt"], key);
+}
+
+fn panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else if let Some(message) = payload.downcast_ref::<&'static str>() {
+        (*message).to_string()
+    } else {
+        "non-string panic payload".to_string()
+    }
+}
+
+/// Run one preservation assertion over a generation whose extension was
+/// deliberately dropped, and require the drop -- with the assertion naming
+/// its level -- to be what tripped it. The panic hook is muted only across
+/// the expected panic; a wrongly-shaped failure still fails the test
+/// through the message comparison.
+fn assert_drop_trips_assertion(label: &str, expected_message: &str, check: impl FnOnce()) {
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(check));
+    std::panic::set_hook(previous_hook);
+
+    let message = match outcome {
+        Err(payload) => panic_payload_message(payload),
+        Ok(()) => panic!("dropping the {label} extension must fail the preservation assertion"),
+    };
+    assert!(
+        message.contains(expected_message),
+        "dropping the {label} extension must fail with {expected_message:?}, got: {message}"
+    );
+}
+
+/// The negative half of the contract: for every object level the corpus
+/// seeds, remove that level's extension from a published generation and
+/// require the comparison to panic naming the loss. Each drop goes through
+/// helpers that refuse to remove nothing, and the pristine generations
+/// clear the same assertions just before, so the drop is the only possible
+/// trigger -- a future edit that silently neuters an assertion fails here.
+#[test]
+fn a_dropped_unknown_field_fails_the_preservation_assertions() {
+    let generations = build_generations();
+
+    assert_levels_preserved(&generations.generation_1, &generations, false);
+    assert_levels_preserved(&generations.generation_2, &generations, true);
+    assert_receipt_extension(
+        &generations.generation_2,
+        &generations.receipt_with_extensions,
+    );
+    assert_pointer_extension(&read_pointer(generations.workspace(0)), "pristine");
+
+    let mut mutated = generations.generation_1.clone();
+    drop_issue_extension(&mut mutated, &generations.issue_a, "future_priority_signal");
+    assert_drop_trips_assertion("issue", "issue-level unknown fields", || {
+        assert_levels_preserved(&mutated, &generations, false)
+    });
+
+    let mut mutated = generations.generation_1.clone();
+    drop_dependency_extension(
+        &mut mutated,
+        &generations.issue_a,
+        &generations.issue_b,
+        "future_weight",
+    );
+    assert_drop_trips_assertion("dependency", "dependency-entry unknown fields", || {
+        assert_levels_preserved(&mutated, &generations, false)
+    });
+
+    let mut mutated = generations.generation_1.clone();
+    drop_reference_extension(&mut mutated, &generations.issue_a, "future_visibility");
+    assert_drop_trips_assertion(
+        "external-reference",
+        "external-reference unknown fields",
+        || assert_levels_preserved(&mutated, &generations, false),
+    );
+
+    let mut mutated = generations.generation_1.clone();
+    drop_data_extension(&mut mutated, &generations.issue_a, "future_etag");
+    assert_drop_trips_assertion(
+        "structured-data",
+        "structured-data envelope unknown fields",
+        || assert_levels_preserved(&mutated, &generations, false),
+    );
+
+    let mut mutated = generations.generation_1.clone();
+    drop_resource_key_extension(&mut mutated, &generations.issue_a, "future_exclusive_until");
+    assert_drop_trips_assertion("resource-key", "resource-key unknown fields", || {
+        assert_levels_preserved(&mutated, &generations, false)
+    });
+
+    // Dropping the seeded map itself leaves no carrier event at all, so the
+    // locator trips first.
+    let mut mutated = generations.generation_1.clone();
+    drop_event_extension(
+        &mut mutated,
+        &generations.extended_event_identity,
+        "future_tier",
+    );
+    assert_drop_trips_assertion(
+        "event",
+        "exactly one event must carry the seeded payload",
+        || assert_levels_preserved(&mutated, &generations, false),
+    );
+
+    // Dropping only the replay widening keeps the event a carrier, so the
+    // drop surfaces where the contract cares: a parse-equal mismatch on the
+    // surviving map.
+    let mut mutated = generations.generation_2.clone();
+    drop_event_extension(
+        &mut mutated,
+        &generations.extended_event_identity,
+        EVENT_WIDEN_KEY,
+    );
+    assert_drop_trips_assertion(
+        "event",
+        "event-level unknown fields must survive parse-equal",
+        || assert_levels_preserved(&mutated, &generations, true),
+    );
+
+    let mut mutated = generations.generation_2.clone();
+    drop_receipt_extension(
+        &mut mutated,
+        &generations.receipt_with_extensions,
+        "future_signed_by",
+    );
+    assert_drop_trips_assertion("receipt", "receipt-level unknown fields", || {
+        assert_receipt_extension(&mutated, &generations.receipt_with_extensions)
+    });
+
+    let mut pointer = read_pointer(generations.workspace(0));
+    assert_eq!(
+        pointer
+            .as_object_mut()
+            .expect("the generation pointer must be a JSON object")
+            .remove(POINTER_EXTENSION_KEY),
+        Some(pointer_extension_value()),
+        "the pointer extension must be present to be dropped"
+    );
+    assert_drop_trips_assertion("pointer", "pointer must re-project", || {
+        assert_pointer_extension(&pointer, "deliberately dropped")
+    });
 }
