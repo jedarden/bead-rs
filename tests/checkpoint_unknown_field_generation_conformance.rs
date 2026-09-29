@@ -163,16 +163,21 @@ fn event_payload() -> Value {
     json!({ "future_tier": { "level": 3, "path": ["x", "y"] } })
 }
 
+/// Like the record corpus's payloads, every store-record payload below
+/// nests an object and an array -- the shapes a projection can flatten,
+/// stringify, or reorder -- so scalar-only survival cannot pass for
+/// preservation. Keys stay stable across edits: the deliberate-drop test
+/// removes them by name.
 fn dependency_payload() -> Value {
-    json!({ "future_weight": 1.5 })
+    json!({ "future_weight": { "lanes": [1.5, 2.5], "gate": { "soft": true } } })
 }
 
 fn reference_payload() -> Value {
-    json!({ "future_visibility": "internal" })
+    json!({ "future_visibility": { "audiences": ["audit", "ops"], "gate": { "internal": true } } })
 }
 
 fn data_payload() -> Value {
-    json!({ "future_etag": "etag-11" })
+    json!({ "future_etag": { "digests": ["etag-11", "etag-12"], "gate": { "weak": false } } })
 }
 
 fn resource_key_payload() -> Value {
