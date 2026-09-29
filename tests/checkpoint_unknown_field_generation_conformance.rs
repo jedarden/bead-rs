@@ -233,8 +233,12 @@ fn receipt_payload() -> Value {
     json!({ "future_signed_by": { "keys": ["pk-11"], "gate": { "sealed": true } } })
 }
 
+/// Like every other payload in this file, the pointer's unknown value
+/// nests an object and an array -- the shapes a projection can flatten,
+/// stringify, or reorder -- so scalar-only survival cannot pass for
+/// preservation on the restore-staging hop either.
 fn pointer_extension_value() -> Value {
-    json!({ "v": 1 })
+    json!({ "lineage": ["gen-1", "gen-2"], "gate": { "sealed": false } })
 }
 
 fn bead(dir: &Path, args: &[&str]) -> Command {
