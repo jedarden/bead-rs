@@ -450,10 +450,24 @@ fn labels_of(records: &[Value]) -> HashSet<(String, String)> {
         .collect()
 }
 
+/// A fresh workspace root under `/var/tmp`, never the TMPDIR default.
+/// Workspace discovery stops at the first ancestor `.beads`, and the shared
+/// lab box keeps one at `/tmp/.beads`: a bare `TempDir::new()` there is
+/// silently adopted by `init --skip-foreign-workspace` (it exits 0 against
+/// the ancestor store) instead of receiving a fresh workspace, and every
+/// corpus test then fails on the config it never got. `/var/tmp` is the
+/// base the definition-of-done script vets clean for the same reason.
+fn fresh_workspace() -> TempDir {
+    tempfile::Builder::new()
+        .prefix("ufk-corpus-")
+        .tempdir_in("/var/tmp")
+        .unwrap()
+}
+
 /// Restore a generation file into a fresh workspace. Returns the workspace
 /// so the caller keeps the temp dir alive.
 fn restore_into_empty(generation: &Path, actor: &str, expected_issue_count: usize) -> TempDir {
-    let workspace = TempDir::new().unwrap();
+    let workspace = fresh_workspace();
     init_workspace(workspace.path());
     suppress_auto_flush(workspace.path());
     bead(
@@ -501,7 +515,7 @@ struct Corpus {
 
 fn build_corpus() -> Corpus {
     // -- source workspace: real lifecycle, unknown fields, relationships ----
-    let source = TempDir::new().unwrap();
+    let source = fresh_workspace();
     init_workspace(source.path());
     suppress_auto_flush(source.path());
 
@@ -1368,7 +1382,7 @@ fn assert_extensions_physically_published(workspace: &Path, keys: &[String], lab
 #[test]
 fn published_checkpoint_carries_unknown_fields_at_every_object_level() {
     // -- source workspace: every level a store carries before a restore ----
-    let source = TempDir::new().unwrap();
+    let source = fresh_workspace();
     init_workspace(source.path());
     suppress_auto_flush(source.path());
 
