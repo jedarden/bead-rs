@@ -1,8 +1,8 @@
 # bead-rs Current Product and Software Factory Plan
 
-Plan revision: 17
+Plan revision: 18
 
-As of: 2026-09-26
+As of: 2026-10-02
 
 Status owner: bead-rs maintainers
 
@@ -50,6 +50,16 @@ both gate shapes, the title-inference guard, the `verifies` ring, and kind
 coexistence as data. The normative record is
 `research/specs/verification-edges-v1.md`.
 
+Revision 18 records the remaining secret-write boundary exposed by the
+2026-10-02 review: CLI preflight rejects a synthetic high-confidence finding,
+but public mutating service functions can bypass it; recovery is report-only
+and may publish newly encountered findings; and workspace policy can select
+`advisory` or `off` or acknowledge a finding. It proposes ADR-020 through
+ADR-022 and `secret-write-boundary-v1` as R039. No R039 implementation is
+credited until an independent exact-hash review accepts that contract and
+the BR-T31 through BR-T33 gates pass. Existing fast-secret-scanner rollout
+beads own the separate Git transport layer.
+
 ## 0. How to read this plan
 
 Sections 0–8 are the current normative product and transition plan. The former
@@ -80,6 +90,13 @@ This revision accepts:
 - [ADR-015: Audited historical redaction over hand-edited recovery artifacts](../adr/015-audited-historical-redaction.md)
 - [ADR-016: Keep workspace probes observational](../adr/016-observational-workspace-probes.md)
 - [R038 specification acceptance for the exact submitted hashes](../reviews/r038-specification-acceptance-2026-09-03.md)
+
+This revision proposes, pending independent review:
+
+- [ADR-020: Enforce secret scanning at service writes](../adr/020-enforce-secret-scanning-at-service-writes.md)
+- [ADR-021: Lock secret scanning policy for managed fleets](../adr/021-lock-fleet-secret-scan-policy.md)
+- [ADR-022: Quarantine secret-bearing recovery before publication](../adr/022-quarantine-secret-bearing-recovery.md)
+- [`secret-write-boundary-v1`](../../research/specs/secret-write-boundary-v1.md)
 
 ## 1. Product boundary and current reality
 
@@ -166,6 +183,13 @@ and BR-T11 complete against one exact source commit and pinned binary.
 - Workspace probing was itself mutating because it used the auto-migrating
   connection path. ADR-016 and commit `36432b2` make probing observational;
   exact-source store discovery and all nine R036 tests pass.
+- The current secret gate is in CLI dispatch. Public service write functions
+  do not all invoke it, and recurrence materialization can derive text from
+  recovered templates. R039 proposes a service-level gate before commit.
+- Recovery reports findings without refusing the local operation, while
+  automatic checkpoint publication can create a Git-trackable copy. R039
+  proposes durable publication quarantine for newly detected blocking
+  findings. This does not clean already-published history.
 
 ## 2. Current design principles
 
@@ -372,6 +396,25 @@ receipt.
 anti_resurrection, sanitized_generation_set }`. Capability absence means an
 operator must stop; hand-editing SQLite or checkpoint JSON is never a fallback.
 
+### 5.2 Proposed secret write boundary (R039)
+
+The built-in scanner becomes the authoritative gate for all public service
+mutations, including direct library callers and generated recurrence text.
+Managed fleet artifacts lock `enforce` and reject worker acknowledgments;
+general-purpose artifacts retain ADR-014 behavior. Recovery may complete
+locally, but a newly detected blocking finding holds checkpoint publication
+and `sync commit` until fingerprint-selected redaction has produced a
+verified sanitized generation. Doctor, status, and capabilities make the
+effective policy and quarantine visible without printing matched bytes.
+
+These are proposed contracts in ADR-020 through ADR-022 and
+`research/specs/secret-write-boundary-v1.md`, not current release claims.
+BR-T29 authors the documents, BR-T30 independently reviews their exact hash,
+and BR-T31 through BR-T33 implement the accepted service, policy, and recovery
+boundaries in dependency order. The existing `secret-scanner` fleet beads
+`fss-3aa3e0b6` and `fss-5f007601` own the independent Forgejo and fleet
+transport checks; they do not substitute for the bead-rs write gate.
+
 ## 6. Artifact-by-artifact transition ledger
 
 | ID | Artifact(s) | Change | Acceptance evidence | Status |
@@ -405,6 +448,11 @@ operator must stop; hand-editing SQLite or checkpoint JSON is never a fallback.
 | BR-T26 | ADR-017, `needle-v1` specification, schemas, recursive help, capabilities and concurrency fixtures | Freeze and advertise the claim-epoch contract, then prove every command and profile obeys it without weakening older profile behavior | accepted ADR/spec review, capability snapshots, installed-binary help and twenty-claimant concurrency fixture | transition chain through `beadrs-eec200d1`, `beadrs-24a3a27b` |
 | BR-T27 | exact-source packaging and NEEDLE consumer conformance | Build one pinned artifact and run the old/new consumer matrix plus duplicate-worker replay before release | source/binary hashes, archive-build proof, restore rehearsal, NEEDLE canary and rollback receipt agree | blocked by BR-T23–BR-T26; `beadrs-41b9130e` |
 | BR-T28 | existing manifest transaction, planner guidance, dependency graph and resource declarations | Make manifest-based atomic materialization the required/default planner path; retain assigned-staging only for shapes the manifest cannot express | concurrent claimer observes zero wins before graph commit; create resource keys are present at first visibility; cycle, missing-ID and replay failures leave no partial issue or edge | transition; `beadrs-57c668be` |
+| BR-T29 | ADR-020 through ADR-022, plan, proposed contract and fixtures | Specify the public service gate, managed policy, and recovery quarantine without claiming approval | Link and scope audit; no secret-shaped values committed | authoring; `beadrs-b49b7f22` |
+| BR-T30 | independent exact-hash contract review | Accept or reject `secret-write-boundary-v1` and resolve the false-positive recovery path before code | Reviewer identity, exact spec/fixture hashes, compatibility and threat-model disposition | blocked by BR-T29; `beadrs-b1bb3723` |
+| BR-T31 | public service mutation API | Enforce canonical scan before every public write and generated text commit | Direct library plus CLI atomicity, redaction, audit, recurrence and manifest tests; full Rust gates | blocked by BR-T30; `beadrs-235ead28` |
+| BR-T32 | managed artifact, capabilities and policy | Reject workspace downgrade and worker acknowledgment in the managed fleet build | Both build profiles, downgrade/tamper, capability, installed-binary and fleet pin evidence | blocked by BR-T31; `beadrs-d527e9dc` |
+| BR-T33 | restore/import/reconcile, publication and commit | Quarantine newly detected blocking findings before Git-trackable publication | Clean and finding-bearing recovery, restart, concurrency, redaction clearance, flush/commit refusal | blocked by BR-T32; `beadrs-297416cc` |
 
 General mutation idempotency remains a separate potential feature. BR-T03–T08
 adopt idempotency only for the attempt-resolution boundary required by the
@@ -464,6 +512,13 @@ The attempt-outcome capability is releasable only when:
 14. a redacted exact-release artifact passes the same repository gitleaks
     configuration and a guarded Forgejo push without an allowlist broader than
     one independently classified false-positive fingerprint.
+
+R039 adds release gates after its contract is independently accepted: direct
+library and CLI callers return the same redacted scan verdict before commit;
+the managed artifact rejects policy downgrade and acknowledgment; and a
+finding-bearing recovery cannot publish or commit a new checkpoint before a
+verified sanitized generation exists. The exact source and pinned fleet
+artifact must pass the repository Rust gates and a Git transport canary.
 
 Current exact-source gate snapshot (2026-09-04): the redaction unit,
 transaction, publication, recovery, installed-binary, package, and NEEDLE
@@ -3184,6 +3239,18 @@ access-key-ID assignment detector after the motivating remediation proved that
 credential identifiers can persist after a secret value is removed. BR-T18
 remains open until the exact packaged artifact, full Rust gates, and NEEDLE
 remediation evidence all pass together.
+
+### R039 — Secret write boundary and recovery publication quarantine
+
+Extend R038's accepted CLI protection to the public service API, lock the
+managed fleet's minimum policy outside workspace control, and prevent
+finding-bearing recovery from creating a new Git-trackable checkpoint. The
+proposed decisions are ADR-020 through ADR-022; the proposed normative
+contract is `research/specs/secret-write-boundary-v1.md`. BR-T29 through
+BR-T33 carry authoring, independent review, implementation and conformance.
+R039 is not implemented or release-backed until that exact-hash review and
+all three implementation beads complete. The fast-secret-scanner repository
+owns staged and Forgejo push gates separately.
 
 ## 13. Release gates
 

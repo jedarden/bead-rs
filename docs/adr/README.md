@@ -54,3 +54,6 @@ Use the template in `000-template.md` for new ADRs. Each ADR should include:
 | [017](017-gate-ready-to-commit-on-git-reachability.md) | Gate `ready_to_commit` on Git reachability | Accepted | 2026-09-13 |
 | [018](018-auto-stage-published-checkpoint-fileset.md) | Auto-Stage the Published Checkpoint Fileset | Accepted | 2026-09-13 |
 | [019](019-explicit-sync-commit-command.md) | The Explicit `sync commit` Command | Accepted | 2026-09-14 |
+| [020](020-enforce-secret-scanning-at-service-writes.md) | Enforce secret scanning at service writes | Proposed | 2026-10-02 |
+| [021](021-lock-fleet-secret-scan-policy.md) | Lock secret scanning policy for managed fleets | Proposed | 2026-10-02 |
+| [022](022-quarantine-secret-bearing-recovery.md) | Quarantine secret-bearing recovery before publication | Proposed | 2026-10-02 |
