@@ -137,7 +137,17 @@ if ! (cd "$SCRATCH" && CARGO_TARGET_DIR="$SCRATCH/target" "${BUILD_CMD[@]}" 2>&1
 	die "build of $SHORT_SHA failed (full log: $BUILD_LOG)"
 fi
 
-BIN="$SCRATCH/target/release/bead"
+# Ask Cargo where the build landed instead of assuming $SCRATCH/target: a
+# host cargo wrapper may redirect CARGO_TARGET_DIR (codinghome and lab force
+# /build/<repo>, needle-d6b685b4), and `cargo metadata` reports the
+# effective directory through the same wrapper (beadrs-049cfb7b). That
+# directory can be shared with other builds, so the binary is copied out
+# immediately below.
+TARGET_DIR=$(cd "$SCRATCH" && CARGO_TARGET_DIR="$SCRATCH/target" \
+	cargo metadata --format-version 1 --no-deps --offline 2>/dev/null |
+	sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')
+[[ -n "$TARGET_DIR" ]] || TARGET_DIR="$SCRATCH/target"
+BIN="$TARGET_DIR/release/bead"
 [[ -x "$BIN" ]] || die "build reported success but $BIN is missing"
 
 # Run the binary once from inside the scratch dir to prove it executes; its
