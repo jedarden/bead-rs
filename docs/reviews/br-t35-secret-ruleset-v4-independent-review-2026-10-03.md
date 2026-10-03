@@ -10,7 +10,10 @@ or scanner output was inspected.
 
 ## Reviewed artifacts and exact identities
 
-The review is bound to the following bytes as present at `HEAD` `565fd14`:
+The review was first performed against the following bytes at review anchor
+commit `565fd14`. The contract artifacts below are byte-identical at the
+current committed `HEAD` `1f235fe`; the later v1 implementation corrections
+are noted below and do not change the ruleset-v4 target hash:
 
 | Artifact | SHA-256 |
 | --- | --- |
@@ -39,6 +42,27 @@ provider/JWT positives and near-misses, structural credentials, redaction,
 diagnostic coverage, and the advisory notice. The dirty worktree contains
 other workers' staged and untracked changes; none were staged, edited, or
 used as review evidence.
+
+## Current-tree revalidation
+
+The two committed changes after the original review were also checked. Commit
+`13d16c5` corrects the ruleset-3 npm checksum width and adds its boundary
+coverage; commit `1f235fe` makes the v1 keyword prefilter enumerate
+overlapping anchors and adds its regression coverage. Both are expressly
+allowed v1 corrections in the proposed v4 document. Neither defines the
+missing v4 qualifier table, derived-view limits, raw-range map, or advisory
+schema. The committed tree still has no v4 implementation, so these changes
+cannot be treated as conformance evidence for the proposed contract.
+
+The reviewed provider table does name `json-web-token` as a blocking rule,
+and section 4.5 requires an `alg` member in its decoded header. That intent is
+not yet testable as a deterministic blocking rule because section 3.2 leaves
+the base64url decoder grammar unspecified; no accepted v1 fixture supplies a
+v4 JWT truth table. Likewise, table rows are intended to block through
+`credential-assignment`, with `Q(value, 20)`, but the marker/separator
+ambiguity prevents a deterministic claim about the reported value and raw
+range. These are contract blockers, not a claim that the intended rules are
+absent.
 
 ## Findings requiring correction
 
@@ -72,7 +96,10 @@ Ruleset-v4 §5.2 instead names a member `secret_scan.advisory_findings` but
 does not define whether it is an integer count, a list of redacted findings,
 or another value. The existing synthetic notice test treats it as a list,
 while the ADR describes a count. NEEDLE permits additive JSON fields, but it
-does not make an unspecified field type compatible.
+does not make an unspecified field type compatible. Routing the notice to
+stderr is compatible with NEEDLE §5.2; the unresolved issue is what one
+notice record and the additive machine member mean, not that stderr itself is
+forbidden.
 
 Required correction: choose and state one JSON type, its exact placement on
 every machine-readable mutation result, and whether the count/list is
@@ -185,4 +212,3 @@ normative Q truth table and grammar, resolve the ADR-025 machine-schema
 conflict, specify table-row parsing, decoded-run selection/decoding, raw-range
 envelopes, URI percent-decoding, and bead-ID shape, the changed
 `secret-ruleset-v4.md` must receive a new exact-hash independent review.
-
