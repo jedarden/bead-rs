@@ -311,6 +311,124 @@ struct PendingRedaction {
     records: Option<(RedactionFinding, ResurrectionTombstone, Option<String>)>,
 }
 
+/// The outcome of planning a whole-workspace "remove every blocking secret"
+/// batch (beadrs-1c110ec3).
+#[derive(Debug, Default, Serialize)]
+pub struct AllBlockingSelection {
+    /// One fingerprint per overlap group, ready for
+    /// [`redact_findings_holding`] as a single atomic batch.
+    pub fingerprints: Vec<String>,
+    /// Blocking findings considered (live and retained, every ruleset).
+    pub considered: usize,
+    /// Findings dropped because another selected finding covers the same
+    /// bytes (a retained copy of a live finding, or a narrower overlapping
+    /// match from another rule or scanner).
+    pub covered: usize,
+}
+
+/// Select every current confirmed blocking finding for one atomic batch.
+///
+/// Native rules and organization-scanner parity rules routinely flag the
+/// same bytes with different ranges, and a retained checkpoint copy
+/// resolves to the same live bytes as its live finding. A batch may not hold
+/// two fingerprints for overlapping bytes (each redaction revalidates its
+/// own fingerprint), so this resolves every finding to its live location,
+/// groups overlaps per field, and keeps the one finding whose range covers
+/// the whole group: redacting it removes the bytes of every other member.
+/// A group that no single finding covers is refused, changing nothing.
+/// Acknowledged findings are included: an acknowledgment admits a write, it
+/// does not make the bytes any less sensitive.
+pub fn select_all_blocking_holding(
+    store: &mut SqliteStore,
+    locks: &RedactionLocks,
+) -> Result<AllBlockingSelection, RedactionError> {
+    verify_workspace(store.conn(), locks)?;
+    let report = crate::service::secret_diagnostics::run_secret_diagnostics(store)
+        .map_err(|_| integrity("could not inventory secret findings"))?;
+    let mut selection = AllBlockingSelection::default();
+    let mut located: Vec<LiveFindingLocation> = Vec::new();
+    let mut seen_fingerprints = BTreeSet::new();
+    for finding in report
+        .findings
+        .iter()
+        .filter(|finding| finding.is_blocking_match())
+    {
+        if !seen_fingerprints.insert(finding.fingerprint.clone()) {
+            continue;
+        }
+        selection.considered += 1;
+        let Some(location) =
+            resolve_redaction_finding(store.conn(), locks.checkpoint_dir(), &finding.fingerprint)?
+        else {
+            return Err(RedactionError::Conflict(
+                "a blocking finding no longer resolves to live bytes; rerun after the workspace settles"
+                    .to_string(),
+            ));
+        };
+        located.push(location);
+    }
+
+    // Group by (table, identity, field), then merge overlapping ranges.
+    located.sort_by(|left, right| {
+        (
+            left.table,
+            format!("{:?}", left.identity_values),
+            left.field,
+            left.finding.start,
+        )
+            .cmp(&(
+                right.table,
+                format!("{:?}", right.identity_values),
+                right.field,
+                right.finding.start,
+            ))
+            .then_with(|| right.finding.end.cmp(&left.finding.end))
+    });
+    let mut index = 0;
+    while index < located.len() {
+        let first = &located[index];
+        let key = (
+            first.table,
+            format!("{:?}", first.identity_values),
+            first.field,
+        );
+        let (group_start, mut group_end) = (first.finding.start, first.finding.end);
+        let mut next = index + 1;
+        while next < located.len() {
+            let candidate = &located[next];
+            let candidate_key = (
+                candidate.table,
+                format!("{:?}", candidate.identity_values),
+                candidate.field,
+            );
+            if candidate_key != key || candidate.finding.start >= group_end {
+                break;
+            }
+            group_end = group_end.max(candidate.finding.end);
+            next += 1;
+        }
+        let group = &located[index..next];
+        let Some(cover) = group
+            .iter()
+            .find(|member| member.finding.start == group_start && member.finding.end == group_end)
+        else {
+            return Err(RedactionError::Conflict(format!(
+                "{} overlapping findings in {} field {} have no single covering range; \
+                 redact them with explicit --finding selections",
+                group.len(),
+                first.origin_identity,
+                first.field
+            )));
+        };
+        selection
+            .fingerprints
+            .push(cover.finding.fingerprint.clone());
+        selection.covered += group.len() - 1;
+        index = next;
+    }
+    Ok(selection)
+}
+
 /// All selected fingerprints are validated in one locked snapshot. No caller
 /// supplied value, replacement text, selector or SQL crosses this boundary.
 pub fn redact_findings_holding(

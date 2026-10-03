@@ -13,6 +13,7 @@
 //! quoting it.
 
 mod credential_shape;
+pub mod external;
 pub mod fingerprint;
 pub mod rules;
 mod structured_credentials;
@@ -936,6 +937,10 @@ fn scan_raw_field(selector: &str, field: &Field<'_>) -> Vec<Finding> {
 pub(crate) fn scan_field(selector: &str, field: &Field<'_>) -> Vec<Finding> {
     let mut findings = scan_raw_field(selector, field);
     findings.extend(structured_credentials::scan(selector, field, false));
+    // Organization-scanner parity (beadrs-1c110ec3): whatever the fleet's
+    // Git-side scanner reports for this text is a finding here too, so it can
+    // be rejected at write time and redacted atomically.
+    findings.extend(external::scan(selector, field));
     for view in text_views::derived(field.text) {
         let derived = Field::new(field.path, &view.text);
         let mut matches = scan_raw_field(selector, &derived);

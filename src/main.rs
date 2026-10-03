@@ -416,10 +416,6 @@ fn cmd_redact(opts: cli::RedactOptions) -> Result<()> {
         return Ok(());
     }
 
-    let fingerprint = opts
-        .finding
-        .first()
-        .ok_or_else(|| Error::cli_usage("--finding or --resume is required"))?;
     let actor = opts
         .actor
         .as_deref()
@@ -428,12 +424,42 @@ fn cmd_redact(opts: cli::RedactOptions) -> Result<()> {
         .reason
         .as_deref()
         .ok_or_else(|| Error::cli_usage("--reason is required with --finding"))?;
+    let selected = if opts.all_blocking {
+        let selection = service::select_all_blocking_holding(&mut store, &locks)?;
+        if selection.fingerprints.is_empty() {
+            if opts.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &serde_json::json!({"selection": selection, "receipts": []})
+                    )?
+                );
+            } else {
+                println!("No blocking secret findings; nothing to redact");
+            }
+            return Ok(());
+        }
+        if !opts.json {
+            eprintln!(
+                "Selected {} finding(s) for one atomic batch ({} considered, {} covered by an overlapping selection)",
+                selection.fingerprints.len(),
+                selection.considered,
+                selection.covered
+            );
+        }
+        selection.fingerprints
+    } else {
+        opts.finding.clone()
+    };
+    let fingerprint = selected
+        .first()
+        .ok_or_else(|| Error::cli_usage("--finding, --all-blocking, or --resume is required"))?;
 
-    if opts.finding.len() > 1 {
+    if selected.len() > 1 || opts.all_blocking {
         let outcomes = service::redact_findings_holding(
             &mut store,
             &locks,
-            &opts.finding,
+            &selected,
             actor,
             reason,
             opts.dry_run,

@@ -134,8 +134,8 @@ pub use recurrence::{
 #[allow(unused_imports)]
 pub use redaction::{
     acquire_redaction_locks, load_redaction_receipt, preview_redaction_holding, redact_finding,
-    redact_finding_holding, redact_findings_holding, RedactionLocks, RedactionOutcome,
-    RedactionPreview,
+    redact_finding_holding, redact_findings_holding, select_all_blocking_holding, RedactionLocks,
+    RedactionOutcome, RedactionPreview,
 };
 pub use rehearsal::run_recovery_rehearsal;
 pub use schema::{

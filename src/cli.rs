@@ -166,7 +166,16 @@ when workspace automatic publication is disabled.
 If publication fails after the SQLite redaction commits, no semantic mutation is
 repeated. Resume the recorded receipt with `bead redact --resume RECEIPT_ID`.
 
+Repeating --finding redacts several ranges in one atomic batch. --all-blocking
+selects every current confirmed blocking finding (native rules, plus the
+organization scanner when BEAD_ORG_SECRET_SCANNER names it; live and retained;
+acknowledged ones included) and collapses overlapping matches to the one finding
+that covers them, so one transaction and one sanitized publication remove every
+copy. Overlaps that no single finding covers are refused without changes.
+
 EXAMPLES:
+  bead redact --all-blocking --actor operator --reason \"credential rotation\" --dry-run
+  bead redact --all-blocking --actor operator --reason \"credential rotation\" --json
   bead doctor --scope secrets --format json
   bead redact --finding FINGERPRINT --actor operator --reason \"credential rotation\" --dry-run --json
   bead redact --finding FINGERPRINT --actor operator --reason \"credential rotation\" --json
@@ -1130,9 +1139,15 @@ pub struct ReopenOptions {
     ArgGroup::new("redaction_selection")
         .required(true)
         .multiple(false)
-        .args(["finding", "resume"])
+        .args(["finding", "resume", "all_blocking"])
 ))]
 pub struct RedactOptions {
+    /// Select every current blocking finding (native and organization
+    /// scanner, live and retained) for one atomic batch: overlapping matches
+    /// collapse to the one finding that covers them all
+    #[arg(long, conflicts_with_all = ["finding", "resume"])]
+    pub all_blocking: bool,
+
     /// Live or retained-checkpoint fingerprint; repeat for one atomic batch
     #[arg(long, value_name = "FINGERPRINT")]
     pub finding: Vec<String>,

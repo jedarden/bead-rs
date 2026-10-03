@@ -4,7 +4,7 @@
 .SH NAME
 bead redact \- Redact one historical secret by scanner fingerprint
 .SH SYNOPSIS
-\fBbead redact\fR [\fB\-\-actor\fR] [\fB\-\-reason\fR] [\fB\-\-dry\-run\fR] [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-finding\fR|\fB\-\-resume\fR> 
+\fBbead redact\fR [\fB\-\-actor\fR] [\fB\-\-reason\fR] [\fB\-\-dry\-run\fR] [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-finding\fR|\fB\-\-resume\fR|\fB\-\-all\-blocking\fR> 
 .SH DESCRIPTION
 Destroy exactly one sensitive byte range selected by a current secret\-scanner fingerprint.
 .PP
@@ -20,7 +20,16 @@ when workspace automatic publication is disabled.
 If publication fails after the SQLite redaction commits, no semantic mutation is
 repeated. Resume the recorded receipt with `bead redact \-\-resume RECEIPT_ID`.
 .PP
+Repeating \-\-finding redacts several ranges in one atomic batch. \-\-all\-blocking
+selects every current confirmed blocking finding (native rules, plus the
+organization scanner when BEAD_ORG_SECRET_SCANNER names it; live and retained;
+acknowledged ones included) and collapses overlapping matches to the one finding
+that covers them, so one transaction and one sanitized publication remove every
+copy. Overlaps that no single finding covers are refused without changes.
+.PP
 EXAMPLES:
+  bead redact \-\-all\-blocking \-\-actor operator \-\-reason "credential rotation" \-\-dry\-run
+  bead redact \-\-all\-blocking \-\-actor operator \-\-reason "credential rotation" \-\-json
   bead doctor \-\-scope secrets \-\-format json
   bead redact \-\-finding FINGERPRINT \-\-actor operator \-\-reason "credential rotation" \-\-dry\-run \-\-json
   bead redact \-\-finding FINGERPRINT \-\-actor operator \-\-reason "credential rotation" \-\-json
@@ -34,8 +43,11 @@ EXIT CODES:
   4  stale target or semantic conflict
 .SH OPTIONS
 .TP
+\fB\-\-all\-blocking\fR
+Select every current blocking finding (native and organization scanner, live and retained) for one atomic batch: overlapping matches collapse to the one finding that covers them all
+.TP
 \fB\-\-finding\fR \fI<FINGERPRINT>\fR
-Live or retained\-checkpoint fingerprint reported by secret diagnostics
+Live or retained\-checkpoint fingerprint; repeat for one atomic batch
 .TP
 \fB\-\-resume\fR \fI<RECEIPT_ID>\fR
 Resume sanitized publication for an already committed receipt
