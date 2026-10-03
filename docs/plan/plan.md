@@ -1921,6 +1921,13 @@ native backups.
 
 #### 6.1.1 Adaptive sharded checkpoint set
 
+The compatibility view exists only while the active generation is a monolith
+(beadrs-43d4bcb6). A sharded generation removes `forensic.jsonl` after its
+pointer commits and stages the removal; a later monolithic generation recreates
+it byte-identical to its root. A stale view would let the
+`sync import-only --input forensic.jsonl` recovery restore superseded state, or,
+after a redaction, bytes removed everywhere else.
+
 Small workspaces use `.beads/checkpoint/forensic.jsonl` as the nonauthoritative
 view of the pointer-selected forensic monolith. `.beads/issues.jsonl` remains
 the separate issue-per-line interoperability checkpoint. Native forensic

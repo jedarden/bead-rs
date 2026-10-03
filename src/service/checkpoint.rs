@@ -7696,17 +7696,16 @@ fn publish_forensic_checkpoint_inner(
         }
     };
 
-    if redaction_request.is_some() && mode == CheckpointMode::Sharded {
-        // Sharded generations do not ordinarily maintain the compatibility
-        // view. A redaction cannot leave a stale monolithic view containing
-        // the removed bytes, so rewrite it from the same sanitized corpus.
-        publish_forensic_view(&corpus, &checkpoint_dir, scratch_dir)?;
-        changed_paths.push("forensic.jsonl".to_string());
-    }
+    // The compatibility view exists only while the active generation is a
+    // monolith (beadrs-43d4bcb6, plan 6.1.1). A sharded generation removes
+    // it below, after its pointer commits: a stale view would be the last
+    // monolith, and the documented `import-only --input forensic.jsonl`
+    // recovery would silently restore old state from it -- or, after a
+    // redaction, bytes that were removed everywhere else.
     // Whether this generation wrote the compatibility view: it is among the
-    // referenced paths in monolithic mode, and rewritten explicitly in the
-    // sharded redaction case above. The ADR-018 staging set needs to know,
-    // because the view is part of what one external Git commit must carry.
+    // referenced paths in monolithic mode. The ADR-018 staging set needs to
+    // know, because the view is part of what one external Git commit must
+    // carry.
     let view_written = changed_paths.iter().any(|path| path == "forensic.jsonl");
 
     // Update checkpoint pointers in a write transaction
@@ -7921,6 +7920,30 @@ fn publish_forensic_checkpoint_inner(
     // failure cannot fail the publication that already committed (the
     // ADR-017 rule that publication keys on internals alone); the ordinary
     // `sync status` reachability buckets surface whatever did not stage.
+    // Retire the compatibility view under a sharded generation now that the
+    // pointer has committed (see above). Its removal is part of what one
+    // external Git commit must carry.
+    let mut staged_deletions = deleted_paths_sorted.clone();
+    if mode == CheckpointMode::Sharded {
+        let view_path = checkpoint_dir.join("forensic.jsonl");
+        match std::fs::remove_file(&view_path) {
+            Ok(()) => {
+                changed_paths.push("forensic.jsonl".to_string());
+                staged_deletions.push("forensic.jsonl".to_string());
+                if let Ok(directory) = File::open(&checkpoint_dir) {
+                    let _ = directory.sync_all();
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(anyhow!(
+                    "could not retire the compatibility view after a sharded publication: {}",
+                    error
+                ))
+            }
+        }
+    }
+
     if config.auto_stage_enabled() {
         let mut stage_candidates: Vec<String> = publication.referenced_paths.clone();
         stage_candidates.extend(previous_files.iter().cloned());
@@ -7938,7 +7961,7 @@ fn publish_forensic_checkpoint_inner(
             workspace_root,
             &checkpoint_dir,
             &stage_candidates,
-            &deleted_paths_sorted,
+            &staged_deletions,
         ) {
             eprintln!(
                 "checkpoint-publish: warning: staging the verified checkpoint \
@@ -8372,35 +8395,6 @@ fn publish_monolithic_checkpoint(
         root_path: root_path.clone(),
         referenced_paths: vec![root_path, "forensic.jsonl".to_string()],
     })
-}
-
-fn publish_forensic_view(
-    corpus: &SerializedCorpus,
-    checkpoint_dir: &Path,
-    scratch_dir: Option<&Path>,
-) -> Result<()> {
-    let view_path = checkpoint_dir.join("forensic.jsonl");
-    let view_temp = publication_temp_path(
-        scratch_dir,
-        &view_path.with_extension("tmp"),
-        "sharded-forensic-view.tmp",
-    );
-    let mut file = create_publication_temp(&view_temp, scratch_dir.is_some())?;
-    for line in corpus
-        .issue_lines
-        .iter()
-        .chain(corpus.event_lines.iter())
-        .chain(corpus.receipt_lines.iter())
-        .chain(corpus.attempt_outcome_lines.iter())
-        .chain(corpus.redaction_lines.iter())
-    {
-        file.write_all(line)?;
-        file.write_all(b"\n")?;
-    }
-    file.sync_all()?;
-    drop(file);
-    std::fs::rename(&view_temp, &view_path)?;
-    sync_dir(checkpoint_dir)
 }
 
 /// Maximum hex-prefix depth of an issue shard partition (a shard key is a
