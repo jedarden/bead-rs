@@ -319,7 +319,7 @@ bead stores on one fleet host. Ruleset 3 reported 0 blocking and 37,547
 advisory findings there. The prototype reported 11 distinct blocking values
 in 12 beads, and every identifier that triggered `credential-assignment`
 named a credential. Ruleset 3 classified none of those values as blocking.
-For the values examined in detail it gave four of ten stored copies no
+For the values examined in detail it gave four of twelve stored copies no
 finding of any tier, which left `bead redact` with nothing to select.
 Dispositions belong to the operator-held release evidence of section 7, not
 to this document.
