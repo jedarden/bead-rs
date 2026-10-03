@@ -11,8 +11,8 @@ or scanner output was inspected.
 ## Reviewed artifacts and exact identities
 
 The review was first performed against the following bytes at review anchor
-commit `565fd14`. The contract artifacts below are byte-identical at the
-current committed `HEAD` `8417d8b`; the later v1 implementation corrections
+commit `565fd14`. The contract artifacts below remain byte-identical through
+the committed review corrections; the later v1 implementation corrections
 are noted below and do not change the ruleset-v4 target hash:
 
 | Artifact | SHA-256 |
