@@ -1,0 +1,57 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead sync configure" 1  "bead sync configure " 
+.SH NAME
+bead sync configure \- Set the checkpoint mode and per\-object size limit
+.SH SYNOPSIS
+\fBbead sync configure\fR [\fB\-\-mode\fR] [\fB\-\-max\-object\-bytes\fR] [\fB\-\-dry\-run\fR] [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Record the checkpoint section of .beads/config.json and publish under it.
+.PP
+Plan 6.1.1 lets operators force monolithic or sharded output, and its size
+thresholds are versioned configuration. This command is the supported way to
+change them; it rewrites only the `checkpoint` section and keeps every other
+key of .beads/config.json.
+.PP
+  \-\-mode adaptive     select monolithic or sharded from the thresholds (default)
+  \-\-mode monolithic   force one forensic.jsonl monolith (refused above the
+                      safety limits, as for any forced monolith)
+  \-\-mode sharded      force a manifest of content\-addressed shard objects
+.PP
+  \-\-max\-object\-bytes N
+                      upper bound for every issue shard and event object; the
+                      record\-line limit is capped at the same value. Applied on
+                      top of the configured thresholds, or the plan defaults.
+                      Minimum 1048576.
+.PP
+The proposed document is validated with the same rules every later load
+applies. Under the checkpoint publication lock the file is replaced atomically
+and a generation is published under the new configuration; if that
+publication fails the previous file is restored. Like flush\-only, it refuses
+while the checkpoint is remote\-advanced or in a covered\-ahead integrity
+failure. A request that changes nothing publishes nothing.
+.PP
+In sharded mode .beads/checkpoint/forensic.jsonl is no longer maintained: it is
+a nonauthoritative view and stays as the last monolith published. Recover from
+the pointer with \*(Aqbead restore \-\-source .beads/checkpoint \-\-generation <GEN>\*(Aq.
+.PP
+EXAMPLES:
+  bead sync configure \-\-mode sharded \-\-max\-object\-bytes 8388608
+  bead sync configure \-\-mode sharded \-\-dry\-run \-\-json
+  bead sync configure \-\-mode adaptive
+.SH OPTIONS
+.TP
+\fB\-\-mode\fR \fI<MODE>\fR
+Checkpoint mode: adaptive, monolithic, or sharded
+.TP
+\fB\-\-max\-object\-bytes\fR \fI<MAX_OBJECT_BYTES>\fR
+Upper bound in bytes for every issue shard and event object
+.TP
+\fB\-\-dry\-run\fR
+Validate and report the change without writing or publishing
+.TP
+\fB\-\-json\fR
+Emit the result as JSON on stdout
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

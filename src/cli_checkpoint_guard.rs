@@ -48,6 +48,8 @@ fn policy(command: &Command) -> Option<bool> {
         Command::Sync(command) => match command {
             SyncCommand::Fork(_) => Some(true),
             SyncCommand::FlushOnly(opts) => opts.output.is_none().then_some(true),
+            // Rewrites .beads/config.json and publishes; a dry run only reads.
+            SyncCommand::Configure(opts) => (!opts.dry_run).then_some(true),
             SyncCommand::ImportOnly(_) | SyncCommand::Reconcile(_) => Some(false),
             // `sync commit` (ADR-019) mutates Git, never beads state, and
             // it must not hold the workspace operation lock across the

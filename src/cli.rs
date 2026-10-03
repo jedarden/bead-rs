@@ -1318,6 +1318,46 @@ GIT INTEGRATION:
     )]
     FlushOnly(SyncFlushOptions),
 
+    /// Set the checkpoint mode and per-object size limit
+    #[command(
+        name = "configure",
+        about = "Set the checkpoint mode and per-object size limit",
+        long_about = "Record the checkpoint section of .beads/config.json and publish under it.
+
+Plan 6.1.1 lets operators force monolithic or sharded output, and its size
+thresholds are versioned configuration. This command is the supported way to
+change them; it rewrites only the `checkpoint` section and keeps every other
+key of .beads/config.json.
+
+  --mode adaptive     select monolithic or sharded from the thresholds (default)
+  --mode monolithic   force one forensic.jsonl monolith (refused above the
+                      safety limits, as for any forced monolith)
+  --mode sharded      force a manifest of content-addressed shard objects
+
+  --max-object-bytes N
+                      upper bound for every issue shard and event object; the
+                      record-line limit is capped at the same value. Applied on
+                      top of the configured thresholds, or the plan defaults.
+                      Minimum 1048576.
+
+The proposed document is validated with the same rules every later load
+applies. Under the checkpoint publication lock the file is replaced atomically
+and a generation is published under the new configuration; if that
+publication fails the previous file is restored. Like flush-only, it refuses
+while the checkpoint is remote-advanced or in a covered-ahead integrity
+failure. A request that changes nothing publishes nothing.
+
+In sharded mode .beads/checkpoint/forensic.jsonl is no longer maintained: it is
+a nonauthoritative view and stays as the last monolith published. Recover from
+the pointer with 'bead restore --source .beads/checkpoint --generation <GEN>'.
+
+EXAMPLES:
+  bead sync configure --mode sharded --max-object-bytes 8388608
+  bead sync configure --mode sharded --dry-run --json
+  bead sync configure --mode adaptive"
+    )]
+    Configure(SyncConfigureOptions),
+
     /// Import forensic checkpoint with restore or merge
     #[command(
         name = "import-only",
@@ -1704,6 +1744,26 @@ pub struct SyncImportOptions {
     /// Enable diagnostic mode (R014) with detailed validation failure collection
     #[arg(long)]
     pub diagnostics: bool,
+}
+
+/// Options for configuring the checkpoint section
+#[derive(Parser, Debug)]
+pub struct SyncConfigureOptions {
+    /// Checkpoint mode: adaptive, monolithic, or sharded
+    #[arg(long)]
+    pub mode: Option<String>,
+
+    /// Upper bound in bytes for every issue shard and event object
+    #[arg(long)]
+    pub max_object_bytes: Option<u64>,
+
+    /// Validate and report the change without writing or publishing
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Emit the result as JSON on stdout
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Options for checkpoint status

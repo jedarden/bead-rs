@@ -382,6 +382,16 @@ pub fn load_checkpoint_config(beads_dir: &Path) -> Result<CheckpointConfig> {
     let parsed: serde_json::Value =
         serde_json::from_str(&raw).map_err(|e| anyhow!("Invalid .beads/config.json: {}", e))?;
 
+    parse_checkpoint_config_document(&parsed)
+}
+
+/// Interpret the `checkpoint` section of an already-parsed
+/// `.beads/config.json` document
+///
+/// Shared by [`load_checkpoint_config`] and `bead sync configure`, which
+/// validates a proposed document with exactly the rules every later load
+/// applies before it writes anything.
+pub fn parse_checkpoint_config_document(parsed: &serde_json::Value) -> Result<CheckpointConfig> {
     let Some(section) = parsed.get("checkpoint") else {
         return Ok(CheckpointConfig::default());
     };

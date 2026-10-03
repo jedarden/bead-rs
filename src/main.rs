@@ -1971,6 +1971,7 @@ fn print_manifest_report(report: &service::ManifestReport, format: &str) -> Resu
 fn cmd_sync(cmd: cli::SyncCommand) -> Result<()> {
     match cmd {
         cli::SyncCommand::FlushOnly(opts) => cmd_sync_flush_only(opts),
+        cli::SyncCommand::Configure(opts) => cmd_sync_configure(opts),
         cli::SyncCommand::ImportOnly(opts) => cmd_sync_import_only(opts),
         cli::SyncCommand::Reconcile(opts) => cmd_sync_reconcile(opts),
         cli::SyncCommand::Commit(opts) => cmd_sync_commit(opts),
@@ -2130,6 +2131,109 @@ fn cmd_sync_flush_only(opts: cli::SyncFlushOptions) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn cmd_sync_configure(opts: cli::SyncConfigureOptions) -> Result<()> {
+    use service::checkpoint_configure::{
+        apply_checkpoint_config_change, plan_checkpoint_config_change, CheckpointConfigChange,
+        ModeSetting,
+    };
+
+    let mode = opts
+        .mode
+        .as_deref()
+        .map(ModeSetting::parse)
+        .transpose()
+        .map_err(|e| Error::validation(format!("{:#}", e)))?;
+    let change = CheckpointConfigChange {
+        mode,
+        max_object_bytes: opts.max_object_bytes,
+    };
+
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+    let checkpoint_base = config.root.join(".beads");
+    let plan = plan_checkpoint_config_change(&checkpoint_base, &change)
+        .map_err(|e| Error::validation(format!("{:#}", e)))?;
+
+    let report_json = |plan: &service::checkpoint_configure::PlannedConfigChange,
+                       publication: Option<&service::checkpoint::ForensicFlushResult>,
+                       dry_run: bool| {
+        serde_json::json!({
+            "dry_run": dry_run,
+            "changed": plan.changed,
+            "checkpoint_before": plan.before,
+            "checkpoint_after": plan.after,
+            "published": publication.map(|p| serde_json::json!({
+                "mode": p.mode.as_str(),
+                "generation_id": p.generation_id,
+                "covered_sequence": p.covered_sequence,
+                "changed_paths": p.changed_paths,
+            })),
+        })
+    };
+
+    if opts.dry_run {
+        if opts.json {
+            println!("{}", report_json(&plan, None, true));
+        } else {
+            eprintln!("Checkpoint configuration (dry run, nothing written):");
+            eprintln!("  Changes: {}", if plan.changed { "yes" } else { "no" });
+            eprintln!("  Proposed checkpoint section: {}", plan.after);
+        }
+        return Ok(());
+    }
+
+    let db_path = config.database_path();
+    let conn = store::open_configured_connection(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+    let mut store = store::SqliteStore::from_conn(conn);
+
+    // Same R027 refusals as flush-only: publishing over a checkpoint that
+    // is ahead of the live store would discard or overwrite evidence.
+    if plan.changed {
+        let report = service::forensic_checkpoint_status(&mut store, &checkpoint_base)?;
+        if report.relationship == service::reconcile::SyncRelationship::RemoteAdvanced.as_str() {
+            return Err(Error::conflict(format!(
+                "configure refused: the checkpoint is remote-advanced (covered {} > live {}) - {}",
+                report.covered_sequence.unwrap_or_default(),
+                report.live_sequence,
+                service::reconcile::REMOTE_ADVANCED_REMEDY
+            )));
+        }
+        if report.relationship
+            == service::reconcile::SyncRelationship::CoveredAheadIntegrityFailure.as_str()
+        {
+            return Err(Error::integrity(
+                "configure refused: covered-ahead integrity failure; resolve it before \
+                 changing the checkpoint configuration",
+            ));
+        }
+    }
+
+    let applied = apply_checkpoint_config_change(&mut store, &checkpoint_base, plan)?;
+
+    if opts.json {
+        println!(
+            "{}",
+            report_json(&applied.plan, applied.publication.as_ref(), false)
+        );
+        return Ok(());
+    }
+    match &applied.publication {
+        None => {
+            eprintln!("Checkpoint configuration already as requested; nothing written.");
+        }
+        Some(result) => {
+            eprintln!("Checkpoint configuration updated:");
+            eprintln!("  Checkpoint section: {}", applied.plan.after);
+            eprintln!("  Published mode: {}", result.mode.as_str());
+            eprintln!("  Generation: {}", result.generation_id);
+            eprintln!("  Covered sequence: {}", result.covered_sequence);
+            eprintln!("  Changed paths: {}", result.changed_paths.len());
+        }
+    }
     Ok(())
 }
 

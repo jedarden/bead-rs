@@ -9,6 +9,7 @@ pub mod attempt;
 pub mod capabilities;
 pub mod changes;
 pub mod checkpoint;
+pub mod checkpoint_configure;
 pub mod claim;
 pub mod comparison;
 pub mod conditions;

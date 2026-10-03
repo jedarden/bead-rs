@@ -746,6 +746,22 @@ fn registry() -> Vec<RegisteredCommand> {
             invoke: |_| vec!["sync".into(), "flush-only".into()],
         },
         RegisteredCommand {
+            path: "bead sync configure",
+            class: NonMutating,
+            reason: "rewrites the checkpoint section of .beads/config.json and publishes \
+                     a generation under it, like flush-only; workspace configuration is \
+                     not state the forensic checkpoint carries, and an event would \
+                     re-dirty the checkpoint it just published",
+            invoke: |_| {
+                vec![
+                    "sync".into(),
+                    "configure".into(),
+                    "--mode".into(),
+                    "sharded".into(),
+                ]
+            },
+        },
+        RegisteredCommand {
             path: "bead sync status",
             class: NonMutating,
             reason: "read-only checkpoint freshness report",
