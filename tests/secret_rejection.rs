@@ -1,6 +1,7 @@
 //! End-to-end coverage for the secret-rejection contract at the CLI boundary.
 
 use assert_cmd::Command;
+use bead_rs::scan::{rules::encode_base62_crc32, Checksum};
 use rusqlite::Connection;
 use serde_json::Value;
 use std::path::Path;
@@ -36,6 +37,15 @@ fn aws_secret_access_key_assignment() -> String {
 fn garage_access_key_id_assignment() -> String {
     let value = [["G", "K"].concat(), "7e4a19c2b6d83f501ac942".to_string()].concat();
     format!("SCCACHE_AWS_ACCESS_KEY_ID={value}")
+}
+
+fn npm_publish_token() -> String {
+    let alphabet = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    let payload: String = (0..30)
+        .map(|index| alphabet[(index * 11 + 5) % alphabet.len()] as char)
+        .collect();
+    let checksum = encode_base62_crc32(Checksum::NpmBase62Crc32, payload.as_bytes());
+    format!("npm_{payload}{checksum}")
 }
 
 fn placeholder_shaped_value() -> String {
@@ -175,6 +185,68 @@ fn garage_access_key_id_assignment_rejects_atomically_without_disclosure() {
     assert!(stderr.contains("garage-access-key-id-assignment"));
     assert!(!stderr.contains(&assignment));
     assert!(!stdout.contains(&assignment));
+}
+
+#[test]
+fn npm_checksum_is_enforced_at_the_cli_boundary() {
+    let workspace = workspace();
+    let conforming = npm_publish_token();
+
+    let rejected = Command::cargo_bin("bead")
+        .unwrap()
+        .current_dir(workspace.path())
+        .env("BEAD_ORG_SECRET_SCANNER", "off")
+        .args(["create", "--title", "safe title", "--description"])
+        .arg(&conforming)
+        .arg("--no-auto-flush")
+        .output()
+        .unwrap();
+    assert_eq!(rejected.status.code(), Some(2));
+    assert_eq!(counts(workspace.path()), (0, 0));
+    let rejected_stderr = String::from_utf8(rejected.stderr).unwrap();
+    assert!(rejected_stderr.contains("secret_detected"));
+    assert!(rejected_stderr.contains("npm-publish-token"));
+    assert!(!rejected_stderr.contains(&conforming));
+
+    let mut tampered = conforming.clone();
+    let last = tampered.pop().unwrap();
+    tampered.push(if last == '0' { '1' } else { '0' });
+    let admitted = Command::cargo_bin("bead")
+        .unwrap()
+        .current_dir(workspace.path())
+        .env("BEAD_ORG_SECRET_SCANNER", "off")
+        .args(["create", "--title", "safe title", "--description"])
+        .arg(&tampered)
+        .arg("--no-auto-flush")
+        .output()
+        .unwrap();
+    assert!(admitted.status.success());
+    assert_eq!(counts(workspace.path()).0, 1);
+    let admitted_stderr = String::from_utf8(admitted.stderr).unwrap();
+    assert!(admitted_stderr.contains("secret_scan advisory"));
+    assert!(admitted_stderr.contains("npm-publish-token"));
+    assert!(!admitted_stderr.contains(&tampered));
+
+    let diagnostics = Command::cargo_bin("bead")
+        .unwrap()
+        .current_dir(workspace.path())
+        .env("BEAD_ORG_SECRET_SCANNER", "off")
+        .args(["doctor", "--scope", "secrets", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(diagnostics.status.success());
+    let report: Value = serde_json::from_slice(&diagnostics.stdout).unwrap();
+    let findings = report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["name"] == "secret_scan")
+        .expect("secret diagnostics check")["details"]["findings"]
+        .as_array()
+        .expect("secret diagnostics findings");
+    assert!(findings.iter().any(|finding| {
+        finding["rule_id"] == "npm-publish-token" && finding["disposition"] == "checksum_failed"
+    }));
 }
 
 #[test]

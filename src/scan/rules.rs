@@ -529,13 +529,18 @@ mod tests {
     }
 
     #[test]
-    fn npm_checksum_is_six_characters() {
+    fn npm_checksum_is_six_characters_and_rejects_tampering() {
         let payload = b"4hTnLw9ZxVcMrJqKsYbGdPeAfU3r2X";
         assert_eq!(payload.len(), 30);
         let mut token = String::from_utf8(payload.to_vec()).unwrap();
         token.push_str(&encode_base62_crc32(Checksum::NpmBase62Crc32, payload));
         assert_eq!(token.len(), 30 + 6);
         assert!(checksum_valid(Checksum::NpmBase62Crc32, &token));
+
+        let mut tampered = token;
+        let last = tampered.pop().unwrap();
+        tampered.push(if last == '0' { '1' } else { '0' });
+        assert!(!checksum_valid(Checksum::NpmBase62Crc32, &tampered));
     }
 
     #[test]
