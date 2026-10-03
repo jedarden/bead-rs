@@ -1,6 +1,7 @@
 //! Context and structure detectors from secret-ruleset-v4 section 4.
 use super::{credential_shape, fingerprint, Disposition, Field, Finding, Tier, RULESET_VERSION};
 use regex::Regex;
+use std::ops::Range;
 use std::sync::LazyLock;
 
 fn finding(
@@ -34,6 +35,24 @@ fn finding(
 }
 
 pub(super) fn scan(selector: &str, field: &Field<'_>, decoded: bool) -> Vec<Finding> {
+    scan_with_source(selector, field, decoded, None)
+}
+
+pub(super) fn scan_view(
+    selector: &str,
+    field: &Field<'_>,
+    decoded: bool,
+    source_map: &[Range<usize>],
+) -> Vec<Finding> {
+    scan_with_source(selector, field, decoded, Some(source_map))
+}
+
+fn scan_with_source(
+    selector: &str,
+    field: &Field<'_>,
+    decoded: bool,
+    source_map: Option<&[Range<usize>]>,
+) -> Vec<Finding> {
     if decoded {
         return Vec::new();
     }
@@ -77,9 +96,29 @@ pub(super) fn scan(selector: &str, field: &Field<'_>, decoded: bool) -> Vec<Find
             ));
         }
     }
+    for (start, end) in uri_userinfo_ranges(field.text, source_map) {
+        let password = &field.text[start..end];
+        let password = if source_map.is_some() {
+            password.to_string()
+        } else {
+            match percent_decode(password) {
+                Some(password) => password,
+                None => continue,
+            }
+        };
+        if credential_shape::qualifies(&password, 8) {
+            findings.push(finding(
+                selector,
+                field,
+                "uri-userinfo-credential",
+                start,
+                end,
+                Tier::Blocking,
+            ));
+        }
+    }
     static STRUCTURES: LazyLock<Vec<(&str, Regex, usize)>> = LazyLock::new(|| {
         [
-        ("uri-userinfo-credential",r#"[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:(?P<value>[^@\s]+)@[^/\s]+"#,8),
         ("authorization-header-credential",r#"(?i)(?:authorization["']?[ \t]*[:=][ \t]*["']?[ \t]*(?:bearer|basic|token|apikey)|bearer)[ \t]+(?P<value>[A-Za-z0-9_+/=.-]{20,})"#,12),
         ("curl-user-credential",r#"(?:^|[ \t])(?:-u|--user)(?:=|[ \t]+)["']?[^:\s"']+:(?P<value>[^\s"'`,;]+)"#,8),
     ].iter().map(|(rule,pattern,min)|(*rule,Regex::new(pattern).unwrap(),*min)).collect()
@@ -180,4 +219,82 @@ pub(super) fn scan(selector: &str, field: &Field<'_>, decoded: bool) -> Vec<Find
         }
     }
     findings
+}
+
+static URI_PREFIX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:"#).unwrap());
+
+fn uri_userinfo_ranges(text: &str, source_map: Option<&[Range<usize>]>) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    for prefix in URI_PREFIX.find_iter(text) {
+        let password_start = prefix.end();
+        let mut password_end = password_start;
+        let mut delimiter = None;
+        while password_end < text.len() {
+            let character = text[password_end..].chars().next().unwrap();
+            if character.is_whitespace() {
+                break;
+            }
+            let is_source_byte =
+                source_map.is_none_or(|map| map[password_end].end - map[password_end].start == 1);
+            if character == '@' && is_source_byte {
+                delimiter = Some(password_end);
+                break;
+            }
+            if character == '/' && is_source_byte {
+                break;
+            }
+            password_end += character.len_utf8();
+        }
+        let Some(delimiter) = delimiter else {
+            continue;
+        };
+        let host_start = delimiter + 1;
+        if host_start >= text.len() {
+            continue;
+        }
+        let mut host_end = host_start;
+        while host_end < text.len() {
+            let character = text[host_end..].chars().next().unwrap();
+            if character.is_whitespace() || character == '/' {
+                break;
+            }
+            host_end += character.len_utf8();
+        }
+        if host_end > host_start && password_end > password_start {
+            ranges.push((password_start, password_end));
+        }
+    }
+    ranges
+}
+
+fn percent_decode(text: &str) -> Option<String> {
+    let mut decoded = Vec::with_capacity(text.len());
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let (Some(high), Some(low)) =
+                (hex_digit(bytes[index + 1]), hex_digit(bytes[index + 2]))
+            {
+                decoded.push(high << 4 | low);
+                index += 3;
+                continue;
+            }
+        }
+        let character = text[index..].chars().next().unwrap();
+        let mut encoded = [0; 4];
+        decoded.extend_from_slice(character.encode_utf8(&mut encoded).as_bytes());
+        index += character.len_utf8();
+    }
+    String::from_utf8(decoded).ok()
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }

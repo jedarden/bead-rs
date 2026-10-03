@@ -954,7 +954,9 @@ pub(crate) fn scan_field(selector: &str, field: &Field<'_>) -> Vec<Finding> {
                         && finding.rule_id != "vault-legacy-token")
         });
         if !view.decoded {
-            matches.extend(structured_credentials::scan(selector, &derived, false));
+            matches.extend(structured_credentials::scan_view(
+                selector, &derived, false, &view.map,
+            ));
         }
         for mut finding in matches {
             let range = view.raw_range(finding.start, finding.end);

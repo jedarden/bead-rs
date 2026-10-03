@@ -444,6 +444,33 @@ fn structural_credentials_block_but_references_and_hashes_are_not_noisy() {
 }
 
 #[test]
+fn uri_password_percent_decoding_keeps_encoded_at_inside_userinfo() {
+    let first = mixed(8);
+    let second = mixed(8);
+    let third = mixed(8);
+    let password = format!("{first}%2F{second}%40{third}");
+    let text = format!("postgres://worker:{password}@localhost/db");
+    let report = scan::scan(
+        &ScanConfig::enforce(),
+        "fixture",
+        &[Field::new("description", &text)],
+    );
+    let findings: Vec<_> = report
+        .blocking
+        .iter()
+        .filter(|finding| finding.rule_id == "uri-userinfo-credential")
+        .collect();
+    assert_eq!(findings.len(), 1);
+    assert_eq!(
+        (findings[0].start, findings[0].end),
+        (
+            text.find(&password).unwrap(),
+            text.find(&password).unwrap() + password.len()
+        )
+    );
+}
+
+#[test]
 fn new_provider_inventory_has_positive_and_boundary_negative_coverage() {
     let hex: String = (0..64)
         .map(|index| b"a1b2c3d4e5f6"[(index * 7 + 3) % 12] as char)
