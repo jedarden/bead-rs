@@ -1,0 +1,7 @@
+# Every process `cargo test` / `cargo run` starts gets these. bead-rs's
+# organization-scanner parity is opt-in through BEAD_ORG_SECRET_SCANNER, which
+# hosts set fleet-wide; forcing it off keeps the test suite hermetic
+# (beadrs-72bdfc5c). Tests that exercise parity set it per command
+# (tests/redact_all_blocking.rs reads BEAD_TEST_ORG_SCANNER).
+[env]
+BEAD_ORG_SECRET_SCANNER = { value = "off", force = true }
