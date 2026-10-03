@@ -133,6 +133,29 @@ fn sharded_switch_bounds_objects_and_preserves_unrelated_keys() {
 }
 
 #[test]
+fn doctor_accepts_tombstoned_monolith_after_sharded_configure() {
+    let temp = tempfile::tempdir().unwrap();
+    let ws = temp.path().join("ws");
+    init_workspace(&ws);
+    create_issues(&ws, 3);
+    assert_eq!(pointer(&ws)["mode"], "monolithic");
+
+    configure_json(&ws, &["--mode", "sharded"]);
+
+    let output = run_bead(&ws, &["doctor"]);
+    assert!(
+        output.status.success(),
+        "doctor must succeed after the mode transition: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.lines().any(|line| line.starts_with("ERROR")),
+        "doctor must not report an error after the mode transition: {stderr}"
+    );
+}
+
+#[test]
 fn dry_run_and_invalid_input_write_nothing() {
     let temp = tempfile::tempdir().unwrap();
     let ws = temp.path().join("ws");

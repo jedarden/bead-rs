@@ -480,6 +480,12 @@ fn checkpoint_issue_paths(pointer_path: &Path) -> Result<Vec<PathBuf>> {
         .parent()
         .ok_or_else(|| Error::integrity("checkpoint pointer has no parent directory"))?;
     let root_path = confined_path(checkpoint_dir, root_path)?;
+    if pointer_path.file_name().and_then(|name| name.to_str()) == Some("previous.json")
+        && !root_path.exists()
+        && previous_root_was_tombstoned(pointer_path, &root_path)?
+    {
+        return Ok(Vec::new());
+    }
     match mode {
         "monolithic" => Ok(vec![root_path]),
         "sharded" => {
@@ -500,6 +506,31 @@ fn checkpoint_issue_paths(pointer_path: &Path) -> Result<Vec<PathBuf>> {
         }
         _ => Err(Error::integrity("checkpoint pointer has unsupported mode")),
     }
+}
+
+/// A publication may tombstone the outgoing root while `previous.json` still
+/// points at that root until the next publication advances the pointer. Such
+/// a pointer is an intentionally empty retained generation, not an unreadable
+/// checkpoint. Missing roots without the current pointer's explicit,
+/// confined deletion remain errors at the eventual file-open boundary.
+fn previous_root_was_tombstoned(pointer_path: &Path, root_path: &Path) -> Result<bool> {
+    let checkpoint_dir = pointer_path
+        .parent()
+        .ok_or_else(|| Error::integrity("checkpoint pointer has no parent directory"))?;
+    let current = read_json(
+        &checkpoint_dir.join("current.json"),
+        "current checkpoint pointer",
+    )?;
+    Ok(current
+        .get("deleted_paths")
+        .and_then(Value::as_array)
+        .is_some_and(|paths| {
+            paths.iter().any(|path| {
+                path.as_str().is_some_and(|path| {
+                    confined_path(checkpoint_dir, path).is_ok_and(|path| path == root_path)
+                })
+            })
+        }))
 }
 
 fn find_checkpoint_issue_in_jsonl(
@@ -836,21 +867,9 @@ fn scan_pointer(
         .ok_or_else(|| Error::integrity("checkpoint pointer has no parent directory"))?;
     let root_path = confined_path(checkpoint_dir, root_path)?;
     if generation == "previous" && !root_path.exists() {
-        let current = read_json(
-            &checkpoint_dir.join("current.json"),
-            "current checkpoint pointer",
-        )?;
-        let deleted = current.get("deleted_paths").and_then(Value::as_array);
-        let was_removed = deleted.is_some_and(|paths| {
-            paths.iter().any(|path| {
-                path.as_str().is_some_and(|path| {
-                    confined_path(checkpoint_dir, path).is_ok_and(|path| path == root_path)
-                })
-            })
-        });
         // Only an explicit, confined deletion in the current pointer makes
         // absence legitimate. An unexplained missing root remains an error.
-        if was_removed {
+        if previous_root_was_tombstoned(pointer_path, &root_path)? {
             return Ok(false);
         }
     }
@@ -1337,5 +1356,35 @@ mod tests {
         assert!(!serde_json::to_string(&report.findings)
             .unwrap()
             .contains(&value));
+    }
+
+    #[test]
+    fn retained_finding_lookup_skips_tombstoned_previous_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let checkpoint = directory.path();
+        std::fs::write(
+            checkpoint.join("previous.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "mode": "monolithic",
+                "active_root": {"path": "objects/old.jsonl"}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            checkpoint.join("current.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "mode": "monolithic",
+                "active_root": {"path": "objects/current.jsonl"},
+                "deleted_paths": ["objects/old.jsonl"]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::create_dir_all(checkpoint.join("objects")).unwrap();
+        std::fs::write(checkpoint.join("objects/current.jsonl"), b"").unwrap();
+
+        let result = find_retained_checkpoint_finding(checkpoint, &"0".repeat(64)).unwrap();
+        assert!(result.is_none());
     }
 }
