@@ -28,7 +28,7 @@ use std::fmt;
 use std::path::Path;
 use std::sync::LazyLock;
 
-use aho_corasick::AhoCorasick;
+use aho_corasick::{AhoCorasick, MatchKind};
 use regex::Regex;
 
 thread_local! {
@@ -760,6 +760,7 @@ static PREFILTER: LazyLock<(AhoCorasick, Vec<Vec<usize>>)> = LazyLock::new(|| {
     let anchors = keyword_anchors();
     let patterns: Vec<&str> = anchors.iter().map(|(a, _)| a.as_str()).collect();
     let automaton = AhoCorasick::builder()
+        .match_kind(MatchKind::Standard)
         .ascii_case_insensitive(true)
         .build(&patterns)
         .expect("keyword anchors are static and valid");
@@ -789,6 +790,8 @@ fn scan_raw_field(selector: &str, field: &Field<'_>) -> Vec<Finding> {
     }
     let (automaton, mapping) = &*PREFILTER;
     let mut candidate_rules = BTreeSet::new();
+    // A shorter anchor can begin inside a longer one. Keep every occurrence
+    // eligible so the longer anchor never suppresses the rule it gates.
     for hit in automaton.find_overlapping_iter(field.text) {
         if let Some(rules) = mapping.get(hit.pattern().as_usize()) {
             candidate_rules.extend(rules.iter().copied());

@@ -92,9 +92,9 @@ pub const RULES: &[Rule] = &[
         id: "aws-secret-access-key-assignment",
         provider: "aws",
         tier: Tier::Blocking,
-        // A leading namespace anchor locates assignments before the exact
-        // pattern verifies their spelling; overlapping anchors are retained.
-        keywords: &["aws_"],
+        // This natural anchor overlaps the shorter advisory `secret` anchor;
+        // the prefilter must retain both occurrences.
+        keywords: &["aws_secret_access_key"],
         pattern: r#"(?i)\b(?:[A-Z][A-Z0-9]*_)*AWS_SECRET_ACCESS_KEY["']?[ \t]*[:=][ \t]*["']?([A-Za-z0-9/+=]{40})["']?"#,
         checksum: None,
     },
@@ -106,9 +106,9 @@ pub const RULES: &[Rule] = &[
         // but it is still one half of an S3 credential. Require both its
         // provider-specific shape and an explicit access-key assignment so
         // an unrelated 24-character identifier cannot block bead text.
-        // Lead with the AWS namespace so the existing, shorter advisory
-        // `access_key` prefilter anchor cannot mask this rule.
-        keywords: &["aws_"],
+        // This natural anchor overlaps the context rule's `access_key_id`
+        // anchor; the prefilter must retain both occurrences.
+        keywords: &["aws_access_key_id"],
         pattern: r#"(?i:\b(?:[A-Z][A-Z0-9]*_)*AWS_ACCESS_KEY_ID["']?[ \t]*[:=][ \t]*["']?)(GK[0-9a-f]{22})["']?"#,
         checksum: None,
     },

@@ -53,6 +53,10 @@ fn garage_access_key_id_assignment(namespace: &str) -> String {
     format!("{namespace}AWS_ACCESS_KEY_ID={}", garage_access_key_id())
 }
 
+fn backblaze_key_id() -> String {
+    ["00", "0123456789abcdef0123456"].concat()
+}
+
 fn github_checksum_value() -> String {
     let alphabet = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
     let payload: String = (0..30)
@@ -156,6 +160,30 @@ fn garage_access_key_id_blocks_only_in_assignment_context() {
         .blocking
         .iter()
         .all(|finding| finding.rule_id != "garage-access-key-id-assignment"));
+}
+
+#[test]
+fn overlapping_prefilter_runs_both_rules_for_overlapping_anchors() {
+    // `access_key_id` begins inside `aws_access_key_id`. Use one assignment
+    // shaped for each rule so both rules must be eligible from that overlap.
+    let text = format!(
+        "AWS_ACCESS_KEY_ID={}\nAWS_ACCESS_KEY_ID={}",
+        backblaze_key_id(),
+        garage_access_key_id()
+    );
+    let report = scan(
+        &ScanConfig::enforce(),
+        "issue:overlapping-anchors",
+        &[Field::new("description", &text)],
+    );
+
+    let rule_ids: std::collections::BTreeSet<_> = report
+        .findings
+        .iter()
+        .map(|finding| finding.rule_id.as_str())
+        .collect();
+    assert!(rule_ids.contains("backblaze-key-id-assignment"));
+    assert!(rule_ids.contains("garage-access-key-id-assignment"));
 }
 
 #[test]
