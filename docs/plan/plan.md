@@ -612,6 +612,14 @@ and the operator-admitted rotation/remediation in BR-T45. Secret detection is
 bounded and cannot prove that all possible credentials are absent. Rotation
 of exposed credentials remains necessary even after local erasure succeeds.
 
+Delivery observation: `git push origin main` accepted implementation
+`af3fe9c` and evidence checkpoint `5bdb9b1`. Forgejo explicitly reported
+content secret scanning disabled (`fss-eeeb789c`); only size and path guards
+were applied. This is not Git-layer secret-scan acceptance. The bead service
+gate does not protect arbitrary Git writes, and shared Forgejo configuration
+was not changed. Restoring server-side scanning requires its owning
+infrastructure workflow and remains outside this repository implementation.
+
 ## 6. Artifact-by-artifact transition ledger
 
 | ID | Artifact(s) | Change | Acceptance evidence | Status |
