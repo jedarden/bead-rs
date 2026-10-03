@@ -414,6 +414,14 @@ fn structural_credentials_block_but_references_and_hashes_are_not_noisy() {
         ),
         (
             "kubernetes-secret-data",
+            format!("data:\n  connection: {}\nkind: Secret", base64(&value)),
+        ),
+        (
+            "kubernetes-secret-data",
+            format!("stringData:\n  connection: {value}\nkind: \"Secret\""),
+        ),
+        (
+            "kubernetes-secret-data",
             serde_json::json!({"kind":"Secret","data":{"password":base64(&value)}}).to_string(),
         ),
     ] {

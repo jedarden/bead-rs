@@ -176,7 +176,7 @@ within the 64 bytes before the match.
 | `uri-userinfo-credential` | scheme, `://`, user, `:`, password, `@`, host | `Q(password, 8)` after percent-decoding |
 | `authorization-header-credential` | `authorization`, `:` or `=`, a scheme word (`bearer`, `basic`, `token`, `apikey`), value; or `bearer` followed by a value of 20 or more bytes | `Q(value, 12)` |
 | `curl-user-credential` | `-u` or `--user`, then `name:password` | `Q(password, 8)` |
-| `kubernetes-secret-data` | a line `kind: Secret`, a later `data:` or `stringData:` line, and indented entries beneath it | under `data:`, a value of 16 or more base64 bytes; under `stringData:`, `Q(value, 12)` |
+| `kubernetes-secret-data` | a YAML document containing a `kind` field whose value is `Secret` (quoted or unquoted), and a `data:` or `stringData:` field, in either order, with indented entries beneath it | under `data:`, a value of 16 or more base64 bytes; under `stringData:`, `Q(value, 12)` |
 
 The reported range is the password or value, never the surrounding
 structure.

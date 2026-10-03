@@ -138,20 +138,26 @@ fn scan_with_source(
             }
         }
     }
-    static KIND: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"(?m)^\s*kind:[ \t]*Secret[ \t]*$").unwrap());
+    static KIND: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?m)^[ \t]*kind:[ \t]*(?:Secret|\"Secret\"|'Secret')[ \t]*(?:#[^\r\n]*)?$"#)
+            .unwrap()
+    });
     static SECTION: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"(?m)^(?P<indent>[ \t]*)(?P<kind>data|stringData):[ \t]*$").unwrap()
     });
     static ENTRY: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r#"^[ \t]+[^:\s]+:[ \t]*["']?(?P<value>[^\s"']+)"#).unwrap());
-    if let Some(kind) = KIND.find(field.text) {
-        for section in SECTION.captures_iter(&field.text[kind.end()..]) {
-            let offset = kind.end() + section.get(0).unwrap().end();
+    for document in yaml_document_ranges(field.text) {
+        let document_text = &field.text[document.clone()];
+        if !KIND.is_match(document_text) {
+            continue;
+        }
+        for section in SECTION.captures_iter(document_text) {
+            let offset = document.start + section.get(0).unwrap().end();
             let indent = section.name("indent").unwrap().len();
             let encoded = section.name("kind").unwrap().as_str() == "data";
             let mut position = offset;
-            for line in field.text[offset..].split_inclusive('\n') {
+            for line in field.text[offset..document.end].split_inclusive('\n') {
                 let trimmed = line.trim();
                 if !trimmed.is_empty() {
                     let line_indent = line.len() - line.trim_start_matches([' ', '\t']).len();
@@ -219,6 +225,24 @@ fn scan_with_source(
         }
     }
     findings
+}
+
+fn yaml_document_ranges(text: &str) -> Vec<Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut document_start = 0;
+    let mut line_start = 0;
+    for line in text.split_inclusive('\n') {
+        let content = line.trim_end_matches(['\n', '\r']).trim();
+        if line_start > document_start && (content == "---" || content.starts_with("--- #")) {
+            ranges.push(document_start..line_start);
+            document_start = line_start;
+        }
+        line_start += line.len();
+    }
+    if document_start < text.len() {
+        ranges.push(document_start..text.len());
+    }
+    ranges
 }
 
 static URI_PREFIX: LazyLock<Regex> =
