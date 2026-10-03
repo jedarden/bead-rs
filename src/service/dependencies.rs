@@ -25,6 +25,12 @@ pub fn add_label(store: &mut SqliteStore, issue_id: &str, label: &str) -> Result
 /// Returns whether the label row was inserted, so a composing caller can
 /// distinguish a semantic change from the command's idempotent no-op.
 pub fn add_label_in_tx(tx: &Transaction, issue_id: &str, label: &str) -> Result<bool, Error> {
+    let _secret_write = super::secret_boundary::guard_pairs(
+        tx,
+        &super::secret_boundary::selector("issue", issue_id),
+        "cli",
+        &[("id", issue_id), ("label", label)],
+    )?;
     // Verify issue exists
     let issue_exists = tx
         .query_row("SELECT 1 FROM issues WHERE id = ?", [&issue_id], |_| Ok(()))
@@ -78,6 +84,12 @@ pub fn remove_label(store: &mut SqliteStore, issue_id: &str, label: &str) -> Res
 ///
 /// Returns whether the label row was deleted; see `add_label_in_tx`.
 pub fn remove_label_in_tx(tx: &Transaction, issue_id: &str, label: &str) -> Result<bool, Error> {
+    let _secret_write = super::secret_boundary::guard_pairs(
+        tx,
+        &super::secret_boundary::selector("issue", issue_id),
+        "cli",
+        &[("id", issue_id), ("label", label)],
+    )?;
     // Verify issue exists
     let issue_exists = tx
         .query_row("SELECT 1 FROM issues WHERE id = ?", [&issue_id], |_| Ok(()))
@@ -176,6 +188,18 @@ pub fn add_dependency_in_tx(
     kind: &str,
     condition: Option<&ConditionExpr>,
 ) -> Result<bool, Error> {
+    let condition_text = condition.map(serde_json::to_string).transpose()?;
+    let _secret_write = super::secret_boundary::guard_pairs(
+        tx,
+        "dependency:input",
+        "cli",
+        &[
+            ("blocked_issue_id", blocked_id),
+            ("blocker_issue_id", blocker_id),
+            ("kind", kind),
+            ("condition", condition_text.as_deref().unwrap_or("")),
+        ],
+    )?;
     if !is_valid_kind(kind) {
         return Err(ValidationError::InvalidKind {
             kind: kind.to_string(),
@@ -343,6 +367,16 @@ pub fn remove_dependency_in_tx(
     blocker_id: &str,
     kind: Option<&str>,
 ) -> Result<bool, Error> {
+    let _secret_write = super::secret_boundary::guard_pairs(
+        tx,
+        "dependency:input",
+        "cli",
+        &[
+            ("blocked_issue_id", blocked_id),
+            ("blocker_issue_id", blocker_id),
+            ("kind", kind.unwrap_or("")),
+        ],
+    )?;
     // Idempotent delete: removing a non-existent edge commits no semantic
     // mutation, so it must append no event.
     let removed = if let Some(k) = kind {

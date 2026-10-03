@@ -86,6 +86,14 @@ pub struct SecretScanCapabilities {
     pub blocking: bool,
     pub advisory: bool,
     pub exact_fingerprint_acknowledgment: bool,
+    #[serde(default)]
+    pub ruleset_contract: String,
+    #[serde(default)]
+    pub compiled_policy: String,
+    #[serde(default)]
+    pub service_write_gate: bool,
+    #[serde(default)]
+    pub recovery_quarantine: bool,
 }
 
 /// Exceptional maintenance capability for already-stored sensitive bytes.
@@ -97,6 +105,15 @@ pub struct HistoricalRedactionCapabilities {
     pub anti_resurrection: bool,
     pub sanitized_generation_set: bool,
     pub resumable_publication: bool,
+    #[serde(default)]
+    pub atomic_batch: bool,
+    #[serde(default)]
+    pub local_sqlite_cleanup: bool,
+    #[serde(default)]
+    pub metadata_redaction: bool,
+    /// Identity-bearing fields require a separately specified rekeying policy.
+    #[serde(default)]
+    pub identity_key_redaction: bool,
 }
 
 /// Priority capabilities
@@ -292,7 +309,16 @@ pub fn generate_capabilities_with_secret_mode(
             effective_mode: secret_mode.as_str().to_string(),
             blocking: true,
             advisory: true,
-            exact_fingerprint_acknowledgment: true,
+            exact_fingerprint_acknowledgment: !cfg!(feature = "managed-secret-policy"),
+            ruleset_contract: crate::scan::rules::RULESET_CONTRACT.to_string(),
+            compiled_policy: if cfg!(feature = "managed-secret-policy") {
+                "managed-enforce-no-ack"
+            } else {
+                "workspace-configurable"
+            }
+            .to_string(),
+            service_write_gate: true,
+            recovery_quarantine: true,
         }),
         historical_redaction: Some(HistoricalRedactionCapabilities {
             contract: "urn:bead-rs:spec:historical-redaction:v1".to_string(),
@@ -301,6 +327,10 @@ pub fn generate_capabilities_with_secret_mode(
             anti_resurrection: true,
             sanitized_generation_set: true,
             resumable_publication: true,
+            atomic_batch: true,
+            local_sqlite_cleanup: true,
+            metadata_redaction: true,
+            identity_key_redaction: true,
         }),
     })
 }

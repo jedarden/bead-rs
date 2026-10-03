@@ -163,6 +163,10 @@ fn publish_committed_state(probe: &PublicationProbe) -> anyhow::Result<()> {
     let Some(sequence_after) = service::read_live_event_sequence(&conn) else {
         return Ok(());
     };
+    if probe.explicit_recovery && service::secret_boundary::ensure_not_quarantined(&conn).is_err() {
+        eprintln!("secret_quarantined: recovery committed locally; checkpoint publication withheld. Inspect bead doctor --scope secrets and redact the findings.");
+        return Ok(());
+    }
 
     if sequence_after <= probe.sequence_before {
         // This invocation committed nothing the checkpoint carries; leave
@@ -181,6 +185,10 @@ fn publish_committed_state(probe: &PublicationProbe) -> anyhow::Result<()> {
     // point the pointer stays stable until this publication finishes.
     let publication_lock =
         service::acquire_checkpoint_publication_lock(&checkpoint_base.join("checkpoint"))?;
+    if probe.explicit_recovery && service::secret_boundary::ensure_not_quarantined(&conn).is_err() {
+        eprintln!("secret_quarantined: recovery committed locally; checkpoint publication withheld. Inspect bead doctor --scope secrets and redact the findings.");
+        return Ok(());
+    }
     if !probe.explicit_recovery {
         service::reconcile::require_writable(&conn, &checkpoint_base)?;
     }
@@ -232,6 +240,10 @@ fn publish_newly_restored_state(no_auto_flush: bool) -> Result<()> {
         return Ok(());
     }
     let conn = store::open_configured_connection(&config.database_path())?;
+    if service::secret_boundary::ensure_not_quarantined(&conn).is_err() {
+        eprintln!("secret_quarantined: restore committed locally; checkpoint publication withheld. Inspect bead doctor --scope secrets and redact the findings.");
+        return Ok(());
+    }
     let live = service::read_live_event_sequence(&conn).unwrap_or(0);
     if service::read_covered_event_sequence(&config.root.join(".beads"))
         .is_some_and(|covered| covered >= live)
@@ -326,6 +338,9 @@ fn execute_command(cli: Cli) -> Result<()> {
     drop(operation_guard);
 
     if let Ok(created_new_workspace) = &result {
+        if let Some(scan) = &prepared_scan {
+            scan.report_advisories();
+        }
         if let Some(probe) = probe.as_ref() {
             publish_after_commit(probe)?;
         } else if restore_without_probe {
@@ -403,7 +418,7 @@ fn cmd_redact(opts: cli::RedactOptions) -> Result<()> {
 
     let fingerprint = opts
         .finding
-        .as_deref()
+        .first()
         .ok_or_else(|| Error::cli_usage("--finding or --resume is required"))?;
     let actor = opts
         .actor
@@ -413,6 +428,61 @@ fn cmd_redact(opts: cli::RedactOptions) -> Result<()> {
         .reason
         .as_deref()
         .ok_or_else(|| Error::cli_usage("--reason is required with --finding"))?;
+
+    if opts.finding.len() > 1 {
+        let outcomes = service::redact_findings_holding(
+            &mut store,
+            &locks,
+            &opts.finding,
+            actor,
+            reason,
+            opts.dry_run,
+        )?;
+        if opts.dry_run {
+            if opts.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &serde_json::json!({"dry_run":true, "redactions":outcomes})
+                    )?
+                );
+            } else {
+                println!(
+                    "Dry-run: {} replacements, one atomic transaction; no changes committed",
+                    outcomes.len()
+                );
+            }
+            return Ok(());
+        }
+        if outcomes[0].receipt.publication_state
+            != crate::model::redaction::PublicationState::Published
+        {
+            publish_redaction_or_split(
+                &mut store,
+                &locks,
+                &checkpoint_config,
+                &checkpoint_base,
+                &outcomes[0].receipt,
+            )?;
+        }
+        let receipts = outcomes
+            .iter()
+            .map(|outcome| {
+                service::load_redaction_receipt(store.conn(), &outcome.receipt.receipt_id)
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        if opts.json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({"receipts":receipts}))?
+            );
+        } else {
+            for receipt in &receipts {
+                print_redaction_receipt(receipt, false)?;
+            }
+        }
+        return Ok(());
+    }
 
     if opts.dry_run {
         let preview =
@@ -807,10 +877,10 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
     if opts.json {
         let output = if let Some(trace_data) = trace {
             // When --why is set, output enriched result with decision trace
-            serde_json::to_string(&serde_json::json!({
+            serde_json::to_string(&scan::decorate_mutation(&serde_json::json!({
                 "claim_result": enhanced_result,
                 "decision_trace": trace_data
-            }))
+            }))?)
             .map_err(|e| {
                 Error::Internal(anyhow::anyhow!(
                     "Failed to serialize claim result with trace: {}",
@@ -819,7 +889,7 @@ fn cmd_claim(opts: cli::ClaimOptions) -> Result<()> {
             })?
         } else {
             // Standard claim result with lease information
-            serde_json::to_string(&enhanced_result).map_err(|e| {
+            serde_json::to_string(&scan::decorate_mutation(&enhanced_result)?).map_err(|e| {
                 Error::Internal(anyhow::anyhow!("Failed to serialize claim result: {}", e))
             })?
         };
@@ -1218,7 +1288,7 @@ fn cmd_update(opts: cli::UpdateOptions) -> Result<()> {
         )?;
 
         // Output JSON result
-        let json = serde_json::to_string_pretty(&result)?;
+        let json = serde_json::to_string_pretty(&scan::decorate_mutation(&result)?)?;
         println!("{}", json);
         return Ok(());
     }
@@ -1256,7 +1326,7 @@ fn cmd_release(opts: cli::ReleaseOptions) -> Result<()> {
         let result = service::release_issue_dryrun(&conn, &opts.id)?;
 
         // Output JSON result
-        let json = serde_json::to_string_pretty(&result)?;
+        let json = serde_json::to_string_pretty(&scan::decorate_mutation(&result)?)?;
         println!("{}", json);
         return Ok(());
     }
@@ -1311,7 +1381,7 @@ fn cmd_close(opts: cli::CloseOptions) -> Result<()> {
         let result = service::close_issue_dryrun(&conn, &opts.id, &reason)?;
 
         // Output JSON result
-        let json = serde_json::to_string_pretty(&result)?;
+        let json = serde_json::to_string_pretty(&scan::decorate_mutation(&result)?)?;
         println!("{}", json);
         return Ok(());
     }
@@ -1346,7 +1416,7 @@ fn cmd_reopen(opts: cli::ReopenOptions) -> Result<()> {
         let result = service::reopen_issue_dryrun(&conn, &opts.id)?;
 
         // Output JSON result
-        let json = serde_json::to_string_pretty(&result)?;
+        let json = serde_json::to_string_pretty(&scan::decorate_mutation(&result)?)?;
         println!("{}", json);
         return Ok(());
     }
@@ -1429,7 +1499,7 @@ fn cmd_resolve(opts: cli::ResolveOptions) -> Result<()> {
 
             // Output based on format
             if opts.format == "json" {
-                let output = serde_json::to_string_pretty(&receipt)?;
+                let output = serde_json::to_string_pretty(&scan::decorate_mutation(&receipt)?)?;
                 println!("{}", output);
             } else {
                 // Text output
@@ -1616,7 +1686,7 @@ fn cmd_dep_add(opts: cli::DepAddOptions) -> Result<()> {
         )?;
 
         // Output JSON result
-        let json = serde_json::to_string_pretty(&result)?;
+        let json = serde_json::to_string_pretty(&scan::decorate_mutation(&result)?)?;
         println!("{}", json);
         return Ok(());
     }
@@ -1682,7 +1752,7 @@ fn cmd_dep_remove(opts: cli::DepRemoveOptions) -> Result<()> {
         )?;
 
         // Output JSON result
-        let json = serde_json::to_string_pretty(&result)?;
+        let json = serde_json::to_string_pretty(&scan::decorate_mutation(&result)?)?;
         println!("{}", json);
         return Ok(());
     }
@@ -1908,7 +1978,10 @@ fn cmd_manifest(cmd: cli::ManifestCommand) -> Result<()> {
 /// operation with the same information.
 fn print_manifest_report(report: &service::ManifestReport, format: &str) -> Result<()> {
     if format == "json" {
-        println!("{}", serde_json::to_string_pretty(report)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&scan::decorate_mutation(report)?)?
+        );
         return Ok(());
     }
 
@@ -2016,6 +2089,7 @@ fn cmd_sync_flush_only(opts: cli::SyncFlushOptions) -> Result<()> {
 
     // Create store wrapper
     let mut store = store::SqliteStore::from_conn(conn);
+    service::secret_maintenance::ensure_publication_allowed(store.conn())?;
 
     // If explicit output path provided, use pre-F017 issue-only export
     if let Some(ref output) = opts.output {

@@ -17,10 +17,48 @@ pub fn create_template(
     conn: &mut Connection,
     request: CreateTemplateRequest,
 ) -> Result<RecurrenceTemplate> {
+    let mut fields = vec![
+        ("id", request.id.as_str()),
+        ("title", request.title.as_str()),
+        ("description", request.description.as_deref().unwrap_or("")),
+        ("base_title_template", request.base_title_template.as_str()),
+        (
+            "base_description",
+            request.base_description.as_deref().unwrap_or(""),
+        ),
+        ("issue_type", request.issue_type.as_deref().unwrap_or("")),
+    ];
+    if let Some(labels) = &request.labels {
+        fields.extend(labels.iter().map(|label| ("labels[]", label.as_str())));
+    }
+    let _request_scan = super::secret_boundary::guard_pairs(
+        conn,
+        &super::secret_boundary::selector("recurrence", &request.id),
+        "cli",
+        &fields,
+    )?;
     let template = request.into_template(None)?;
+    let _secret_write = super::secret_boundary::guard_pairs(
+        conn,
+        &super::secret_boundary::selector("recurrence", &template.id),
+        "cli",
+        &[
+            ("id", &template.id),
+            ("title", &template.title),
+            ("description", template.description.as_deref().unwrap_or("")),
+            ("base_title_template", &template.base_title_template),
+            (
+                "base_description",
+                template.base_description.as_deref().unwrap_or(""),
+            ),
+            ("issue_type", &template.issue_type),
+            ("labels", template.labels_json.as_deref().unwrap_or("")),
+        ],
+    )?;
     template.validate()?;
 
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    super::secret_maintenance::ensure_publication_allowed(&tx)?;
 
     // Check if template ID already exists
     let exists: bool = tx
@@ -62,6 +100,7 @@ pub fn create_template(
         ))?;
     }
 
+    super::secret_boundary::audit_local_admission(&tx, "recurrence_create")?;
     tx.commit()?;
 
     Ok(template)
@@ -129,9 +168,16 @@ pub fn list_templates(conn: &Connection) -> Result<Vec<RecurrenceTemplate>> {
 
 /// Delete a recurrence template
 pub fn delete_template(conn: &mut Connection, template_id: &str) -> Result<()> {
+    let _secret_write = super::secret_boundary::guard_pairs(
+        conn,
+        &super::secret_boundary::selector("recurrence", template_id),
+        "cli",
+        &[("id", template_id)],
+    )?;
     crate::model::validate_issue_id(template_id)?;
 
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    super::secret_maintenance::ensure_publication_allowed(&tx)?;
 
     // Verify template exists
     get_template(&tx, template_id)?;
@@ -176,9 +222,16 @@ pub fn materialize_next_occurrence(
     template_id: &str,
     actor: Option<&str>,
 ) -> Result<(String, RecurrenceMaterialization)> {
+    let _secret_write = super::secret_boundary::guard_pairs(
+        conn,
+        &super::secret_boundary::selector("recurrence", template_id),
+        actor.unwrap_or("cli"),
+        &[("id", template_id), ("actor", actor.unwrap_or(""))],
+    )?;
     crate::model::validate_issue_id(template_id)?;
 
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    super::secret_maintenance::ensure_publication_allowed(&tx)?;
 
     // Get template
     let template = get_template(&tx, template_id)?;

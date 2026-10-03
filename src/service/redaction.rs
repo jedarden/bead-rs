@@ -23,6 +23,7 @@ use rusqlite::types::Value as SqlValue;
 use rusqlite::{params, params_from_iter, OptionalExtension, Transaction, TransactionBehavior};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::ErrorKind;
 use std::path::Path;
@@ -52,6 +53,8 @@ pub struct RedactionPreview {
     pub affected_issue_revision: Option<i64>,
     pub replacement_marker: &'static str,
     pub previous_generation_reset: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity_rekey: Option<serde_json::Value>,
 }
 
 /// Load one durable receipt for `bead redact --resume` without exposing any
@@ -136,6 +139,7 @@ pub fn redact_finding_holding(
     actor: &str,
     reason: &str,
 ) -> Result<RedactionOutcome, RedactionError> {
+    verify_workspace(store.conn(), locks)?;
     validate_request(fingerprint, actor, reason)?;
     let expected = resolve_redaction_finding(store.conn(), locks.checkpoint_dir(), fingerprint)?;
     redact_in_transaction(
@@ -156,96 +160,78 @@ pub fn preview_redaction_holding(
     actor: &str,
     reason: &str,
 ) -> Result<RedactionPreview, RedactionError> {
+    verify_workspace(store.conn(), locks)?;
     validate_request(fingerprint, actor, reason)?;
     let tx = Transaction::new_unchecked(store.conn(), TransactionBehavior::Immediate)
         .map_err(|_| integrity("could not open redaction preview transaction"))?;
     let location = resolve_redaction_finding(&tx, locks.checkpoint_dir(), fingerprint)?
         .ok_or_else(|| {
-            RedactionError::NotFound(
-                "no current live or retained checkpoint finding matches that fingerprint"
-                    .to_string(),
-            )
+            RedactionError::NotFound("no current finding matches that fingerprint".into())
         })?;
-    let location = canonicalize_event_target(&tx, fingerprint, location)?;
-    let target = target_spec(location.table, location.field).ok_or_else(|| {
-        RedactionError::Conflict(format!(
-            "finding addresses unsupported field {}.{}",
-            location.table, location.field
-        ))
-    })?;
-    let current = read_target_text(&tx, &location)?;
-    let finding = scan::scan(
-        &ScanConfig::new(Mode::Advisory),
-        &location.finding.selector,
-        &[Field::new(&location.finding.field_path, &current)],
-    )
-    .findings
-    .into_iter()
-    .find(|finding| finding.fingerprint == fingerprint)
-    .ok_or_else(|| RedactionError::Conflict("finding changed during dry-run".to_string()))?;
-    if current.get(finding.start..finding.end).is_none() {
-        return Err(RedactionError::Conflict(
-            "finding byte range is no longer a UTF-8 boundary".to_string(),
-        ));
-    }
-
-    let (columns, values) = read_target_record(&tx, &location, target.integrity_hash_column)?;
-    let prior_record_hash = hash_target_values(location.table, &columns, &values);
-    let mut sanitized = String::with_capacity(
-        current.len() - (finding.end - finding.start) + REDACTION_MARKER.len(),
-    );
-    sanitized.push_str(&current[..finding.start]);
-    sanitized.push_str(REDACTION_MARKER);
-    sanitized.push_str(&current[finding.end..]);
-    let mut sanitized_values = values;
-    let field_index = columns
-        .iter()
-        .position(|column| column == location.field)
-        .ok_or_else(|| integrity("redaction preview target field disappeared"))?;
-    sanitized_values[field_index] = SqlValue::Text(sanitized);
-    if target.is_issue_row {
-        let revision_index = columns
-            .iter()
-            .position(|column| column == "revision")
-            .ok_or_else(|| integrity("issue redaction preview has no revision"))?;
-        let revision = match &sanitized_values[revision_index] {
-            SqlValue::Integer(revision) => *revision,
-            _ => return Err(integrity("issue redaction preview has invalid revision")),
-        };
-        sanitized_values[revision_index] = SqlValue::Integer(revision + 1);
-    }
-    let sanitized_record_hash = hash_target_values(location.table, &columns, &sanitized_values);
-    let affected_issue_revision = associated_issue_id(&tx, &location, target.issue_id_column)?
-        .map(|issue_id| {
-            tx.query_row(
-                "SELECT revision + 1 FROM issues WHERE id = ?1",
-                [issue_id],
-                |row| row.get(0),
-            )
-            .map_err(|_| integrity("could not preview affected issue revision"))
-        })
-        .transpose()?;
-    let selector = FieldSelector {
-        schema_ref: SCHEMA_REDACTION_FIELD_SELECTOR.to_string(),
-        record_kind: location.table.to_string(),
-        origin_identity: location.origin_identity,
-        field_path: location.field.to_string(),
-        byte_start: finding.start as i64,
-        byte_length: (finding.end - finding.start) as i64,
-        prior_record_hash: prior_record_hash.clone(),
-        extensions: RedactionExtensions::new(),
-    };
+    let pending = apply_redaction(
+        &tx,
+        fingerprint,
+        actor,
+        reason,
+        Some(&location),
+        &mut BTreeSet::new(),
+    )?;
+    let receipt = pending.outcome.receipt;
+    let identity_rekey = receipt
+        .extensions
+        .get(super::secret_rekey::EXTENSION)
+        .cloned();
+    tx.rollback()
+        .map_err(|_| integrity("could not roll back redaction preview"))?;
     Ok(RedactionPreview {
         finding_fingerprint: fingerprint.to_string(),
-        ruleset_version: finding.ruleset_version,
-        rule_id: finding.rule_id,
-        selector,
-        prior_record_hash,
-        sanitized_record_hash,
-        affected_issue_revision,
-        replacement_marker: REDACTION_MARKER,
+        ruleset_version: receipt.ruleset_version,
+        rule_id: receipt.rule_id,
+        selector: receipt.selector,
+        prior_record_hash: receipt.prior_record_hash,
+        sanitized_record_hash: receipt.sanitized_record_hash,
+        affected_issue_revision: receipt.affected_issue_revision,
+        replacement_marker: if identity_rekey.is_some() {
+            "redacted-<digest>"
+        } else {
+            REDACTION_MARKER
+        },
         previous_generation_reset: true,
+        identity_rekey,
     })
+}
+fn verify_workspace(
+    conn: &rusqlite::Connection,
+    locks: &RedactionLocks,
+) -> Result<(), RedactionError> {
+    let database = conn
+        .path()
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| integrity("redaction requires a workspace-bound live database"))?;
+    let database = std::fs::canonicalize(database)
+        .map_err(|_| integrity("could not resolve redaction live database"))?;
+    if database.file_name().is_none_or(|name| name != "beads.db")
+        || database
+            .parent()
+            .and_then(Path::file_name)
+            .is_none_or(|name| name != ".beads")
+    {
+        return Err(integrity(
+            "redaction requires the native workspace live database",
+        ));
+    }
+    let expected = database
+        .parent()
+        .map(|parent| parent.join("checkpoint"))
+        .ok_or_else(|| integrity("redaction database has no workspace parent"))?;
+    let actual = std::fs::canonicalize(locks.checkpoint_dir())
+        .map_err(|_| integrity("could not resolve locked checkpoint directory"))?;
+    if actual != expected {
+        return Err(RedactionError::Conflict(
+            "redaction locks belong to a different workspace".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn resolve_redaction_finding(
@@ -279,11 +265,11 @@ fn validate_request(fingerprint: &str, actor: &str, reason: &str) -> Result<(), 
     let report = scan::scan(
         &config,
         "redaction:request",
-        &[Field::new("reason", reason)],
+        &[Field::new("actor", actor), Field::new("reason", reason)],
     );
     if let Some(finding) = report.blocking.first() {
         return Err(RedactionError::Usage(format!(
-            "redaction reason contains a blocking finding (rule {}, fingerprint {}); matched bytes are not shown",
+            "redaction metadata contains a blocking finding (rule {}, fingerprint {}); matched bytes are not shown",
             finding.rule_id, finding.fingerprint
         )));
     }
@@ -298,22 +284,263 @@ fn redact_in_transaction(
     fail_before_commit: bool,
     expected: Option<&LiveFindingLocation>,
 ) -> Result<RedactionOutcome, RedactionError> {
+    crate::service::secret_maintenance::enable_secure_erasure(conn)
+        .map_err(|_| integrity("could not enable secure deletion before redaction"))?;
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
         .map_err(|_| integrity("could not open redaction transaction"))?;
 
-    if let Some(existing) = read_receipt_by_fingerprint(&tx, fingerprint)? {
+    let mut pending = vec![apply_redaction(
+        &tx,
+        fingerprint,
+        actor,
+        reason,
+        expected,
+        &mut BTreeSet::new(),
+    )?];
+    commit_redaction_records(&tx, &mut pending)?;
+    if fail_before_commit {
+        return Err(integrity("injected failure before redaction commit"));
+    }
+    tx.commit()
+        .map_err(|_| integrity("could not commit redaction transaction"))?;
+    Ok(pending.remove(0).outcome)
+}
+
+struct PendingRedaction {
+    outcome: RedactionOutcome,
+    records: Option<(RedactionFinding, ResurrectionTombstone, Option<String>)>,
+}
+
+/// All selected fingerprints are validated in one locked snapshot. No caller
+/// supplied value, replacement text, selector or SQL crosses this boundary.
+pub fn redact_findings_holding(
+    store: &mut SqliteStore,
+    locks: &RedactionLocks,
+    fingerprints: &[String],
+    actor: &str,
+    reason: &str,
+    dry_run: bool,
+) -> Result<Vec<RedactionOutcome>, RedactionError> {
+    verify_workspace(store.conn(), locks)?;
+    if fingerprints.is_empty() || fingerprints.len() > 256 {
+        return Err(RedactionError::Usage(
+            "select between 1 and 256 fingerprints".to_string(),
+        ));
+    }
+    let mut unique = BTreeSet::new();
+    for fingerprint in fingerprints {
+        validate_request(fingerprint, actor, reason)?;
+        if !unique.insert(fingerprint) {
+            return Err(RedactionError::Usage(
+                "duplicate fingerprint in redaction batch".to_string(),
+            ));
+        }
+    }
+    crate::service::secret_maintenance::enable_secure_erasure(store.conn())
+        .map_err(|_| integrity("could not enable secure deletion before redaction"))?;
+    let tx = Transaction::new_unchecked(store.conn(), TransactionBehavior::Immediate)
+        .map_err(|_| integrity("could not open redaction batch transaction"))?;
+    let mut existing = Vec::new();
+    for fingerprint in fingerprints {
+        if let Some(receipt) = read_receipt_by_fingerprint(&tx, fingerprint)? {
+            if receipt.actor != actor || receipt.reason != reason {
+                return Err(RedactionError::Conflict(
+                    "batch receipt belongs to a different request".to_string(),
+                ));
+            }
+            existing.push(RedactionOutcome {
+                receipt,
+                is_replay: true,
+            });
+        }
+    }
+    if !existing.is_empty() {
+        if existing.len() != fingerprints.len()
+            || existing
+                .iter()
+                .any(|item| item.receipt.epoch_id != existing[0].receipt.epoch_id)
+        {
+            return Err(RedactionError::Conflict(
+                "partial or mixed-epoch batch replay".to_string(),
+            ));
+        }
+        let count: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM redaction_receipts WHERE epoch_id IS ?1",
+                [&existing[0].receipt.epoch_id],
+                |row| row.get(0),
+            )
+            .map_err(|_| integrity("could not validate batch replay"))?;
+        if count != existing.len() as i64 {
+            return Err(RedactionError::Conflict(
+                "batch replay must select the complete epoch".to_string(),
+            ));
+        }
+        return Ok(existing);
+    }
+    crate::service::checkpoint::canonicalize_local_event_identities(&tx)
+        .map_err(|_| integrity("could not canonicalize batch event identities"))?;
+    let mut locations = Vec::new();
+    for fingerprint in fingerprints {
+        let location = resolve_redaction_finding(&tx, locks.checkpoint_dir(), fingerprint)?
+            .ok_or_else(|| {
+                RedactionError::NotFound("batch finding is stale or absent".to_string())
+            })?;
+        if target_spec(location.table, location.field).is_none() {
+            return Err(RedactionError::Conflict(
+                "batch finding addresses an unsupported identity field".to_string(),
+            ));
+        }
+        for prior in &locations {
+            let prior: &LiveFindingLocation = prior;
+            if location.table == prior.table
+                && location.identity_values == prior.identity_values
+                && location.field == prior.field
+                && location.finding.start < prior.finding.end
+                && prior.finding.start < location.finding.end
+            {
+                return Err(RedactionError::Conflict(
+                    "batch findings overlap; select one fingerprint for each range".to_string(),
+                ));
+            }
+        }
+        locations.push(location);
+    }
+    for (index, location) in locations.iter().enumerate() {
+        let current = read_target_text(&tx, location)?;
+        if let Some(plan) = super::secret_rekey::Plan::resolve(&tx, location, &current)? {
+            for (other, candidate) in locations.iter().enumerate() {
+                if index != other && plan.affects(&tx, candidate)? {
+                    return Err(RedactionError::Conflict(
+                        "coupled identity selections overlap; choose one fingerprint for their atomic rekey".into(),
+                    ));
+                }
+            }
+        }
+    }
+    // Rightmost-first keeps the original byte ranges stable within each field.
+    locations.sort_by(|left, right| {
+        (left.table, &left.origin_identity, left.field)
+            .cmp(&(right.table, &right.origin_identity, right.field))
+            .then_with(|| right.finding.start.cmp(&left.finding.start))
+    });
+    let mut bumped = BTreeSet::new();
+    let mut pending = Vec::new();
+    for location in locations {
+        pending.push(apply_redaction(
+            &tx,
+            &location.finding.fingerprint,
+            actor,
+            reason,
+            Some(&location),
+            &mut bumped,
+        )?);
+    }
+    commit_redaction_records(&tx, &mut pending)?;
+    if dry_run {
+        tx.rollback()
+            .map_err(|_| integrity("could not roll back redaction preview"))?;
+    } else {
+        tx.commit()
+            .map_err(|_| integrity("could not commit redaction batch"))?;
+    }
+    Ok(pending.into_iter().map(|item| item.outcome).collect())
+}
+
+fn commit_redaction_records(
+    tx: &Transaction<'_>,
+    pending: &mut [PendingRedaction],
+) -> Result<(), RedactionError> {
+    let mut receipt_ids: Vec<_> = pending
+        .iter()
+        .filter(|item| !item.outcome.is_replay)
+        .map(|item| item.outcome.receipt.receipt_id.clone())
+        .collect();
+    if receipt_ids.is_empty() {
+        return Ok(());
+    }
+    receipt_ids.sort();
+    let epoch_id = RedactionEpoch::identity_for(&receipt_ids);
+    let epoch = RedactionEpoch {
+        schema_ref: SCHEMA_REDACTION_EPOCH.to_string(),
+        epoch_id: epoch_id.clone(),
+        receipt_ids,
+        publication_state: PublicationState::Committed,
+        resulting_generation_id: None,
+        previous_generation_reset: false,
+        superseded_generations: Vec::new(),
+        opened_at: pending[0].outcome.receipt.redacted_at.clone(),
+        published_at: None,
+        extensions: RedactionExtensions::new(),
+    };
+    epoch.validate()?;
+    for (index, item) in pending.iter_mut().enumerate() {
+        let Some((finding, tombstone, issue_id)) = item.records.as_mut() else {
+            continue;
+        };
+        let receipt = &mut item.outcome.receipt;
+        receipt.epoch_id = Some(epoch_id.clone());
+        tombstone.epoch_id = epoch_id.clone();
+        tombstone.tombstone_id = ResurrectionTombstone::identity_for(
+            &tombstone.record_kind,
+            &tombstone.origin_identity,
+            &tombstone.field_path,
+            &tombstone.prior_record_hash,
+            &tombstone.finding_fingerprint,
+            &epoch_id,
+        );
+        receipt.validate()?;
+        receipt.verify_identity()?;
+        tombstone.validate()?;
+        insert_records(tx, finding, receipt, &epoch, tombstone, index == 0)?;
+        append_audit_event(
+            tx,
+            issue_id.as_deref(),
+            &receipt.actor,
+            &receipt.redacted_at,
+            receipt,
+            &epoch_id,
+        )?;
+    }
+    Ok(())
+}
+
+fn apply_redaction(
+    tx: &Transaction<'_>,
+    fingerprint: &str,
+    actor: &str,
+    reason: &str,
+    expected: Option<&LiveFindingLocation>,
+    bumped: &mut BTreeSet<String>,
+) -> Result<PendingRedaction, RedactionError> {
+    if let Some(existing) = read_receipt_by_fingerprint(tx, fingerprint)? {
         if existing.actor != actor || existing.reason != reason {
             return Err(RedactionError::Conflict(
                 "finding already has a receipt for a different request".to_string(),
             ));
         }
-        return Ok(RedactionOutcome {
-            receipt: existing,
-            is_replay: true,
+        let count: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM redaction_receipts WHERE epoch_id IS ?1",
+                [&existing.epoch_id],
+                |row| row.get(0),
+            )
+            .map_err(|_| integrity("could not validate redaction replay epoch"))?;
+        if count != 1 {
+            return Err(RedactionError::Conflict(
+                "batch replay must select the complete epoch; use redact --resume to finish publication".to_string(),
+            ));
+        }
+        return Ok(PendingRedaction {
+            outcome: RedactionOutcome {
+                receipt: existing,
+                is_replay: true,
+            },
+            records: None,
         });
     }
 
-    let live_location = find_live_finding(&tx, fingerprint)
+    let live_location = find_live_finding(tx, fingerprint)
         .map_err(|_| integrity("could not scan live redaction targets"))?;
     let location = if let Some(expected) = expected {
         let current = live_location.as_ref().unwrap_or(expected);
@@ -340,7 +567,7 @@ fn redact_in_transaction(
             )
         })?
     };
-    let location = canonicalize_event_target(&tx, fingerprint, location)?;
+    let location = canonicalize_event_target(tx, fingerprint, location)?;
     let target = target_spec(location.table, location.field).ok_or_else(|| {
         RedactionError::Conflict(format!(
             "finding addresses unsupported field {}.{}",
@@ -348,7 +575,7 @@ fn redact_in_transaction(
         ))
     })?;
 
-    let current = read_target_text(&tx, &location)?;
+    let current = read_target_text(tx, &location)?;
     let revalidated = scan::scan(
         &ScanConfig::new(Mode::Advisory),
         &location.finding.selector,
@@ -374,7 +601,7 @@ fn redact_in_transaction(
         ));
     }
 
-    let prior_record_hash = hash_target_record(&tx, &location, target.integrity_hash_column)?;
+    let prior_record_hash = hash_target_record(tx, &location, target.integrity_hash_column)?;
     let mut sanitized = String::with_capacity(
         current.len() - (revalidated.end - revalidated.start) + REDACTION_MARKER.len(),
     );
@@ -382,20 +609,45 @@ fn redact_in_transaction(
     sanitized.push_str(REDACTION_MARKER);
     sanitized.push_str(&current[revalidated.end..]);
 
-    let affected_issue_id = associated_issue_id(&tx, &location, target.issue_id_column)?;
-    update_target(&tx, &location, &sanitized, target.is_issue_row)?;
-    let affected_issue_revision = if let Some(issue_id) = affected_issue_id.as_deref() {
-        if !target.is_issue_row {
+    let affected_issue_id = associated_issue_id(tx, &location, target.issue_id_column)?;
+    let rekey = super::secret_rekey::Plan::resolve(tx, &location, &current)?;
+    let (post_location, extensions) = if let Some(plan) = rekey {
+        let (post, affected) = plan.apply(tx, &location)?;
+        for issue in affected {
+            if bumped.insert(issue.clone()) {
+                let changed = tx
+                    .execute(
+                        "UPDATE issues SET revision=revision+1 WHERE id=?1",
+                        [&issue],
+                    )
+                    .map_err(|_| integrity("could not advance rekeyed issue revision"))?;
+                if changed != 1 {
+                    return Err(integrity("rekeyed issue disappeared during redaction"));
+                }
+            }
+        }
+        let mut extensions = RedactionExtensions::new();
+        extensions.insert(super::secret_rekey::EXTENSION.to_string(), plan.metadata()?);
+        (post, extensions)
+    } else {
+        let advance = affected_issue_id
+            .as_ref()
+            .is_some_and(|id| bumped.insert(id.clone()));
+        update_target(tx, &location, &sanitized, target.is_issue_row && advance)?;
+        if !target.is_issue_row && advance {
             let changed = tx
                 .execute(
-                    "UPDATE issues SET revision = revision + 1 WHERE id = ?1",
-                    [issue_id],
+                    "UPDATE issues SET revision=revision+1 WHERE id=?1",
+                    [affected_issue_id.as_deref().unwrap()],
                 )
                 .map_err(|_| integrity("could not advance affected issue revision"))?;
             if changed != 1 {
                 return Err(integrity("affected issue disappeared during redaction"));
             }
         }
+        (location.clone(), RedactionExtensions::new())
+    };
+    let affected_issue_revision = if let Some(issue_id) = affected_issue_id.as_deref() {
         Some(
             tx.query_row(
                 "SELECT revision FROM issues WHERE id = ?1",
@@ -408,13 +660,14 @@ fn redact_in_transaction(
         None
     };
 
-    let sanitized_record_hash = hash_target_record(&tx, &location, target.integrity_hash_column)?;
+    let sanitized_record_hash =
+        hash_target_record(tx, &post_location, target.integrity_hash_column)?;
     if prior_record_hash == sanitized_record_hash {
         return Err(integrity("redaction did not change the target record hash"));
     }
     update_integrity_hash(
-        &tx,
-        &location,
+        tx,
+        &post_location,
         target.integrity_hash_column,
         &sanitized_record_hash,
     )?;
@@ -446,7 +699,7 @@ fn redact_in_transaction(
             FindingSeverity::Advisory
         },
         detected_at: timestamp.clone(),
-        extensions: RedactionExtensions::new(),
+        extensions: extensions.clone(),
     };
     finding.validate()?;
 
@@ -479,23 +732,10 @@ fn redact_in_transaction(
         publication_state: PublicationState::Committed,
         resulting_generation_id: None,
         epoch_id: Some(epoch_id.clone()),
-        extensions: RedactionExtensions::new(),
+        extensions: extensions.clone(),
     };
     receipt.validate()?;
     receipt.verify_identity()?;
-    let epoch = RedactionEpoch {
-        schema_ref: SCHEMA_REDACTION_EPOCH.to_string(),
-        epoch_id: epoch_id.clone(),
-        receipt_ids,
-        publication_state: PublicationState::Committed,
-        resulting_generation_id: None,
-        previous_generation_reset: false,
-        superseded_generations: Vec::new(),
-        opened_at: timestamp.clone(),
-        published_at: None,
-        extensions: RedactionExtensions::new(),
-    };
-    epoch.validate()?;
     let tombstone_id = ResurrectionTombstone::identity_for(
         &selector.record_kind,
         &selector.origin_identity,
@@ -514,28 +754,16 @@ fn redact_in_transaction(
         finding_fingerprint: fingerprint.to_string(),
         epoch_id: epoch_id.clone(),
         created_at: timestamp.clone(),
-        extensions: RedactionExtensions::new(),
+        extensions,
     };
     tombstone.validate()?;
 
-    insert_records(&tx, &finding, &receipt, &epoch, &tombstone)?;
-    append_audit_event(
-        &tx,
-        affected_issue_id.as_deref(),
-        actor,
-        &timestamp,
-        &receipt,
-        &epoch_id,
-    )?;
-
-    if fail_before_commit {
-        return Err(integrity("injected failure before redaction commit"));
-    }
-    tx.commit()
-        .map_err(|_| integrity("could not commit redaction transaction"))?;
-    Ok(RedactionOutcome {
-        receipt,
-        is_replay: false,
+    Ok(PendingRedaction {
+        outcome: RedactionOutcome {
+            receipt,
+            is_replay: false,
+        },
+        records: Some((finding, tombstone, affected_issue_id)),
     })
 }
 
@@ -568,19 +796,41 @@ struct TargetSpec {
 
 fn target_spec(table: &str, field: &str) -> Option<TargetSpec> {
     let allowed = match table {
-        "issues" => matches!(field, "title" | "description" | "notes" | "close_reason"),
-        "events" => field == "detail",
-        "comments" => field == "body",
-        "issue_data" | "external_references" => field == "value",
+        "issues" => matches!(
+            field,
+            "title"
+                | "description"
+                | "notes"
+                | "close_reason"
+                | "assignee"
+                | "issue_type"
+                | "source_repo"
+        ),
+        "events" => matches!(field, "actor" | "detail"),
+        "labels" => field == "label",
+        "comments" => matches!(field, "author" | "body"),
+        "issue_data" => matches!(field, "namespace" | "schema_ref" | "value"),
+        "external_references" => matches!(field, "namespace" | "key" | "value"),
+        "unique_reference_bindings" => matches!(field, "namespace" | "key"),
+        "issue_resource_keys" => field == "resource_key",
+        "dependencies" => field == "condition",
+        "recurrence_materializations" => field == "actor",
         "recurrence_templates" => matches!(
             field,
-            "title" | "description" | "base_title_template" | "base_description" | "labels_json"
+            "title"
+                | "description"
+                | "base_title_template"
+                | "base_description"
+                | "labels_json"
+                | "issue_type"
         ),
         "attempt_outcomes" => matches!(
             field,
-            "reason" | "evidence_refs_json" | "model" | "harness" | "harness_version"
+            "reason" | "actor" | "evidence_refs_json" | "model" | "harness" | "harness_version"
         ),
         "provenance_receipts" => field == "actor",
+        "leases" => field == "assignee",
+        "saved_views" => matches!(field, "name" | "description" | "query_json"),
         _ => false,
     };
     if !allowed {
@@ -590,9 +840,14 @@ fn target_spec(table: &str, field: &str) -> Option<TargetSpec> {
         is_issue_row: table == "issues",
         issue_id_column: match table {
             "issues" => Some("id"),
-            "comments" | "issue_data" | "external_references" | "attempt_outcomes" => {
-                Some("issue_id")
-            }
+            "comments"
+            | "issue_data"
+            | "external_references"
+            | "attempt_outcomes"
+            | "labels"
+            | "unique_reference_bindings"
+            | "issue_resource_keys" => Some("issue_id"),
+            "leases" => Some("issue_id"),
             _ => None,
         },
         integrity_hash_column: match table {
@@ -851,6 +1106,7 @@ fn insert_records(
     receipt: &RedactionReceipt,
     epoch: &RedactionEpoch,
     tombstone: &ResurrectionTombstone,
+    insert_epoch: bool,
 ) -> Result<(), RedactionError> {
     let finding_extensions = encode_extensions(&finding.extensions)?;
     let finding_selector_extensions = encode_extensions(&finding.selector.extensions)?;
@@ -951,26 +1207,28 @@ fn insert_records(
     let superseded = serde_json::to_string(&epoch.superseded_generations)
         .map_err(|_| integrity("could not encode redaction epoch"))?;
     let epoch_extensions = encode_extensions(&epoch.extensions)?;
-    tx.execute(
-        "INSERT INTO redaction_epochs (
+    if insert_epoch {
+        tx.execute(
+            "INSERT INTO redaction_epochs (
             epoch_id, publication_state, receipt_ids_json,
             resulting_generation_id, previous_generation_reset,
             superseded_generations_json, opened_at, published_at,
             extensions_json
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        params![
-            epoch.epoch_id,
-            epoch.publication_state.as_str(),
-            receipt_ids,
-            epoch.resulting_generation_id,
-            epoch.previous_generation_reset,
-            superseded,
-            epoch.opened_at,
-            epoch.published_at,
-            epoch_extensions,
-        ],
-    )
-    .map_err(|_| integrity("could not store redaction epoch"))?;
+            params![
+                epoch.epoch_id,
+                epoch.publication_state.as_str(),
+                receipt_ids,
+                epoch.resulting_generation_id,
+                epoch.previous_generation_reset,
+                superseded,
+                epoch.opened_at,
+                epoch.published_at,
+                epoch_extensions,
+            ],
+        )
+        .map_err(|_| integrity("could not store redaction epoch"))?;
+    }
 
     let tombstone_extensions = encode_extensions(&tombstone.extensions)?;
     tx.execute(

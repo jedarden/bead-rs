@@ -60,10 +60,7 @@ where
     keys.sort();
     for pair in keys.windows(2) {
         if pair[0] == pair[1] {
-            return Err(Error::validation(format!(
-                "Resource key declared more than once: {}",
-                pair[0]
-            )));
+            return Err(Error::validation("Resource key declared more than once"));
         }
     }
     Ok(keys)
@@ -127,7 +124,31 @@ pub fn get_resource_keys(conn: &Connection, issue_id: &str) -> Result<Vec<String
 /// The caller supplies the connection that owns the surrounding transaction;
 /// this helper does not open or commit a nested transaction.
 pub fn declare_resource_keys(conn: &Connection, issue_id: &str, raw_keys: &[String]) -> Result<()> {
+    let mut fields = vec![("id", issue_id)];
+    fields.extend(raw_keys.iter().map(|key| ("resource_keys[]", key.as_str())));
+    let _secret_write = super::secret_boundary::guard_pairs(
+        conn,
+        &super::secret_boundary::selector("issue", issue_id),
+        "cli",
+        &fields,
+    )?;
     let keys = normalize_resource_keys(raw_keys.iter().map(String::as_str))?;
+    super::secret_boundary::atomic_write(conn, || {
+        replace_resource_declarations(conn, issue_id, &keys)
+    })
+}
+
+/// Historical recovery admits existing declarations, then inspects the
+/// activated state in its transaction. Not available to public writers.
+pub(crate) fn restore_resource_declarations(
+    conn: &Connection,
+    issue_id: &str,
+    keys: &[String],
+) -> Result<()> {
+    replace_resource_declarations(conn, issue_id, keys)
+}
+
+fn replace_resource_declarations(conn: &Connection, issue_id: &str, keys: &[String]) -> Result<()> {
     conn.execute(
         "DELETE FROM issue_resource_keys WHERE issue_id = ?1",
         [issue_id],
@@ -136,7 +157,7 @@ pub fn declare_resource_keys(conn: &Connection, issue_id: &str, raw_keys: &[Stri
         conn.execute(
             "INSERT INTO issue_resource_keys (issue_id, resource_key)
              VALUES (?1, ?2)",
-            [issue_id, &key],
+            [issue_id, key],
         )?;
     }
     Ok(())
@@ -150,6 +171,16 @@ pub fn add_resource_keys(
     fencing_token: Option<i64>,
     override_claim: Option<&str>,
 ) -> Result<Vec<String>> {
+    let fields: Vec<_> = raw_keys
+        .iter()
+        .map(|key| ("resource_keys[]", key.as_str()))
+        .collect();
+    let _scan = super::secret_boundary::guard_pairs(
+        tx,
+        &super::secret_boundary::selector("issue", issue_id),
+        "cli",
+        &fields,
+    )?;
     let mut keys = get_resource_keys(tx, issue_id)?;
     let additions = normalize_resource_keys(raw_keys.iter().map(String::as_str))?;
     for key in additions {
@@ -170,6 +201,16 @@ pub fn remove_resource_keys(
     fencing_token: Option<i64>,
     override_claim: Option<&str>,
 ) -> Result<Vec<String>> {
+    let fields: Vec<_> = raw_keys
+        .iter()
+        .map(|key| ("resource_keys[]", key.as_str()))
+        .collect();
+    let _scan = super::secret_boundary::guard_pairs(
+        tx,
+        &super::secret_boundary::selector("issue", issue_id),
+        "cli",
+        &fields,
+    )?;
     let remove = normalize_resource_keys(raw_keys)?;
     let current = get_resource_keys(tx, issue_id)?;
     let remaining = current
@@ -189,6 +230,18 @@ pub fn add_resource_keys_with_event(
     override_claim: Option<&str>,
     actor: &str,
 ) -> Result<Vec<String>> {
+    let mut fields = vec![
+        ("id", issue_id),
+        ("actor", actor),
+        ("override_claim", override_claim.unwrap_or("")),
+    ];
+    fields.extend(raw_keys.iter().map(|key| ("resource_keys[]", key.as_str())));
+    let _secret_write = super::secret_boundary::guard_pairs(
+        tx,
+        &super::secret_boundary::selector("issue", issue_id),
+        actor,
+        &fields,
+    )?;
     let before = get_resource_keys(tx, issue_id)?;
     let keys = add_resource_keys(tx, issue_id, raw_keys, fencing_token, override_claim)?;
     if before != keys {
@@ -206,6 +259,18 @@ pub fn remove_resource_keys_with_event(
     override_claim: Option<&str>,
     actor: &str,
 ) -> Result<Vec<String>> {
+    let mut fields = vec![
+        ("id", issue_id),
+        ("actor", actor),
+        ("override_claim", override_claim.unwrap_or("")),
+    ];
+    fields.extend(raw_keys.iter().map(|key| ("resource_keys[]", key.as_str())));
+    let _secret_write = super::secret_boundary::guard_pairs(
+        tx,
+        &super::secret_boundary::selector("issue", issue_id),
+        actor,
+        &fields,
+    )?;
     let before = get_resource_keys(tx, issue_id)?;
     let keys = remove_resource_keys(tx, issue_id, raw_keys, fencing_token, override_claim)?;
     if before != keys {
@@ -222,6 +287,17 @@ pub fn set_resource_keys(
     fencing_token: Option<i64>,
     override_claim: Option<&str>,
 ) -> Result<()> {
+    let mut fields = vec![
+        ("id", issue_id),
+        ("override_claim", override_claim.unwrap_or("")),
+    ];
+    fields.extend(raw_keys.iter().map(|key| ("resource_keys[]", key.as_str())));
+    let _secret_write = super::secret_boundary::guard_pairs(
+        tx,
+        &super::secret_boundary::selector("issue", issue_id),
+        "cli",
+        &fields,
+    )?;
     let keys = normalize_resource_keys(raw_keys.iter().map(String::as_str))?;
     let issue_state: Option<(String, Option<String>)> = tx
         .query_row(
@@ -275,6 +351,37 @@ pub fn acquire_issue_locks(
     lease_fencing_token: Option<i64>,
 ) -> Result<()> {
     let keys = get_resource_keys(tx, issue_id)?;
+    let mut fields = vec![("id", issue_id)];
+    fields.extend(keys.iter().map(|key| ("resource_keys[]", key.as_str())));
+    let _scan = super::secret_boundary::guard_pairs(
+        tx,
+        &super::secret_boundary::selector("issue", issue_id),
+        "cli",
+        &fields,
+    )?;
+    acquire_issue_locks_unchecked(tx, issue_id, lease_fencing_token, keys)
+}
+
+/// Recovery reconstructs existing lock state before its quarantine verdict.
+pub(crate) fn restore_issue_locks(
+    tx: &Transaction,
+    issue_id: &str,
+    lease_fencing_token: Option<i64>,
+) -> Result<()> {
+    acquire_issue_locks_unchecked(
+        tx,
+        issue_id,
+        lease_fencing_token,
+        get_resource_keys(tx, issue_id)?,
+    )
+}
+
+fn acquire_issue_locks_unchecked(
+    tx: &Transaction,
+    issue_id: &str,
+    lease_fencing_token: Option<i64>,
+    keys: Vec<String>,
+) -> Result<()> {
     let now = now_string();
     let mut existing_keys = Vec::new();
     for key in &keys {
@@ -289,8 +396,8 @@ pub fn acquire_issue_locks(
         if let Some((owner, _)) = existing {
             if owner != issue_id {
                 return Err(Error::conflict(format!(
-                    "{}: resource key '{}' is held by issue '{}' in this workspace",
-                    RESOURCE_CONFLICT_REASON_CODE, key, owner
+                    "{}: a resource key is held by another issue in this workspace",
+                    RESOURCE_CONFLICT_REASON_CODE
                 )));
             }
             existing_keys.push(key.clone());
@@ -312,12 +419,24 @@ pub fn acquire_issue_locks(
 
 /// Release every key held by an issue.
 pub fn release_issue_locks(tx: &Transaction, issue_id: &str) -> Result<()> {
+    super::secret_boundary::atomic_write(tx, || release_issue_locks_unchecked(tx, issue_id))
+}
+
+fn release_issue_locks_unchecked(tx: &Transaction, issue_id: &str) -> Result<()> {
     tx.execute("DELETE FROM resource_locks WHERE issue_id = ?1", [issue_id])?;
     Ok(())
 }
 
 /// Reconcile an issue's active lock rows with its current lifecycle state.
 pub fn sync_issue_locks(tx: &Transaction, issue_id: &str) -> Result<()> {
+    super::secret_boundary::atomic_write(tx, || sync_issue_locks_unchecked(tx, issue_id, false))
+}
+
+pub(crate) fn restore_lock_state(tx: &Transaction, issue_id: &str) -> Result<()> {
+    sync_issue_locks_unchecked(tx, issue_id, true)
+}
+
+fn sync_issue_locks_unchecked(tx: &Transaction, issue_id: &str, recovery: bool) -> Result<()> {
     let state: Option<(String, Option<String>)> = tx
         .query_row(
             "SELECT base_status, assignee FROM issues WHERE id = ?1",
@@ -328,9 +447,13 @@ pub fn sync_issue_locks(tx: &Transaction, issue_id: &str) -> Result<()> {
     let Some((status, assignee)) = state else {
         return Err(Error::not_found(format!("Issue not found: {}", issue_id)));
     };
-    release_issue_locks(tx, issue_id)?;
+    release_issue_locks_unchecked(tx, issue_id)?;
     if status == "in_progress" && assignee.is_some() {
-        acquire_issue_locks(tx, issue_id, active_lease_token(tx, issue_id)?)?;
+        if recovery {
+            restore_issue_locks(tx, issue_id, active_lease_token(tx, issue_id)?)?;
+        } else {
+            acquire_issue_locks(tx, issue_id, active_lease_token(tx, issue_id)?)?;
+        }
     }
     Ok(())
 }
@@ -341,18 +464,21 @@ pub fn update_issue_lock_lease_token(
     issue_id: &str,
     lease_fencing_token: i64,
 ) -> Result<()> {
-    tx.execute(
-        "UPDATE resource_locks SET lease_fencing_token = ?1 WHERE issue_id = ?2",
-        rusqlite::params![lease_fencing_token, issue_id],
-    )?;
-    Ok(())
+    super::secret_boundary::atomic_write(tx, || {
+        tx.execute(
+            "UPDATE resource_locks SET lease_fencing_token = ?1 WHERE issue_id = ?2",
+            rusqlite::params![lease_fencing_token, issue_id],
+        )?;
+        Ok(())
+    })
 }
 
 /// Return keys whose lease epoch has expired.
 pub fn release_expired_resource_locks(tx: &Transaction) -> Result<()> {
-    let now = now_string();
-    tx.execute(
-        "DELETE FROM resource_locks
+    super::secret_boundary::atomic_write(tx, || {
+        let now = now_string();
+        tx.execute(
+            "DELETE FROM resource_locks
          WHERE lease_fencing_token IS NOT NULL
            AND EXISTS (
                SELECT 1 FROM leases l
@@ -360,9 +486,10 @@ pub fn release_expired_resource_locks(tx: &Transaction) -> Result<()> {
                  AND l.fencing_token = resource_locks.lease_fencing_token
                  AND l.expires_at <= ?1
            )",
-        [&now],
-    )?;
-    Ok(())
+            [&now],
+        )?;
+        Ok(())
+    })
 }
 
 /// Count effective resource conflicts for a candidate or explanation.

@@ -96,6 +96,12 @@ pub fn enforce_claimant_credential(
     fencing_token: Option<i64>,
     override_claim: Option<&str>,
 ) -> Result<()> {
+    let _scan = super::secret_boundary::guard_pairs(
+        tx,
+        &super::secret_boundary::selector("issue", id),
+        "operator",
+        &[("override_claim", override_claim.unwrap_or(""))],
+    )?;
     let Some(current_assignee) = assignee else {
         return Ok(());
     };
@@ -213,6 +219,18 @@ pub fn update_issue_in_tx(
     fencing_token: Option<i64>,
     override_claim: Option<&str>,
 ) -> Result<String> {
+    let _secret_write = super::secret_boundary::guard_pairs(
+        tx,
+        &super::secret_boundary::selector("issue", id),
+        "cli",
+        &[
+            ("id", id),
+            ("status", status.unwrap_or("")),
+            ("assignee", assignee.unwrap_or("")),
+            ("notes", notes.unwrap_or("")),
+            ("override_claim", override_claim.unwrap_or("")),
+        ],
+    )?;
     // Validate that assignee and clear_assignee are not both specified
     if assignee.is_some() && clear_assignee {
         return Err(Error::validation(
@@ -274,6 +292,12 @@ pub fn release_issue_with_override(
     fencing_token: Option<i64>,
     override_claim: Option<&str>,
 ) -> Result<String> {
+    let _scan = super::secret_boundary::guard_pairs(
+        conn,
+        &super::secret_boundary::selector("issue", id),
+        "cli",
+        &[("id", id), ("override_claim", override_claim.unwrap_or(""))],
+    )?;
     // Process in a write transaction taken before the read, so the revision
     // precondition and lease are validated against the snapshot the UPDATE
     // lands on (see begin_lifecycle_transaction)
@@ -354,6 +378,16 @@ pub fn close_issue_in_tx(
     fencing_token: Option<i64>,
     override_claim: Option<&str>,
 ) -> Result<String> {
+    let _secret_write = super::secret_boundary::guard_pairs(
+        tx,
+        &super::secret_boundary::selector("issue", id),
+        "cli",
+        &[
+            ("id", id),
+            ("close_reason", reason),
+            ("override_claim", override_claim.unwrap_or("")),
+        ],
+    )?;
     // Validate reason
     if reason.trim().is_empty() {
         return Err(Error::validation("Close reason cannot be empty"));
@@ -391,6 +425,12 @@ pub fn release_issue_in_tx(
     fencing_token: Option<i64>,
     override_claim: Option<&str>,
 ) -> Result<String> {
+    let _secret_write = super::secret_boundary::guard_pairs(
+        tx,
+        &super::secret_boundary::selector("issue", id),
+        "cli",
+        &[("id", id), ("override_claim", override_claim.unwrap_or(""))],
+    )?;
     // Get current issue state
     let issue = get_issue_for_update(tx, id)?.ok_or_else(|| Error::not_found(id))?;
 
@@ -420,6 +460,12 @@ pub fn reopen_issue_with_override(
     fencing_token: Option<i64>,
     override_claim: Option<&str>,
 ) -> Result<String> {
+    let _secret_write = super::secret_boundary::guard_pairs(
+        conn,
+        &super::secret_boundary::selector("issue", id),
+        "cli",
+        &[("id", id), ("override_claim", override_claim.unwrap_or(""))],
+    )?;
     // Process in a write transaction taken before the read, so the revision
     // precondition and lease are validated against the snapshot the UPDATE
     // lands on (see begin_lifecycle_transaction)

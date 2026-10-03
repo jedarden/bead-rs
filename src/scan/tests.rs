@@ -1,6 +1,32 @@
 use super::*;
 use std::time::{Duration, Instant};
 
+#[test]
+fn integer_qualifier_excludes_identifiers_and_accepts_labelled_randomness() {
+    for value in [
+        "bead-19d43acf",
+        "worker-14ab90ce",
+        "2026-10-03T10:23:59Z",
+        "version_0.2.6",
+        "kv/service/access_token",
+        "CamelCaseTypeName",
+        "snake_case_name",
+    ] {
+        assert!(!credential_shape::qualifies(value, 12));
+    }
+    let value = "a1B2c3D4e5F6g7H8j9K0m1N2p3Q4r5S6t7U8v9W0";
+    assert!(credential_shape::qualifies(value, 12));
+    for value in [
+        "your_key_here",
+        "example_token",
+        "masked-secret",
+        "<credential>",
+        "x".repeat(32).as_str(),
+    ] {
+        assert!(credential_shape::placeholder(value));
+    }
+}
+
 fn aws_shaped_value() -> String {
     ["AK", "IA", "7Q9W2E4R6T8Y1U3I"].concat()
 }
@@ -74,7 +100,10 @@ fn aws_secret_access_key_assignment_blocks_with_or_without_namespace() {
             .iter()
             .find(|finding| finding.rule_id == "aws-secret-access-key-assignment")
             .expect("the exact AWS assignment must block");
-        assert_eq!(&text[finding.start..finding.end], assignment);
+        assert_eq!(
+            &text[finding.start..finding.end],
+            aws_secret_access_key_value()
+        );
         let rendered = format!("{finding:?} {finding}");
         assert!(!rendered.contains(&assignment));
         assert!(!rendered.contains(&aws_secret_access_key_value()));
@@ -111,7 +140,7 @@ fn garage_access_key_id_blocks_only_in_assignment_context() {
             .iter()
             .find(|finding| finding.rule_id == "garage-access-key-id-assignment")
             .expect("the contextual Garage key ID must block");
-        assert_eq!(&text[finding.start..finding.end], assignment);
+        assert_eq!(&text[finding.start..finding.end], garage_access_key_id());
         let rendered = format!("{finding:?} {finding}");
         assert!(!rendered.contains(&assignment));
         assert!(!rendered.contains(&garage_access_key_id()));
@@ -195,8 +224,8 @@ fn exact_fingerprint_acknowledgment_admits_only_that_finding() {
 
     assert!(admitted.is_admitted());
     assert_eq!(admitted.acknowledged.len(), 1);
-    assert_eq!(admitted.findings[0].tier, Tier::Blocking);
-    assert!(admitted.findings[0].is_blocking_match());
+    assert_eq!(admitted.acknowledged[0].tier, Tier::Blocking);
+    assert!(admitted.acknowledged[0].is_blocking_match());
 
     let changed_selector = scan(
         &config,

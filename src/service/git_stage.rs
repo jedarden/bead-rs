@@ -85,6 +85,8 @@ fn stage_published_checkpoint_with(
     present: &[String],
     deleted: &[String],
 ) -> Result<Vec<String>, String> {
+    super::secret_maintenance::ensure_staging_allowed(workspace_root)
+        .map_err(|error| error.to_string())?;
     // Outside any repository there is no index to stage into and no handoff
     // to serve; this is the common shape for tests and throwaway workspaces,
     // so it must stay a no-op that never spawns a subprocess (ADR-013's

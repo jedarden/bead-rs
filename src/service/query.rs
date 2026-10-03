@@ -444,6 +444,16 @@ pub fn project_issue(issue: &Issue, projection: &QueryProjection) -> Result<serd
 
 /// Save a query as a named view
 pub fn save_view(conn: &Connection, name: &str, description: &str, query_json: &str) -> Result<()> {
+    let _secret_write = super::secret_boundary::guard_pairs(
+        conn,
+        "view:input",
+        "cli",
+        &[
+            ("name", name),
+            ("description", description),
+            ("query", query_json),
+        ],
+    )?;
     let now = time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "unknown".to_string());
@@ -451,15 +461,18 @@ pub fn save_view(conn: &Connection, name: &str, description: &str, query_json: &
     // Generate view ID using timestamp and random bytes
     let view_id = format!("view-{}", now.replace(":", "").replace("-", ""));
 
-    conn.execute(
-        "INSERT INTO saved_views (id, name, description, query_json, created_at, updated_at)
+    super::secret_boundary::local_transaction(conn, "view_save", || {
+        conn.execute(
+            "INSERT INTO saved_views (id, name, description, query_json, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT(name) DO UPDATE SET
             query_json = ?4,
             updated_at = ?6",
-        [&view_id, name, description, query_json, &now, &now],
-    )
-    .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to save view: {}", e)))?;
+            [&view_id, name, description, query_json, &now, &now],
+        )
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to save view: {}", e)))?;
+        Ok(())
+    })?;
 
     Ok(())
 }
@@ -497,6 +510,8 @@ pub fn list_views(conn: &Connection) -> Result<Vec<SavedView>> {
 
 /// Delete a saved view
 pub fn delete_view(conn: &Connection, name: &str) -> Result<()> {
+    let _secret_write =
+        super::secret_boundary::guard_pairs(conn, "view:input", "cli", &[("name", name)])?;
     let rows_affected = conn
         .execute("DELETE FROM saved_views WHERE name = ?1", [name])
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to delete view: {}", e)))?;

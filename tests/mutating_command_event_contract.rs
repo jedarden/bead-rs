@@ -164,6 +164,16 @@ fn registry() -> Vec<RegisteredCommand> {
             class: Mutating,
             reason: "a committed historical redaction appends one `historical_redaction` event",
             invoke: |f| {
+                // Keep recovery fixtures clean under durable quarantine. Seed
+                // this historical value only when its final redaction runs.
+                let value = ["AK", "IA", "7Q9W2E4R6T8Y1U3I"].concat();
+                let conn = rusqlite::Connection::open(f.workspace.join(".beads/beads.db")).unwrap();
+                conn.execute(
+                    "UPDATE issues SET description=?1 WHERE id=?2",
+                    rusqlite::params![value, f.redaction_target],
+                )
+                .unwrap();
+                conn.execute("INSERT INTO events (issue_id,kind,actor,time,detail) VALUES (?1,'historical_fixture_seed','contract-probe','2026-10-03T00:00:00Z','{}')", [&f.redaction_target]).unwrap();
                 vec![
                     "redact".into(),
                     "--finding".into(),
@@ -926,6 +936,7 @@ struct Fixture {
     resolve_target: String,
     /// Opaque scanner identity for the historical-redaction probe.
     redaction_fingerprint: String,
+    redaction_target: String,
     /// Recurrence template created in setup: target for `materialize`.
     template: String,
     /// Created and deleted only by the NonMutating phase.
@@ -1057,6 +1068,8 @@ fn build_fixture() -> Fixture {
     // scanner fingerprint for the command registry.
     let shaped = ["AK", "IA", "7Q9W2E4R6T8Y1U3I"].concat();
     let conn = rusqlite::Connection::open(workspace.join(".beads/beads.db")).unwrap();
+    conn.execute_batch("SAVEPOINT redaction_fixture_probe")
+        .unwrap();
     conn.execute(
         "UPDATE issues
          SET description = ?1, revision = revision + 1,
@@ -1087,6 +1100,13 @@ fn build_fixture() -> Fixture {
         })
         .expect("historical fixture must produce one blocking finding")
         .fingerprint;
+    conn.execute_batch("ROLLBACK TO redaction_fixture_probe; RELEASE redaction_fixture_probe")
+        .unwrap();
+    conn.execute(
+        "UPDATE issues SET updated_at='2020-01-01T00:00:00Z' WHERE id=?1",
+        [&watchdog_target],
+    )
+    .unwrap();
     drop(conn);
     bead(&workspace)
         .args([
@@ -1168,6 +1188,7 @@ fn build_fixture() -> Fixture {
         closed,
         resolve_target,
         redaction_fingerprint,
+        redaction_target: redact_target,
         template: "probe-template".to_string(),
         spare_template: "probe-spare-template".to_string(),
         foreign_checkpoint,

@@ -1,6 +1,6 @@
 # bead-rs Current Product and Software Factory Plan
 
-Plan revision: 19
+Plan revision: 20
 
 As of: 2026-10-03
 
@@ -55,7 +55,7 @@ Revision 18 records the remaining secret-write boundary exposed by the
 but public mutating service functions can bypass it; recovery is report-only
 and may publish newly encountered findings; and workspace policy can select
 `advisory` or `off` or acknowledge a finding. It proposes ADR-020 through
-ADR-022 and `secret-write-boundary-v1` as R039. No R039 implementation is
+ADR-022 and `secret-write-boundary-v1` as R039. No R039 release acceptance is
 credited until an independent exact-hash review accepts that contract and
 the BR-T31 through BR-T33 gates pass. Existing fast-secret-scanner rollout
 beads own the separate Git transport layer.
@@ -73,11 +73,33 @@ widens the blocking ruleset, ADR-024 matches on a normalized view while
 reporting raw byte ranges, and ADR-025 makes advisory findings and partial
 scan coverage visible. The proposed contract is `secret-ruleset-v4`. Three
 defect corrections (BR-T36 through BR-T38) restore accepted behavior and do
-not wait for review; no other R040 implementation is credited until an
+not wait for review; no other R040 release acceptance is credited until an
 independent exact-hash review accepts the contract and BR-T44 records the
 fleet replay.
 
 ## 0. How to read this plan
+
+Revision 20 tracks the repository owner's 2026-10-03 instruction to close the
+secret-redaction and prevention gaps found in the current checkout. Existing
+BR-T31–BR-T43 beads own the service boundary, managed policy, recovery
+quarantine, and detector work; they are reused rather than duplicated.
+`beadrs-25768cbe` owns interrupted-publication safety and local SQLite/WAL
+cleanup (BR-T46), and `beadrs-ebec169c` owns metadata and atomic batch
+redaction (BR-T47). The implementation instruction admits this repository
+work; it does not constitute an independent exact-hash specification review,
+a fleet credential-rotation instruction, or release evidence. BR-T30, BR-T35,
+BR-T44, and BR-T45 retain their separate acceptance boundaries.
+
+Baseline verification ran locally against the dirty checkout: `cargo test
+--test secret_rejection --test redaction_transaction --test
+redaction_publication --test redaction_event_identity` passed all 23 tests.
+A separate runtime-assembled synthetic probe established two missing cases:
+ordinary flush after semantic-only redaction retained a contaminated previous
+generation, and successful redaction resume left removed bytes in the SQLite
+WAL with secure deletion disabled. No actual credential or finding location
+is recorded here. Both cases now have synthetic repository regression tests
+in `tests/redaction_maintenance.rs`; section 5.5 records the verification and
+remaining acceptance work.
 
 Sections 0–8 are the current normative product and transition plan. The former
 0.1/Marathon plan follows as a historical appendix. Its bootstrap sequence,
@@ -182,9 +204,8 @@ and BR-T11 complete against one exact source commit and pinned binary.
 - Claim service layers accept some harness/model metadata internally, but the
   public CLI does not yet supply a durable attempt identity across claim and
   outcome.
-- Tag v0.2.6 (`d9a32b3`) and the installed development binary both advertise
-  secret ruleset v3 and historical redaction (`RULESET_VERSION = 3` in
-  `src/scan/rules.rs`; `src/model/redaction.rs`; `ruleset_version` and
+- Tag v0.2.6 (`d9a32b3`) and the previously installed development binary both advertise
+  secret ruleset v3 and historical redaction (`src/model/redaction.rs`; `ruleset_version` and
   `historical_redaction` in `src/service/capabilities.rs`). The contract is
   now carried by a tag, but the tag predates its evidence: BR-T18's
   conformance, packaging, and remediation gates remain open, so the capability
@@ -204,23 +225,31 @@ and BR-T11 complete against one exact source commit and pinned binary.
 - Workspace probing was itself mutating because it used the auto-migrating
   connection path. ADR-016 and commit `36432b2` make probing observational;
   exact-source store discovery and all nine R036 tests pass.
-- The current secret gate is in CLI dispatch. Public service write functions
-  do not all invoke it, and recurrence materialization can derive text from
-  recovered templates. R039 proposes a service-level gate before commit.
-- Recovery reports findings without refusing the local operation, while
-  automatic checkpoint publication can create a Git-trackable copy. R039
-  proposes durable publication quarantine for newly detected blocking
-  findings. This does not clean already-published history.
-- Ruleset 3 does not recognize several credential formats the fleet stores,
-  matches only an isolated raw token, and validates npm tokens with the
-  wrong checksum width. A stored credential with no finding cannot be
-  selected by `bead redact`. R040 proposes ruleset 4 and a normalized
-  matching view.
-- The advisory tier holds tens of thousands of hash-shaped findings, is
-  silent when a mutation is accepted, and the doctor check aborts without a
-  verdict when one retained generation is unreadable. R040 proposes
-  shape-based advisory selection, a write-time notice, and per-source
-  coverage.
+- The owner-directed checkout implementation now gates public service
+  writes, including direct library entry points and recurrence-generated
+  text. Native policy is bound to the actual database workspace; embedded
+  stores without workspace identity use fixed enforce behavior. Independent
+  R039 acceptance and exact-source fleet installation remain open.
+- Recovery now commits a durable quarantine with detected blocking findings
+  or incomplete retained-artifact coverage. Ordinary writes, flush, staging
+  and commit refuse; explicit recovery and fingerprint redaction remain
+  available. This does not clean already-published history.
+- The checkout now compiles ruleset 4: corrected npm checksum width,
+  overlapping prefilter anchors, bounded normalized matching with raw-byte
+  ranges, provider/context and structural rules, and an integer-arithmetic
+  assignment qualifier. Ruleset 3 remains the prior artifact baseline;
+  ruleset 4 is not frozen or release-backed before BR-T35 and BR-T44.
+- Advisory findings are now shape-qualified and hash shapes excluded.
+  Successful mutations emit one redacted notice, with additive metadata on
+  object-shaped machine results. Doctor preserves findings from readable
+  sources while reporting per-source incomplete coverage. Cross-scanner
+  parity, the hostile-field benchmark and fleet noise comparison remain
+  acceptance gates, not inferred successes.
+- Historical redaction now supports atomic selected batches, non-key
+  metadata and owner-admitted controlled identity rekeying, with a durable
+  maintenance hold and checked SQLite/WAL cleanup. Collision and coupled
+  selection refusal preserve rows and references instead of merging or
+  overwriting them (BR-T47).
 
 ## 2. Current design principles
 
@@ -427,7 +456,7 @@ receipt.
 anti_resurrection, sanitized_generation_set }`. Capability absence means an
 operator must stop; hand-editing SQLite or checkpoint JSON is never a fallback.
 
-### 5.2 Proposed secret write boundary (R039)
+### 5.2 Owner-directed secret write boundary (R039; independent acceptance pending)
 
 The built-in scanner becomes the authoritative gate for all public service
 mutations, including direct library callers and generated recurrence text.
@@ -438,15 +467,17 @@ and `sync commit` until fingerprint-selected redaction has produced a
 verified sanitized generation. Doctor, status, and capabilities make the
 effective policy and quarantine visible without printing matched bytes.
 
-These are proposed contracts in ADR-020 through ADR-022 and
-`research/specs/secret-write-boundary-v1.md`, not current release claims.
+ADR-020 through ADR-022 and `research/specs/secret-write-boundary-v1.md`
+remain proposed review artifacts, not current release claims. The owner
+authorized repository implementation on 2026-10-03 without substituting that
+instruction for an independent exact-hash acceptance.
 BR-T29 authors the documents, BR-T30 independently reviews their exact hash,
 and BR-T31 through BR-T33 implement the accepted service, policy, and recovery
 boundaries in dependency order. The existing `secret-scanner` fleet beads
 `fss-3aa3e0b6` and `fss-5f007601` own the independent Forgejo and fleet
 transport checks; they do not substitute for the bead-rs write gate.
 
-### 5.3 Proposed ruleset 4 and matching contract (R040)
+### 5.3 Owner-directed ruleset 4 (R040; independent acceptance pending)
 
 R039 decides where the scan runs and who may weaken it. R040 decides what the
 scan detects. The two are independent and neither waits for the other,
@@ -474,8 +505,9 @@ excludes hash shapes; a successful mutation that admitted advisory findings
 says so in one redacted line; and doctor reports coverage per source instead
 of aborting.
 
-These are proposed contracts in ADR-023 through ADR-025 and
-`research/specs/secret-ruleset-v4.md`, not current release claims. BR-T34
+ADR-023 through ADR-025 and `research/specs/secret-ruleset-v4.md` remain
+proposed review artifacts, not current release claims. The 2026-10-03 owner
+instruction admits repository implementation but not fleet activation. BR-T34
 authors the documents and BR-T35 independently reviews their exact hash.
 BR-T36 through BR-T38 correct defects against the accepted contract and
 proceed immediately. BR-T39 through BR-T43 implement the accepted contract,
@@ -483,6 +515,102 @@ and BR-T44 replays it across the fleet before the version is frozen. Rule
 parity with the Git-layer scanner is a fixture obligation of this contract;
 selecting that scanner's findings for redaction and a shared acknowledgment
 path remain with `beadrs-1c110ec3`.
+
+### 5.4 Complete local historical-redaction maintenance (R041)
+
+`research/specs/historical-redaction-maintenance-v1.md` specifies the
+owner-directed hardening. A committed but unfinished redaction is a durable
+publication hold, including after restart: ordinary flush, auto-publication,
+staging, and `sync commit` cannot retain or commit its dirty predecessor.
+Only the fingerprint-selected maintenance publisher may finish it. Local
+cleanup enables secure deletion before replacement, compacts sanitized SQLite
+state, and checks WAL truncation before marking the epoch complete. Readers
+that prevent cleanup leave a resumable hold rather than false success.
+
+Every diagnostic text field needs an explicit redaction disposition. Non-key
+text metadata is supported. Following the owner's explicit 2026-10-03 choice,
+identity-bearing metadata uses controlled whole-key rekeying: a bounded opaque
+name replaces a label, data/reference namespace, reference key, uniqueness
+binding, resource key or saved-view name. Defined relational references are
+updated in the same transaction. Shared resource declarations and active locks
+keep their contention and fencing state. Any collision or coupled batch
+selection refuses without partial changes. Durable digest tombstones prevent
+recovery from resurrecting old identity aliases, independently of scanner
+version. Capabilities report `identity_key_redaction: true`. Multiple selected findings
+are validated against one snapshot and replaced in one all-or-none
+transaction, with individual nonsecret receipts and one publication epoch.
+Existing Git history, copies, storage snapshots, and credential rotation are
+outside the local byte-cleanup guarantee.
+
+### 5.5 Implementation and verification handoff (2026-10-03)
+
+The narrow destructive exception is scanner-selected byte replacement, not
+bead or event deletion and not arbitrary caller-selected SQL or replacement
+text. `bead doctor --scope secrets --format json` reports safe fingerprints.
+`bead redact --finding <fingerprint> --actor <identity> --reason <nonsecret-reason>
+--dry-run --json` previews one selection; repeat `--finding` for one atomic
+batch. Omit `--dry-run` to apply and publish. A committed but unfinished
+receipt resumes with `bead redact --resume <receipt-id> --json`.
+
+New implementation owners are `beadrs-25768cbe` (BR-T46) and
+`beadrs-ebec169c` (BR-T47). Existing BR-T31–BR-T43 carry the prevention and
+detector steps; the existing doctor transition defect `beadrs-9e6f9b9e` is
+also covered, not duplicated. The new maintenance contract is
+[`historical-redaction-maintenance-v1`](../../research/specs/historical-redaction-maintenance-v1.md).
+Migration 20 adds the durable quarantine table; checkpoint and forensic
+recovery retain their existing additive-field contracts.
+
+The targeted regression suites cover service rejection without CLI preflight,
+same-transaction acknowledgment, generated recurrence, batch rollback and
+replay, mapped encodings and complete PEM spans, recovery quarantine/restart,
+identity rekeying/collision, incomplete doctor coverage, pending publication, local byte
+absence and busy-reader resume. The managed profile is compiled with
+`managed-secret-policy`; it refuses workspace `off`/`advisory` and all
+fingerprint acknowledgments. No installed or pinned fleet binary was changed.
+
+Validation uses `TMPDIR=/var/tmp` to keep independently initialized test
+workspaces outside the host's Git/workspace ancestry. The shared checkout
+contains unrelated edits and untracked tests, which are preserved. Its full
+`cargo test` run stops on `archive_build_leaves_shared_checkout_untouched`:
+the host Cargo wrapper redirects the build to `/build/bead-rs` while the
+archive script expects a scratch-local target. Existing `beadrs-049cfb7b`
+owns that blocker. Checkout `cargo fmt --check` also reports pre-existing
+untracked `checkpoint_resilience.rs` and `dependency_blocker_status.rs`.
+An exported HEAD plus only this change's precise files is used separately
+for complete source verification; it is not a pinned release artifact and
+cannot establish Git-specific archive-build acceptance. Final command
+outcomes are recorded below and on the owning beads before handoff.
+
+Final local outcomes for exported `7fef332` plus the precise implementation
+files, excluding other workers' edits and untracked tests:
+
+- `cargo fmt --check`: passed.
+- `cargo clippy --all-targets -- -D warnings`: passed.
+- `cargo clippy --all-targets --features managed-secret-policy -- -D warnings`:
+  passed.
+- `TMPDIR=/var/tmp cargo test --no-fail-fast`: passed all 114 test targets,
+  1,594 tests, zero failures and six ignored tests, including doctests.
+  Git-specific tests that return early in an exported tree do not establish
+  the shared-checkout/archive gate described above.
+- `TMPDIR=/var/tmp cargo test --features managed-secret-policy --test
+  secret_gap_contract --test cli_capabilities`: 27 passed, zero failures.
+  This is targeted managed-profile verification, not a full managed suite.
+
+The identity suite includes five passing tests: seven supported-family
+round trips, shared resource/fencing preservation and recovery refusal,
+coupled-batch rollback, cross-issue/cross-namespace collision refusal without
+primary-key overlap, and an independent key/prose batch. The command/event
+fixture now seeds historical content only at its redaction step; all four
+event-contract probes pass without exempting contaminated recovery from
+quarantine. The source is verified; whole-checkout acceptance remains held
+by the existing archive-build blocker and unrelated formatting failures.
+Neither implementation owner is closed on incomplete whole-checkout gates.
+
+Remaining independent acceptance includes BR-T30/BR-T35 review, scanner parity
+and performance evidence, BR-T44 exact-artifact fleet replay, BR-T32 fleet pin,
+and the operator-admitted rotation/remediation in BR-T45. Secret detection is
+bounded and cannot prove that all possible credentials are absent. Rotation
+of exposed credentials remains necessary even after local erasure succeeds.
 
 ## 6. Artifact-by-artifact transition ledger
 
@@ -518,22 +646,24 @@ path remain with `beadrs-1c110ec3`.
 | BR-T27 | exact-source packaging and NEEDLE consumer conformance | Build one pinned artifact and run the old/new consumer matrix plus duplicate-worker replay before release | source/binary hashes, archive-build proof, restore rehearsal, NEEDLE canary and rollback receipt agree | blocked by BR-T23–BR-T26; `beadrs-41b9130e` |
 | BR-T28 | existing manifest transaction, planner guidance, dependency graph and resource declarations | Make manifest-based atomic materialization the required/default planner path; retain assigned-staging only for shapes the manifest cannot express | concurrent claimer observes zero wins before graph commit; create resource keys are present at first visibility; cycle, missing-ID and replay failures leave no partial issue or edge | transition; `beadrs-57c668be` |
 | BR-T29 | ADR-020 through ADR-022, plan, proposed contract and fixtures | Specify the public service gate, managed policy, and recovery quarantine without claiming approval | Link and scope audit; no secret-shaped values committed | proposed documents committed in `bc5da50`; independent review pending; `beadrs-b49b7f22` |
-| BR-T30 | independent exact-hash contract review | Accept or reject `secret-write-boundary-v1` and resolve the false-positive recovery path before code | Reviewer identity, exact spec/fixture hashes, compatibility and threat-model disposition | blocked by BR-T29; `beadrs-b1bb3723` |
-| BR-T31 | public service mutation API | Enforce canonical scan before every public write and generated text commit | Direct library plus CLI atomicity, redaction, audit, recurrence and manifest tests; full Rust gates | blocked by BR-T30; `beadrs-235ead28` |
-| BR-T32 | managed artifact, capabilities and policy | Reject workspace downgrade and worker acknowledgment in the managed fleet build | Both build profiles, downgrade/tamper, capability, installed-binary and fleet pin evidence | blocked by BR-T31; `beadrs-d527e9dc` |
-| BR-T33 | restore/import/reconcile, publication and commit | Quarantine newly detected blocking findings before Git-trackable publication | Clean and finding-bearing recovery, restart, concurrency, redaction clearance, flush/commit refusal | blocked by BR-T32; `beadrs-297416cc` |
+| BR-T30 | independent exact-hash contract review | Accept or reject `secret-write-boundary-v1` and resolve the false-positive recovery path before release | Reviewer identity, exact spec/fixture hashes, compatibility and threat-model disposition | independent exact-hash acceptance pending; not self-approved; `beadrs-b1bb3723` |
+| BR-T31 | public service mutation API | Enforce canonical scan before every public write and generated text commit | Direct library plus CLI atomicity, redaction, audit, recurrence and manifest tests; full Rust gates | repository implementation under owner admission; acceptance pending; `beadrs-235ead28` |
+| BR-T32 | managed artifact, capabilities and policy | Reject workspace downgrade and worker acknowledgment in the managed fleet build | Both build profiles, downgrade/tamper, capability, installed-binary and fleet pin evidence | managed build implemented; installation and fleet pin pending; `beadrs-d527e9dc` |
+| BR-T33 | restore/import/reconcile, publication and commit | Quarantine newly detected blocking findings before Git-trackable publication | Clean and finding-bearing recovery, restart, concurrency, redaction clearance, flush/commit refusal | durable quarantine implemented; independent acceptance pending; `beadrs-297416cc` |
 | BR-T34 | ADR-023 through ADR-025, plan, proposed `secret-ruleset-v4` contract | Specify ruleset 4 detection, normalized matching, advisory selection and diagnostic coverage without claiming approval | Link and scope audit; no format-valid sample and no finding location committed; Git-layer scanner clean on added lines | proposed documents committed; independent review pending; `beadrs-4dc46d5f`, umbrella `beadrs-8088ab92` |
-| BR-T35 | independent exact-hash contract review | Accept or reject `secret-ruleset-v4`, including the qualifier, excluded identifiers, decoded-view bounds and the write-time notice | Reviewer identity, exact spec hash, compatibility and threat-model disposition | blocked by BR-T34; `beadrs-1c110609` |
-| BR-T36 | npm rule and its checksum test | Validate the 6-character checksum the format defines; open ruleset 4 | 30 plus 6 round trip, tampered negative, CLI rejection of a conforming candidate | ready; defect against accepted contract; `beadrs-92e903cb` |
-| BR-T37 | keyword prefilter | Evaluate every rule whose anchor occurs, including overlapping anchors | Overlapping-anchor test; natural AWS anchors restored; benchmark within budget | ready; defect against accepted contract; `beadrs-0ba44859` |
-| BR-T38 | doctor secret diagnostics | Scan live rows and each retained generation independently; report `coverage` | Missing previous root yields live findings plus an `unreadable` or `absent` entry | blocked by `beadrs-9e6f9b9e`; `beadrs-4e5cd8d9` |
-| BR-T39 | scanner matcher | Explicit boundaries; normalized, dewrapped and decoded views with an offset map; raw-range reporting | Five-encoding GitHub fixture blocks and is redactable; Unicode ranges; 4 MiB benchmark within three times ruleset 3 | blocked by BR-T35, BR-T36, BR-T37; `beadrs-5cf44cfe` |
-| BR-T40 | rule table, capabilities | Provider and context-bound formats of ruleset 4; `ruleset_contract` capability | One true positive and two near misses per rule; label-absent negatives; inventory test | blocked by BR-T35, BR-T39; `beadrs-7740733d` |
-| BR-T41 | qualifier and labelled-assignment rule | Predicates `P` and `Q`; `credential-assignment`; replacement advisory keyword rule | Qualifier truth table; excluded identifiers non-blocking; prefixed, camel-case, option and title-case labels block | blocked by BR-T35, BR-T39; `beadrs-1d8b4c78` |
-| BR-T42 | structural rules | URI userinfo, authorization header, curl user option, Kubernetes Secret data | Positives block; word and variable passwords do not; Git-layer parity fixtures pass both ways | blocked by BR-T41; `beadrs-3cf43a16` |
-| BR-T43 | advisory rule, mutation output, doctor | Shape-based advisory selection; one redacted write-time notice; additive machine member | Hash shapes unreported; unlabelled token reported; NEEDLE CLI contract suite passes | blocked by BR-T41; `beadrs-dfe88716` |
+| BR-T35 | independent exact-hash contract review | Accept or reject `secret-ruleset-v4`, including the qualifier, excluded identifiers, decoded-view bounds and the write-time notice | Reviewer identity, exact spec hash, compatibility and threat-model disposition | independent exact-hash acceptance pending; not self-approved; `beadrs-1c110609` |
+| BR-T36 | npm rule and its checksum test | Validate the 6-character checksum the format defines; open ruleset 4 | 30 plus 6 round trip, tampered negative, CLI rejection of a conforming candidate | checksum defect corrected; complete acceptance evidence pending; `beadrs-92e903cb` |
+| BR-T37 | keyword prefilter | Evaluate every rule whose anchor occurs, including overlapping anchors | Overlapping-anchor test; natural AWS anchors restored; benchmark within budget | overlap defect corrected; benchmark acceptance pending; `beadrs-0ba44859` |
+| BR-T38 | doctor secret diagnostics | Scan live rows and each retained generation independently; report `coverage` | Missing previous root yields live findings plus an `unreadable` or `absent` entry | per-source coverage and tombstoned-root handling implemented; acceptance pending; `beadrs-9e6f9b9e` |
+| BR-T39 | scanner matcher | Explicit boundaries; normalized, dewrapped and decoded views with an offset map; raw-range reporting | Five-encoding GitHub fixture blocks and is redactable; Unicode ranges; 4 MiB benchmark within three times ruleset 3 | bounded mapped views implemented/tested; parity and performance acceptance pending; `beadrs-5cf44cfe` |
+| BR-T40 | rule table, capabilities | Provider and context-bound formats of ruleset 4; `ruleset_contract` capability | One true positive and two near misses per rule; label-absent negatives; inventory test | compiled ruleset 4 and inventory tests implemented; review/replay pending; `beadrs-7740733d` |
+| BR-T41 | qualifier and labelled-assignment rule | Predicates `P` and `Q`; `credential-assignment`; replacement advisory keyword rule | Qualifier truth table; excluded identifiers non-blocking; prefixed, camel-case, option and title-case labels block | integer qualifier and assignments implemented/tested; review pending; `beadrs-1d8b4c78` |
+| BR-T42 | structural rules | URI userinfo, authorization header, curl user option, Kubernetes Secret data | Positives block; word and variable passwords do not; Git-layer parity fixtures pass both ways | structural rules implemented/tested; Git-layer parity pending; `beadrs-3cf43a16` |
+| BR-T43 | advisory rule, mutation output, doctor | Shape-based advisory selection; one redacted write-time notice; additive machine member | Hash shapes unreported; unlabelled token reported; NEEDLE CLI contract suite passes | notice and object-shaped JSON metadata implemented; independent contract acceptance pending; `beadrs-dfe88716` |
 | BR-T44 | exact-source artifact, fleet replay evidence | Replay ruleset 4 over every reachable fleet workspace, disposition every blocking fingerprint, freeze the version | Zero undispositioned findings; advisory volume at most one tenth of ruleset 3; parity, benchmark and installed-binary evidence | blocked by BR-T36–BR-T43; `beadrs-de9b30a6` |
 | BR-T45 | fleet bead stores | Redact findings that predate ruleset 4 after their credentials are rotated | Receipts, sanitized generations, zero unacknowledged blocking findings per workspace | proposal awaiting operator admission; blocked by BR-T44; `beadrs-fdfbaa7b` |
+| BR-T46 | redaction transaction, checkpoint publisher, Git staging/commit, SQLite cleanup | Hold ordinary publication while maintenance is pending; securely remove local database/WAL remnants before completion | Interrupted transaction/publication, active-reader refusal/resume, raw-file absence, checkpoint cleanup and concurrency; full Rust gates | source gates passed; whole-checkout gate held by `beadrs-049cfb7b` and unrelated formatting; `beadrs-25768cbe` |
+| BR-T47 | redaction selectors, metadata handling, batch CLI and recovery precedence | Make diagnostic metadata findings removable and selected batches atomic without deleting beads/events | Metadata/key collision, stale batch rollback, exact replay, recovery and one-generation publication tests; full Rust gates | rekeying/batches source-verified; whole-checkout and independent acceptance pending; `beadrs-ebec169c` |
 
 General mutation idempotency remains a separate potential feature. BR-T03–T08
 adopt idempotency only for the attempt-resolution boundary required by the

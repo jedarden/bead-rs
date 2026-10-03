@@ -736,6 +736,14 @@ pub fn run_diagnostics_with_scopes(
     if run_all || scopes.contains(&DiagnosticScope::Secrets) {
         scopes_checked.push("secrets".to_string());
         match crate::service::secret_diagnostics::run_secret_diagnostics(store) {
+            Ok(report) if !report.coverage_complete => {
+                has_errors = true;
+                checks.push(DiagnosticCheck {
+                    name:"secret_scan".to_string(), status:DiagnosticStatus::Error,
+                    message:"Secret scan coverage is incomplete; findings from readable sources are retained, and unreadable sources are not certified clean".to_string(),
+                    scope:Some("secrets".to_string()), details:Some(serde_json::to_value(report)?),
+                });
+            }
             Ok(report) if report.findings.is_empty() => {
                 checks.push(DiagnosticCheck {
                     name: "secret_scan".to_string(),

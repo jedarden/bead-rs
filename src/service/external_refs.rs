@@ -27,6 +27,17 @@ pub fn add_external_reference(
     key: &str,
     value: &str,
 ) -> Result<(), Error> {
+    let _secret_write = super::secret_boundary::guard_pairs(
+        store.conn(),
+        &super::secret_boundary::selector("issue", issue_id),
+        "cli",
+        &[
+            ("id", issue_id),
+            ("external_ref.namespace", namespace),
+            ("external_ref.key", key),
+            ("external_ref.value", value),
+        ],
+    )?;
     if key == crate::service::issues::UNIQUE_REF_EXTERNAL_KEY {
         return Err(Error::validation(
             "The 'unique-ref' reference key is reserved; use `create --unique-ref NAMESPACE:KEY`",
@@ -46,6 +57,7 @@ pub fn add_external_reference(
 
     let conn = store.conn();
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    super::secret_maintenance::ensure_publication_allowed(&tx)?;
 
     // Check if issue exists
     let issue_exists = tx
@@ -148,12 +160,23 @@ pub fn remove_external_reference(
     namespace: &str,
     key: &str,
 ) -> Result<(), Error> {
+    let _secret_write = super::secret_boundary::guard_pairs(
+        store.conn(),
+        &super::secret_boundary::selector("issue", issue_id),
+        "cli",
+        &[
+            ("id", issue_id),
+            ("external_ref.namespace", namespace),
+            ("external_ref.key", key),
+        ],
+    )?;
     // Validate inputs
     validate_reference_namespace(namespace).map_err(|e| Error::validation(e.to_string()))?;
     validate_reference_key(key).map_err(|e| Error::validation(e.to_string()))?;
 
     let conn = store.conn();
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    super::secret_maintenance::ensure_publication_allowed(&tx)?;
 
     let unique_binding_key: Option<String> =
         if key == crate::service::issues::UNIQUE_REF_EXTERNAL_KEY {

@@ -66,6 +66,12 @@ pub const MIN_LEASE_TTL: u64 = 30;
 /// Must run in the same IMMEDIATE transaction as the assignment it
 /// credentials.
 pub fn mint_claim_epoch(conn: &Connection, issue_id: &str) -> Result<i64> {
+    let _scan = super::secret_boundary::guard_pairs(
+        conn,
+        &super::secret_boundary::selector("issue", issue_id),
+        "cli",
+        &[("id", issue_id)],
+    )?;
     conn.execute(
         "UPDATE issues SET claim_epoch = claim_epoch + 1 WHERE id = ?1",
         [issue_id],
@@ -128,6 +134,12 @@ pub fn create_lease(
     ttl_seconds: u64,
     fencing_token: i64,
 ) -> Result<LeaseClaimResult> {
+    let _secret_write = super::secret_boundary::guard_pairs(
+        tx,
+        "claim:ready-frontier",
+        "cli",
+        &[("id", issue_id), ("assignee", assignee)],
+    )?;
     // Validate TTL range using clamp
     let ttl = ttl_seconds.clamp(MIN_LEASE_TTL, MAX_LEASE_TTL);
 
@@ -189,6 +201,12 @@ pub fn renew_lease(
     ttl_seconds: u64,
     fencing_token: i64,
 ) -> Result<LeaseClaimResult> {
+    let _secret_write = super::secret_boundary::guard_pairs(
+        tx,
+        "claim:ready-frontier",
+        "cli",
+        &[("id", issue_id), ("assignee", assignee)],
+    )?;
     // Validate TTL range using clamp
     let ttl = ttl_seconds.clamp(MIN_LEASE_TTL, MAX_LEASE_TTL);
 

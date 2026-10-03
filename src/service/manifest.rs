@@ -804,6 +804,7 @@ pub fn manifest_dry_run(
     manifest: &Manifest,
 ) -> Result<ManifestReport> {
     let sequence_before = read_sequence(conn)?;
+    let _secret_write = super::secret_boundary::guard_manifest(conn, manifest)?;
     let mut tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let (results, semantic_changes) = execute_manifest_in_tx(&mut tx, config, manifest)?;
     tx.rollback()?;
@@ -826,6 +827,7 @@ pub fn manifest_commit(
     config: &WorkspaceConfig,
     manifest: &Manifest,
 ) -> Result<ManifestReport> {
+    let _secret_write = super::secret_boundary::guard_manifest(conn, manifest)?;
     let mut tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let (results, semantic_changes) = execute_manifest_in_tx(&mut tx, config, manifest)?;
     let sequence_after = read_sequence(&tx)?;

@@ -243,6 +243,17 @@ pub fn claim_issue(
     _harness_version: Option<&str>,
     single_claim: bool,
 ) -> Result<ClaimResult> {
+    let _secret_write = super::secret_boundary::guard_pairs(
+        tx,
+        "claim:ready-frontier",
+        "cli",
+        &[
+            ("assignee", assignee),
+            ("model", _model.unwrap_or("")),
+            ("harness", _harness.unwrap_or("")),
+            ("harness_version", _harness_version.unwrap_or("")),
+        ],
+    )?;
     // Lease expiry returns leased resource keys before the ready frontier is
     // evaluated. The immediate claim transaction makes cleanup and selection
     // one atomic workspace-local decision.
@@ -383,6 +394,12 @@ pub fn claim_issue_with_lease_and_sort(
     single_claim: bool,
     ready_sort: ReadySort,
 ) -> Result<EnhancedClaimResult> {
+    let _secret_write = super::secret_boundary::guard_pairs(
+        tx,
+        "claim:ready-frontier",
+        "cli",
+        &[("assignee", assignee)],
+    )?;
     // Handle lease renewal if requested
     if renew_lease {
         return claim_with_renewal(tx, assignee, lease_ttl_seconds);
@@ -1083,6 +1100,17 @@ pub fn claim_issue_with_policy(
     harness_version: Option<&str>,
     single_claim: bool,
 ) -> Result<ClaimResult> {
+    let _secret_write = super::secret_boundary::guard_pairs(
+        tx,
+        "claim:ready-frontier",
+        "cli",
+        &[
+            ("assignee", assignee),
+            ("model", model.unwrap_or("")),
+            ("harness", harness.unwrap_or("")),
+            ("harness_version", harness_version.unwrap_or("")),
+        ],
+    )?;
     match policy {
         SchedulingPolicy::FifoV1 => {
             // Use existing FIFO-v1 logic for backward compatibility

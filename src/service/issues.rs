@@ -80,6 +80,49 @@ pub fn create_issue_with_unique_ref(
     resource_keys: Vec<String>,
     unique_ref: Option<&str>,
 ) -> Result<CreateIssueResult> {
+    super::secret_boundary::atomic_write(conn, || {
+        create_issue_with_unique_ref_inner(
+            conn,
+            config,
+            title,
+            description,
+            priority,
+            issue_type,
+            assignee,
+            labels,
+            resource_keys,
+            unique_ref,
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_issue_with_unique_ref_inner(
+    conn: &Connection,
+    config: &WorkspaceConfig,
+    title: String,
+    description: Option<String>,
+    priority: i64,
+    issue_type: Option<String>,
+    assignee: Option<String>,
+    labels: Vec<String>,
+    resource_keys: Vec<String>,
+    unique_ref: Option<&str>,
+) -> Result<CreateIssueResult> {
+    let mut fields = vec![
+        ("title", title.as_str()),
+        ("description", description.as_deref().unwrap_or("")),
+        ("issue_type", issue_type.as_deref().unwrap_or("")),
+        ("assignee", assignee.as_deref().unwrap_or("")),
+        ("unique_ref", unique_ref.unwrap_or("")),
+    ];
+    fields.extend(labels.iter().map(|value| ("labels[]", value.as_str())));
+    fields.extend(
+        resource_keys
+            .iter()
+            .map(|value| ("resource_keys[]", value.as_str())),
+    );
+    let _secret_write = super::secret_boundary::guard_pairs(conn, "issue:new", "cli", &fields)?;
     // Validate inputs
     if title.is_empty() {
         return Err(Error::validation("Title cannot be empty"));
@@ -499,6 +542,16 @@ pub fn create_issue_internal(
     labels: &[String],
     actor: Option<&str>,
 ) -> Result<String> {
+    let mut fields = vec![
+        ("id", id),
+        ("title", title),
+        ("description", description.unwrap_or("")),
+        ("issue_type", issue_type),
+        ("actor", actor.unwrap_or("")),
+    ];
+    fields.extend(labels.iter().map(|value| ("labels[]", value.as_str())));
+    let _secret_write =
+        super::secret_boundary::guard_pairs(conn, "issue:new", actor.unwrap_or("cli"), &fields)?;
     // Validate inputs
     if title.is_empty() {
         return Err(Error::validation("Title cannot be empty"));
@@ -1572,6 +1625,12 @@ pub fn analyze_exclusion(
 
 /// Add a comment to an issue
 pub fn add_comment(conn: &Connection, issue_id: &str, body: &str, actor: &str) -> Result<()> {
+    let _secret_write = super::secret_boundary::guard_pairs(
+        conn,
+        &super::secret_boundary::selector("issue", issue_id),
+        actor,
+        &[("id", issue_id), ("body", body), ("actor", actor)],
+    )?;
     // Validate issue exists
     let exists: bool = conn
         .query_row(
@@ -1589,15 +1648,26 @@ pub fn add_comment(conn: &Connection, issue_id: &str, body: &str, actor: &str) -
     let random_bytes: [u8; 4] = rand::random();
     let comment_id = format!("comment-{}", hex::encode(random_bytes));
 
-    // Insert the comment
-    conn.execute(
-        "INSERT INTO comments (id, issue_id, author, body, created_at)
-         VALUES (?1, ?2, ?3, ?4, datetime('now'))",
-        [&comment_id, issue_id, actor, body],
-    )
-    .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to add comment: {}", e)))?;
-
-    Ok(())
+    // The shared transaction helper rechecks the maintenance hold after
+    // obtaining the write lock. The event and acknowledgment audit commit
+    // with the comment, including for standalone library callers.
+    super::secret_boundary::atomic_write(conn, || {
+        conn.execute(
+            "INSERT INTO comments (id, issue_id, author, body, created_at)
+             VALUES (?1, ?2, ?3, ?4, datetime('now'))",
+            [&comment_id, issue_id, actor, body],
+        )?;
+        conn.execute(
+            "INSERT INTO events (issue_id, kind, actor, time, detail)
+             VALUES (?1, 'comment_added', ?2, datetime('now'), ?3)",
+            [
+                issue_id,
+                actor,
+                &serde_json::json!({"comment_id": comment_id}).to_string(),
+            ],
+        )?;
+        Ok(())
+    })
 }
 
 #[cfg(test)]

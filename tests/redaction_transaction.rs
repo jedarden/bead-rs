@@ -207,8 +207,14 @@ fn aws_secret_access_key_assignment_is_discoverable_and_redactable() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(stored, REDACTION_MARKER);
-    assert_eq!(outcome.receipt.ruleset_version, 3);
+    assert_eq!(
+        stored,
+        format!("BEDROCK_AWS_SECRET_ACCESS_KEY={REDACTION_MARKER}")
+    );
+    assert_eq!(
+        outcome.receipt.ruleset_version,
+        bead_rs::scan::RULESET_VERSION
+    );
     assert_eq!(outcome.receipt.rule_id, "aws-secret-access-key-assignment");
     assert!(!serde_json::to_string(&outcome)
         .unwrap()
@@ -247,8 +253,14 @@ fn garage_access_key_id_assignment_is_discoverable_and_redactable() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(stored, REDACTION_MARKER);
-    assert_eq!(outcome.receipt.ruleset_version, 3);
+    assert_eq!(
+        stored,
+        format!("SCCACHE_AWS_ACCESS_KEY_ID={REDACTION_MARKER}")
+    );
+    assert_eq!(
+        outcome.receipt.ruleset_version,
+        bead_rs::scan::RULESET_VERSION
+    );
     assert_eq!(outcome.receipt.rule_id, "garage-access-key-id-assignment");
     assert!(!serde_json::to_string(&outcome)
         .unwrap()
@@ -256,7 +268,7 @@ fn garage_access_key_id_assignment_is_discoverable_and_redactable() {
 }
 
 #[test]
-fn unsupported_scanner_field_conflicts_without_mutation() {
+fn assignee_metadata_is_redactable_without_deleting_the_issue() {
     let workspace = workspace();
     let mut store = store(workspace.path());
     let value = shaped_value();
@@ -270,15 +282,15 @@ fn unsupported_scanner_field_conflicts_without_mutation() {
                 && finding.is_blocking_match()
         })
         .unwrap();
-    let error = redact_finding(
+    let outcome = redact_finding(
         &mut store,
         workspace.path(),
         &finding.fingerprint,
         "operator",
-        "unsupported field check",
+        "remove credential from metadata",
     )
-    .unwrap_err();
-    assert!(matches!(error, RedactionError::Conflict(_)));
+    .unwrap();
+    assert!(!outcome.is_replay);
     let stored: String = store
         .conn()
         .query_row(
@@ -287,14 +299,14 @@ fn unsupported_scanner_field_conflicts_without_mutation() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(stored, value);
+    assert_eq!(stored, REDACTION_MARKER);
     let receipts: i64 = store
         .conn()
         .query_row("SELECT COUNT(*) FROM redaction_receipts", [], |row| {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(receipts, 0);
+    assert_eq!(receipts, 1);
 }
 
 #[test]

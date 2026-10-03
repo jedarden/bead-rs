@@ -21,6 +21,18 @@ pub struct SecretDiagnosticsReport {
     pub blocking_findings: usize,
     pub advisory_findings: usize,
     pub findings: Vec<Finding>,
+    pub coverage: Vec<SourceCoverage>,
+    pub coverage_complete: bool,
+    pub quarantined: bool,
+    pub redaction_pending: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SourceCoverage {
+    pub source: &'static str,
+    pub status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason_code: Option<&'static str>,
 }
 
 struct LiveTable {
@@ -113,6 +125,26 @@ const LIVE_TABLES: &[LiveTable] = &[
         identity_fields: &["receipt_id"],
         fields: &["actor"],
     },
+    LiveTable {
+        name: "leases",
+        identity_fields: &["lease_id"],
+        fields: &["assignee"],
+    },
+    LiveTable {
+        name: "saved_views",
+        identity_fields: &["id"],
+        fields: &["name", "description", "query_json"],
+    },
+    LiveTable {
+        name: "issue_resource_keys",
+        identity_fields: &["issue_id", "resource_key"],
+        fields: &["resource_key"],
+    },
+    LiveTable {
+        name: "unique_reference_bindings",
+        identity_fields: &["namespace", "key"],
+        fields: &["namespace", "key"],
+    },
 ];
 
 /// Opaque locator for one live finding.
@@ -165,11 +197,62 @@ pub fn run_secret_diagnostics(store: &impl Store) -> Result<SecretDiagnosticsRep
     let diagnostic_config = ScanConfig::new(Mode::Advisory);
     let conn = open_configured_connection(&workspace.database_path())?;
 
-    let (live_reports, live_fields_scanned) = scan_live_rows(&conn, &diagnostic_config)?;
-    let (checkpoint_reports, checkpoint_generations_scanned) = scan_retained_generations(
-        &workspace.root.join(".beads/checkpoint"),
-        &diagnostic_config,
-    )?;
+    let mut coverage = Vec::new();
+    let (live_reports, live_fields_scanned) = match scan_live_rows(&conn, &diagnostic_config) {
+        Ok(result) => {
+            coverage.push(SourceCoverage {
+                source: "live",
+                status: "scanned",
+                reason_code: None,
+            });
+            result
+        }
+        Err(_) => {
+            coverage.push(SourceCoverage {
+                source: "live",
+                status: "unreadable",
+                reason_code: Some("live_scan_failed"),
+            });
+            (Vec::new(), 0)
+        }
+    };
+    let mut checkpoint_reports = Vec::new();
+    let mut checkpoint_generations_scanned = Vec::new();
+    for name in ["current", "previous"] {
+        let pointer = workspace
+            .root
+            .join(".beads/checkpoint")
+            .join(format!("{name}.json"));
+        if !pointer.exists() {
+            coverage.push(SourceCoverage {
+                source: name,
+                status: "absent",
+                reason_code: Some("no_retained_generation"),
+            });
+            continue;
+        }
+        match scan_pointer(&pointer, name, &diagnostic_config, &mut checkpoint_reports) {
+            Ok(true) => {
+                coverage.push(SourceCoverage {
+                    source: name,
+                    status: "scanned",
+                    reason_code: None,
+                });
+                checkpoint_generations_scanned.push(name.to_string());
+            }
+            Ok(false) => coverage.push(SourceCoverage {
+                source: name,
+                status: "absent",
+                reason_code: Some("root_tombstoned_by_current_generation"),
+            }),
+            Err(_) => coverage.push(SourceCoverage {
+                source: name,
+                status: "unreadable",
+                reason_code: Some("checkpoint_scan_failed"),
+            }),
+        }
+    }
+    let coverage_complete = coverage.iter().all(|source| source.status != "unreadable");
     let report = ScanReport::merge(live_reports.into_iter().chain(checkpoint_reports));
     let blocking_findings = report
         .findings
@@ -186,6 +269,10 @@ pub fn run_secret_diagnostics(store: &impl Store) -> Result<SecretDiagnosticsRep
         blocking_findings,
         advisory_findings: report.findings.len() - blocking_findings,
         findings: report.findings,
+        coverage,
+        coverage_complete,
+        quarantined: super::secret_boundary::ensure_not_quarantined(&conn).is_err(),
+        redaction_pending: super::secret_maintenance::pending_redaction(&conn)?.is_some(),
     })
 }
 
@@ -728,29 +815,12 @@ fn table_columns(conn: &rusqlite::Connection, table: &str) -> Result<HashSet<Str
     Ok(columns)
 }
 
-fn scan_retained_generations(
-    checkpoint_dir: &Path,
-    config: &ScanConfig,
-) -> Result<(Vec<ScanReport>, Vec<String>)> {
-    let mut reports = Vec::new();
-    let mut generations = Vec::new();
-    for name in ["current", "previous"] {
-        let pointer_path = checkpoint_dir.join(format!("{name}.json"));
-        if !pointer_path.exists() {
-            continue;
-        }
-        scan_pointer(&pointer_path, name, config, &mut reports)?;
-        generations.push(name.to_string());
-    }
-    Ok((reports, generations))
-}
-
 fn scan_pointer(
     pointer_path: &Path,
     generation: &str,
     config: &ScanConfig,
     reports: &mut Vec<ScanReport>,
-) -> Result<()> {
+) -> Result<bool> {
     let pointer = read_json(pointer_path, "checkpoint pointer")?;
     let mode = pointer
         .get("mode")
@@ -765,11 +835,31 @@ fn scan_pointer(
         .parent()
         .ok_or_else(|| Error::integrity("checkpoint pointer has no parent directory"))?;
     let root_path = confined_path(checkpoint_dir, root_path)?;
+    if generation == "previous" && !root_path.exists() {
+        let current = read_json(
+            &checkpoint_dir.join("current.json"),
+            "current checkpoint pointer",
+        )?;
+        let deleted = current.get("deleted_paths").and_then(Value::as_array);
+        let was_removed = deleted.is_some_and(|paths| {
+            paths.iter().any(|path| {
+                path.as_str().is_some_and(|path| {
+                    confined_path(checkpoint_dir, path).is_ok_and(|path| path == root_path)
+                })
+            })
+        });
+        // Only an explicit, confined deletion in the current pointer makes
+        // absence legitimate. An unexplained missing root remains an error.
+        if was_removed {
+            return Ok(false);
+        }
+    }
     match mode {
         "monolithic" => scan_jsonl(&root_path, generation, config, reports),
         "sharded" => scan_shard_manifest(&root_path, checkpoint_dir, generation, config, reports),
         _ => Err(Error::integrity("checkpoint pointer has unsupported mode")),
-    }
+    }?;
+    Ok(true)
 }
 
 fn scan_shard_manifest(
@@ -816,7 +906,7 @@ fn scan_artifact_file(
     }
     let document = read_json(path, "recovery artifact")?;
     if document.get("active_root").is_some() {
-        return scan_pointer(path, generation, config, reports);
+        return scan_pointer(path, generation, config, reports).map(|_| ());
     }
     if document.get("issue_shards").is_some() || document.get("event_shards").is_some() {
         let parent = path
@@ -933,11 +1023,89 @@ fn scan_json_value(
 }
 
 fn safe_path_component(component: &str) -> &str {
-    let safe = !component.is_empty()
-        && component.len() <= 64
-        && component.bytes().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-' | b'$')
-        });
+    // Lexically tidy property names can still be credential values. Only
+    // compiled schema vocabulary is allowed in diagnostics; arbitrary data
+    // keys and extension names never become a second disclosure channel.
+    let safe = matches!(
+        component,
+        "$schema"
+            | "issue"
+            | "event"
+            | "receipt"
+            | "record"
+            | "data"
+            | "extensions"
+            | "id"
+            | "issue_id"
+            | "title"
+            | "description"
+            | "notes"
+            | "assignee"
+            | "issue_type"
+            | "priority"
+            | "base_status"
+            | "manual_blocked"
+            | "close_reason"
+            | "source_repo"
+            | "created_at"
+            | "updated_at"
+            | "closed_at"
+            | "revision"
+            | "actor"
+            | "detail"
+            | "kind"
+            | "time"
+            | "author"
+            | "body"
+            | "labels"
+            | "dependencies"
+            | "comments"
+            | "external_references"
+            | "resource_keys"
+            | "namespace"
+            | "key"
+            | "value"
+            | "schema_ref"
+            | "blocked_issue_id"
+            | "blocker_issue_id"
+            | "condition"
+            | "attempt_id"
+            | "receipt_id"
+            | "template_id"
+            | "occurrence_id"
+            | "reply_to_id"
+            | "origin_store_uuid"
+            | "origin_event_sequence"
+            | "source_store_uuid"
+            | "target_store_uuid"
+            | "store_uuid"
+            | "fingerprint"
+            | "sha256"
+            | "event_sha256"
+            | "receipt_sha256"
+            | "source_root_sha256"
+            | "materialized_at"
+            | "reason"
+            | "model"
+            | "harness"
+            | "harness_version"
+            | "evidence_refs"
+            | "base_title_template"
+            | "base_description"
+            | "name"
+            | "query_json"
+            | "resource_key"
+            | "unique_ref"
+            | "publication_state"
+            | "redacted_at"
+            | "detected_at"
+            | "opened_at"
+            | "published_at"
+            | "lease_id"
+            | "series_sequence"
+            | "attempt_outcome"
+            | "provenance_receipt"
+    );
     if safe {
         component
     } else {

@@ -12,8 +12,11 @@
 //! diagnostics, fingerprints, JSON, errors — identifies a finding without
 //! quoting it.
 
+mod credential_shape;
 pub mod fingerprint;
 pub mod rules;
+mod structured_credentials;
+mod text_views;
 
 pub use rules::{rule_ids, Checksum, Rule, Tier, CONTRACT_IDENTITY, RULESET_VERSION};
 
@@ -26,6 +29,60 @@ use std::sync::LazyLock;
 
 use aho_corasick::AhoCorasick;
 use regex::Regex;
+
+thread_local! {
+    static INVOCATION_ADVISORIES: RefCell<Option<Vec<Finding>>> = const { RefCell::new(None) };
+}
+
+pub struct AdvisoryNoticeGuard {
+    previous: Option<Vec<Finding>>,
+}
+impl Drop for AdvisoryNoticeGuard {
+    fn drop(&mut self) {
+        INVOCATION_ADVISORIES.with(|state| *state.borrow_mut() = self.previous.take());
+    }
+}
+pub fn arm_advisory_notice(report: &ScanReport) -> AdvisoryNoticeGuard {
+    let previous = INVOCATION_ADVISORIES.with(|state| state.replace(Some(Vec::new())));
+    record_advisories(report);
+    AdvisoryNoticeGuard { previous }
+}
+pub(crate) fn record_advisories(report: &ScanReport) {
+    INVOCATION_ADVISORIES.with(|state| {
+        if let Some(findings) = state.borrow_mut().as_mut() {
+            for finding in report
+                .findings
+                .iter()
+                .filter(|finding| !finding.is_blocking_match())
+            {
+                if !findings
+                    .iter()
+                    .any(|prior| prior.fingerprint == finding.fingerprint)
+                {
+                    findings.push(finding.clone());
+                }
+            }
+        }
+    });
+}
+pub fn advisory_summary() -> Option<serde_json::Value> {
+    INVOCATION_ADVISORIES.with(|state| {
+        state
+            .borrow()
+            .as_ref()
+            .filter(|findings| !findings.is_empty())
+            .map(|findings| serde_json::json!({"advisory_findings":findings}))
+    })
+}
+pub fn decorate_mutation<T: serde::Serialize>(
+    value: &T,
+) -> Result<serde_json::Value, serde_json::Error> {
+    let mut value = serde_json::to_value(value)?;
+    if let (Some(object), Some(summary)) = (value.as_object_mut(), advisory_summary()) {
+        object.insert("secret_scan".to_string(), summary);
+    }
+    Ok(value)
+}
 
 /// Machine reason code carried by every secret rejection (spec §4).
 pub const SECRET_DETECTED: &str = "secret_detected";
@@ -79,11 +136,14 @@ pub enum ScanConfigError {
     InvalidInvocationAcknowledgment { index: usize },
     WrongAcknowledgmentType,
     WrongModeType,
+    ManagedPolicyConflict,
 }
 
 impl fmt::Display for ScanConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            ScanConfigError::ManagedPolicyConflict => write!(f,
+                "managed_secret_policy: this artifact requires enforce mode and refuses fingerprint acknowledgments; use references or audited redaction"),
             ScanConfigError::ConfigUnreadable => write!(
                 f,
                 "cannot read .beads/config.json while resolving secret_scan; fix the file to continue"
@@ -206,6 +266,9 @@ impl ScanConfig {
             }
             Some(_) => return Err(ScanConfigError::WrongAcknowledgmentType),
         }
+        if cfg!(feature = "managed-secret-policy") && (mode != Mode::Enforce || !list.is_empty()) {
+            return Err(ScanConfigError::ManagedPolicyConflict);
+        }
         Ok(Self {
             mode,
             acknowledged: list,
@@ -228,6 +291,10 @@ impl ScanConfig {
         &mut self,
         values: impl IntoIterator<Item = &'a str>,
     ) -> Result<(), ScanConfigError> {
+        let values: Vec<&str> = values.into_iter().collect();
+        if cfg!(feature = "managed-secret-policy") && !values.is_empty() {
+            return Err(ScanConfigError::ManagedPolicyConflict);
+        }
         for (index, fingerprint) in values.into_iter().enumerate() {
             if !is_fingerprint_shape(fingerprint) {
                 return Err(ScanConfigError::InvalidInvocationAcknowledgment { index });
@@ -237,7 +304,7 @@ impl ScanConfig {
         Ok(())
     }
 
-    fn is_acknowledged(&self, fingerprint: &str) -> bool {
+    pub(crate) fn is_acknowledged(&self, fingerprint: &str) -> bool {
         self.acknowledged.contains(fingerprint)
     }
 }
@@ -442,6 +509,9 @@ struct PendingAcknowledgment {
     actor: String,
     selector: String,
     field_path: String,
+    ruleset_version: u32,
+    start: usize,
+    end: usize,
 }
 
 thread_local! {
@@ -455,11 +525,14 @@ thread_local! {
 /// The CLI is single-shot, but the guard prevents library tests and future
 /// embedded callers from accidentally carrying an admission into a later
 /// operation on the same thread.
-pub struct AcknowledgmentAuditGuard;
+pub struct AcknowledgmentAuditGuard {
+    previous: Vec<PendingAcknowledgment>,
+}
 
 impl Drop for AcknowledgmentAuditGuard {
     fn drop(&mut self) {
-        PENDING_ACKNOWLEDGMENTS.with(|pending| pending.borrow_mut().clear());
+        PENDING_ACKNOWLEDGMENTS
+            .with(|pending| *pending.borrow_mut() = std::mem::take(&mut self.previous));
     }
 }
 
@@ -468,10 +541,13 @@ impl Drop for AcknowledgmentAuditGuard {
 /// connection-local trigger that appends the audit events inside the first
 /// semantic event transaction. A no-op or rolled-back mutation therefore
 /// cannot leave a false acknowledgment event.
-pub fn arm_acknowledgment_audit(report: &ScanReport, actor: &str) -> AcknowledgmentAuditGuard {
-    PENDING_ACKNOWLEDGMENTS.with(|pending| {
+pub(crate) fn arm_acknowledgment_audit(
+    report: &ScanReport,
+    actor: &str,
+) -> AcknowledgmentAuditGuard {
+    let previous = PENDING_ACKNOWLEDGMENTS.with(|pending| {
         let mut pending = pending.borrow_mut();
-        pending.clear();
+        let previous = std::mem::take(&mut *pending);
         pending.extend(
             report
                 .acknowledged
@@ -482,10 +558,73 @@ pub fn arm_acknowledgment_audit(report: &ScanReport, actor: &str) -> Acknowledgm
                     actor: actor.to_string(),
                     selector: finding.selector.clone(),
                     field_path: finding.field_path.clone(),
+                    ruleset_version: finding.ruleset_version,
+                    start: finding.start,
+                    end: finding.end,
                 }),
         );
+        previous
     });
-    AcknowledgmentAuditGuard
+    AcknowledgmentAuditGuard { previous }
+}
+
+/// Rebind a CLI admission only after checking the exact bytes against its
+/// original fingerprint. No broader rule exemption is passed to services.
+pub(crate) fn inherit_acknowledgments(
+    config: &mut ScanConfig,
+    report: &ScanReport,
+    fields: &[Field<'_>],
+) {
+    let pending = PENDING_ACKNOWLEDGMENTS.with(|pending| pending.borrow().clone());
+    for finding in &report.blocking {
+        for prior in &pending {
+            let field_name = |path: &str| {
+                path.rsplit('.')
+                    .next()
+                    .unwrap_or(path)
+                    .trim_end_matches("[]")
+                    .to_string()
+            };
+            if prior.rule_id != finding.rule_id
+                || field_name(&prior.field_path) != field_name(&finding.field_path)
+            {
+                continue;
+            }
+            let exact = fields
+                .iter()
+                .filter(|field| field.path == finding.field_path)
+                .any(|field| {
+                    field
+                        .text
+                        .as_bytes()
+                        .get(finding.start..finding.end)
+                        .is_some_and(|matched| {
+                            fingerprint::compute(
+                                prior.ruleset_version,
+                                &prior.rule_id,
+                                &prior.selector,
+                                &prior.field_path,
+                                prior.start,
+                                prior.end,
+                                matched,
+                            ) == prior.fingerprint
+                        })
+                });
+            if exact {
+                config.acknowledged.insert(finding.fingerprint.clone());
+            }
+        }
+    }
+}
+
+pub(crate) fn include_invocation_admissions(config: &mut ScanConfig) {
+    if !cfg!(feature = "managed-secret-policy") {
+        PENDING_ACKNOWLEDGMENTS.with(|pending| {
+            config
+                .acknowledged
+                .extend(pending.borrow().iter().map(|item| item.fingerprint.clone()))
+        });
+    }
 }
 
 /// Install the connection-local audit bridge, if this thread has pending
@@ -634,7 +773,7 @@ static COMPILED_RULES: LazyLock<Vec<(&'static Rule, Regex)>> = LazyLock::new(|| 
     rules::RULES
         .iter()
         .map(|rule| {
-            let regex = Regex::new(rule.pattern)
+            let regex = Regex::new(&rule.pattern.replace(r"\b", ""))
                 .unwrap_or_else(|err| panic!("rule {} pattern failed to compile: {err}", rule.id));
             (rule, regex)
         })
@@ -643,13 +782,13 @@ static COMPILED_RULES: LazyLock<Vec<(&'static Rule, Regex)>> = LazyLock::new(|| 
 
 /// Scan one field's text for every rule the prefilter gates, plus the
 /// statistical advisory scanner.
-pub(crate) fn scan_field(selector: &str, field: &Field<'_>) -> Vec<Finding> {
+fn scan_raw_field(selector: &str, field: &Field<'_>) -> Vec<Finding> {
     if field.text.is_empty() {
         return Vec::new();
     }
     let (automaton, mapping) = &*PREFILTER;
     let mut candidate_rules = BTreeSet::new();
-    for hit in automaton.find_iter(field.text) {
+    for hit in automaton.find_overlapping_iter(field.text) {
         if let Some(rules) = mapping.get(hit.pattern().as_usize()) {
             candidate_rules.extend(rules.iter().copied());
         }
@@ -658,10 +797,79 @@ pub(crate) fn scan_field(selector: &str, field: &Field<'_>) -> Vec<Finding> {
     let mut findings = Vec::new();
     for rule_index in candidate_rules {
         let (rule, regex) = &COMPILED_RULES[rule_index];
+        if rule.id == "advisory-keyword-assignment" {
+            continue;
+        }
         for capture in regex.captures_iter(field.text) {
             let whole = capture.get(0).expect("pattern has a group 0");
             let body = capture.get(1).unwrap_or(whole);
-            let mut matched = SecretBytes::from_str(whole.as_str());
+            if whole.start() > 0 && field.text.as_bytes()[whole.start() - 1].is_ascii_alphanumeric()
+            {
+                continue;
+            }
+            let body_character = |byte: u8| match rule.id {
+                "aws-access-key-id" | "age-secret-key" => {
+                    byte.is_ascii_uppercase() || byte.is_ascii_digit()
+                }
+                "github-classic-token"
+                | "npm-publish-token"
+                | "vault-legacy-token"
+                | "stripe-secret-key"
+                | "huggingface-token"
+                | "netlify-pat"
+                | "tailscale-key" => byte.is_ascii_alphanumeric(),
+                "garage-access-key-id-assignment"
+                | "digitalocean-pat"
+                | "openrouter-api-key"
+                | "backblaze-key-id-assignment" => {
+                    byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+                }
+                "shopify-token" => byte.is_ascii_hexdigit(),
+                "github-fine-grained-pat" => byte.is_ascii_alphanumeric() || byte == b'_',
+                "aws-secret-access-key-assignment" => {
+                    byte.is_ascii_alphanumeric() || b"/+=".contains(&byte)
+                }
+                "backblaze-application-key" => {
+                    byte.is_ascii_alphanumeric() || b"/+".contains(&byte)
+                }
+                "slack-token" => byte.is_ascii_alphanumeric() || byte == b'-',
+                "pem-private-key" => false,
+                "advisory-keyword-assignment" => {
+                    byte.is_ascii_alphanumeric() || b"+/=_.~-".contains(&byte)
+                }
+                _ => byte.is_ascii_alphanumeric() || b"_-".contains(&byte),
+            };
+            if field
+                .text
+                .as_bytes()
+                .get(body.end())
+                .is_some_and(|byte| body_character(*byte))
+            {
+                continue;
+            }
+            if rule.id == "vault-legacy-token" {
+                let context = &field.text[..whole.start()];
+                let line = context.rsplit('\n').next().unwrap_or(context);
+                let start = line
+                    .char_indices()
+                    .rev()
+                    .nth(63)
+                    .map(|(index, _)| index)
+                    .unwrap_or(0);
+                let context = line[start..].to_ascii_lowercase();
+                if !["vault", "bao", "token"]
+                    .iter()
+                    .any(|label| context.contains(label))
+                {
+                    continue;
+                }
+            }
+            let selected = if rule.id.ends_with("-assignment") {
+                body
+            } else {
+                whole
+            };
+            let mut matched = SecretBytes::from_str(selected.as_str());
             let disposition = match rule.tier {
                 Tier::Advisory => Disposition::Confirmed,
                 Tier::Blocking => {
@@ -669,6 +877,21 @@ pub(crate) fn scan_field(selector: &str, field: &Field<'_>) -> Vec<Finding> {
                         Disposition::Placeholder
                     } else if let Some(checksum) = rule.checksum {
                         if rules::checksum_valid(checksum, body.as_str()) {
+                            Disposition::Confirmed
+                        } else {
+                            Disposition::ChecksumFailed
+                        }
+                    } else if rule.id == "json-web-token" {
+                        let valid = whole
+                            .as_str()
+                            .split('.')
+                            .next()
+                            .and_then(text_views::decode_base64)
+                            .and_then(|bytes| {
+                                serde_json::from_slice::<serde_json::Value>(&bytes).ok()
+                            })
+                            .is_some_and(|value| value.is_object() && value.get("alg").is_some());
+                        if valid {
                             Disposition::Confirmed
                         } else {
                             Disposition::ChecksumFailed
@@ -684,8 +907,8 @@ pub(crate) fn scan_field(selector: &str, field: &Field<'_>) -> Vec<Finding> {
                     rule.id,
                     selector,
                     field.path,
-                    whole.start(),
-                    whole.end(),
+                    selected.start(),
+                    selected.end(),
                     bytes,
                 )
             });
@@ -699,14 +922,54 @@ pub(crate) fn scan_field(selector: &str, field: &Field<'_>) -> Vec<Finding> {
                 disposition,
                 selector: selector.to_string(),
                 field_path: field.path.to_string(),
-                start: whole.start(),
-                end: whole.end(),
+                start: selected.start(),
+                end: selected.end(),
                 fingerprint,
             });
         }
     }
 
     findings.extend(scan_entropy(selector, field));
+    findings
+}
+
+pub(crate) fn scan_field(selector: &str, field: &Field<'_>) -> Vec<Finding> {
+    let mut findings = scan_raw_field(selector, field);
+    findings.extend(structured_credentials::scan(selector, field, false));
+    for view in text_views::derived(field.text) {
+        let derived = Field::new(field.path, &view.text);
+        let mut matches = scan_raw_field(selector, &derived);
+        matches.retain(|finding| {
+            finding.tier == Tier::Blocking
+                && (!view.decoded
+                    || !finding.rule_id.ends_with("-assignment")
+                        && finding.rule_id != "vault-legacy-token")
+        });
+        if !view.decoded {
+            matches.extend(structured_credentials::scan(selector, &derived, false));
+        }
+        for mut finding in matches {
+            let range = view.raw_range(finding.start, finding.end);
+            finding.start = range.start;
+            finding.end = range.end;
+            finding.fingerprint = fingerprint::compute(
+                RULESET_VERSION,
+                &finding.rule_id,
+                selector,
+                field.path,
+                range.start,
+                range.end,
+                &field.text.as_bytes()[range],
+            );
+            findings.push(finding);
+        }
+    }
+    findings.sort_by(|left, right| {
+        (&left.rule_id, left.start, left.end).cmp(&(&right.rule_id, right.start, right.end))
+    });
+    findings.dedup_by(|left, right| {
+        left.rule_id == right.rule_id && left.start == right.start && left.end == right.end
+    });
     findings
 }
 
@@ -739,8 +1002,7 @@ fn is_placeholder(body: &str) -> bool {
 /// provider rule covers. Advisory only — this class never rejects, because
 /// bead text is dense with hash-shaped strings (ADR-014).
 fn scan_entropy(selector: &str, field: &Field<'_>) -> Vec<Finding> {
-    const MIN_RUN: usize = 25;
-    const MIN_ENTROPY_BITS: f64 = 4.3;
+    const MIN_RUN: usize = 20;
     let text = field.text.as_bytes();
     let mut findings = Vec::new();
     let mut run_start: Option<usize> = None;
@@ -748,20 +1010,11 @@ fn scan_entropy(selector: &str, field: &Field<'_>) -> Vec<Finding> {
         if end - start < MIN_RUN {
             return;
         }
-        let mut counts = [0u32; 256];
-        for byte in &text[start..end] {
-            counts[*byte as usize] += 1;
-        }
-        let len = (end - start) as f64;
-        let entropy: f64 = counts
-            .iter()
-            .filter(|c| **c > 0)
-            .map(|c| {
-                let p = *c as f64 / len;
-                -p * p.log2()
-            })
-            .sum();
-        if entropy < MIN_ENTROPY_BITS {
+        let value = &field.text[start..end];
+        if findings.len() >= 32
+            || credential_shape::hash_shaped(value)
+            || !credential_shape::qualifies(value, 16)
+        {
             return;
         }
         let mut matched = SecretBytes(Box::from(&text[start..end]));
@@ -853,7 +1106,24 @@ pub fn reject_if_blocked(config: &ScanConfig, report: &ScanReport) -> Option<Rej
     if config.mode != Mode::Enforce {
         return None;
     }
-    report.blocking.first().cloned().map(Rejection::build)
+    report.blocking.first().cloned().map(|finding| {
+        let mut rejection = Rejection::build(finding);
+        if report.blocking.len() > 1 {
+            rejection
+                .message
+                .push_str("\nAdditional blocking findings (no matched bytes): ");
+            rejection.message.push_str(
+                &report
+                    .blocking
+                    .iter()
+                    .skip(1)
+                    .map(Finding::diagnostic)
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            );
+        }
+        rejection
+    })
 }
 
 #[cfg(test)]

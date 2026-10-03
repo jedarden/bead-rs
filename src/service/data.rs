@@ -25,7 +25,19 @@ pub fn set_data(
     value: &serde_json::Value,
 ) -> Result<()> {
     let conn = store.conn();
+    let _secret_write = super::secret_boundary::guard_pairs(
+        conn,
+        &super::secret_boundary::selector("issue", issue_id),
+        "cli",
+        &[
+            ("id", issue_id),
+            ("data.namespace", namespace),
+            ("data.schema_ref", schema_ref),
+            ("data.value", &value.to_string()),
+        ],
+    )?;
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    super::secret_maintenance::ensure_publication_allowed(&tx)?;
 
     // Verify issue exists
     let issue_exists: bool = tx.query_row(
@@ -192,8 +204,15 @@ pub fn list_data(store: &mut SqliteStore, issue_id: &str) -> Result<Vec<(String,
 /// A remove that deletes a row appends a `data_removed` audit event in the
 /// same transaction; an idempotent no-op remove appends none.
 pub fn remove_data(store: &mut SqliteStore, issue_id: &str, namespace: &str) -> Result<()> {
+    let _secret_write = super::secret_boundary::guard_pairs(
+        store.conn(),
+        &super::secret_boundary::selector("issue", issue_id),
+        "cli",
+        &[("id", issue_id), ("data.namespace", namespace)],
+    )?;
     let conn = store.conn();
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    super::secret_maintenance::ensure_publication_allowed(&tx)?;
 
     // Verify issue exists
     let issue_exists: bool = tx.query_row(

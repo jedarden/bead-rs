@@ -22,17 +22,21 @@ fn secret_scan_capability_uses_compiled_default_without_workspace() {
         capabilities["secret_scan"]["contract_identity"],
         "urn:bead-rs:spec:secret-rejection:v1"
     );
-    assert_eq!(capabilities["secret_scan"]["ruleset_version"], 3);
+    assert_eq!(
+        capabilities["secret_scan"]["ruleset_version"],
+        bead_rs::scan::RULESET_VERSION
+    );
     assert_eq!(capabilities["secret_scan"]["effective_mode"], "enforce");
     assert_eq!(capabilities["secret_scan"]["blocking"], true);
     assert_eq!(capabilities["secret_scan"]["advisory"], true);
     assert_eq!(
         capabilities["secret_scan"]["exact_fingerprint_acknowledgment"],
-        true
+        !cfg!(feature = "managed-secret-policy")
     );
 }
 
 #[test]
+#[cfg(not(feature = "managed-secret-policy"))]
 fn secret_scan_capability_reports_effective_workspace_mode() {
     let workspace = tempfile::Builder::new()
         .prefix("bead-secret-capability-")

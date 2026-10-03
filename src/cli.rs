@@ -1133,9 +1133,9 @@ pub struct ReopenOptions {
         .args(["finding", "resume"])
 ))]
 pub struct RedactOptions {
-    /// Live or retained-checkpoint fingerprint reported by secret diagnostics
+    /// Live or retained-checkpoint fingerprint; repeat for one atomic batch
     #[arg(long, value_name = "FINGERPRINT")]
-    pub finding: Option<String>,
+    pub finding: Vec<String>,
 
     /// Resume sanitized publication for an already committed receipt
     #[arg(

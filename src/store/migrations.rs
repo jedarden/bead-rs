@@ -7,7 +7,7 @@ use rusqlite::{Connection, Result as SqliteResult, Transaction, TransactionBehav
 use sha2::{Digest, Sha256};
 
 /// Current migration version
-pub const CURRENT_VERSION: i64 = 19;
+pub const CURRENT_VERSION: i64 = 20;
 
 /// Whether the store has already reached [`CURRENT_VERSION`].
 ///
@@ -184,6 +184,7 @@ fn get_migration(version: i64) -> Migration {
         17 => migration_17(),
         18 => migration_18(),
         19 => migration_19(),
+        20 => migration_20(),
         v => panic!("Unknown migration version: {}", v),
     }
 }
@@ -191,6 +192,19 @@ fn get_migration(version: i64) -> Migration {
 /// Migration structure
 struct Migration {
     sql: String,
+}
+
+/// Recovery may activate historical bytes locally, but must not publish them.
+fn migration_20() -> Migration {
+    Migration {
+        sql: "CREATE TABLE IF NOT EXISTS secret_quarantine (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        ruleset_version INTEGER NOT NULL,
+        blocking_count INTEGER NOT NULL,
+        coverage_incomplete INTEGER NOT NULL CHECK (coverage_incomplete IN (0, 1))
+    )"
+        .to_string(),
+    }
 }
 
 /// Migration 1: Core workspace schema

@@ -75,9 +75,7 @@ use crate::model::Issue;
 use crate::profile::ProfileLossReport;
 use crate::service::git::{self, GitReachability};
 use crate::service::git_stage;
-use crate::service::resource_locks::{
-    acquire_issue_locks, declare_resource_keys, resource_keys_from_value,
-};
+use crate::service::resource_locks::resource_keys_from_value;
 use crate::store::SqliteStore;
 use anyhow::{anyhow, bail, Result};
 use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
@@ -1438,6 +1436,8 @@ pub struct FullImportResult {
     pub receipt: Option<SerializedReceipt>,
     pub summary_event_sequence: Option<i64>,
     pub loss_report: Option<ProfileLossReport>,
+    pub secret_quarantined: bool,
+    pub checkpoint_publication_withheld: bool,
 }
 
 /// A named checkpoint generation whose complete source set has passed the
@@ -1501,6 +1501,8 @@ pub struct RestoreReport {
     pub summary_event_sequence: i64,
     pub non_empty_override: bool,
     pub displaced: RestoreDisplacedCounts,
+    pub secret_quarantined: bool,
+    pub checkpoint_publication_withheld: bool,
 }
 
 /// Flush checkpoint result
@@ -1781,6 +1783,7 @@ pub fn import_forensic_checkpoint(
     actor: &str,
     dry_run: bool,
 ) -> Result<FullImportResult> {
+    validate_restore_actor(actor)?;
     let (staging, loss_report) = if profile == "native-v1" {
         (stage_forensic_checkpoint(input_path)?, None)
     } else {
@@ -1815,6 +1818,8 @@ pub fn import_forensic_checkpoint(
             receipt: None,
             summary_event_sequence: None,
             loss_report,
+            secret_quarantined: false,
+            checkpoint_publication_withheld: false,
         });
     }
 
@@ -1958,6 +1963,11 @@ fn get_import_result(
         receipt,
         summary_event_sequence: None,
         loss_report: None,
+        secret_quarantined: crate::service::secret_boundary::ensure_not_quarantined(conn).is_err(),
+        checkpoint_publication_withheld: crate::service::secret_boundary::ensure_not_quarantined(
+            conn,
+        )
+        .is_err(),
     };
 
     Ok((final_sequence, result))
@@ -4453,10 +4463,25 @@ pub fn restore_verified_generation(
         } else {
             RestoreDisplacedCounts::default()
         },
+        secret_quarantined: crate::service::secret_boundary::ensure_not_quarantined(store.conn())
+            .is_err(),
+        checkpoint_publication_withheld: crate::service::secret_boundary::ensure_not_quarantined(
+            store.conn(),
+        )
+        .is_err(),
     })
 }
 
 fn validate_restore_actor(actor: &str) -> Result<()> {
+    let config = crate::scan::ScanConfig::enforce();
+    let report = crate::scan::scan(
+        &config,
+        "recovery:request",
+        &[crate::scan::Field::new("actor", actor)],
+    );
+    if let Some(rejection) = crate::scan::reject_if_blocked(&config, &report) {
+        bail!("{}", rejection.message);
+    }
     if actor.trim().is_empty() {
         bail!("Restore actor cannot be empty");
     }
@@ -4509,6 +4534,12 @@ pub fn fork_workspace_identity(
     actor: &str,
     reason: Option<&str>,
 ) -> Result<ForkReport> {
+    let _scan = crate::service::secret_boundary::guard_pairs(
+        store.conn(),
+        "workspace:fork",
+        actor,
+        &[("actor", actor), ("reason", reason.unwrap_or(""))],
+    )?;
     // Validate actor (same rules as restore)
     if actor.trim().is_empty() {
         bail!("Fork actor cannot be empty");
@@ -4924,6 +4955,7 @@ fn execute_restore_into_empty(
     let receipt = create_restore_receipt(&tx, staging, actor, summary_event_sequence)?;
 
     // Commit transaction
+    crate::service::secret_boundary::quarantine_recovery(&tx)?;
     tx.commit()?;
 
     if !record_summary_event {
@@ -4992,6 +5024,7 @@ fn execute_merge(
     let receipt = create_merge_receipt(&tx, staging, actor, activation_sequence)?;
 
     // Commit transaction
+    crate::service::secret_boundary::quarantine_recovery(&tx)?;
     tx.commit()?;
 
     eprintln!(
@@ -5644,6 +5677,7 @@ fn ensure_restore_preserves_redaction_history(
 /// Fail the enclosing transaction if recovery made a finding guarded by any
 /// known tombstone live again. Diagnostics name only the safe fingerprint.
 fn reject_live_tombstoned_findings(tx: &Transaction<'_>) -> Result<()> {
+    crate::service::secret_rekey::reject_restored_identities(tx)?;
     let missing_metadata: i64 = tx.query_row(
         "SELECT COUNT(*)
          FROM redaction_tombstones AS tombstone
@@ -5999,7 +6033,7 @@ fn reconcile_and_merge(
                         )?;
                     }
 
-                    crate::service::resource_locks::sync_issue_locks(tx, &issue.id)?;
+                    crate::service::resource_locks::restore_lock_state(tx, &issue.id)?;
 
                     updated += 1;
                 } else {
@@ -6093,7 +6127,7 @@ fn import_resource_keys(tx: &Transaction, issue: &Issue) -> Result<()> {
         return Ok(());
     };
     let keys = resource_keys_from_value(value)?;
-    declare_resource_keys(tx, &issue.id, &keys)?;
+    crate::service::resource_locks::restore_resource_declarations(tx, &issue.id, &keys)?;
     // Object-form entries carry additive fields beside their identity. The
     // declaration above stored the normalized identities; this re-attaches
     // whatever a newer producer wrapped around them, matched on the
@@ -6130,7 +6164,7 @@ fn import_resource_keys(tx: &Transaction, issue: &Issue) -> Result<()> {
         }
     }
     if issue.base_status == crate::model::BaseStatus::InProgress && issue.assignee.is_some() {
-        acquire_issue_locks(tx, &issue.id, None)?;
+        crate::service::resource_locks::restore_issue_locks(tx, &issue.id, None)?;
     }
     Ok(())
 }
@@ -7122,6 +7156,7 @@ fn activate_import(store: &mut SqliteStore, staging: &ImportStaging) -> Result<(
     // Update checkpoint_state table
     update_checkpoint_state(&tx, &staging.input_hash, activation_sequence, &event_time)?;
 
+    crate::service::secret_boundary::quarantine_recovery(&tx)?;
     tx.commit()?;
 
     Ok((staging.issue_count, activation_sequence))
@@ -7191,8 +7226,25 @@ fn activate_import(store: &mut SqliteStore, staging: &ImportStaging) -> Result<(
 /// # }
 /// ```
 pub fn flush_checkpoint(store: &mut SqliteStore, output_path: &Path) -> Result<FlushResult> {
+    // Exporting a legacy interchange file must not race native redaction and
+    // publish a dirty snapshot after the exceptional publisher has cleaned it.
+    let native_checkpoint = store
+        .conn()
+        .path()
+        .filter(|path| !path.is_empty())
+        .and_then(|path| {
+            Path::new(path)
+                .parent()
+                .filter(|parent| parent.file_name().is_some_and(|name| name == ".beads"))
+                .map(|parent| parent.join("checkpoint"))
+        });
+    let _publication_lock = native_checkpoint
+        .as_deref()
+        .map(acquire_checkpoint_publication_lock)
+        .transpose()?;
     // Open read transaction to capture snapshot
     let conn = store.conn();
+    crate::service::secret_maintenance::ensure_publication_allowed(conn)?;
     let tx = conn.unchecked_transaction()?;
 
     // Get current event sequence
@@ -7458,6 +7510,11 @@ fn publish_forensic_checkpoint_inner(
     redaction_request: Option<RedactionPublicationRequest>,
 ) -> Result<(ForensicFlushResult, Option<RedactionReceipt>)> {
     let conn = store.conn();
+    if redaction_request.is_none() {
+        crate::service::secret_maintenance::ensure_publication_allowed(conn)?;
+    } else {
+        crate::service::secret_boundary::verify_quarantine_cleanup(conn)?;
+    }
 
     // Begin read transaction to capture snapshot
     let tx = conn.unchecked_transaction()?;
@@ -7831,7 +7888,14 @@ fn publish_forensic_checkpoint_inner(
     };
     update_forensic_checkpoint_state(&tx, &state_config)?;
 
+    tx.commit()?;
+
     if let Some(request) = &redaction_request {
+        // The epoch stays committed across pointer publication and local
+        // byte cleanup, so another process cannot stage a dirty predecessor
+        // after an interrupted attempt. VACUUM cannot run in a transaction.
+        crate::service::secret_maintenance::purge_local_remnants(store.conn())?;
+        let tx = Transaction::new_unchecked(store.conn(), TransactionBehavior::Immediate)?;
         mark_redaction_published(
             &tx,
             request,
@@ -7839,9 +7903,9 @@ fn publish_forensic_checkpoint_inner(
             &superseded_generations,
             &published_at,
         )?;
+        tx.execute("DELETE FROM secret_quarantine", [])?;
+        tx.commit()?;
     }
-
-    tx.commit()?;
 
     // The publication is durable; stage the fileset it made authoritative
     // so the next Git commit carries a complete, consistent checkpoint
@@ -7937,6 +8001,19 @@ fn gate_readiness(mut report: CheckpointStatusReport) -> Result<CheckpointStatus
 /// short-circuit keeps keying on the internals verdict alone
 /// (`checkpoint_consistent`).
 pub fn forensic_checkpoint_status(
+    store: &mut SqliteStore,
+    checkpoint_base: &Path,
+) -> Result<CheckpointStatusReport> {
+    let mut report = forensic_checkpoint_status_inner(store, checkpoint_base)?;
+    if let Err(error) = crate::service::secret_maintenance::ensure_publication_allowed(store.conn())
+    {
+        report.ready_to_commit = false;
+        report.not_ready_reasons.push(error.to_string());
+    }
+    Ok(report)
+}
+
+fn forensic_checkpoint_status_inner(
     store: &mut SqliteStore,
     checkpoint_base: &Path,
 ) -> Result<CheckpointStatusReport> {

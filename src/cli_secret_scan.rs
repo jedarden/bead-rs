@@ -19,8 +19,23 @@ pub(crate) struct PreparedScan {
 }
 
 impl PreparedScan {
-    pub(crate) fn arm_audit(&self) -> scan::AcknowledgmentAuditGuard {
-        scan::arm_acknowledgment_audit(&self.report, &self.actor)
+    pub(crate) fn report_advisories(&self) {
+        if let Some(summary) = scan::advisory_summary() {
+            let findings = summary["advisory_findings"]
+                .as_array()
+                .expect("advisory summary array");
+            let rules: std::collections::BTreeSet<_> = findings
+                .iter()
+                .filter_map(|finding| finding["rule_id"].as_str())
+                .collect();
+            eprintln!("secret_scan advisory: {} finding(s), rules {}; inspect bead doctor --scope secrets. Matched bytes are not shown.",findings.len(),rules.into_iter().collect::<Vec<_>>().join(", "));
+        }
+    }
+    pub(crate) fn arm_audit(&self) -> (scan::AcknowledgmentAuditGuard, scan::AdvisoryNoticeGuard) {
+        (
+            scan::arm_acknowledgment_audit(&self.report, &self.actor),
+            scan::arm_advisory_notice(&self.report),
+        )
     }
 
     fn report_dry_run_findings(&self) {

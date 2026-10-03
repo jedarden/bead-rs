@@ -497,6 +497,33 @@ impl Store for SqliteStore {
     }
 
     fn get_workspace_config(&self) -> Result<WorkspaceConfig> {
+        // A supplied native connection owns its workspace even when an
+        // embedding application's cwd points at a different repository.
+        if let Some(path) = self
+            .conn
+            .as_ref()
+            .and_then(|conn| conn.path())
+            .filter(|path| !path.is_empty())
+        {
+            let parent = std::path::Path::new(path).parent();
+            if let Some(beads) =
+                parent.filter(|parent| parent.file_name().is_some_and(|name| name == ".beads"))
+            {
+                let root = beads
+                    .parent()
+                    .ok_or_else(|| Error::workspace("Native database has no workspace root"))?
+                    .to_path_buf();
+                let conn = self
+                    .conn
+                    .as_ref()
+                    .ok_or_else(|| Error::workspace("Native store connection is missing"))?;
+                let (uuid, prefix) =
+                    conn.query_row("SELECT uuid,prefix FROM workspace WHERE id=1", [], |row| {
+                        Ok((row.get(0)?, row.get(1)?))
+                    })?;
+                return Ok(WorkspaceConfig { root, uuid, prefix });
+            }
+        }
         // R030: resolve the workspace through the same discovery walk every
         // command uses -- stop at the first `.beads` directory and fail closed
         // when it is not ours, continuing past one only under the explicit

@@ -131,6 +131,33 @@ pub fn resolve_attempt(
     workspace_uuid: &str,
     request: ResolveRequest,
 ) -> std::result::Result<ResolveReceipt, AttemptError> {
+    let mut fields = vec![
+        ("id", request.issue_id.as_str()),
+        ("attempt_id", request.attempt_id.as_str()),
+        ("outcome", request.outcome.as_str()),
+        ("action", request.action.as_deref().unwrap_or("")),
+        ("reason", request.reason.as_deref().unwrap_or("")),
+        ("actor", request.actor.as_str()),
+        ("model", request.model.as_deref().unwrap_or("")),
+        ("harness", request.harness.as_deref().unwrap_or("")),
+        (
+            "harness_version",
+            request.harness_version.as_deref().unwrap_or(""),
+        ),
+    ];
+    fields.extend(
+        request
+            .evidence_refs
+            .iter()
+            .map(|value| ("evidence_refs[]", value.as_str())),
+    );
+    let _secret_write = super::secret_boundary::guard_pairs(
+        tx,
+        &super::secret_boundary::selector("issue", &request.issue_id),
+        &request.actor,
+        &fields,
+    )
+    .map_err(|error| AttemptError::Usage(error.to_string()))?;
     // Validate request structure
     request
         .validate()

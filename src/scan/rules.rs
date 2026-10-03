@@ -14,7 +14,8 @@
 /// Version of the compiled ruleset. Bumping it changes every fingerprint
 /// (the version is hashed into the finding fingerprint), so it moves only
 /// with a release that re-justifies each blocking rule.
-pub const RULESET_VERSION: u32 = 3;
+pub const RULESET_VERSION: u32 = 4;
+pub const RULESET_CONTRACT: &str = "urn:bead-rs:spec:secret-ruleset:v4";
 
 /// Identity of the normative contract this ruleset implements.
 pub const CONTRACT_IDENTITY: &str = "urn:bead-rs:spec:secret-rejection:v1";
@@ -43,8 +44,8 @@ pub enum Checksum {
     /// GitHub classic tokens: 36 base62 characters after the prefix, the last
     /// 6 being a base62-encoded CRC32 of the first 30.
     GithubBase62Crc32,
-    /// npm tokens: 36 base62 characters after the prefix, the last 8 being a
-    /// base62-encoded CRC32 of the first 28.
+    /// npm tokens: 36 base62 characters after the prefix, the last 6 being a
+    /// base62-encoded CRC32 of the first 30.
     NpmBase62Crc32,
 }
 
@@ -76,7 +77,7 @@ pub const RULES: &[Rule] = &[
         provider: "generic",
         tier: Tier::Blocking,
         keywords: &["private key"],
-        pattern: r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----",
+        pattern: r"(?s)-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----.*?-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----|-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----",
         checksum: None,
     },
     Rule {
@@ -91,9 +92,8 @@ pub const RULES: &[Rule] = &[
         id: "aws-secret-access-key-assignment",
         provider: "aws",
         tier: Tier::Blocking,
-        // The prefilter emits non-overlapping matches. Use the leading AWS
-        // segment so the shorter advisory `secret` anchor cannot mask this
-        // rule before the exact assignment regex runs.
+        // A leading namespace anchor locates assignments before the exact
+        // pattern verifies their spelling; overlapping anchors are retained.
         keywords: &["aws_"],
         pattern: r#"(?i)\b(?:[A-Z][A-Z0-9]*_)*AWS_SECRET_ACCESS_KEY["']?[ \t]*[:=][ \t]*["']?([A-Za-z0-9/+=]{40})["']?"#,
         checksum: None,
@@ -156,8 +156,8 @@ pub const RULES: &[Rule] = &[
         id: "openai-api-key",
         provider: "openai",
         tier: Tier::Blocking,
-        keywords: &["t3blbkfj"],
-        pattern: r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20}T3BlbkFJ[A-Za-z0-9_-]{20}\b",
+        keywords: &["t3blbkfj", "sk-proj-", "sk-svcacct-", "sk-admin-"],
+        pattern: r"\bsk-(?:(?:proj|svcacct|admin)-[A-Za-z0-9_-]{40,}|[A-Za-z0-9_-]{20}T3BlbkFJ[A-Za-z0-9_-]{20})\b",
         checksum: None,
     },
     Rule {
@@ -256,6 +256,86 @@ pub const RULES: &[Rule] = &[
         pattern: r"\bnfp_[A-Za-z0-9]{40,}\b",
         checksum: None,
     },
+    Rule {
+        id: "docker-hub-token",
+        provider: "docker",
+        tier: Tier::Blocking,
+        keywords: &["dckr_pat_", "dckr_oat_"],
+        pattern: r"dckr_(?:pat|oat)_[A-Za-z0-9_-]{20,64}",
+        checksum: None,
+    },
+    Rule {
+        id: "tailscale-key",
+        provider: "tailscale",
+        tier: Tier::Blocking,
+        keywords: &["tskey-"],
+        pattern: r"tskey-[a-z]+-[A-Za-z0-9]{6,}-[A-Za-z0-9]{20,}",
+        checksum: None,
+    },
+    Rule {
+        id: "vault-batch-token",
+        provider: "vault",
+        tier: Tier::Blocking,
+        keywords: &["hvb."],
+        pattern: r"hvb\.[A-Za-z0-9_-]{20,}",
+        checksum: None,
+    },
+    Rule {
+        id: "vault-recovery-token",
+        provider: "vault",
+        tier: Tier::Blocking,
+        keywords: &["hvr."],
+        pattern: r"hvr\.[A-Za-z0-9_-]{20,}",
+        checksum: None,
+    },
+    Rule {
+        id: "vault-legacy-token",
+        provider: "vault",
+        tier: Tier::Blocking,
+        keywords: &["s."],
+        pattern: r"s\.[A-Za-z0-9]{24}",
+        checksum: None,
+    },
+    Rule {
+        id: "backblaze-application-key",
+        provider: "backblaze",
+        tier: Tier::Blocking,
+        keywords: &["k00"],
+        pattern: r"K00[A-Za-z0-9+/]{28}",
+        checksum: None,
+    },
+    Rule {
+        id: "backblaze-key-id-assignment",
+        provider: "backblaze",
+        tier: Tier::Blocking,
+        keywords: &["key_id", "keyid", "key id", "access_key_id", "account_id"],
+        pattern: r#"(?i)[A-Za-z_ -]*(?:key[_ -]?id|access_key_id|account_id)["']?\s*[:=]\s*["']?(00[0-9a-f]{23})"#,
+        checksum: None,
+    },
+    Rule {
+        id: "openrouter-api-key",
+        provider: "openrouter",
+        tier: Tier::Blocking,
+        keywords: &["sk-or-v1-"],
+        pattern: r"sk-or-v1-[0-9a-f]{64}",
+        checksum: None,
+    },
+    Rule {
+        id: "age-secret-key",
+        provider: "age",
+        tier: Tier::Blocking,
+        keywords: &["age-secret-key-1"],
+        pattern: r"AGE-SECRET-KEY-1[0-9A-Z]{58}",
+        checksum: None,
+    },
+    Rule {
+        id: "json-web-token",
+        provider: "jwt",
+        tier: Tier::Blocking,
+        keywords: &["eyj"],
+        pattern: r"eyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{8,}",
+        checksum: None,
+    },
     // Advisory tier: statistical, never rejects.
     Rule {
         id: "advisory-keyword-assignment",
@@ -290,6 +370,13 @@ pub const ADVISORY_ENTROPY_RULE_ID: &str = "advisory-high-entropy-string";
 pub fn rule_ids() -> Vec<&'static str> {
     let mut ids: Vec<&'static str> = RULES.iter().map(|r| r.id).collect();
     ids.push(ADVISORY_ENTROPY_RULE_ID);
+    ids.extend([
+        "credential-assignment",
+        "uri-userinfo-credential",
+        "authorization-header-credential",
+        "curl-user-credential",
+        "kubernetes-secret-data",
+    ]);
     ids
 }
 
@@ -322,7 +409,7 @@ pub(crate) fn checksum_valid(kind: Checksum, body: &str) -> bool {
     let chars: Vec<u8> = body.bytes().collect();
     let checksum_len = match kind {
         Checksum::GithubBase62Crc32 => 6,
-        Checksum::NpmBase62Crc32 => 8,
+        Checksum::NpmBase62Crc32 => 6,
     };
     if chars.len() <= checksum_len {
         return false;
@@ -364,7 +451,7 @@ fn crc32(data: &[u8]) -> u32 {
 pub fn encode_base62_crc32(kind: Checksum, payload: &[u8]) -> String {
     let checksum_len = match kind {
         Checksum::GithubBase62Crc32 => 6,
-        Checksum::NpmBase62Crc32 => 8,
+        Checksum::NpmBase62Crc32 => 6,
     };
     let mut value = crc32(payload) as u64;
     let mut encoded = vec![b'0'; checksum_len];
@@ -381,7 +468,7 @@ mod tests {
 
     #[test]
     fn ruleset_is_closed_and_versioned() {
-        assert_eq!(RULESET_VERSION, 3);
+        assert_eq!(RULESET_VERSION, 4);
         assert_eq!(CONTRACT_IDENTITY, "urn:bead-rs:spec:secret-rejection:v1");
         // The blocking tier is provider formats and armor only.
         for rule in RULES.iter().filter(|r| r.tier == Tier::Blocking) {
@@ -442,12 +529,12 @@ mod tests {
     }
 
     #[test]
-    fn npm_checksum_is_eight_characters() {
-        let payload = b"4hTnLw9ZxVcMrJqKsYbGdPeAfU";
-        assert_eq!(payload.len(), 26);
+    fn npm_checksum_is_six_characters() {
+        let payload = b"4hTnLw9ZxVcMrJqKsYbGdPeAfU3r2X";
+        assert_eq!(payload.len(), 30);
         let mut token = String::from_utf8(payload.to_vec()).unwrap();
         token.push_str(&encode_base62_crc32(Checksum::NpmBase62Crc32, payload));
-        assert_eq!(token.len(), 26 + 8);
+        assert_eq!(token.len(), 30 + 6);
         assert!(checksum_valid(Checksum::NpmBase62Crc32, &token));
     }
 

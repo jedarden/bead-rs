@@ -115,6 +115,7 @@ fn commit_with(
 ) -> Result<CommitReport> {
     let workspace_root = checkpoint_base.parent().unwrap_or(checkpoint_base);
     let checkpoint_dir = checkpoint_base.join("checkpoint");
+    super::secret_maintenance::ensure_publication_allowed(store.conn())?;
 
     // Outside any repository there is no index and no history to record
     // into; refusing here keeps every later invocation repository-clean.
