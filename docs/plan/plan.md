@@ -1,8 +1,8 @@
 # bead-rs Current Product and Software Factory Plan
 
-Plan revision: 18
+Plan revision: 19
 
-As of: 2026-10-02
+As of: 2026-10-03
 
 Status owner: bead-rs maintainers
 
@@ -60,6 +60,23 @@ credited until an independent exact-hash review accepts that contract and
 the BR-T31 through BR-T33 gates pass. Existing fast-secret-scanner rollout
 beads own the separate Git transport layer.
 
+Revision 19 records what the 2026-10-03 scanner audit measured and proposes
+R040. Ruleset 3 reported 0 blocking and 37,547 advisory findings across 82
+fleet workspaces, and returned no verdict in 8 of them. A runtime-assembled
+probe of the installed binary was admitted for container-registry,
+object-storage, vault, network-mesh, web-token, URI, authorization-header,
+and labelled-assignment credentials; a conforming npm token was admitted
+because the checksum width is wrong; and a checksum-valid GitHub token was
+admitted in five common encodings. R039 closes paths around the scanner and
+does not change what the scanner detects, so R040 is separate: ADR-023
+widens the blocking ruleset, ADR-024 matches on a normalized view while
+reporting raw byte ranges, and ADR-025 makes advisory findings and partial
+scan coverage visible. The proposed contract is `secret-ruleset-v4`. Three
+defect corrections (BR-T36 through BR-T38) restore accepted behavior and do
+not wait for review; no other R040 implementation is credited until an
+independent exact-hash review accepts the contract and BR-T44 records the
+fleet replay.
+
 ## 0. How to read this plan
 
 Sections 0–8 are the current normative product and transition plan. The former
@@ -97,6 +114,10 @@ This revision proposes, pending independent review:
 - [ADR-021: Lock secret scanning policy for managed fleets](../adr/021-lock-fleet-secret-scan-policy.md)
 - [ADR-022: Quarantine secret-bearing recovery before publication](../adr/022-quarantine-secret-bearing-recovery.md)
 - [`secret-write-boundary-v1`](../../research/specs/secret-write-boundary-v1.md)
+- [ADR-023: Widen the blocking ruleset to the credential formats the fleet stores](../adr/023-widen-blocking-ruleset-to-observed-credential-formats.md)
+- [ADR-024: Match on a normalized view and report raw byte ranges](../adr/024-match-on-a-normalized-view.md)
+- [ADR-025: Surface advisory findings at write time and report partial scan coverage](../adr/025-surface-advisory-findings-and-partial-scan-coverage.md)
+- [`secret-ruleset-v4`](../../research/specs/secret-ruleset-v4.md)
 
 ## 1. Product boundary and current reality
 
@@ -190,6 +211,16 @@ and BR-T11 complete against one exact source commit and pinned binary.
   automatic checkpoint publication can create a Git-trackable copy. R039
   proposes durable publication quarantine for newly detected blocking
   findings. This does not clean already-published history.
+- Ruleset 3 does not recognize several credential formats the fleet stores,
+  matches only an isolated raw token, and validates npm tokens with the
+  wrong checksum width. A stored credential with no finding cannot be
+  selected by `bead redact`. R040 proposes ruleset 4 and a normalized
+  matching view.
+- The advisory tier holds tens of thousands of hash-shaped findings, is
+  silent when a mutation is accepted, and the doctor check aborts without a
+  verdict when one retained generation is unreadable. R040 proposes
+  shape-based advisory selection, a write-time notice, and per-source
+  coverage.
 
 ## 2. Current design principles
 
@@ -415,6 +446,44 @@ boundaries in dependency order. The existing `secret-scanner` fleet beads
 `fss-3aa3e0b6` and `fss-5f007601` own the independent Forgejo and fleet
 transport checks; they do not substitute for the bead-rs write gate.
 
+### 5.3 Proposed ruleset 4 and matching contract (R040)
+
+R039 decides where the scan runs and who may weaken it. R040 decides what the
+scan detects. The two are independent and neither waits for the other,
+except that both edit `src/scan` and are serialized by that resource key.
+
+The blocking tier stays closed, compiled, offline, and deterministic. Its
+membership criterion changes from "provider prefix" to evidence: a rule may
+block when its fixtures pass and the fleet replay leaves no undispositioned
+finding. Ruleset 4 adds provider formats for the credentials the fleet
+issues, context-bound formats for shapes too short to trust alone,
+structural credentials (URI passwords, authorization headers, curl user
+options, Kubernetes Secret data), and labelled credential assignments whose
+value passes a specified integer-arithmetic randomness qualifier. Entropy
+scoring still never blocks.
+
+Rules are matched on the raw field and on bounded derived views: normalized
+(control sequences removed, escapes and percent-encoding decoded), dewrapped,
+and one level of base64 decoding. Findings keep raw byte ranges and
+fingerprints, so acknowledgment and `bead redact` are unchanged. Detection is
+what gives redaction something to select: a stored credential that ruleset 3
+cannot see becomes redactable only when ruleset 4 reports it.
+
+The advisory tier selects token-shaped runs with the same qualifier and
+excludes hash shapes; a successful mutation that admitted advisory findings
+says so in one redacted line; and doctor reports coverage per source instead
+of aborting.
+
+These are proposed contracts in ADR-023 through ADR-025 and
+`research/specs/secret-ruleset-v4.md`, not current release claims. BR-T34
+authors the documents and BR-T35 independently reviews their exact hash.
+BR-T36 through BR-T38 correct defects against the accepted contract and
+proceed immediately. BR-T39 through BR-T43 implement the accepted contract,
+and BR-T44 replays it across the fleet before the version is frozen. Rule
+parity with the Git-layer scanner is a fixture obligation of this contract;
+selecting that scanner's findings for redaction and a shared acknowledgment
+path remain with `beadrs-1c110ec3`.
+
 ## 6. Artifact-by-artifact transition ledger
 
 | ID | Artifact(s) | Change | Acceptance evidence | Status |
@@ -453,6 +522,18 @@ transport checks; they do not substitute for the bead-rs write gate.
 | BR-T31 | public service mutation API | Enforce canonical scan before every public write and generated text commit | Direct library plus CLI atomicity, redaction, audit, recurrence and manifest tests; full Rust gates | blocked by BR-T30; `beadrs-235ead28` |
 | BR-T32 | managed artifact, capabilities and policy | Reject workspace downgrade and worker acknowledgment in the managed fleet build | Both build profiles, downgrade/tamper, capability, installed-binary and fleet pin evidence | blocked by BR-T31; `beadrs-d527e9dc` |
 | BR-T33 | restore/import/reconcile, publication and commit | Quarantine newly detected blocking findings before Git-trackable publication | Clean and finding-bearing recovery, restart, concurrency, redaction clearance, flush/commit refusal | blocked by BR-T32; `beadrs-297416cc` |
+| BR-T34 | ADR-023 through ADR-025, plan, proposed `secret-ruleset-v4` contract | Specify ruleset 4 detection, normalized matching, advisory selection and diagnostic coverage without claiming approval | Link and scope audit; no format-valid sample and no finding location committed; Git-layer scanner clean on added lines | proposed documents committed; independent review pending; `beadrs-4dc46d5f`, umbrella `beadrs-8088ab92` |
+| BR-T35 | independent exact-hash contract review | Accept or reject `secret-ruleset-v4`, including the qualifier, excluded identifiers, decoded-view bounds and the write-time notice | Reviewer identity, exact spec hash, compatibility and threat-model disposition | blocked by BR-T34; `beadrs-1c110609` |
+| BR-T36 | npm rule and its checksum test | Validate the 6-character checksum the format defines; open ruleset 4 | 30 plus 6 round trip, tampered negative, CLI rejection of a conforming candidate | ready; defect against accepted contract; `beadrs-92e903cb` |
+| BR-T37 | keyword prefilter | Evaluate every rule whose anchor occurs, including overlapping anchors | Overlapping-anchor test; natural AWS anchors restored; benchmark within budget | ready; defect against accepted contract; `beadrs-0ba44859` |
+| BR-T38 | doctor secret diagnostics | Scan live rows and each retained generation independently; report `coverage` | Missing previous root yields live findings plus an `unreadable` or `absent` entry | blocked by `beadrs-9e6f9b9e`; `beadrs-4e5cd8d9` |
+| BR-T39 | scanner matcher | Explicit boundaries; normalized, dewrapped and decoded views with an offset map; raw-range reporting | Five-encoding GitHub fixture blocks and is redactable; Unicode ranges; 4 MiB benchmark within three times ruleset 3 | blocked by BR-T35, BR-T36, BR-T37; `beadrs-5cf44cfe` |
+| BR-T40 | rule table, capabilities | Provider and context-bound formats of ruleset 4; `ruleset_contract` capability | One true positive and two near misses per rule; label-absent negatives; inventory test | blocked by BR-T35, BR-T39; `beadrs-7740733d` |
+| BR-T41 | qualifier and labelled-assignment rule | Predicates `P` and `Q`; `credential-assignment`; replacement advisory keyword rule | Qualifier truth table; excluded identifiers non-blocking; prefixed, camel-case, option and title-case labels block | blocked by BR-T35, BR-T39; `beadrs-1d8b4c78` |
+| BR-T42 | structural rules | URI userinfo, authorization header, curl user option, Kubernetes Secret data | Positives block; word and variable passwords do not; Git-layer parity fixtures pass both ways | blocked by BR-T41; `beadrs-3cf43a16` |
+| BR-T43 | advisory rule, mutation output, doctor | Shape-based advisory selection; one redacted write-time notice; additive machine member | Hash shapes unreported; unlabelled token reported; NEEDLE CLI contract suite passes | blocked by BR-T41; `beadrs-dfe88716` |
+| BR-T44 | exact-source artifact, fleet replay evidence | Replay ruleset 4 over every reachable fleet workspace, disposition every blocking fingerprint, freeze the version | Zero undispositioned findings; advisory volume at most one tenth of ruleset 3; parity, benchmark and installed-binary evidence | blocked by BR-T36–BR-T43; `beadrs-de9b30a6` |
+| BR-T45 | fleet bead stores | Redact findings that predate ruleset 4 after their credentials are rotated | Receipts, sanitized generations, zero unacknowledged blocking findings per workspace | proposal awaiting operator admission; blocked by BR-T44; `beadrs-fdfbaa7b` |
 
 General mutation idempotency remains a separate potential feature. BR-T03–T08
 adopt idempotency only for the attempt-resolution boundary required by the
@@ -519,6 +600,16 @@ the managed artifact rejects policy downgrade and acknowledgment; and a
 finding-bearing recovery cannot publish or commit a new checkpoint before a
 verified sanitized generation exists. The exact source and pinned fleet
 artifact must pass the repository Rust gates and a Git transport canary.
+
+R040 adds release gates after its contract is independently accepted: every
+ruleset 4 rule passes its true-positive and near-miss fixtures; a
+checksum-valid synthetic token is rejected in each of the five encodings and
+its reported range is redactable; the Git-layer parity fixtures pass in both
+directions; the fleet replay records a disposition for every blocking
+fingerprint with none outstanding; the advisory count over the replayed
+stores is at most one tenth of the ruleset 3 count; and the hostile-field
+scan stays within three times the ruleset 3 measurement. Replay evidence
+carries fingerprints and counts only.
 
 Current exact-source gate snapshot (2026-09-04): the redaction unit,
 transaction, publication, recovery, installed-binary, package, and NEEDLE
@@ -3251,6 +3342,28 @@ BR-T33 carry authoring, independent review, implementation and conformance.
 R039 is not implemented or release-backed until that exact-hash review and
 all three implementation beads complete. The fast-secret-scanner repository
 owns staged and Forgejo push gates separately.
+
+### R040 — Ruleset 4 detection coverage and matching correctness
+
+Make the scanner recognize the credentials the fleet actually stores, in the
+forms agents actually paste them. Ruleset 4 widens the blocking tier to
+additional provider formats, context-bound formats, structural credentials,
+and labelled assignments qualified by a deterministic randomness predicate;
+matches on normalized, dewrapped, and base64-decoded views while reporting
+raw byte ranges; replaces entropy-threshold advisory selection with a
+shape-based rule; announces admitted advisory findings at write time; and
+reports diagnostic coverage per source. The proposed decisions are ADR-023
+through ADR-025; the proposed normative contract is
+`research/specs/secret-ruleset-v4.md`. BR-T34 through BR-T44 carry authoring,
+independent review, three defect corrections, implementation, and the fleet
+replay that freezes the version. BR-T45, redaction of findings that predate
+ruleset 4, is a proposal awaiting operator admission.
+
+R040 does not move the scan boundary, lock policy, or change redaction
+mechanics; those remain R039 and R038. It is not implemented or
+release-backed until the exact-hash review is recorded and BR-T44 passes,
+with the exception of the BR-T36 through BR-T38 corrections, which restore
+behavior the accepted `secret-rejection-v1` already requires.
 
 ## 13. Release gates
 

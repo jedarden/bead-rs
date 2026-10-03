@@ -57,3 +57,6 @@ Use the template in `000-template.md` for new ADRs. Each ADR should include:
 | [020](020-enforce-secret-scanning-at-service-writes.md) | Enforce secret scanning at service writes | Proposed | 2026-10-02 |
 | [021](021-lock-fleet-secret-scan-policy.md) | Lock secret scanning policy for managed fleets | Proposed | 2026-10-02 |
 | [022](022-quarantine-secret-bearing-recovery.md) | Quarantine secret-bearing recovery before publication | Proposed | 2026-10-02 |
+| [023](023-widen-blocking-ruleset-to-observed-credential-formats.md) | Widen the blocking ruleset to the credential formats the fleet stores | Proposed | 2026-10-03 |
+| [024](024-match-on-a-normalized-view.md) | Match on a normalized view and report raw byte ranges | Proposed | 2026-10-03 |
+| [025](025-surface-advisory-findings-and-partial-scan-coverage.md) | Surface advisory findings at write time and report partial scan coverage | Proposed | 2026-10-03 |
