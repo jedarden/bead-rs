@@ -321,6 +321,7 @@ fn test_query_without_workspace() {
 
     Command::cargo_bin("bead")
         .unwrap()
+        .arg("--skip-foreign-workspace")
         .args(["query", "--json", query_json])
         .assert()
         .failure()

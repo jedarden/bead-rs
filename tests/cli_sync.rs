@@ -40,6 +40,7 @@ fn test_sync_flush_only_basic() {
     // Flush forensic checkpoint
     Command::cargo_bin("bead")
         .unwrap()
+        .arg("--skip-foreign-workspace")
         .args(["sync", "flush-only"])
         .current_dir(temp_dir.path())
         .assert()

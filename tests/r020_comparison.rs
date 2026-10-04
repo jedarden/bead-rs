@@ -12,6 +12,7 @@ use serial_test::serial;
 fn test_comparison_help_available() {
     Command::cargo_bin("bead")
         .unwrap()
+        .arg("--skip-foreign-workspace")
         .arg("compare")
         .arg("--help")
         .assert()

@@ -458,6 +458,7 @@ fn needle_v1_exit_codes() {
 
     Command::cargo_bin("bead")
         .unwrap()
+        .arg("--skip-foreign-workspace")
         .args(["list"])
         .assert()
         .failure()

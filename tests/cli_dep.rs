@@ -761,6 +761,7 @@ fn test_dep_without_workspace() {
     // Try to add dependency without workspace
     Command::cargo_bin("bead")
         .unwrap()
+        .arg("--skip-foreign-workspace")
         .args(["dep", "add", "issue-1", "issue-2"])
         .assert()
         .failure()
@@ -769,6 +770,7 @@ fn test_dep_without_workspace() {
     // Try to remove dependency without workspace
     Command::cargo_bin("bead")
         .unwrap()
+        .arg("--skip-foreign-workspace")
         .args(["dep", "remove", "issue-1", "issue-2"])
         .assert()
         .failure()

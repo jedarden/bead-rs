@@ -242,6 +242,7 @@ fn test_label_without_workspace() {
     // Try to add label without workspace
     Command::cargo_bin("bead")
         .unwrap()
+        .arg("--skip-foreign-workspace")
         .args(["label", "add", "issue-1", "--label", "bug"])
         .assert()
         .failure()
@@ -250,6 +251,7 @@ fn test_label_without_workspace() {
     // Try to remove label without workspace
     Command::cargo_bin("bead")
         .unwrap()
+        .arg("--skip-foreign-workspace")
         .args(["label", "remove", "issue-1", "--label", "bug"])
         .assert()
         .failure()

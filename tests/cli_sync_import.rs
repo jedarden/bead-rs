@@ -30,6 +30,7 @@ fn test_sync_import_only_basic() {
     // Import issues
     Command::cargo_bin("bead")
         .unwrap()
+        .arg("--skip-foreign-workspace")
         .args([
             "sync",
             "import-only",

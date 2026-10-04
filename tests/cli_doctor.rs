@@ -12,6 +12,7 @@ fn test_doctor_no_workspace() {
     // Doctor should fail when there's no workspace
     Command::cargo_bin("bead")
         .unwrap()
+        .arg("--skip-foreign-workspace")
         .args(["doctor"])
         .assert()
         .failure()

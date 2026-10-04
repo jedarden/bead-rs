@@ -117,6 +117,7 @@ fn test_create_without_workspace() {
     // Try to create without workspace
     Command::cargo_bin("bead")
         .unwrap()
+        .arg("--skip-foreign-workspace")
         .args(["create", "--title", "Test Issue"])
         .assert()
         .failure()

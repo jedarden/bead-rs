@@ -657,6 +657,7 @@ fn test_update_without_workspace() {
 
     Command::cargo_bin("bead")
         .unwrap()
+        .arg("--skip-foreign-workspace")
         .args(["update", "test-id", "--status", "in_progress"])
         .current_dir(temp_dir.path())
         .assert()
@@ -670,6 +671,7 @@ fn test_release_without_workspace() {
 
     Command::cargo_bin("bead")
         .unwrap()
+        .arg("--skip-foreign-workspace")
         .args(["release", "test-id"])
         .current_dir(temp_dir.path())
         .assert()
@@ -683,6 +685,7 @@ fn test_close_without_workspace() {
 
     Command::cargo_bin("bead")
         .unwrap()
+        .arg("--skip-foreign-workspace")
         .args(["close", "test-id", "--reason", "Test"])
         .current_dir(temp_dir.path())
         .assert()
@@ -696,6 +699,7 @@ fn test_reopen_without_workspace() {
 
     Command::cargo_bin("bead")
         .unwrap()
+        .arg("--skip-foreign-workspace")
         .args(["reopen", "test-id"])
         .current_dir(temp_dir.path())
         .assert()

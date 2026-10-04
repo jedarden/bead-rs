@@ -17,7 +17,8 @@ fn setup_test_workspace() -> tempfile::TempDir {
 
 fn run_bead_command(args: &[&str], workspace_dir: &std::path::Path) -> std::process::Output {
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_bead"));
-    cmd.args(args)
+    cmd.arg("--skip-foreign-workspace")
+        .args(args)
         .current_dir(workspace_dir)
         .env("RUST_BACKTRACE", "1")
         .env("BEAD_WORKSPACE_ROOT", workspace_dir.to_str().unwrap())

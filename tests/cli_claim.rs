@@ -186,6 +186,7 @@ fn test_claim_without_workspace() {
     // Try to claim without workspace
     Command::cargo_bin("bead")
         .unwrap()
+        .arg("--skip-foreign-workspace")
         .args(["claim", "--assignee", "worker-1"])
         .assert()
         .failure()

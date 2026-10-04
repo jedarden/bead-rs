@@ -546,6 +546,7 @@ fn test_change_feed_no_workspace() {
     // Should fail without workspace
     Command::cargo_bin("bead")
         .unwrap()
+        .arg("--skip-foreign-workspace")
         .arg("changes")
         .arg("--latest")
         .current_dir(temp_dir.path())
