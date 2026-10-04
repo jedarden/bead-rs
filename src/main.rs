@@ -826,6 +826,10 @@ fn cmd_restore(opts: cli::RestoreOptions) -> Result<()> {
             report.summary_event_sequence
         );
         eprintln!("  Non-empty target override: {}", report.non_empty_override);
+        eprintln!(
+            "  Local recovery succeeded: {}",
+            report.local_recovery_succeeded
+        );
         eprintln!("  Secret quarantined: {}", report.secret_quarantined);
         eprintln!(
             "  Checkpoint publication withheld: {}",
@@ -2906,6 +2910,10 @@ fn cmd_sync_import_only(opts: cli::SyncImportOptions) -> Result<()> {
     eprintln!("  Receipts: {} processed", result.receipts_processed);
     eprintln!("  Dry run: {}", result.dry_run);
     eprintln!("  Prospective: {}", result.prospective);
+    eprintln!(
+        "  Local recovery succeeded: {}",
+        result.local_recovery_succeeded
+    );
     eprintln!("  Secret quarantined: {}", result.secret_quarantined);
     eprintln!(
         "  Checkpoint publication withheld: {}",

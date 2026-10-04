@@ -1441,6 +1441,8 @@ pub struct FullImportResult {
     pub receipt: Option<SerializedReceipt>,
     pub summary_event_sequence: Option<i64>,
     pub loss_report: Option<ProfileLossReport>,
+    /// The recovery transaction committed its local state. False for dry runs.
+    pub local_recovery_succeeded: bool,
     pub secret_quarantined: bool,
     pub checkpoint_publication_withheld: bool,
 }
@@ -1506,6 +1508,8 @@ pub struct RestoreReport {
     pub summary_event_sequence: i64,
     pub non_empty_override: bool,
     pub displaced: RestoreDisplacedCounts,
+    /// The recovery transaction committed its local state.
+    pub local_recovery_succeeded: bool,
     pub secret_quarantined: bool,
     pub checkpoint_publication_withheld: bool,
 }
@@ -1823,6 +1827,7 @@ pub fn import_forensic_checkpoint(
             receipt: None,
             summary_event_sequence: None,
             loss_report,
+            local_recovery_succeeded: false,
             secret_quarantined: false,
             checkpoint_publication_withheld: false,
         });
@@ -1854,6 +1859,7 @@ pub fn import_forensic_checkpoint(
     result.receipts_processed = counts.receipts_processed as i64;
     result.receipt = counts.receipt;
     result.summary_event_sequence = counts.summary_event_sequence;
+    result.local_recovery_succeeded = true;
     Ok(result)
 }
 
@@ -1968,6 +1974,7 @@ fn get_import_result(
         receipt,
         summary_event_sequence: None,
         loss_report: None,
+        local_recovery_succeeded: false,
         secret_quarantined: crate::service::secret_boundary::ensure_not_quarantined(conn).is_err(),
         checkpoint_publication_withheld: crate::service::secret_boundary::ensure_not_quarantined(
             conn,
@@ -4468,6 +4475,7 @@ pub fn restore_verified_generation(
         } else {
             RestoreDisplacedCounts::default()
         },
+        local_recovery_succeeded: true,
         secret_quarantined: crate::service::secret_boundary::ensure_not_quarantined(store.conn())
             .is_err(),
         checkpoint_publication_withheld: crate::service::secret_boundary::ensure_not_quarantined(
