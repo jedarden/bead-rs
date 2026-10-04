@@ -223,13 +223,24 @@ pub fn run_secret_diagnostics(store: &impl Store) -> Result<SecretDiagnosticsRep
             .root
             .join(".beads/checkpoint")
             .join(format!("{name}.json"));
-        if !pointer.exists() {
-            coverage.push(SourceCoverage {
-                source: name,
-                status: "absent",
-                reason_code: Some("no_retained_generation"),
-            });
-            continue;
+        match std::fs::symlink_metadata(&pointer) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                coverage.push(SourceCoverage {
+                    source: name,
+                    status: "absent",
+                    reason_code: Some("no_retained_generation"),
+                });
+                continue;
+            }
+            Err(_) => {
+                coverage.push(SourceCoverage {
+                    source: name,
+                    status: "unreadable",
+                    reason_code: Some("checkpoint_scan_failed"),
+                });
+                continue;
+            }
         }
         match scan_pointer(&pointer, name, &diagnostic_config, &mut checkpoint_reports) {
             Ok(true) => {

@@ -709,18 +709,143 @@ fn advisory_success_emits_one_counted_notice_and_additive_manifest_json() {
 fn unreadable_previous_generation_keeps_live_findings_and_reports_incomplete_coverage() {
     let (root, mut store) = workspace();
     insert(store.conn(), &provider());
+    let checkpoint = root.path().join(".beads/checkpoint");
+    std::fs::create_dir_all(&checkpoint).unwrap();
+    std::fs::write(checkpoint.join("current.jsonl"), b"").unwrap();
+    std::fs::write(checkpoint.join("previous.jsonl"), b"").unwrap();
     std::fs::write(
-        root.path().join(".beads/checkpoint/previous.json"),
-        b"invalid pointer",
+        checkpoint.join("current.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "mode": "monolithic",
+            "active_root": {"path": "current.jsonl"}
+        }))
+        .unwrap(),
     )
     .unwrap();
+    std::fs::write(
+        checkpoint.join("previous.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "mode": "monolithic",
+            "active_root": {"path": "previous.jsonl"}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::remove_file(checkpoint.join("previous.jsonl")).unwrap();
+
+    let diagnostics = bead_rs::service::doctor::run_diagnostics_with_scopes(
+        &store,
+        &[bead_rs::service::doctor::DiagnosticScope::Secrets],
+    )
+    .unwrap();
+    assert!(diagnostics.has_errors);
+    let check = diagnostics
+        .checks
+        .iter()
+        .find(|check| check.name == "secret_scan")
+        .unwrap();
+    assert_eq!(
+        check.status,
+        bead_rs::service::doctor::DiagnosticStatus::Error
+    );
+    let details = check.details.as_ref().unwrap();
+    assert!(details["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|finding| {
+            finding["selector"]
+                .as_str()
+                .is_some_and(|selector| selector.starts_with("live:issues:"))
+        }));
+    assert!(details["coverage"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|source| { source["source"] == "live" && source["status"] == "scanned" }));
+    assert!(details["coverage"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|source| { source["source"] == "current" && source["status"] == "scanned" }));
+    assert!(details["coverage"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|source| {
+            source["source"] == "previous"
+                && source["status"] == "unreadable"
+                && source["reason_code"] == "checkpoint_scan_failed"
+        }));
+}
+
+#[test]
+fn first_checkpoint_publication_reports_previous_generation_absent() {
+    let (root, store) = workspace();
+    bead(root.path())
+        .args(["sync", "flush-only"])
+        .assert()
+        .success();
+
+    let checkpoint = root.path().join(".beads/checkpoint");
+    assert!(checkpoint.join("current.json").is_file());
+    assert!(!checkpoint.join("previous.json").exists());
+
+    let diagnostics = bead_rs::service::doctor::run_diagnostics_with_scopes(
+        &store,
+        &[bead_rs::service::doctor::DiagnosticScope::Secrets],
+    )
+    .unwrap();
+    assert!(!diagnostics.has_errors);
+    let check = diagnostics
+        .checks
+        .iter()
+        .find(|check| check.name == "secret_scan")
+        .unwrap();
+    let details = check.details.as_ref().unwrap();
+    assert!(details["coverage"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|source| { source["source"] == "current" && source["status"] == "scanned" }));
+    assert!(details["coverage"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|source| {
+            source["source"] == "previous"
+                && source["status"] == "absent"
+                && source["reason_code"] == "no_retained_generation"
+        }));
+}
+
+#[cfg(unix)]
+#[test]
+fn dangling_checkpoint_pointer_is_reported_as_unreadable() {
+    use std::os::unix::fs::symlink;
+
+    let (root, store) = workspace();
+    let checkpoint = root.path().join(".beads/checkpoint");
+    std::fs::create_dir_all(&checkpoint).unwrap();
+    std::fs::write(checkpoint.join("current.jsonl"), b"").unwrap();
+    std::fs::write(
+        checkpoint.join("current.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "mode": "monolithic",
+            "active_root": {"path": "current.jsonl"}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    symlink("missing-previous.json", checkpoint.join("previous.json")).unwrap();
+
     let report = secret_diagnostics::run_secret_diagnostics(&store).unwrap();
     assert!(!report.coverage_complete);
-    assert!(report.blocking_findings > 0);
-    assert!(report
-        .coverage
-        .iter()
-        .any(|source| source.source == "previous" && source.status == "unreadable"));
+    assert!(report.coverage.iter().any(|source| {
+        source.source == "previous"
+            && source.status == "unreadable"
+            && source.reason_code == Some("checkpoint_scan_failed")
+    }));
 }
 
 #[test]
