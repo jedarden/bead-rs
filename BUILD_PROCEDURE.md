@@ -23,9 +23,15 @@ The attempt-resolution functionality is **always enabled** in the current bead-r
 
 ```bash
 # Check that resolve command is available
-/home/coding/target/release/bead --help | grep resolve
+/build/bead-rs/release/bead --help | grep resolve
 # Output: resolve            Record an execution attempt outcome atomically
 ```
+
+On fleet build hosts, the cargo wrapper enforces
+`CARGO_TARGET_DIR=/build/<repo>`, where `<repo>` is the origin URL's basename.
+For this repository, a direct release build therefore produces
+`/build/bead-rs/release/bead`. Hosts without the wrapper's `/build` directory
+use Cargo's default `target/release/bead` path instead.
 
 ## Build Rule
 
@@ -89,14 +95,14 @@ sha256sum <binary-path-from-script>
 ```bash
 cargo install --path .
 # Or copy the built binary:
-sudo cp /home/coding/target/release/bead /usr/local/bin/bead
+sudo cp /build/bead-rs/release/bead /usr/local/bin/bead
 ```
 
 ### User-local Installation
 
 ```bash
 mkdir -p ~/.local/bin
-cp /home/coding/target/release/bead ~/.local/bin/bead
+cp /build/bead-rs/release/bead ~/.local/bin/bead
 # Ensure ~/.local/bin is in your PATH
 ```
 
@@ -124,13 +130,13 @@ To verify the binary is working correctly with attempt-resolution:
 # Initialize a test workspace
 mkdir -p /tmp/bead-test
 cd /tmp/bead-test
-/home/coding/target/release/bead init --prefix test
+/build/bead-rs/release/bead init --prefix test
 
 # Create a test bead
-TEST_BEAD=$(/home/coding/target/release/bead create --title "Test resolve functionality" --priority 1)
+TEST_BEAD=$(/build/bead-rs/release/bead create --title "Test resolve functionality" --priority 1)
 
 # Verify resolve command works
-/home/coding/target/release/bead resolve --help
+/build/bead-rs/release/bead resolve --help
 ```
 
 ## Commit Pinning

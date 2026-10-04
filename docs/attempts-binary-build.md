@@ -49,8 +49,12 @@ checkout) and underneath runs the equivalent of:
 cargo build --release --locked
 ```
 
-**Binary location:** `<out-dir>/<name>` as printed by the script — never
-`/home/coding/target/release/bead`, which is the shared checkout's own build.
+**Binary location:** `<out-dir>/<name>` as printed by the script. A tree-local
+`target/release` path is not the artifact location on fleet build hosts.
+For a direct release build on those hosts, the wrapper-enforced location for
+this repository is `/build/bead-rs/release/bead` (`CARGO_TARGET_DIR=/build/<repo>`).
+The archive script may use that effective target directory internally, but the
+artifact to consume is always the `<out-dir>/<name>` path it prints and copies.
 
 ### Feature-Enabled Build (With Attempt-Resolution)
 
@@ -77,19 +81,20 @@ After building, capture the following metadata:
 
 ### 1. Version Information
 ```bash
-./target/release/bead --version
+BINARY="<binary-path-from-script>"
+"$BINARY" --version
 # Expected output: bead 0.2.6 (<commit-sha> <timestamp>)
 ```
 
 ### 2. Binary Hash
 ```bash
-sha256sum target/release/bead
-# Outputs: <hash>  target/release/bead
+sha256sum "$BINARY"
+# Outputs: <hash>  <binary-path-from-script>
 ```
 
 ### 3. Binary Size
 ```bash
-ls -lh target/release/bead
+ls -lh "$BINARY"
 # Outputs size in human-readable format (e.g., 7.0M)
 ```
 
@@ -297,8 +302,8 @@ Expected output (identical for `bead-pre-attempt-resolution`, `bead-attempt-reso
 **Solution**: Treat the rebuild as a new artifact:
 ```bash
 # Record the new artifact's provenance (see Build Recipe above)
-sha256sum target/release/bead
-./target/release/bead --version
+sha256sum <binary-path-from-script>
+<binary-path-from-script> --version
 
 # Verify a PINNED binary by comparing bytes to its metadata — never by rebuilding
 sha256sum pinned-binaries/bead-attempt-resolution-f25ab5c
@@ -321,7 +326,7 @@ If you also need assurance the rebuilt source is functionally equivalent to the 
 cargo build --release --features attempt-resolution
 
 # Check binary type
-file target/release/bead
+file /build/bead-rs/release/bead
 # Should show: ELF 64-bit LSB executable, x86-64
 ```
 
