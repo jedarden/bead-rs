@@ -403,33 +403,90 @@ fn normalized_findings_point_to_the_raw_bytes_and_complete_pem_material() {
 #[test]
 fn structural_credentials_block_but_references_and_hashes_are_not_noisy() {
     let value = mixed(32);
-    for (rule, text) in [
-        ("credential-assignment", format!("clientSecret={value}")),
+    let encoded = base64(&value);
+    let positive_cases = [
+        (
+            "credential-assignment",
+            format!("clientSecret={value}"),
+            value.clone(),
+        ),
         (
             "uri-userinfo-credential",
             format!("postgres://worker:{value}@localhost/db"),
+            value.clone(),
         ),
         (
             "authorization-header-credential",
             format!("Authorization: Bearer {value}"),
+            value.clone(),
         ),
-        ("curl-user-credential", format!("curl -u worker:{value}")),
+        (
+            "authorization-header-credential",
+            format!("bearer {value}"),
+            value.clone(),
+        ),
+        (
+            "curl-user-credential",
+            format!("curl -u worker:{value}"),
+            value.clone(),
+        ),
+        (
+            "curl-user-credential",
+            format!("curl -uworker:{value}"),
+            value.clone(),
+        ),
         (
             "kubernetes-secret-data",
             format!("kind: Secret\nstringData:\n  credential: {value}"),
+            value.clone(),
         ),
         (
             "kubernetes-secret-data",
-            format!("data:\n  connection: {}\nkind: Secret", base64(&value)),
+            format!("kind: Secret\nstringData: |\n  password: {value}\n"),
+            value.clone(),
+        ),
+        (
+            "kubernetes-secret-data",
+            format!("data:\n  connection: {encoded}\nkind: Secret"),
+            encoded.clone(),
         ),
         (
             "kubernetes-secret-data",
             format!("stringData:\n  connection: {value}\nkind: \"Secret\""),
+            value.clone(),
         ),
         (
             "kubernetes-secret-data",
-            serde_json::json!({"kind":"Secret","data":{"password":base64(&value)}}).to_string(),
+            serde_json::json!({"kind":"Secret","data":{"password":encoded}}).to_string(),
+            encoded.clone(),
         ),
+    ];
+    for (rule, text, expected) in positive_cases {
+        let report = scan::scan(
+            &ScanConfig::enforce(),
+            "fixture",
+            &[Field::new("description", &text)],
+        );
+        let matches: Vec<_> = report
+            .blocking
+            .iter()
+            .filter(|finding| finding.rule_id == rule)
+            .collect();
+        assert_eq!(matches.len(), 1, "unexpected structural matches for {rule}");
+        let start = text.find(&expected).expect("fixture value is present");
+        assert_eq!(
+            (matches[0].start, matches[0].end),
+            (start, start + expected.len()),
+            "wrong structural range for {rule}"
+        );
+    }
+    for text in [
+        "Authorization: Bearer token".to_string(),
+        "Authorization: Bearer ${BEARER_TOKEN}".to_string(),
+        "curl -u worker:password".to_string(),
+        "curl -uworker:${CREDENTIAL}".to_string(),
+        format!("forbearer {value}"),
+        format!("kind: Secret\nstringData: |\n  password: ${{PASSWORD}}\n"),
     ] {
         let report = scan::scan(
             &ScanConfig::enforce(),
@@ -437,11 +494,22 @@ fn structural_credentials_block_but_references_and_hashes_are_not_noisy() {
             &[Field::new("description", &text)],
         );
         assert!(
-            report
-                .blocking
-                .iter()
-                .any(|finding| finding.rule_id == rule),
-            "missing structural rule {rule}"
+            report.blocking.is_empty(),
+            "reference or single-word fixture was blocked: {text}"
+        );
+    }
+    for text in [
+        "diagnostic output: token precedes name=1234567890",
+        "see secret-rotation-guide.md for the procedure",
+    ] {
+        let report = scan::scan(
+            &ScanConfig::enforce(),
+            "fixture",
+            &[Field::new("description", text)],
+        );
+        assert!(
+            report.blocking.is_empty(),
+            "Git-layer false-positive parity fixture was blocked: {text}"
         );
     }
     let text="secret_path=kv/service/token\nSHA256 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\nfencing_token=19\napi_key=your_api_key_here\nthis is explanatory prose about token rotation";

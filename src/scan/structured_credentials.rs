@@ -119,8 +119,8 @@ fn scan_with_source(
     }
     static STRUCTURES: LazyLock<Vec<(&str, Regex, usize)>> = LazyLock::new(|| {
         [
-        ("authorization-header-credential",r#"(?i)(?:authorization["']?[ \t]*[:=][ \t]*["']?[ \t]*(?:bearer|basic|token|apikey)|bearer)[ \t]+(?P<value>[A-Za-z0-9_+/=.-]{20,})"#,12),
-        ("curl-user-credential",r#"(?:^|[ \t])(?:-u|--user)(?:=|[ \t]+)["']?[^:\s"']+:(?P<value>[^\s"'`,;]+)"#,8),
+        ("authorization-header-credential",r#"(?i)(?:authorization["']?[ \t]*[:=][ \t]*["']?[ \t]*(?:bearer|basic|token|apikey)|(?:^|[^A-Za-z0-9])bearer)[ \t]+(?P<value>[A-Za-z0-9_+/=.-]{20,})"#,12),
+        ("curl-user-credential",r#"(?:^|[ \t])(?:-u(?:=|[ \t]*)|--user(?:=|[ \t]+))["']?[^:\s"']+:(?P<value>[^\s"'`,;]+)"#,8),
     ].iter().map(|(rule,pattern,min)|(*rule,Regex::new(pattern).unwrap(),*min)).collect()
     });
     for (rule, regex, minimum) in STRUCTURES.iter() {
@@ -143,7 +143,8 @@ fn scan_with_source(
             .unwrap()
     });
     static SECTION: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?m)^(?P<indent>[ \t]*)(?P<kind>data|stringData):[ \t]*$").unwrap()
+        Regex::new(r"(?m)^(?P<indent>[ \t]*)(?P<kind>data|stringData):[ \t]*(?:[|>][+-]?[ \t]*)?$")
+            .unwrap()
     });
     static ENTRY: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r#"^[ \t]+[^:\s]+:[ \t]*["']?(?P<value>[^\s"']+)"#).unwrap());
