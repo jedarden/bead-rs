@@ -3,9 +3,11 @@ use assert_cmd::Command;
 use bead_rs::scan::{self, Field, ScanConfig};
 use bead_rs::service::{issues, redaction, secret_diagnostics};
 use bead_rs::store::{open_configured_connection, SqliteStore, WorkspaceConfig};
+use rusqlite::types::Value as SqlValue;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 fn bead(root: &Path) -> Command {
     let mut command = Command::cargo_bin("bead").unwrap();
@@ -136,6 +138,167 @@ fn fail_quarantine_insert(conn: &rusqlite::Connection) {
          END;",
     )
     .unwrap();
+}
+
+fn recovery_state_snapshot(conn: &rusqlite::Connection) -> Vec<(String, Vec<Vec<SqlValue>>)> {
+    let tables = conn
+        .prepare(
+            "SELECT name FROM sqlite_schema
+             WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    tables
+        .into_iter()
+        .map(|table| {
+            let sql = format!("SELECT * FROM \"{table}\" ORDER BY rowid");
+            let mut statement = conn.prepare(&sql).unwrap();
+            let column_count = statement.column_count();
+            let rows = statement
+                .query_map([], |row| {
+                    (0..column_count)
+                        .map(|index| row.get::<_, SqlValue>(index))
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            (table, rows)
+        })
+        .collect()
+}
+
+fn checkpoint_state_snapshot(checkpoint: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    fn collect_files(root: &Path, dir: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if entry.file_type().unwrap().is_dir() {
+                collect_files(root, &path, files);
+            } else if entry.file_type().unwrap().is_file() {
+                files.insert(
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    fs::read(path).unwrap(),
+                );
+            }
+        }
+    }
+
+    let mut files = BTreeMap::new();
+    collect_files(checkpoint, checkpoint, &mut files);
+    files
+}
+
+fn retained_secret_reconcile_pair() -> (tempfile::TempDir, tempfile::TempDir, String) {
+    let source_root = isolated_workspace_root("bead-secret-reconcile-retained-");
+    bead(source_root.path())
+        .args(["init", "--prefix", "gap"])
+        .assert()
+        .success();
+    bead(source_root.path())
+        .args(["create", "--title", "clean clone base"])
+        .assert()
+        .success();
+    bead(source_root.path())
+        .args(["sync", "flush-only"])
+        .assert()
+        .success();
+    let generation = serde_json::from_slice::<Value>(
+        &fs::read(source_root.path().join(".beads/checkpoint/current.json")).unwrap(),
+    )
+    .unwrap()["generation_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let target_root = isolated_workspace_root("bead-secret-reconcile-retained-target-");
+    fs::create_dir_all(target_root.path().join(".beads")).unwrap();
+    fs::copy(
+        source_root.path().join(".beads/config.json"),
+        target_root.path().join(".beads/config.json"),
+    )
+    .unwrap();
+    copy_tree(
+        &source_root.path().join(".beads/checkpoint"),
+        &target_root.path().join(".beads/checkpoint"),
+    );
+    bead(target_root.path()).args(["init"]).assert().success();
+    bead(target_root.path())
+        .args([
+            "restore",
+            "--source",
+            ".beads/checkpoint",
+            "--generation",
+            &generation,
+            "--actor",
+            "clone-operator",
+        ])
+        .assert()
+        .success();
+
+    let value = provider();
+    let mut target_store = SqliteStore::from_conn(
+        open_configured_connection(&target_root.path().join(".beads/beads.db")).unwrap(),
+    );
+    let issue_id: String = target_store
+        .conn()
+        .query_row("SELECT id FROM issues ORDER BY id LIMIT 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    target_store
+        .conn()
+        .execute(
+            "UPDATE issues SET description = ?1, revision = revision + 1",
+            [&value],
+        )
+        .unwrap();
+    target_store
+        .conn()
+        .execute(
+            "INSERT INTO events (issue_id, kind, actor, time, detail)
+             VALUES (?1, 'fixture_secret_revision', 'fixture',
+                     '2026-10-03T00:01:00Z', '{}')",
+            [&issue_id],
+        )
+        .unwrap();
+    bead(target_root.path())
+        .args(["sync", "flush-only"])
+        .assert()
+        .success();
+
+    target_store
+        .conn()
+        .execute(
+            "UPDATE issues SET description = 'clean current description', revision = revision + 1",
+            [],
+        )
+        .unwrap();
+    target_store
+        .conn()
+        .execute(
+            "INSERT INTO events (issue_id, kind, actor, time, detail)
+             VALUES (?1, 'fixture_clean_revision', 'fixture',
+                     '2026-10-03T00:02:00Z', '{}')",
+            [&issue_id],
+        )
+        .unwrap();
+    bead(target_root.path())
+        .args(["sync", "flush-only"])
+        .assert()
+        .success();
+    drop(target_store);
+
+    let source_checkpoint = source_root.path().join(".beads/checkpoint");
+    fs::remove_dir_all(&source_checkpoint).unwrap();
+    copy_tree(
+        &target_root.path().join(".beads/checkpoint"),
+        &source_checkpoint,
+    );
+    (source_root, target_root, value)
 }
 
 fn published_secret_generation(prefix: &str) -> (tempfile::TempDir, String) {
@@ -1485,7 +1648,7 @@ fn reconcile_secret_recovery_succeeds_locally_without_republishing() {
         &target_root.path().join(".beads/checkpoint"),
         &source_checkpoint,
     );
-    let pointer_before = fs::read(source_checkpoint.join("current.json")).unwrap();
+    let published_before = checkpoint_state_snapshot(&source_checkpoint);
 
     let output = bead(source_root.path())
         .args(["sync", "reconcile", "--actor", "reconcile-operator"])
@@ -1503,9 +1666,9 @@ fn reconcile_secret_recovery_succeeds_locally_without_republishing() {
     assert!(stderr.contains("secret_quarantined"));
     assert!(!stdout.contains(&value));
     assert!(!stderr.contains(&value));
-    assert_eq!(
-        fs::read(source_checkpoint.join("current.json")).unwrap(),
-        pointer_before
+    assert!(
+        checkpoint_state_snapshot(&source_checkpoint) == published_before,
+        "quarantined reconcile changed the published checkpoint set"
     );
 
     let conn = open_configured_connection(&source_root.path().join(".beads/beads.db")).unwrap();
@@ -1515,7 +1678,10 @@ fn reconcile_secret_recovery_succeeds_locally_without_republishing() {
         })
         .unwrap();
     assert_eq!(quarantine, 1);
-    assert_eq!(stored(&conn), value);
+    assert!(
+        stored(&conn) == value,
+        "incoming issue was not retained locally"
+    );
 
     for args in [
         vec!["sync", "flush-only"],
@@ -1527,6 +1693,108 @@ fn reconcile_secret_recovery_succeeds_locally_without_republishing() {
         assert!(message.contains("secret_quarantined"));
         assert!(!message.contains(&value));
     }
+}
+
+#[test]
+fn reconcile_quarantines_a_finding_only_in_the_retained_generation() {
+    let (source_root, _target_root, value) = retained_secret_reconcile_pair();
+    let source_checkpoint = source_root.path().join(".beads/checkpoint");
+    let published_before = checkpoint_state_snapshot(&source_checkpoint);
+
+    let output = bead(source_root.path())
+        .args(["sync", "reconcile", "--actor", "reconcile-operator"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "reconcile failed without exposing its candidate"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.contains("Secret quarantined: true"));
+    assert!(stdout.contains("Checkpoint publication withheld: true"));
+    assert!(stderr.contains("secret_quarantined"));
+    assert!(!stdout.contains(&value));
+    assert!(!stderr.contains(&value));
+    assert!(
+        checkpoint_state_snapshot(&source_checkpoint) == published_before,
+        "retained-generation quarantine changed the published checkpoint set"
+    );
+
+    let conn = open_configured_connection(&source_root.path().join(".beads/beads.db")).unwrap();
+    assert!(
+        secret_diagnostics::scan_live_findings(&conn)
+            .unwrap()
+            .is_empty(),
+        "the reconciled live semantic state should be clean"
+    );
+    let quarantine_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM secret_quarantine", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(quarantine_count, 1);
+
+    let diagnostics = bead(source_root.path())
+        .args(["doctor", "--scope", "secrets", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(diagnostics.status.success());
+    let diagnostic_stdout = String::from_utf8_lossy(&diagnostics.stdout);
+    let diagnostic_stderr = String::from_utf8_lossy(&diagnostics.stderr);
+    assert!(!diagnostic_stdout.contains(&value));
+    assert!(!diagnostic_stderr.contains(&value));
+    let report: Value = serde_json::from_slice(&diagnostics.stdout).unwrap();
+    let findings = report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["name"] == "secret_scan")
+        .unwrap()["details"]["findings"]
+        .as_array()
+        .unwrap();
+    assert!(!findings.is_empty());
+    assert!(findings.iter().all(|finding| finding["selector"]
+        .as_str()
+        .is_some_and(|selector| selector.starts_with("checkpoint:previous:record:"))));
+}
+
+#[test]
+fn failed_reconcile_rolls_back_quarantine_and_local_state() {
+    let (source_root, _target_root, value) = retained_secret_reconcile_pair();
+    let source_checkpoint = source_root.path().join(".beads/checkpoint");
+    let published_before = checkpoint_state_snapshot(&source_checkpoint);
+    let source_db = source_root.path().join(".beads/beads.db");
+    let conn = open_configured_connection(&source_db).unwrap();
+    let state_before = recovery_state_snapshot(&conn);
+    fail_quarantine_insert(&conn);
+    drop(conn);
+
+    let output = bead(source_root.path())
+        .args(["sync", "reconcile", "--actor", "reconcile-operator"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stdout.contains(&value));
+    assert!(!stderr.contains(&value));
+
+    let conn = open_configured_connection(&source_db).unwrap();
+    assert!(
+        recovery_state_snapshot(&conn) == state_before,
+        "failed reconcile changed local semantic or quarantine state"
+    );
+    assert!(
+        checkpoint_state_snapshot(&source_checkpoint) == published_before,
+        "failed reconcile changed the published checkpoint set"
+    );
+    let quarantine_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM secret_quarantine", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(quarantine_count, 0);
 }
 
 #[cfg(feature = "managed-secret-policy")]
