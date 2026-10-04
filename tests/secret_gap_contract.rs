@@ -1189,15 +1189,18 @@ fn imported_secret_is_quarantined_across_restart_until_redaction() {
             "--restore-into-empty",
             "--actor",
             "tester",
+            "--format",
+            "json",
         ])
         .output()
         .unwrap();
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Local recovery succeeded: true"));
-    assert!(stderr.contains("Secret quarantined: true"));
-    assert!(stderr.contains("Checkpoint publication withheld: true"));
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["local_recovery_succeeded"], true);
+    assert_eq!(report["secret_quarantined"], true);
+    assert_eq!(report["checkpoint_publication_withheld"], true);
     assert!(stderr.contains("secret_quarantined"));
     assert!(!stdout.contains(&value));
     assert!(!stderr.contains(&value));

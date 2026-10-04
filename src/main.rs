@@ -2883,6 +2883,11 @@ fn cmd_sync_import_only(opts: cli::SyncImportOptions) -> Result<()> {
         opts.dry_run,
     )?;
 
+    if opts.format == "json" {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+        return Ok(());
+    }
+
     if let Some(report) = &result.loss_report {
         println!("{}", serde_json::to_string(report)?);
     }

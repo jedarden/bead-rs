@@ -1743,6 +1743,10 @@ pub struct SyncImportOptions {
     #[arg(long)]
     pub input: String,
 
+    /// Output format: text or json
+    #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+    pub format: String,
+
     /// Profile for import (default: native-v1)
     #[arg(long, default_value = "native-v1")]
     pub profile: String,
