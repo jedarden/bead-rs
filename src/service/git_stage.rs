@@ -66,7 +66,23 @@ use super::git;
 /// when there was nothing to do. `Err` carries a one-line reason suitable
 /// for a warning; the caller decides that a staging failure is not a
 /// publication failure.
+#[allow(dead_code)]
 pub fn stage_published_checkpoint(
+    workspace_root: &Path,
+    checkpoint_dir: &Path,
+    present: &[String],
+    deleted: &[String],
+) -> Result<Vec<String>, String> {
+    let lock = super::checkpoint::acquire_checkpoint_publication_lock(checkpoint_dir)
+        .map_err(|error| error.to_string())?;
+    stage_published_checkpoint_holding(&lock, workspace_root, checkpoint_dir, present, deleted)
+}
+
+/// Stage a published fileset while the caller holds the checkpoint
+/// publication lock. Automatic publication and explicit `sync commit` use
+/// this seam so quarantine cannot change between the verdict and `git add`.
+pub fn stage_published_checkpoint_holding(
+    _publication_lock: &super::checkpoint::CheckpointPublicationLock,
     workspace_root: &Path,
     checkpoint_dir: &Path,
     present: &[String],

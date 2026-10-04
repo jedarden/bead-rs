@@ -1,8 +1,9 @@
 //! Workspace-bound scanner gate shared by CLI and direct public services.
 use crate::error::{Error, Result};
 use crate::scan::{self, Field, ScanConfig};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::cell::Cell;
+use std::collections::BTreeSet;
 use std::path::Path;
 
 thread_local! { static DEPTH: Cell<usize> = const { Cell::new(0) }; }
@@ -213,14 +214,62 @@ pub fn ensure_not_quarantined(conn: &Connection) -> Result<()> {
         |row| row.get(0),
     )?;
     if exists {
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM secret_quarantine", [], |row| {
-            row.get(0)
-        })?;
-        if count != 0 {
-            return Err(Error::conflict("secret_quarantined: recovery contains blocking findings or incomplete retained-generation coverage; inspect 'bead doctor --scope secrets' and run 'bead redact --all-blocking' to redact live findings or republish a clean live store"));
+        let state: Option<(i64, i64, bool)> = conn
+            .query_row(
+                "SELECT ruleset_version, blocking_count, coverage_incomplete
+                 FROM secret_quarantine WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        if let Some((ruleset_version, blocking_count, coverage_incomplete)) = state {
+            let rules = recovery_rule_ids(conn);
+            let rule_summary = if rules.is_empty() {
+                "unavailable".to_string()
+            } else {
+                rules.join(",")
+            };
+            return Err(Error::conflict(format!(
+                "secret_quarantined: {blocking_count} blocking finding(s), rules: {rule_summary}, ruleset: {ruleset_version}, retained-generation coverage incomplete: {coverage_incomplete}; inspect 'bead doctor --scope secrets' and run 'bead redact --all-blocking' to redact live findings or republish a clean live store"
+            )));
         }
     }
     Ok(())
+}
+
+/// Return only scanner rule identities for an active quarantine. Findings are
+/// deliberately read through the redacted diagnostic model; matched content
+/// never enters this message or the durable quarantine row.
+fn recovery_rule_ids(conn: &Connection) -> Vec<String> {
+    let mut rules = BTreeSet::new();
+    if let Ok(report) = super::secret_diagnostics::scan_live_findings(conn) {
+        rules.extend(
+            report
+                .into_iter()
+                .filter(|finding| finding.is_blocking_match())
+                .map(|finding| finding.rule_id),
+        );
+    }
+    if let Some(path) = conn.path().filter(|path| !path.is_empty()) {
+        if let Some(parent) = Path::new(path)
+            .parent()
+            .filter(|parent| parent.file_name().is_some_and(|name| name == ".beads"))
+        {
+            let checkpoint = parent.join("checkpoint");
+            if checkpoint.exists() {
+                if let Ok(report) = super::secret_diagnostics::scan_recovery_artifact(&checkpoint) {
+                    rules.extend(
+                        report
+                            .findings
+                            .into_iter()
+                            .filter(|finding| finding.is_blocking_match())
+                            .map(|finding| finding.rule_id),
+                    );
+                }
+            }
+        }
+    }
+    rules.into_iter().collect()
 }
 
 /// Called inside recovery activation's transaction. Historical content stays
@@ -236,8 +285,7 @@ pub(crate) fn quarantine_recovery(conn: &Connection) -> Result<()> {
             .filter(|parent| parent.file_name().is_some_and(|name| name == ".beads"))
         {
             let checkpoint = parent.join("checkpoint");
-            if checkpoint.join("current.json").exists() || checkpoint.join("previous.json").exists()
-            {
+            if checkpoint.exists() {
                 match super::secret_diagnostics::scan_recovery_artifact(&checkpoint) {
                     Ok(report) => findings.extend(report.findings),
                     Err(_) => incomplete = true,

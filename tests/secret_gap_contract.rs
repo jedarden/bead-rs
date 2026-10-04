@@ -4,6 +4,7 @@ use bead_rs::scan::{self, Field, ScanConfig};
 use bead_rs::service::{issues, redaction, secret_diagnostics};
 use bead_rs::store::{open_configured_connection, SqliteStore, WorkspaceConfig};
 use serde_json::Value;
+use std::fs;
 use std::path::Path;
 
 fn bead(root: &Path) -> Command {
@@ -80,6 +81,20 @@ fn stored(conn: &rusqlite::Connection) -> String {
         |row| row.get(0),
     )
     .unwrap()
+}
+
+fn copy_tree(source: &Path, target: &Path) {
+    fs::create_dir_all(target).unwrap();
+    for entry in fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&source_path, &target_path);
+        } else {
+            fs::copy(source_path, target_path).unwrap();
+        }
+    }
 }
 
 #[test]
@@ -1098,6 +1113,16 @@ fn imported_secret_is_quarantined_across_restart_until_redaction() {
         .unwrap();
     assert_eq!(quarantine, 1);
     assert!(String::from_utf8_lossy(&output.stderr).contains("secret_quarantined"));
+    let status = bead(root.path())
+        .args(["sync", "status", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    let status_text = String::from_utf8_lossy(&status.stdout);
+    assert!(status_text.contains("aws-access-key-id"));
+    assert!(status_text.contains("blocking finding"));
+    assert!(status_text.contains("bead redact --all-blocking"));
+    assert!(!status_text.contains(&value));
     for args in [
         vec!["sync", "flush-only"],
         vec!["create", "--title", "clean"],
@@ -1124,6 +1149,129 @@ fn imported_secret_is_quarantined_across_restart_until_redaction() {
         .args(["sync", "flush-only"])
         .assert()
         .success();
+}
+
+#[test]
+fn reconcile_secret_recovery_succeeds_locally_without_republishing() {
+    let source_root = tempfile::tempdir().unwrap();
+    bead(source_root.path())
+        .args(["init", "--prefix", "gap"])
+        .assert()
+        .success();
+    bead(source_root.path())
+        .args(["create", "--title", "clean clone base"])
+        .assert()
+        .success();
+    bead(source_root.path())
+        .args(["sync", "flush-only"])
+        .assert()
+        .success();
+    let generation = serde_json::from_slice::<Value>(
+        &fs::read(source_root.path().join(".beads/checkpoint/current.json")).unwrap(),
+    )
+    .unwrap()["generation_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Build a clean clone from the source's committed identity and checkpoint,
+    // then activate it locally before the source advances. This mirrors the
+    // transport shape without putting a candidate value in a fixture file.
+    let target_root = tempfile::tempdir().unwrap();
+    fs::create_dir_all(target_root.path().join(".beads")).unwrap();
+    fs::copy(
+        source_root.path().join(".beads/config.json"),
+        target_root.path().join(".beads/config.json"),
+    )
+    .unwrap();
+    copy_tree(
+        &source_root.path().join(".beads/checkpoint"),
+        &target_root.path().join(".beads/checkpoint"),
+    );
+    bead(target_root.path()).args(["init"]).assert().success();
+    bead(target_root.path())
+        .args([
+            "restore",
+            "--source",
+            ".beads/checkpoint",
+            "--generation",
+            &generation,
+            "--actor",
+            "clone-operator",
+        ])
+        .assert()
+        .success();
+    // The clone advances through a direct fixture write so the clone itself
+    // is not quarantined. Its explicit flush creates the remote-advanced
+    // checkpoint that the original workspace must admit locally without
+    // republishing.
+    let value = provider();
+    let mut target_store = SqliteStore::from_conn(
+        open_configured_connection(&target_root.path().join(".beads/beads.db")).unwrap(),
+    );
+    insert(target_store.conn(), &value);
+    target_store
+        .conn()
+        .execute(
+            "INSERT INTO events (issue_id, kind, actor, time, detail)
+             VALUES ('gap-1', 'fixture_advance', 'fixture',
+                     '2026-10-03T00:01:00Z', '{}')",
+            [],
+        )
+        .unwrap();
+    bead(target_root.path())
+        .args(["sync", "flush-only"])
+        .assert()
+        .success();
+
+    let source_checkpoint = source_root.path().join(".beads/checkpoint");
+    fs::remove_dir_all(&source_checkpoint).unwrap();
+    copy_tree(
+        &target_root.path().join(".beads/checkpoint"),
+        &source_checkpoint,
+    );
+    let pointer_before = fs::read(source_checkpoint.join("current.json")).unwrap();
+
+    let output = bead(source_root.path())
+        .args(["sync", "reconcile", "--actor", "reconcile-operator"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.contains("Secret quarantined: true"));
+    assert!(stdout.contains("Checkpoint publication withheld: true"));
+    assert!(stderr.contains("secret_quarantined"));
+    assert!(!stdout.contains(&value));
+    assert!(!stderr.contains(&value));
+    assert_eq!(
+        fs::read(source_checkpoint.join("current.json")).unwrap(),
+        pointer_before
+    );
+
+    let conn = open_configured_connection(&source_root.path().join(".beads/beads.db")).unwrap();
+    let quarantine: i64 = conn
+        .query_row("SELECT COUNT(*) FROM secret_quarantine", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(quarantine, 1);
+    assert_eq!(stored(&conn), value);
+
+    for args in [
+        vec!["sync", "flush-only"],
+        vec!["sync", "commit", "--dry-run"],
+    ] {
+        let blocked = bead(source_root.path()).args(args).output().unwrap();
+        assert!(!blocked.status.success());
+        let message = String::from_utf8_lossy(&blocked.stderr);
+        assert!(message.contains("secret_quarantined"));
+        assert!(!message.contains(&value));
+    }
 }
 
 #[cfg(feature = "managed-secret-policy")]

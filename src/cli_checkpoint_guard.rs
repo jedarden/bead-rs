@@ -143,6 +143,8 @@ pub(crate) fn acquire(command: &Command) -> Result<Option<OperationGuard>> {
 pub(crate) fn is_recovery(command: &Command) -> bool {
     matches!(
         command,
-        Command::Restore(_) | Command::Redact(_) | Command::Sync(SyncCommand::ImportOnly(_))
+        Command::Restore(_)
+            | Command::Redact(_)
+            | Command::Sync(SyncCommand::ImportOnly(_) | SyncCommand::Reconcile(_))
     )
 }

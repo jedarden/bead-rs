@@ -139,6 +139,12 @@ fn commit_with(
         ));
     };
 
+    // Keep the publication lock through the readiness check, staging, and
+    // commit. Recovery and automatic publication cannot change the quarantine
+    // verdict or replace the verified fileset between those operations.
+    let publication_lock = checkpoint::acquire_checkpoint_publication_lock(&checkpoint_dir)?;
+    super::secret_maintenance::ensure_publication_allowed(store.conn())?;
+
     // The checkpoint gates. These key on the same report `sync status`
     // prints, so the command and the report cannot disagree about
     // readiness; see [`refuse_gates`] for the per-gate remedies.
@@ -211,15 +217,20 @@ fn commit_with(
     // this command exists to prevent.
     let present: Vec<String> = verified.present.iter().cloned().collect();
     let deleted: Vec<String> = verified.deleted.iter().cloned().collect();
-    let staged_pathspecs =
-        git_stage::stage_published_checkpoint(workspace_root, &checkpoint_dir, &present, &deleted)
-            .map_err(|reason| {
-                Error::integrity(format!(
-                    "sync commit refused: staging the verified checkpoint fileset failed: {} - \
+    let staged_pathspecs = git_stage::stage_published_checkpoint_holding(
+        &publication_lock,
+        workspace_root,
+        &checkpoint_dir,
+        &present,
+        &deleted,
+    )
+    .map_err(|reason| {
+        Error::integrity(format!(
+            "sync commit refused: staging the verified checkpoint fileset failed: {} - \
              nothing was committed; resolve the staging failure and re-run",
-                    reason
-                ))
-            })?;
+            reason
+        ))
+    })?;
 
     // Idempotent short-circuit: after staging, index == worktree for every
     // verified path, so an empty index-vs-HEAD delta over exactly the

@@ -8047,7 +8047,8 @@ fn publish_forensic_checkpoint_inner(
         stage_candidates.sort();
         stage_candidates.dedup();
         let workspace_root = checkpoint_base.parent().unwrap_or(checkpoint_base);
-        if let Err(reason) = git_stage::stage_published_checkpoint(
+        if let Err(reason) = git_stage::stage_published_checkpoint_holding(
+            _publication_lock,
             workspace_root,
             &checkpoint_dir,
             &stage_candidates,

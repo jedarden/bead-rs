@@ -826,6 +826,11 @@ fn cmd_restore(opts: cli::RestoreOptions) -> Result<()> {
             report.summary_event_sequence
         );
         eprintln!("  Non-empty target override: {}", report.non_empty_override);
+        eprintln!("  Secret quarantined: {}", report.secret_quarantined);
+        eprintln!(
+            "  Checkpoint publication withheld: {}",
+            report.checkpoint_publication_withheld
+        );
         if report.non_empty_override {
             eprintln!(
                 "  Displaced native state: {} issues, {} events, {} provenance receipts, {} attempt outcomes, {} redaction records, {} saved views, {} recurrence templates",
@@ -2594,6 +2599,11 @@ fn cmd_sync_reconcile(opts: cli::SyncReconcileOptions) -> Result<()> {
     println!("  Receipts: {} processed", result.receipts_processed);
     println!("  Dry run: {}", result.dry_run);
     println!("  Prospective: {}", result.prospective);
+    println!("  Secret quarantined: {}", result.secret_quarantined);
+    println!(
+        "  Checkpoint publication withheld: {}",
+        result.checkpoint_publication_withheld
+    );
 
     if let Some(preview) = result.receipt_preview {
         println!("  Receipt preview:");
@@ -2896,6 +2906,11 @@ fn cmd_sync_import_only(opts: cli::SyncImportOptions) -> Result<()> {
     eprintln!("  Receipts: {} processed", result.receipts_processed);
     eprintln!("  Dry run: {}", result.dry_run);
     eprintln!("  Prospective: {}", result.prospective);
+    eprintln!("  Secret quarantined: {}", result.secret_quarantined);
+    eprintln!(
+        "  Checkpoint publication withheld: {}",
+        result.checkpoint_publication_withheld
+    );
 
     // Print receipt information
     if let Some(receipt_preview) = result.receipt_preview {
