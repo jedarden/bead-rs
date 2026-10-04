@@ -486,7 +486,7 @@ fn structural_credentials_block_but_references_and_hashes_are_not_noisy() {
         "curl -u worker:password".to_string(),
         "curl -uworker:${CREDENTIAL}".to_string(),
         format!("forbearer {value}"),
-        format!("kind: Secret\nstringData: |\n  password: ${{PASSWORD}}\n"),
+        "kind: Secret\nstringData: |\n  password: ${PASSWORD}\n".to_string(),
     ] {
         let report = scan::scan(
             &ScanConfig::enforce(),
