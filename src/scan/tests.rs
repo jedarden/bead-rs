@@ -247,7 +247,15 @@ fn exact_fingerprint_acknowledgment_admits_only_that_finding() {
     );
     let fingerprint = first.blocking[0].fingerprint.clone();
     let acknowledged = serde_json::json!([fingerprint]);
-    let config = ScanConfig::from_config_values(None, Some(&acknowledged)).unwrap();
+    let config = ScanConfig::from_config_values(None, Some(&acknowledged));
+    if cfg!(feature = "managed-secret-policy") {
+        assert!(matches!(
+            config,
+            Err(ScanConfigError::ManagedPolicyConflict)
+        ));
+        return;
+    }
+    let config = config.unwrap();
     let admitted = scan(&config, "issue:new", &[Field::new("description", &value)]);
 
     assert!(admitted.is_admitted());
@@ -303,7 +311,15 @@ fn workspace_configuration_defaults_to_enforce_and_loads_exact_acknowledgments()
         .unwrap(),
     )
     .unwrap();
-    let configured = ScanConfig::load_from_workspace_root(workspace.path()).unwrap();
+    let configured = ScanConfig::load_from_workspace_root(workspace.path());
+    if cfg!(feature = "managed-secret-policy") {
+        assert!(matches!(
+            configured,
+            Err(ScanConfigError::ManagedPolicyConflict)
+        ));
+        return;
+    }
+    let configured = configured.unwrap();
     assert_eq!(configured.mode(), Mode::Advisory);
     assert_eq!(
         configured.acknowledged().collect::<Vec<_>>(),
@@ -365,10 +381,14 @@ fn invocation_acknowledgment_validation_never_echoes_input() {
     let error = config
         .add_invocation_acknowledgments([invalid])
         .unwrap_err();
-    assert!(matches!(
-        error,
-        ScanConfigError::InvalidInvocationAcknowledgment { index: 0 }
-    ));
+    if cfg!(feature = "managed-secret-policy") {
+        assert!(matches!(error, ScanConfigError::ManagedPolicyConflict));
+    } else {
+        assert!(matches!(
+            error,
+            ScanConfigError::InvalidInvocationAcknowledgment { index: 0 }
+        ));
+    }
     assert!(!error.to_string().contains(invalid));
 }
 
@@ -463,6 +483,7 @@ fn secret_buffer_rendering_is_redacted() {
     assert!(!rendered.contains(&value));
 }
 
+#[cfg(not(feature = "managed-secret-policy"))]
 fn exact_acknowledged_report() -> (String, ScanReport) {
     let value = aws_shaped_value();
     let first = scan(
@@ -476,6 +497,7 @@ fn exact_acknowledged_report() -> (String, ScanReport) {
     (value, report)
 }
 
+#[cfg(not(feature = "managed-secret-policy"))]
 fn audit_test_connection() -> rusqlite::Connection {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch(
@@ -493,6 +515,7 @@ fn audit_test_connection() -> rusqlite::Connection {
 }
 
 #[test]
+#[cfg(not(feature = "managed-secret-policy"))]
 fn exact_acknowledgment_audit_commits_once_with_the_mutation() {
     let (value, report) = exact_acknowledged_report();
     let _guard = arm_acknowledgment_audit(&report, "test-actor");
@@ -534,6 +557,7 @@ fn exact_acknowledgment_audit_commits_once_with_the_mutation() {
 }
 
 #[test]
+#[cfg(not(feature = "managed-secret-policy"))]
 fn exact_acknowledgment_audit_rolls_back_with_the_mutation() {
     let (_, report) = exact_acknowledged_report();
     let _guard = arm_acknowledgment_audit(&report, "test-actor");

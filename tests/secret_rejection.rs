@@ -20,6 +20,7 @@ fn workspace() -> tempfile::TempDir {
     workspace
 }
 
+#[cfg(not(feature = "managed-secret-policy"))]
 fn provider_shaped_value() -> String {
     let mut value = ["AK", "IA"].concat();
     value.push_str("7M4Q9Z2N8C5R3T6V");
@@ -65,6 +66,7 @@ fn counts(root: &Path) -> (i64, i64) {
     (issues, events)
 }
 
+#[cfg(not(feature = "managed-secret-policy"))]
 fn fingerprint(stderr: &str) -> String {
     stderr
         .split_whitespace()
@@ -80,6 +82,7 @@ fn fingerprint(stderr: &str) -> String {
 }
 
 #[test]
+#[cfg(not(feature = "managed-secret-policy"))]
 fn blocking_finding_is_atomic_redacted_and_exactly_acknowledgeable() {
     let workspace = workspace();
     let value = provider_shaped_value();
@@ -273,6 +276,7 @@ fn malformed_policy_fails_closed_without_echoing_its_value() {
 }
 
 #[test]
+#[cfg(not(feature = "managed-secret-policy"))]
 fn advisory_and_off_workspace_modes_do_not_reject() {
     for mode in ["advisory", "off"] {
         let workspace = workspace();
@@ -328,6 +332,7 @@ fn successful_dry_run_reports_redacted_nonblocking_findings() {
 }
 
 #[test]
+#[cfg(not(feature = "managed-secret-policy"))]
 fn manifest_is_scanned_as_one_request_before_its_transaction() {
     let workspace = workspace();
     let value = provider_shaped_value();
@@ -393,6 +398,7 @@ fn manifest_is_scanned_as_one_request_before_its_transaction() {
 }
 
 #[test]
+#[cfg(not(feature = "managed-secret-policy"))]
 fn doctor_reports_live_and_both_retained_generations_without_matched_bytes() {
     let workspace = tempfile::Builder::new()
         .prefix("bead-secret-doctor-")
@@ -472,6 +478,7 @@ fn doctor_reports_live_and_both_retained_generations_without_matched_bytes() {
 }
 
 #[test]
+#[cfg(not(feature = "managed-secret-policy"))]
 fn recovery_reports_legacy_findings_without_refusing_import() {
     let source = workspace();
     let config_path = source.path().join(".beads/config.json");

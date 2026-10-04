@@ -749,10 +749,11 @@ pub fn run_diagnostics_with_scopes(
                     name: "secret_scan".to_string(),
                     status: DiagnosticStatus::Ok,
                     message: format!(
-                        "No secret findings across {} live fields and {} retained checkpoint generation(s); effective mode {}",
+                        "No secret findings across {} live fields and {} retained checkpoint generation(s); effective mode {}, compiled policy {}",
                         report.live_fields_scanned,
                         report.checkpoint_generations_scanned.len(),
-                        report.effective_mode
+                        report.effective_mode,
+                        report.compiled_policy
                     ),
                     scope: Some("secrets".to_string()),
                     details: Some(serde_json::to_value(report)?),
@@ -764,8 +765,11 @@ pub fn run_diagnostics_with_scopes(
                     name: "secret_scan".to_string(),
                     status: DiagnosticStatus::Warning,
                     message: format!(
-                        "Secret scan found {} blocking and {} advisory finding(s) across live state and retained checkpoints; matched bytes are never shown",
-                        report.blocking_findings, report.advisory_findings
+                        "Secret scan found {} blocking and {} advisory finding(s) across live state and retained checkpoints; effective mode {}, compiled policy {}; matched bytes are never shown",
+                        report.blocking_findings,
+                        report.advisory_findings,
+                        report.effective_mode,
+                        report.compiled_policy
                     ),
                     scope: Some("secrets".to_string()),
                     details: Some(serde_json::to_value(report)?),

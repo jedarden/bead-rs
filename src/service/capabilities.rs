@@ -190,6 +190,16 @@ pub fn generate_capabilities_with_secret_mode(
     profile: &str,
     secret_mode: Mode,
 ) -> Result<Capabilities> {
+    // This function is also a public library boundary. Do not let an
+    // embedding caller manufacture a capability document that contradicts
+    // the compiled managed policy, even when it bypasses the CLI's workspace
+    // discovery path. A managed artifact has one effective mode: enforce.
+    if cfg!(feature = "managed-secret-policy") && secret_mode != Mode::Enforce {
+        return Err(crate::Error::validation(
+            "managed_secret_policy: capabilities require enforce mode; workspace policy cannot weaken this artifact",
+        ));
+    }
+
     // Validate profile
     if profile != "native-v1" && profile != "needle-v1" {
         return Err(crate::Error::validation(format!(

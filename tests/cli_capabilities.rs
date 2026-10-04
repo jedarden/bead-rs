@@ -1,6 +1,7 @@
 //! Integration tests for `bead capabilities` command
 
 use assert_cmd::Command;
+use bead_rs::scan::Mode;
 use bead_rs::service::AUTO_FLUSH_COMPILED_DEFAULT;
 use serde_json::Value;
 use serial_test::serial;
@@ -41,6 +42,20 @@ fn secret_scan_capability_uses_compiled_default_without_workspace() {
         capabilities["secret_scan"]["exact_fingerprint_acknowledgment"],
         !cfg!(feature = "managed-secret-policy")
     );
+}
+
+#[test]
+fn capability_library_boundary_cannot_forge_a_managed_downgrade() {
+    let result = bead_rs::service::capabilities::generate_capabilities_with_secret_mode(
+        "native-v1",
+        Mode::Off,
+    );
+    if cfg!(feature = "managed-secret-policy") {
+        let error = result.expect_err("managed capabilities must reject a forged downgrade");
+        assert!(error.to_string().contains("managed_secret_policy"));
+    } else {
+        assert_eq!(result.unwrap().secret_scan.unwrap().effective_mode, "off");
+    }
 }
 
 #[test]
