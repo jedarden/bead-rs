@@ -1,0 +1,139 @@
+{
+  "fixture_format": 1,
+  "profile": "native-v1",
+  "input": {
+    "mode": "monolithic",
+    "pointer": "current.json",
+    "root": "objects/unknown-fields.jsonl"
+  },
+  "allowed_native_rewrites": [
+    "generation_id",
+    "active_root.sha256",
+    "snapshot_sequence",
+    "created_at",
+    "added_paths",
+    "replaced_paths",
+    "deleted_paths",
+    "restore-generated receipt_id",
+    "restore-generated receipt timestamps",
+    "restore-generated event identities"
+  ],
+  "sentinels": [
+    {
+      "level": "issue",
+      "field": "future_issue_fixture_sentinel",
+      "value": {
+        "level": "issue",
+        "nested": [
+          "preserve",
+          1,
+          true
+        ]
+      },
+      "selector": {
+        "record_type": "issue",
+        "id": "bead-ufv1-a"
+      }
+    },
+    {
+      "level": "event",
+      "field": "future_event_fixture_sentinel",
+      "value": {
+        "level": "event",
+        "nested": {
+          "opaque": true,
+          "sequence": [
+            1,
+            2
+          ]
+        }
+      },
+      "selector": {
+        "record_type": "event",
+        "origin_store_uuid": "11111111-1111-4111-8111-111111111111",
+        "origin_event_sequence": 1
+      }
+    },
+    {
+      "level": "dependency",
+      "field": "future_dependency_fixture_sentinel",
+      "value": {
+        "level": "dependency",
+        "weight": 7
+      },
+      "selector": {
+        "record_type": "issue",
+        "id": "bead-ufv1-a",
+        "dependency_blocker": "bead-ufv1-b"
+      }
+    },
+    {
+      "level": "external reference",
+      "field": "future_reference_fixture_sentinel",
+      "value": {
+        "level": "external-reference",
+        "source": "fixture"
+      },
+      "selector": {
+        "record_type": "issue",
+        "id": "bead-ufv1-a",
+        "reference_key": "source-id"
+      }
+    },
+    {
+      "level": "structured data",
+      "field": "future_data_fixture_sentinel",
+      "value": {
+        "level": "structured-data",
+        "opaque": [
+          null,
+          "value"
+        ]
+      },
+      "selector": {
+        "record_type": "issue",
+        "id": "bead-ufv1-a",
+        "data_namespace": "fixture-data"
+      }
+    },
+    {
+      "level": "resource key",
+      "field": "future_resource_key_fixture_sentinel",
+      "value": {
+        "level": "resource-key",
+        "capacity": 2
+      },
+      "selector": {
+        "record_type": "issue",
+        "id": "bead-ufv1-a",
+        "resource_key": "gpu:fixture"
+      }
+    },
+    {
+      "level": "receipt",
+      "field": "future_receipt_fixture_sentinel",
+      "value": {
+        "level": "receipt",
+        "attested": true
+      },
+      "selector": {
+        "record_type": "provenance_receipt",
+        "receipt_id": "receipt-unknown-fields-v1"
+      }
+    },
+    {
+      "level": "pointer",
+      "field": "future_pointer_fixture_sentinel",
+      "value": {
+        "level": "pointer",
+        "parents": [
+          "gen-fixture-root"
+        ]
+      },
+      "selector": {
+        "record_type": "pointer",
+        "path": "/future_pointer_fixture_sentinel"
+      }
+    }
+  ]
+}

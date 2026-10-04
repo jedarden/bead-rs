@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "generation_id": "gen-unknown-fields-v1",
+  "mode": "monolithic",
+  "store_uuid": "11111111-1111-4111-8111-111111111111",
+  "snapshot_sequence": 1,
+  "active_root": {
+    "path": "objects/unknown-fields.jsonl",
+    "sha256": "93eddb4fa358e513107e15d9a747268ee38e8bb80e0fab39765ed2d7914daa1b"
+  },
+  "added_paths": [
+    "objects/unknown-fields.jsonl"
+  ],
+  "replaced_paths": [],
+  "deleted_paths": [],
+  "issue_count": 2,
+  "event_count": 1,
+  "receipt_count": 1,
+  "attempt_outcome_count": 0,
+  "redaction_record_count": 0,
+  "total_record_count": 4,
+  "created_at": "2026-01-01T00:00:00Z",
+  "future_pointer_fixture_sentinel": {
+    "level": "pointer",
+    "parents": [
+      "gen-fixture-root"
+    ]
+  }
+}
