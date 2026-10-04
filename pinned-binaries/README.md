@@ -4,7 +4,7 @@ This directory contains pinned binaries of bead-rs for compatibility testing and
 
 ## Pin inventory (this directory is the pin location)
 
-`pinned-binaries/` at the repo root (`/home/coding/bead-rs/pinned-binaries/`) is the pin location of record. Exactly four binaries are pinned here, each with a `*.metadata.json` recording its hash, size, and provenance:
+`pinned-binaries/` at the repo root (`/home/coding/bead-rs/pinned-binaries/`) is the pin location of record. Exactly five binaries are pinned here, each with a `*.metadata.json` recording its hash, size, and provenance:
 
 | Pin | Source commit | Metadata file |
 |-----|---------------|---------------|
@@ -12,12 +12,25 @@ This directory contains pinned binaries of bead-rs for compatibility testing and
 | `bead-pre-attempt-resolution` | `946a727` | `bead-pre-attempt-resolution.metadata.json` |
 | `bead-attempt-resolution-e115609` | `e115609` | `bead-attempt-resolution-e115609.metadata.json` |
 | `bead-attempt-resolution-f25ab5c` | `f25ab5c` (HEAD pin) | `bead-attempt-resolution-f25ab5c.metadata.json` |
+| `bead-managed-secret-policy-cd4986c` | `cd4986c` (managed fleet pin) | `bead-managed-secret-policy-cd4986c.metadata.json` |
 
 **Naming scheme:** `<name>-<shaslice>`, where `<shaslice>` is the first 7 hex characters of the source commit (`bead-attempt-resolution-f25ab5c` → `f25ab5c`). The two baseline pins predate this convention and keep role-only names; their source commit is recorded in their metadata files and in `COMMITS.md`.
 
-**Rebuilding from this table:** the `Source commit` column is built-from provenance, not a rebuild input — all four of those commits are lost-lineage objects (force-pushed away 2026-09-02) and do not resolve here (verified 2026-09-03). To rebuild a pin, use the restored-lineage twin recorded as `restored_lineage_twin_sha` in the pin's `*.metadata.json` (also listed as the rebuild target in `COMMITS.md`) through the sanctioned archive path: `scripts/build-from-archive.sh <twin-sha>` (see `../BUILD_PROCEDURE.md`, "Build Rule").
+**Rebuilding from this table:** the `Source commit` column is built-from provenance. The four historical commits are lost-lineage objects and do not resolve here; the managed pin's `cd4986c` source commit is currently reachable. Rebuild any reachable pin through the sanctioned archive path: `scripts/build-from-archive.sh <sha> --features managed-secret-policy` for the managed role, or `scripts/build-from-archive.sh <sha>` for a default pin (see `../BUILD_PROCEDURE.md`, "Build Rule").
 
 **Everything else in this directory is documentation or metadata, not a pin:** `README.md`, `COMMITS.md`, `BINARY_VERIFICATION.md`, `commits.json` (machine-readable commit/binary registry), and `bead-metadata.json` / `bead-release-metadata.json` (provenance records for the working debug and release builds in `/home/coding/target/`, not pins). This table is maintained against `ls pinned-binaries/` — a binary not in the table is not a pin, and a pin missing from the table means this section is stale.
+
+## bead-managed-secret-policy-cd4986c
+
+**Purpose:** Fleet artifact of record for BR-T32. The compiled `managed-secret-policy` feature requires `enforce` mode, refuses workspace and invocation fingerprint acknowledgments, and advertises `managed-enforce-no-ack` in both capabilities and secret doctor diagnostics.
+
+**Build source:** `cd4986c89110469ff88e50494122bc72020457e7` (`wip(beadrs-db0131b7): review ruleset v4 raw range redaction`)
+
+**Build command:** `scripts/build-from-archive.sh cd4986c --features managed-secret-policy --name bead-managed-secret-policy-cd4986c`
+
+**SHA256:** `6a5969ed9c1c5215d3f0f93505aa0603d7375281f6fb3f64ea6101ece149a50f`
+
+Fleet consumers must verify the binary hash against `bead-managed-secret-policy-cd4986c.metadata.json` and require the advertised policy identity before treating the artifact as managed. A workspace configuration cannot downgrade this artifact; malformed or conflicting policy fails closed.
 
 ## bead-pre-feature
 

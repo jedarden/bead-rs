@@ -63,10 +63,23 @@
     "original_lineage_note": "Rebuilt-from-provenance: the binary was built from original_lineage_sha on the force-pushed-away lineage, whose objects no longer exist in any clone (verified 2026-09-03). full_sha is its restored-lineage content twin (same subject, author date, tree content) and is the rebuild target via scripts/build-from-archive.sh. Re-pinned by beadrs-e030cc56, 2026-09-03.",
     "sha256_verifiability": "hash-only: build.rs embeds a wall-clock timestamp, so no fresh build reproduces the recorded hash; verify by byte comparison with the committed pin"
   },
+  "managed_secret_policy": {
+    "full_sha": "cd4986c89110469ff88e50494122bc72020457e7",
+    "short_sha": "cd4986c",
+    "message": "wip(beadrs-db0131b7): review ruleset v4 raw range redaction",
+    "date": "2026-10-04",
+    "description": "Strict managed-fleet artifact: compiled managed-secret-policy requires enforce mode and refuses fingerprint acknowledgments",
+    "build_features": "--features managed-secret-policy",
+    "binary_name": "bead-managed-secret-policy-cd4986c",
+    "purpose": "Pinned artifact of record for fleet workers; consumers must verify the capability handshake before use",
+    "policy_identity": "managed-enforce-no-ack",
+    "required_capability": "secret_scan.compiled_policy=managed-enforce-no-ack",
+    "sha256_verifiability": "hash-only: build.rs embeds a wall-clock timestamp; verify the committed bytes against the metadata hash"
+  },
   "metadata": {
-    "document_version": "1.2",
-    "last_updated": "2026-09-03",
+    "document_version": "1.3",
+    "last_updated": "2026-10-04",
     "repository": "/home/coding/bead-rs",
-    "notes": "Corrected 2026-09-02 by beadrs-b6441e82: removed the phantom 'bead-feature-enabled' binary reference (never committed), added the pre-feature and feature-enabled pins actually present in pinned-binaries/. Re-pinned 2026-09-03 by beadrs-e030cc56: every full_sha is now a resolvable restored-lineage twin of the commit the binary was built from (original_lineage_sha, kept as provenance; lost with the 2026-09-02 force-push). Recorded binary sha256 values are hash-only, not rebuild-verifiable, until SOURCE_DATE_EPOCH determinism lands."
+    "notes": "Corrected 2026-09-02 by beadrs-b6441e82: removed the phantom 'bead-feature-enabled' binary reference (never committed), added the pre-feature and feature-enabled pins actually present in pinned-binaries/. Re-pinned 2026-09-03 by beadrs-e030cc56: every full_sha is now a resolvable restored-lineage twin of the commit the binary was built from (original_lineage_sha, kept as provenance; lost with the 2026-09-02 force-push). Recorded binary sha256 values are hash-only, not rebuild-verifiable, until SOURCE_DATE_EPOCH determinism lands. Added the managed_secret_policy pin on 2026-10-04; its capability handshake is the fleet acceptance boundary."
   }
 }

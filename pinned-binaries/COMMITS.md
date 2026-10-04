@@ -4,6 +4,18 @@ This file documents the exact git commits for pinned bead-rs binaries used in co
 
 The pinned binaries themselves live in `pinned-binaries/` at the repo root — that directory is the pin location of record (`/home/coding/bead-rs/pinned-binaries/`); see its `README.md`, "Pin inventory", for the authoritative pin table.
 
+## Managed fleet policy pin (BR-T32)
+
+The fleet artifact of record is `bead-managed-secret-policy-cd4986c`, built
+from committed source `cd4986c89110469ff88e50494122bc72020457e7` with
+`--features managed-secret-policy` using the archive-only build procedure.
+Its SHA-256 is
+`6a5969ed9c1c5215d3f0f93505aa0603d7375281f6fb3f64ea6101ece149a50f`.
+Before installation a consumer must verify that hash and require
+`secret_scan.compiled_policy == "managed-enforce-no-ack"` plus
+`exact_fingerprint_acknowledgment == false`; the workspace cannot weaken
+those compiled constraints.
+
 ## SHA lineage and provenance (read this first)
 
 On 2026-09-02 the repository's `main` history was force-pushed and later

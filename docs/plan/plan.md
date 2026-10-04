@@ -566,7 +566,9 @@ replay, mapped encodings and complete PEM spans, recovery quarantine/restart,
 identity rekeying/collision, incomplete doctor coverage, pending publication, local byte
 absence and busy-reader resume. The managed profile is compiled with
 `managed-secret-policy`; it refuses workspace `off`/`advisory` and all
-fingerprint acknowledgments. No installed or pinned fleet binary was changed.
+fingerprint acknowledgments. The committed fleet pin is
+`pinned-binaries/bead-managed-secret-policy-cd4986c`; external installation
+and NEEDLE configuration remain deployment work outside this repository.
 
 Validation uses `TMPDIR=/var/tmp` to keep independently initialized test
 workspaces outside the host's Git/workspace ancestry. The shared checkout
@@ -606,9 +608,9 @@ quarantine. The source is verified; whole-checkout acceptance remains held
 by the existing archive-build blocker and unrelated formatting failures.
 Neither implementation owner is closed on incomplete whole-checkout gates.
 
-Remaining independent acceptance includes BR-T30/BR-T35 review, scanner parity
-and performance evidence, BR-T44 exact-artifact fleet replay, BR-T32 fleet pin,
-and the operator-admitted rotation/remediation in BR-T45. Secret detection is
+Remaining independent acceptance includes BR-T35 review, scanner parity and
+performance evidence, BR-T44 exact-artifact fleet replay, BR-T32 external
+installation, and the operator-admitted rotation/remediation in BR-T45. Secret detection is
 bounded and cannot prove that all possible credentials are absent. Rotation
 of exposed credentials remains necessary even after local erasure succeeds.
 
@@ -656,7 +658,7 @@ infrastructure workflow and remains outside this repository implementation.
 | BR-T29 | ADR-020 through ADR-022, plan, proposed contract and fixtures | Specify the public service gate, managed policy, and recovery quarantine without claiming approval | Link and scope audit; no secret-shaped values committed | proposed documents committed in `bc5da50`; independent review pending; `beadrs-b49b7f22` |
 | BR-T30 | independent exact-hash contract review | Accept or reject `secret-write-boundary-v1` and resolve the false-positive recovery path before release | Reviewer identity, exact spec/fixture hashes, compatibility and threat-model disposition | independent exact-hash acceptance pending; not self-approved; `beadrs-b1bb3723` |
 | BR-T31 | public service mutation API | Enforce canonical scan before every public write and generated text commit | Direct library plus CLI atomicity, redaction, audit, recurrence and manifest tests; full Rust gates | repository implementation under owner admission; acceptance pending; `beadrs-235ead28` |
-| BR-T32 | managed artifact, capabilities and policy | Reject workspace downgrade and worker acknowledgment in the managed fleet build | Both build profiles, downgrade/tamper, capability, installed-binary and fleet pin evidence | managed build implemented; installation and fleet pin pending; `beadrs-d527e9dc` |
+| BR-T32 | managed artifact, capabilities and policy | Reject workspace downgrade and worker acknowledgment in the managed fleet build | Both build profiles, downgrade/tamper, capability, installed-binary and fleet pin evidence | managed build and committed fleet pin implemented; external installation pending; `beadrs-d527e9dc` |
 | BR-T33 | restore/import/reconcile, publication and commit | Quarantine newly detected blocking findings before Git-trackable publication | Clean and finding-bearing recovery, restart, concurrency, redaction clearance, flush/commit refusal | durable quarantine implemented; independent acceptance pending; `beadrs-297416cc` |
 | BR-T34 | ADR-023 through ADR-025, plan, proposed `secret-ruleset-v4` contract | Specify ruleset 4 detection, normalized matching, advisory selection and diagnostic coverage without claiming approval | Link and scope audit; no format-valid sample and no finding location committed; Git-layer scanner clean on added lines | proposed documents committed; independent review pending; `beadrs-4dc46d5f`, umbrella `beadrs-8088ab92` |
 | BR-T35 | independent exact-hash contract review | Accept or reject `secret-ruleset-v4`, including the qualifier, excluded identifiers, decoded-view bounds and the write-time notice | Reviewer identity, exact spec hash, compatibility and threat-model disposition | independent exact-hash acceptance pending; not self-approved; `beadrs-1c110609` |
