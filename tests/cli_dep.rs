@@ -13,7 +13,7 @@ fn test_dep_add_basic() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -60,7 +60,7 @@ fn test_dep_add_with_kind() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -106,7 +106,7 @@ fn test_dep_add_invalid_kind_returns_exit_code_4() {
 
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -134,7 +134,7 @@ fn test_dep_add_idempotent() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -186,7 +186,7 @@ fn test_dep_add_self_edge() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -221,7 +221,7 @@ fn test_dep_add_creates_cycle() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -293,7 +293,7 @@ fn test_relates_to_allows_cycles() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -345,7 +345,7 @@ fn test_dep_add_nonexistent_blocked() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -380,7 +380,7 @@ fn test_dep_add_nonexistent_blocker() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -415,7 +415,7 @@ fn test_dep_remove_basic() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -469,7 +469,7 @@ fn test_dep_remove_with_kind() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -528,7 +528,7 @@ fn test_dep_remove_without_kind() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -587,7 +587,7 @@ fn test_dep_mutations_advance_change_feed() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -702,7 +702,7 @@ fn test_dep_remove_idempotent() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 

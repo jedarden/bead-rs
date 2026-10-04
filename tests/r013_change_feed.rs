@@ -15,7 +15,7 @@ fn setup_workspace() -> TempDir {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .arg("init")
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(workspace)
         .assert()
         .success();

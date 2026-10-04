@@ -6,7 +6,7 @@ fn setup_test_workspace() -> tempfile::TempDir {
     let temp_dir = tempfile::tempdir().unwrap();
 
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_bead"));
-    cmd.arg("init")
+    cmd.args(["init", "--skip-foreign-workspace"])
         .current_dir(temp_dir.path())
         .env("RUST_BACKTRACE", "1")
         .output()

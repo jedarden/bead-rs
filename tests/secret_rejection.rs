@@ -14,7 +14,7 @@ fn workspace() -> tempfile::TempDir {
     Command::cargo_bin("bead")
         .unwrap()
         .current_dir(workspace.path())
-        .args(["init", "--no-auto-flush"])
+        .args(["init", "--skip-foreign-workspace", "--no-auto-flush"])
         .assert()
         .success();
     workspace
@@ -401,7 +401,7 @@ fn doctor_reports_live_and_both_retained_generations_without_matched_bytes() {
     Command::cargo_bin("bead")
         .unwrap()
         .current_dir(workspace.path())
-        .arg("init")
+        .args(["init", "--skip-foreign-workspace"])
         .assert()
         .success();
     let value = provider_shaped_value();

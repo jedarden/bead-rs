@@ -184,7 +184,7 @@ fn integration_test_default_build_capabilities() {
     // Initialize workspace
     let init_output = Command::new(&binary_path)
         .current_dir(workspace_dir)
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .output()
         .expect("Failed to init workspace");
 
@@ -256,7 +256,7 @@ fn integration_test_attempt_resolution_build_capabilities() {
     // Initialize workspace
     let init_output = Command::new(&binary_path)
         .current_dir(workspace_dir)
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .output()
         .expect("Failed to init workspace");
 
@@ -315,7 +315,7 @@ fn integration_test_compare_binary_variants() {
     {
         let output = Command::new(binary)
             .current_dir(temp_dir.path())
-            .args(["init", "--prefix", "test"])
+            .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
             .output()
             .expect("Failed to init workspace");
 
@@ -381,7 +381,7 @@ fn integration_test_command_availability_across_variants() {
         // Initialize workspace
         let init_output = Command::new(&binary_path)
             .current_dir(workspace_dir)
-            .args(["init", "--prefix", "test"])
+            .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
             .output()
             .expect("Failed to init workspace");
 

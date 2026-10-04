@@ -17,7 +17,13 @@ fn workspace() -> (tempfile::TempDir, SqliteStore) {
         .tempdir_in("/var/tmp")
         .unwrap();
     bead(root.path())
-        .args(["init", "--prefix", "gap", "--no-auto-flush"])
+        .args([
+            "init",
+            "--skip-foreign-workspace",
+            "--prefix",
+            "gap",
+            "--no-auto-flush",
+        ])
         .assert()
         .success();
     let store = SqliteStore::from_conn(

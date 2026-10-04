@@ -58,7 +58,7 @@ fn test_f017_monolithic_checkpoint_basic() {
 
     // Initialize workspace
     Command::new(&bead)
-        .args(["init"])
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(workspace)
         .output()
         .expect("Failed to init workspace");
@@ -142,7 +142,7 @@ fn test_f017_content_addressed_paths() {
 
     // Initialize workspace
     Command::new(&bead)
-        .args(["init"])
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(workspace)
         .output()
         .expect("Failed to init workspace");
@@ -220,7 +220,7 @@ fn test_f017_identical_flushes_reuse_one_object() {
 
     // Initialize workspace
     Command::new(&bead)
-        .args(["init"])
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(workspace)
         .output()
         .expect("Failed to init workspace");
@@ -311,7 +311,7 @@ fn test_f017_legacy_generation_named_object_importable() {
 
     // Build a real checkpoint in the source workspace.
     Command::new(&bead)
-        .args(["init"])
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(&source_workspace)
         .output()
         .expect("Failed to init source workspace");
@@ -363,7 +363,7 @@ fn test_f017_legacy_generation_named_object_importable() {
     // pointer's active_root.path is authoritative, so the generation-named
     // object must still be readable.
     Command::new(&bead)
-        .args(["init"])
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(&target_workspace)
         .output()
         .expect("Failed to init target workspace");
@@ -421,7 +421,7 @@ fn test_f017_pointer_metadata_tracking() {
 
     // Initialize workspace
     Command::new(&bead)
-        .args(["init"])
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(workspace)
         .output()
         .expect("Failed to init workspace");
@@ -501,7 +501,7 @@ fn test_f017_doctor_validation() {
 
     // Initialize workspace
     Command::new(&bead)
-        .args(["init"])
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(workspace)
         .output()
         .expect("Failed to init workspace");
@@ -554,7 +554,7 @@ fn test_f017_crash_safety_and_atomicity() {
 
     // Initialize workspace
     Command::new(&bead)
-        .args(["init"])
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(workspace)
         .output()
         .expect("Failed to init workspace");
@@ -619,7 +619,7 @@ fn test_f017_forensic_jsonl_record_types() {
 
     // Initialize workspace
     Command::new(&bead)
-        .args(["init"])
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(workspace)
         .output()
         .expect("Failed to init workspace");

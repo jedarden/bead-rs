@@ -29,7 +29,7 @@ fn populated_workspace() -> tempfile::TempDir {
 
     Command::cargo_bin("bead")
         .unwrap()
-        .arg("init")
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(path)
         .env("HOME", path.to_str().unwrap())
         .assert()
@@ -158,7 +158,7 @@ fn init_rebuilds_uninitialized_workspace_preserving_identity() {
     // init must repair rather than fail.
     Command::cargo_bin("bead")
         .unwrap()
-        .arg("init")
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(clone.path())
         .env("HOME", clone.path().to_str().unwrap())
         .assert()
@@ -304,7 +304,7 @@ fn flushed_checkpoint_round_trips_through_import() {
     let restore_path = restore.path();
     Command::cargo_bin("bead")
         .unwrap()
-        .arg("init")
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(restore_path)
         .env("HOME", restore_path.to_str().unwrap())
         .assert()
@@ -376,7 +376,7 @@ fn restore_into_empty_survives_a_checkpoint_containing_a_provenance_receipt() {
     let middle = tempfile::tempdir().unwrap();
     Command::cargo_bin("bead")
         .unwrap()
-        .arg("init")
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(middle.path())
         .env("HOME", middle.path().to_str().unwrap())
         .assert()
@@ -420,7 +420,7 @@ fn restore_into_empty_survives_a_checkpoint_containing_a_provenance_receipt() {
     let restore = tempfile::tempdir().unwrap();
     Command::cargo_bin("bead")
         .unwrap()
-        .arg("init")
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(restore.path())
         .env("HOME", restore.path().to_str().unwrap())
         .assert()

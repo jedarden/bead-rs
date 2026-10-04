@@ -52,7 +52,7 @@ fn workspace() -> tempfile::TempDir {
     Command::cargo_bin("bead")
         .unwrap()
         .current_dir(workspace.path())
-        .args(["init", "--no-auto-flush"])
+        .args(["init", "--skip-foreign-workspace", "--no-auto-flush"])
         .assert()
         .success();
     workspace

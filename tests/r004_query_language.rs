@@ -15,7 +15,7 @@ fn test_query_basic_predicate() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -60,7 +60,7 @@ fn test_query_invalid_version() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -87,7 +87,7 @@ fn test_query_string_operators() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -131,7 +131,7 @@ fn test_save_and_execute_view() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -190,7 +190,7 @@ fn test_delete_view() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -239,7 +239,7 @@ fn test_query_with_projection() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -278,7 +278,7 @@ fn test_query_limit() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -336,7 +336,7 @@ fn test_query_empty_result() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -366,7 +366,7 @@ fn test_query_file_input() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 

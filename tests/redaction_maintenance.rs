@@ -19,7 +19,13 @@ fn fixture() -> (tempfile::TempDir, SqliteStore, String) {
         .tempdir_in("/var/tmp")
         .unwrap();
     bead(root.path())
-        .args(["init", "--prefix", "maint", "--no-auto-flush"])
+        .args([
+            "init",
+            "--skip-foreign-workspace",
+            "--prefix",
+            "maint",
+            "--no-auto-flush",
+        ])
         .assert()
         .success();
     let mut store = SqliteStore::from_conn(

@@ -15,7 +15,7 @@ fn test_decision_trace_empty_workspace() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -57,7 +57,7 @@ fn test_decision_trace_with_eligible_issue() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -100,7 +100,7 @@ fn test_decision_trace_ineligible_due_to_assignment() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -151,7 +151,7 @@ fn test_decision_trace_ineligible_due_to_manual_block() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -200,7 +200,7 @@ fn test_decision_trace_ineligible_due_to_blockers() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -276,7 +276,7 @@ fn test_decision_trace_priority_ordering() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -336,7 +336,7 @@ fn test_decision_trace_fifo_ordering() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -391,7 +391,7 @@ fn test_decision_trace_version_and_policy() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -415,7 +415,7 @@ fn test_decision_trace_without_flag() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -445,7 +445,7 @@ fn test_claim_with_why_claims_exactly_one_issue() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 

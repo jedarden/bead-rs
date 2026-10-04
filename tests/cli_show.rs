@@ -12,7 +12,7 @@ fn test_show_existing_issue() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -48,7 +48,7 @@ fn test_show_json() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -84,7 +84,7 @@ fn test_show_nonexistent_issue() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -106,7 +106,7 @@ fn test_show_with_description() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -145,7 +145,7 @@ fn test_show_invalid_comments() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 

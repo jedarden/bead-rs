@@ -12,7 +12,7 @@ fn test_create_basic() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -40,7 +40,7 @@ fn test_create_with_description() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -67,7 +67,7 @@ fn test_create_with_priority() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -88,7 +88,7 @@ fn test_create_with_labels() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -132,7 +132,7 @@ fn test_create_invalid_priority() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -156,7 +156,7 @@ fn test_create_empty_title() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -178,7 +178,7 @@ fn test_create_failure_rolls_back_issue_and_created_event() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 

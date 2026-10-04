@@ -413,7 +413,7 @@ impl BinaryHarness {
         let output = self
             .command()?
             .current_dir(&self.workspace_path)
-            .args(["init", "--prefix", "test"])
+            .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
             .output()?;
 
         if !output.status.success() {

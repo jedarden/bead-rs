@@ -606,7 +606,7 @@ mod tests {
         let result = store.init_workspace("test").unwrap();
 
         assert_eq!(result.prefix, "test");
-        assert!(result.root == root);
+        assert_eq!(result.root, root.canonicalize().unwrap());
         assert!(!result.uuid.is_empty());
 
         // Check that .beads directory was created

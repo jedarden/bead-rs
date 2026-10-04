@@ -18,7 +18,7 @@ fn test_flush_only_rejects_profile_flag() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -44,7 +44,7 @@ fn test_flush_only_with_output_rejects_profile_flag() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -87,7 +87,7 @@ fn test_flush_only_without_profile_works() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -119,7 +119,7 @@ fn test_import_only_diagnostics_triggers_r014_path() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -159,7 +159,7 @@ fn test_import_only_diagnostics_rejected_with_restore_into_empty() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -198,7 +198,7 @@ fn test_import_only_diagnostics_rejected_with_merge() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -236,7 +236,7 @@ fn test_import_only_diagnostics_shows_detailed_validation_failures() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -276,7 +276,7 @@ fn test_import_only_diagnostics_with_cycle_detection() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -312,7 +312,7 @@ fn test_import_only_diagnostics_bounded_error_collection() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -374,7 +374,7 @@ fn test_import_only_diagnostics_no_activation_with_errors() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -417,7 +417,7 @@ fn test_import_only_diagnostics_empty_file() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -449,7 +449,7 @@ fn test_import_only_diagnostics_with_valid_data() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -492,7 +492,7 @@ fn test_import_only_without_diagnostics_requires_mode() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -527,7 +527,7 @@ fn test_import_only_diagnostics_does_not_require_actor() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -560,7 +560,7 @@ fn test_flush_only_multiple_flag_variations() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();

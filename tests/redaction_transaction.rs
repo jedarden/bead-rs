@@ -18,7 +18,13 @@ fn workspace() -> tempfile::TempDir {
         .unwrap()
         .current_dir(workspace.path())
         .env("HOME", workspace.path())
-        .args(["init", "--prefix", "redact", "--no-auto-flush"])
+        .args([
+            "init",
+            "--skip-foreign-workspace",
+            "--prefix",
+            "redact",
+            "--no-auto-flush",
+        ])
         .assert()
         .success();
     workspace

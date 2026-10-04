@@ -27,7 +27,7 @@ impl TestWorkspace {
         // Initialize workspace
         Command::cargo_bin("bead")
             .unwrap()
-            .args(["init", "--prefix", "test"])
+            .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
             .assert()
             .success();
 
@@ -62,7 +62,7 @@ fn needle_v1_init_command() {
     // Test init command as subprocess
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "needle"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "needle"])
         .assert()
         .success()
         .stderr(predicates::str::contains("Initialized workspace"));
@@ -492,7 +492,7 @@ fn needle_v1_workspace_isolation() {
     std::env::set_current_dir(root1).unwrap();
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "ws1"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "ws1"])
         .assert()
         .success();
 
@@ -511,7 +511,7 @@ fn needle_v1_workspace_isolation() {
     std::env::set_current_dir(root2).unwrap();
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "ws2"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "ws2"])
         .assert()
         .success();
 

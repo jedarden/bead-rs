@@ -27,7 +27,7 @@ fn test_comparison_basic_native_to_needle() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .arg("init")
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(workspace_dir)
         .env("HOME", workspace_dir.to_str().unwrap())
         .assert()
@@ -82,7 +82,7 @@ fn test_comparison_json_output() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .arg("init")
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(workspace_dir)
         .env("HOME", workspace_dir.to_str().unwrap())
         .assert()
@@ -137,7 +137,7 @@ fn test_comparison_nonexistent_issue() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .arg("init")
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(workspace_dir)
         .env("HOME", workspace_dir.to_str().unwrap())
         .assert()
@@ -169,7 +169,7 @@ fn test_comparison_invalid_profile() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .arg("init")
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(workspace_dir)
         .env("HOME", workspace_dir.to_str().unwrap())
         .assert()
@@ -242,7 +242,7 @@ fn test_comparison_bound_record_count() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .arg("init")
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(workspace_dir)
         .env("HOME", workspace_dir.to_str().unwrap())
         .assert()
@@ -324,7 +324,7 @@ fn test_comparison_read_only_operation() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .arg("init")
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(workspace_dir)
         .env("HOME", workspace_dir.to_str().unwrap())
         .assert()
@@ -418,7 +418,7 @@ fn test_comparison_reports_real_dependencies_and_labels() {
 
     Command::cargo_bin("bead")
         .unwrap()
-        .arg("init")
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(workspace_dir)
         .env("HOME", workspace_dir.to_str().unwrap())
         .assert()

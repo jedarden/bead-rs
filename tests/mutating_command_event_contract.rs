@@ -823,12 +823,16 @@ fn registry() -> Vec<RegisteredCommand> {
                 // identity, since the commit it makes is a real `git
                 // commit`), and publish first: the command requires a clean
                 // checkpoint. Neither setup step appends a store event.
+                let hooks_dir = tempfile::tempdir().expect("fixture hooks tempdir");
+                let hooks_path = hooks_dir.path().to_path_buf();
                 let git_ok = |args: &[&str]| {
                     let out = std::process::Command::new("git")
                         .arg("-C")
                         .arg(f.workspace.as_os_str())
                         .env("GIT_CONFIG_GLOBAL", "/dev/null")
                         .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                        .arg("-c")
+                        .arg(format!("core.hooksPath={}", hooks_path.display()))
                         .args(args)
                         .output()
                         .expect("git should be runnable in tests");
@@ -844,6 +848,12 @@ fn registry() -> Vec<RegisteredCommand> {
                     .assert()
                     .success();
                 git_ok(&["init", "--quiet"]);
+                git_ok(&[
+                    "config",
+                    "--local",
+                    "core.hooksPath",
+                    hooks_path.to_str().expect("hooks path is valid UTF-8"),
+                ]);
                 git_ok(&["config", "user.name", "beadrs-contract"]);
                 git_ok(&["config", "user.email", "beadrs-contract@invalid"]);
                 vec!["sync".into(), "commit".into()]
@@ -1003,7 +1013,7 @@ fn build_fixture() -> Fixture {
     let workspace = dir.path().to_path_buf();
 
     bead(&workspace)
-        .args(["init", "--prefix", "probe"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "probe"])
         .assert()
         .success();
 
@@ -1161,7 +1171,7 @@ fn build_fixture() -> Fixture {
     let foreign = tempfile::tempdir().expect("foreign tempdir");
     let foreign_ws = foreign.path().to_path_buf();
     bead(&foreign_ws)
-        .args(["init", "--prefix", "probe"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "probe"])
         .assert()
         .success();
     create_issue(&foreign_ws, "foreign issue");

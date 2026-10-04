@@ -12,7 +12,7 @@ fn test_claim_empty_workspace() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -34,7 +34,7 @@ fn test_claim_basic() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -68,7 +68,7 @@ fn test_claim_priority_ordering() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -202,7 +202,7 @@ fn test_twenty_simultaneous_claimers_no_duplicates() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -267,7 +267,7 @@ fn single_claim_workspace() -> tempfile::TempDir {
     Command::cargo_bin("bead")
         .unwrap()
         .current_dir(dir.path())
-        .args(["init", "--prefix", "sc"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "sc"])
         .assert()
         .success();
     dir

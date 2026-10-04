@@ -33,7 +33,7 @@ fn test_doctor_basic() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -70,7 +70,7 @@ fn test_doctor_with_dirty_checkpoint() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -99,7 +99,7 @@ fn test_doctor_repair_no_repairs_needed() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -126,7 +126,7 @@ fn test_doctor_repair_temp_files() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -175,7 +175,7 @@ fn test_doctor_repair_creates_missing_receipts_dir() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -225,7 +225,7 @@ fn test_doctor_after_flush() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -260,7 +260,7 @@ fn test_doctor_rejects_inconsistent_close_metadata() {
 
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
     let output = Command::cargo_bin("bead")
@@ -302,7 +302,7 @@ fn test_doctor_reports_open_issue_held_by_assignee() {
 
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init"])
+        .args(["init", "--skip-foreign-workspace"])
         .assert()
         .success();
     let output = Command::cargo_bin("bead")
@@ -398,7 +398,7 @@ fn test_ready_frontier_emits_r001_reason_codes() {
     // Ensure we're in a clean directory without any existing .beads
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test-r035"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test-r035"])
         .assert()
         .success();
 
@@ -556,7 +556,7 @@ fn test_doctor_counts_blocked_issues_from_blocks_edges() {
 
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init"])
+        .args(["init", "--skip-foreign-workspace"])
         .assert()
         .success();
 
@@ -632,7 +632,7 @@ fn doctor_ignores_relates_to_cycles() {
 
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init"])
+        .args(["init", "--skip-foreign-workspace"])
         .assert()
         .success();
 
@@ -765,7 +765,7 @@ fn doctor_reports_each_blocks_cycle_once() {
         std::env::set_current_dir(workspace.path()).unwrap();
         Command::cargo_bin("bead")
             .unwrap()
-            .args(["init"])
+            .args(["init", "--skip-foreign-workspace"])
             .assert()
             .success();
         let ids: Vec<String> = titles.iter().map(|t| create(t)).collect();

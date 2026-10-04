@@ -30,7 +30,7 @@ impl TestWorkspace {
 
         // Initialize workspace using the full path to bead
         Command::new(&bead_path)
-            .args(["init", "--prefix", "test"])
+            .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
             .assert()
             .success();
 

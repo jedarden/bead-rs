@@ -53,7 +53,7 @@ fn secret_scan_capability_reports_effective_workspace_mode() {
     Command::cargo_bin("bead")
         .unwrap()
         .current_dir(workspace.path())
-        .args(["init", "--no-auto-flush"])
+        .args(["init", "--skip-foreign-workspace", "--no-auto-flush"])
         .assert()
         .success();
     let config_path = workspace.path().join(".beads/config.json");

@@ -291,7 +291,7 @@ fn verified_restore_of_the_sharded_generation_preserves_unknown_fields() {
 fn allow_non_empty_override_replaces_semantic_state_and_lands_unknown_fields() {
     let target = TempDir::new().unwrap();
     bead(target.path())
-        .args(["init", "--prefix", "bead"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "bead"])
         .assert()
         .success();
     let straggler = String::from_utf8(

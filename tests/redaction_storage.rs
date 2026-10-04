@@ -26,7 +26,13 @@ fn workspace() -> tempfile::TempDir {
         .tempdir_in("/var/tmp")
         .unwrap();
     bead(workspace.path())
-        .args(["init", "--prefix", "redact", "--no-auto-flush"])
+        .args([
+            "init",
+            "--skip-foreign-workspace",
+            "--prefix",
+            "redact",
+            "--no-auto-flush",
+        ])
         .assert()
         .success();
     workspace

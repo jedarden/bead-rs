@@ -16,7 +16,7 @@ fn test_sync_import_only_basic() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -68,7 +68,7 @@ fn test_sync_import_only_dry_run() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -119,7 +119,7 @@ fn test_sync_import_only_malformed_json() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -154,7 +154,7 @@ fn test_sync_import_only_duplicate_id() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -191,7 +191,7 @@ fn test_sync_import_only_missing_id() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -227,7 +227,7 @@ fn test_sync_import_only_self_edge() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -263,7 +263,7 @@ fn test_sync_import_only_cycle() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -300,7 +300,7 @@ fn test_sync_import_only_dangling_dependency() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -338,7 +338,7 @@ fn test_sync_import_only_invalid_profile() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -376,7 +376,7 @@ fn test_sync_import_only_empty_target() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -420,7 +420,7 @@ fn test_sync_import_only_with_dependencies() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -467,7 +467,7 @@ fn test_sync_import_only_with_labels() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -513,7 +513,7 @@ fn test_sync_import_only_blank_lines() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -553,7 +553,7 @@ fn test_sync_import_only_unknown_field_preservation() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -637,7 +637,7 @@ fn test_sync_import_only_nonexistent_input() {
     // Initialize workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -692,7 +692,7 @@ fn test_restore_from_flushed_checkpoint_after_fresh_clone() {
 
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "gol"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "gol"])
         .current_dir(origin.path())
         .assert()
         .success();
@@ -737,7 +737,7 @@ fn test_restore_from_flushed_checkpoint_after_fresh_clone() {
     // without a matching beads.db.
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "gol"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "gol"])
         .current_dir(clone.path())
         .assert()
         .success();
@@ -783,7 +783,7 @@ fn test_round_trip_dependencies_and_labels() {
     // Initialize origin workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(origin.path())
         .assert()
         .success();
@@ -915,7 +915,7 @@ fn test_round_trip_dependencies_and_labels() {
     // Initialize clone workspace
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(clone.path())
         .assert()
         .success();

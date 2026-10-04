@@ -12,7 +12,10 @@ fn test_init_creates_workspace() {
     let root = temp.path();
 
     let mut cmd = Command::cargo_bin("bead").unwrap();
-    cmd.current_dir(root).arg("init").assert().success();
+    cmd.current_dir(root)
+        .args(["init", "--skip-foreign-workspace"])
+        .assert()
+        .success();
 
     // Check that workspace was created
     let beads_dir = root.join(".beads");
@@ -32,7 +35,7 @@ fn test_init_with_custom_prefix() {
 
     let mut cmd = Command::cargo_bin("bead").unwrap();
     cmd.current_dir(root)
-        .arg("init")
+        .args(["init", "--skip-foreign-workspace"])
         .arg("--prefix")
         .arg("custom")
         .assert()
@@ -55,7 +58,7 @@ fn test_init_invalid_prefix() {
 
     let mut cmd = Command::cargo_bin("bead").unwrap();
     cmd.current_dir(root)
-        .arg("init")
+        .args(["init", "--skip-foreign-workspace"])
         .arg("--prefix")
         .arg("INVALID")
         .assert()
@@ -72,11 +75,17 @@ fn test_init_idempotent() {
 
     // First init
     let mut cmd = Command::cargo_bin("bead").unwrap();
-    cmd.current_dir(root).arg("init").assert().success();
+    cmd.current_dir(root)
+        .args(["init", "--skip-foreign-workspace"])
+        .assert()
+        .success();
 
     // Second init should succeed (idempotent)
     let mut cmd = Command::cargo_bin("bead").unwrap();
-    cmd.current_dir(root).arg("init").assert().success();
+    cmd.current_dir(root)
+        .args(["init", "--skip-foreign-workspace"])
+        .assert()
+        .success();
 }
 
 #[test]
@@ -88,7 +97,10 @@ fn test_init_creates_checkpoint_and_receipts_directories() {
     let root = temp.path();
 
     let mut cmd = Command::cargo_bin("bead").unwrap();
-    cmd.current_dir(root).arg("init").assert().success();
+    cmd.current_dir(root)
+        .args(["init", "--skip-foreign-workspace"])
+        .assert()
+        .success();
 
     // Check checkpoint directory
     let checkpoint_dir = root.join(".beads/checkpoint");
@@ -108,7 +120,10 @@ fn test_init_creates_gitignore() {
     let root = temp.path();
 
     let mut cmd = Command::cargo_bin("bead").unwrap();
-    cmd.current_dir(root).arg("init").assert().success();
+    cmd.current_dir(root)
+        .args(["init", "--skip-foreign-workspace"])
+        .assert()
+        .success();
 
     // Check .gitignore was created
     let gitignore_path = root.join(".beads/.gitignore");
@@ -193,7 +208,10 @@ fn test_init_creates_initial_checkpoint() {
     let root = temp.path();
 
     let mut cmd = Command::cargo_bin("bead").unwrap();
-    cmd.current_dir(root).arg("init").assert().success();
+    cmd.current_dir(root)
+        .args(["init", "--skip-foreign-workspace"])
+        .assert()
+        .success();
 
     // Check that initial checkpoint was created
     let checkpoint_current = root.join(".beads/checkpoint/current.json");
@@ -237,7 +255,7 @@ fn test_init_with_no_auto_flush_skips_checkpoint() {
 
     let mut cmd = Command::cargo_bin("bead").unwrap();
     cmd.current_dir(root)
-        .arg("init")
+        .args(["init", "--skip-foreign-workspace"])
         .arg("--no-auto-flush")
         .assert()
         .success();
@@ -260,7 +278,10 @@ fn test_init_idempotent_does_not_overwrite_checkpoint() {
 
     // First init
     let mut cmd = Command::cargo_bin("bead").unwrap();
-    cmd.current_dir(root).arg("init").assert().success();
+    cmd.current_dir(root)
+        .args(["init", "--skip-foreign-workspace"])
+        .assert()
+        .success();
 
     // Read the initial checkpoint generation
     let checkpoint_current = root.join(".beads/checkpoint/current.json");
@@ -268,7 +289,10 @@ fn test_init_idempotent_does_not_overwrite_checkpoint() {
 
     // Second init should succeed (idempotent)
     let mut cmd = Command::cargo_bin("bead").unwrap();
-    cmd.current_dir(root).arg("init").assert().success();
+    cmd.current_dir(root)
+        .args(["init", "--skip-foreign-workspace"])
+        .assert()
+        .success();
 
     // Verify checkpoint was not overwritten
     let second_checkpoint = std::fs::read_to_string(&checkpoint_current).unwrap();
@@ -317,7 +341,10 @@ fn test_gitignore_trackable_files_not_excluded() {
     let root = temp.path();
 
     let mut cmd = Command::cargo_bin("bead").unwrap();
-    cmd.current_dir(root).arg("init").assert().success();
+    cmd.current_dir(root)
+        .args(["init", "--skip-foreign-workspace"])
+        .assert()
+        .success();
 
     let gitignore_path = root.join(".beads/.gitignore");
     let content = std::fs::read_to_string(&gitignore_path).unwrap();
@@ -367,7 +394,10 @@ fn test_init_preserves_existing_custom_gitignore() {
 
     // Now run init (should preserve the custom .gitignore)
     let mut cmd = Command::cargo_bin("bead").unwrap();
-    cmd.current_dir(root).arg("init").assert().success();
+    cmd.current_dir(root)
+        .args(["init", "--skip-foreign-workspace"])
+        .assert()
+        .success();
 
     // Verify the custom .gitignore was preserved byte-for-byte
     let preserved_content = std::fs::read_to_string(&custom_gitignore).unwrap();
@@ -387,7 +417,10 @@ fn test_init_existing_workspace_no_gitignore() {
 
     // First init: creates workspace with .gitignore
     let mut cmd = Command::cargo_bin("bead").unwrap();
-    cmd.current_dir(root).arg("init").assert().success();
+    cmd.current_dir(root)
+        .args(["init", "--skip-foreign-workspace"])
+        .assert()
+        .success();
 
     let gitignore_path = root.join(".beads/.gitignore");
     let _first_content = std::fs::read_to_string(&gitignore_path).unwrap();
@@ -397,7 +430,10 @@ fn test_init_existing_workspace_no_gitignore() {
 
     // Second init: should NOT recreate the .gitignore (workspace already existed)
     let mut cmd = Command::cargo_bin("bead").unwrap();
-    cmd.current_dir(root).arg("init").assert().success();
+    cmd.current_dir(root)
+        .args(["init", "--skip-foreign-workspace"])
+        .assert()
+        .success();
 
     // Verify .gitignore was NOT recreated
     assert!(
@@ -416,7 +452,10 @@ fn test_init_fresh_clone_recovery_preserves_gitignore() {
 
     // First init: creates complete workspace
     let mut cmd = Command::cargo_bin("bead").unwrap();
-    cmd.current_dir(root).arg("init").assert().success();
+    cmd.current_dir(root)
+        .args(["init", "--skip-foreign-workspace"])
+        .assert()
+        .success();
 
     let gitignore_path = root.join(".beads/.gitignore");
     let config_path = root.join(".beads/config.json");
@@ -431,7 +470,10 @@ fn test_init_fresh_clone_recovery_preserves_gitignore() {
 
     // Run init again (fresh-clone recovery)
     let mut cmd = Command::cargo_bin("bead").unwrap();
-    cmd.current_dir(root).arg("init").assert().success();
+    cmd.current_dir(root)
+        .args(["init", "--skip-foreign-workspace"])
+        .assert()
+        .success();
 
     // Verify database was recreated
     assert!(
@@ -463,7 +505,10 @@ fn test_gitignore_excludes_all_runtime_artifacts() {
     let root = temp.path();
 
     let mut cmd = Command::cargo_bin("bead").unwrap();
-    cmd.current_dir(root).arg("init").assert().success();
+    cmd.current_dir(root)
+        .args(["init", "--skip-foreign-workspace"])
+        .assert()
+        .success();
 
     let gitignore_path = root.join(".beads/.gitignore");
     let content = std::fs::read_to_string(&gitignore_path).unwrap();

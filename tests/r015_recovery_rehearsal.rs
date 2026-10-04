@@ -21,7 +21,7 @@ fn populated_workspace() -> tempfile::TempDir {
 
     Command::cargo_bin("bead")
         .unwrap()
-        .arg("init")
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(path)
         .env("HOME", path.to_str().unwrap())
         .assert()
@@ -163,7 +163,7 @@ fn rehearse_fails_with_a_clear_message_when_no_checkpoint_exists() {
 
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--no-auto-flush"])
+        .args(["init", "--skip-foreign-workspace", "--no-auto-flush"])
         .current_dir(path)
         .env("HOME", path.to_str().unwrap())
         .assert()
@@ -237,7 +237,7 @@ fn rehearse_survives_a_checkpoint_containing_a_provenance_receipt() {
     let workspace = tempfile::tempdir().unwrap();
     Command::cargo_bin("bead")
         .unwrap()
-        .arg("init")
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(workspace.path())
         .env("HOME", workspace.path().to_str().unwrap())
         .assert()

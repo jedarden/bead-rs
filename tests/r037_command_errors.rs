@@ -25,7 +25,7 @@ fn test_update_with_immutable_title_shows_remedy() {
 
     bead_cmd()
         .arg("--skip-foreign-workspace")
-        .arg("init")
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(workspace)
         .assert()
         .success();
@@ -72,7 +72,7 @@ fn test_update_with_immutable_description_shows_remedy() {
 
     bead_cmd()
         .arg("--skip-foreign-workspace")
-        .arg("init")
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(workspace)
         .assert()
         .success();
@@ -110,7 +110,7 @@ fn test_update_with_immutable_priority_shows_remedy() {
 
     bead_cmd()
         .arg("--skip-foreign-workspace")
-        .arg("init")
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(workspace)
         .assert()
         .success();
@@ -149,7 +149,7 @@ fn test_update_with_immutable_issue_type_shows_remedy() {
 
     bead_cmd()
         .arg("--skip-foreign-workspace")
-        .arg("init")
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(workspace)
         .assert()
         .success();
@@ -188,7 +188,7 @@ fn test_update_with_labels_shows_label_command_remedy() {
 
     bead_cmd()
         .arg("--skip-foreign-workspace")
-        .arg("init")
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(workspace)
         .assert()
         .success();
@@ -229,7 +229,7 @@ fn test_close_with_body_flag_shows_reason_remedy() {
 
     bead_cmd()
         .arg("--skip-foreign-workspace")
-        .arg("init")
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(workspace)
         .assert()
         .success();
@@ -279,7 +279,7 @@ fn test_create_with_status_shows_remedy() {
 
     bead_cmd()
         .arg("--skip-foreign-workspace")
-        .arg("init")
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(workspace)
         .assert()
         .success();
@@ -313,7 +313,7 @@ fn test_label_without_subcommand_shows_remedy() {
 
     bead_cmd()
         .arg("--skip-foreign-workspace")
-        .arg("init")
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(workspace)
         .assert()
         .success();
@@ -345,7 +345,7 @@ fn test_update_with_multiple_immutable_fields_shows_all() {
 
     bead_cmd()
         .arg("--skip-foreign-workspace")
-        .arg("init")
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(workspace)
         .assert()
         .success();
@@ -391,7 +391,7 @@ fn test_help_reference_in_error_message() {
 
     bead_cmd()
         .arg("--skip-foreign-workspace")
-        .arg("init")
+        .args(["init", "--skip-foreign-workspace"])
         .current_dir(workspace)
         .assert()
         .success();

@@ -54,7 +54,10 @@ fn run(workspace: &Path, args: &[&str]) {
 fn create_workspace() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_bead"));
-    cmd.current_dir(dir.path()).arg("init").assert().success();
+    cmd.current_dir(dir.path())
+        .args(["init", "--skip-foreign-workspace"])
+        .assert()
+        .success();
     dir
 }
 

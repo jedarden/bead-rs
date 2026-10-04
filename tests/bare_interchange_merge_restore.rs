@@ -65,7 +65,7 @@ fn workspace_with_bare_merge() -> (tempfile::TempDir, PathBuf) {
     let workspace = temp_dir.path().to_path_buf();
 
     bead(&workspace)
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -311,7 +311,7 @@ fn bare_interchange_merge_import_flush_restore_round_trip() {
         .unwrap();
     let recovery = recovery_dir.path().to_path_buf();
     bead(&recovery)
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -499,7 +499,7 @@ fn bare_restore_into_empty_adopts_the_derived_source_identity() {
     let workspace = temp_dir.path().to_path_buf();
 
     bead(&workspace)
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 
@@ -571,7 +571,7 @@ fn bare_restore_into_empty_adopts_the_derived_source_identity() {
         .unwrap();
     let recovery = recovery_dir.path().to_path_buf();
     bead(&recovery)
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
 

@@ -378,7 +378,7 @@ fn import_rejects_jsonl_reconciliation_report() {
     let temp_dir = TempDir::new().unwrap();
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -420,7 +420,7 @@ fn import_rejects_single_document_reconciliation_report() {
     let temp_dir = TempDir::new().unwrap();
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();
@@ -454,7 +454,7 @@ fn import_merge_mode_also_rejects_reconciliation_report() {
     let temp_dir = TempDir::new().unwrap();
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "test"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .current_dir(temp_dir.path())
         .assert()
         .success();

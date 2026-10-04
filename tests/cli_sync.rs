@@ -14,7 +14,7 @@ fn create_workspace() -> TempDir {
     // fail closed on, not scaffold over)
     Command::cargo_bin("bead")
         .unwrap()
-        .args(["init", "--prefix", "bead"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "bead"])
         .current_dir(temp_dir.path())
         .assert()
         .success();

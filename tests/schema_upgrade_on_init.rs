@@ -38,7 +38,7 @@ fn init_applies_pending_migrations_to_an_existing_workspace() {
     Command::cargo_bin("bead")
         .unwrap()
         .current_dir(root)
-        .args(["init", "--prefix", "upg"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "upg"])
         .assert()
         .success();
 
@@ -72,7 +72,7 @@ fn init_applies_pending_migrations_to_an_existing_workspace() {
     Command::cargo_bin("bead")
         .unwrap()
         .current_dir(root)
-        .args(["init"])
+        .args(["init", "--skip-foreign-workspace"])
         .assert()
         .success()
         .stderr(predicates::str::contains("Applied pending migrations"));
@@ -102,7 +102,7 @@ fn init_reports_an_already_current_schema_without_changing_it() {
     Command::cargo_bin("bead")
         .unwrap()
         .current_dir(root)
-        .args(["init", "--prefix", "upg"])
+        .args(["init", "--skip-foreign-workspace", "--prefix", "upg"])
         .assert()
         .success();
 
@@ -111,7 +111,7 @@ fn init_reports_an_already_current_schema_without_changing_it() {
     Command::cargo_bin("bead")
         .unwrap()
         .current_dir(root)
-        .args(["init"])
+        .args(["init", "--skip-foreign-workspace"])
         .assert()
         .success()
         .stderr(predicates::str::contains("Schema up to date"));
