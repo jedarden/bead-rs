@@ -57,6 +57,7 @@ fn set_auto_flush(workspace: &Path, value: bool) {
 fn bead(workspace: &Path) -> Command {
     let mut cmd = Command::cargo_bin("bead").unwrap();
     cmd.current_dir(workspace);
+    cmd.arg("--skip-foreign-workspace");
     cmd
 }
 

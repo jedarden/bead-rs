@@ -33,6 +33,7 @@ fn create_workspace_with_init_args(args: &[&str]) -> (TempDir, WorkspaceConfig, 
     Command::cargo_bin("bead")
         .unwrap()
         .current_dir(root)
+        .arg("--skip-foreign-workspace")
         .args(args)
         .assert()
         .success();

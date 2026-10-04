@@ -30,6 +30,7 @@ use std::process::Output;
 fn bead(workspace: &Path) -> Command {
     let mut cmd = Command::cargo_bin("bead").unwrap();
     cmd.current_dir(workspace);
+    cmd.arg("--skip-foreign-workspace");
     cmd.env("GIT_AUTHOR_NAME", "beadrs-test");
     cmd.env("GIT_AUTHOR_EMAIL", "beadrs-test@invalid");
     cmd.env("GIT_COMMITTER_NAME", "beadrs-test");

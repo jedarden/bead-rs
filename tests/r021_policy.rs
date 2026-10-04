@@ -5,6 +5,7 @@ use tempfile::TempDir;
 
 fn run_bead_command(args: &[&str], workspace_path: &std::path::Path) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_bead"))
+        .arg("--skip-foreign-workspace")
         .args(args)
         .current_dir(workspace_path)
         .output()

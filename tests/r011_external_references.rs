@@ -12,6 +12,7 @@ use std::process::Command;
 fn run_bead_in_workspace(workspace: &std::path::Path, args: &[&str]) -> (String, String, bool) {
     let output = Command::new(env!("CARGO_BIN_EXE_bead"))
         .current_dir(workspace)
+        .arg("--skip-foreign-workspace")
         .args(args)
         .output()
         .expect("Failed to execute bead command");

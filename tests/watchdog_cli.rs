@@ -6,6 +6,7 @@ use std::path::Path;
 fn bead(workspace: &Path, args: &[&str]) -> std::process::Output {
     Command::cargo_bin("bead")
         .unwrap()
+        .arg("--skip-foreign-workspace")
         .args(args)
         .current_dir(workspace)
         .output()
