@@ -279,7 +279,10 @@ fn all_blocking_republishes_when_quarantine_has_only_incomplete_coverage() {
         .output()
         .unwrap();
     assert!(!blocked_write.status.success());
-    assert!(String::from_utf8_lossy(&blocked_write.stderr).contains("secret_quarantined"));
+    let blocked_write_error = String::from_utf8_lossy(&blocked_write.stderr);
+    assert!(blocked_write_error.contains("secret_quarantined"));
+    assert!(blocked_write_error.contains("bead redact --all-blocking"));
+    assert!(blocked_write_error.contains("republish a clean live store"));
 
     let blocked_flush = bead(workspace.path())
         .args(["sync", "flush-only"])
