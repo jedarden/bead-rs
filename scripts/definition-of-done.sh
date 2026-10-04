@@ -27,6 +27,13 @@
 # chain is verified free of any `.beads`, so the suite passes identically in
 # a clean CI container and in a scratch extraction on the contaminated box.
 # It never reads, moves, or deletes any existing `.beads` directory.
+# The build target is also isolated per invocation. Feature-variant workers
+# share the repository target root, and Cargo's `CARGO_BIN_EXE_bead` path is
+# the root target's executable path; a concurrent managed-policy build can
+# otherwise replace the default test binary between compilation and test
+# execution. A unique subdirectory remains inside the enforced
+# `/build/<repo>` target root, so it is still governed by the host's Cargo
+# wrapper while being hermetic to this gate.
 #
 # Usage:
 #	scripts/definition-of-done.sh [--fast]
@@ -111,6 +118,15 @@ while [[ "$probe" != "/" ]]; do
 done
 export TMPDIR="$TEST_TMPDIR"
 
+# Resolve the host-enforced target root through Cargo rather than deriving it
+# from ROOT: ROOT is often a random git-archive extraction directory, while
+# the wrapper maps that extraction back to the repository's shared build root.
+METADATA=$(cargo metadata --no-deps --format-version 1 2>&1) || die "cargo metadata failed: $METADATA"
+TARGET_ROOT=$(sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p' <<<"$METADATA")
+[[ "$TARGET_ROOT" == /build/* ]] || die "cargo metadata selected an unsafe target root: $TARGET_ROOT"
+DOD_TARGET_DIR=$(mktemp -d "$TARGET_ROOT/definition-of-done-XXXXXXXXXX") || die "could not create an isolated Cargo target directory under $TARGET_ROOT"
+export CARGO_TARGET_DIR="$DOD_TARGET_DIR"
+
 # Pin clippy's config search to this tree. clippy walks the ancestor chain
 # of the working directory for clippy.toml, so a stray config above a
 # checkout or extraction (a /tmp/clippy.toml from an unrelated project was
@@ -124,6 +140,9 @@ export CLIPPY_CONF_DIR="$ROOT"
 cleanup() {
 	if [[ -d "$TEST_TMPDIR" ]]; then
 		rm -rf "$TEST_TMPDIR"
+	fi
+	if [[ -d "${DOD_TARGET_DIR:-}" ]]; then
+		rm -rf "$DOD_TARGET_DIR"
 	fi
 }
 trap cleanup EXIT
