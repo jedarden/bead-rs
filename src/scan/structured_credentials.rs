@@ -233,8 +233,8 @@ fn yaml_document_ranges(text: &str) -> Vec<Range<usize>> {
     let mut document_start = 0;
     let mut line_start = 0;
     for line in text.split_inclusive('\n') {
-        let content = line.trim_end_matches(['\n', '\r']).trim();
-        if line_start > document_start && (content == "---" || content.starts_with("--- #")) {
+        let content = line.trim_end_matches(['\n', '\r']);
+        if line_start > document_start && is_yaml_document_start(content) {
             ranges.push(document_start..line_start);
             document_start = line_start;
         }
@@ -244,6 +244,13 @@ fn yaml_document_ranges(text: &str) -> Vec<Range<usize>> {
         ranges.push(document_start..text.len());
     }
     ranges
+}
+
+fn is_yaml_document_start(line: &str) -> bool {
+    let Some(remainder) = line.strip_prefix("---") else {
+        return false;
+    };
+    remainder.is_empty() || remainder.chars().next().is_some_and(char::is_whitespace)
 }
 
 static URI_PREFIX: LazyLock<Regex> =
