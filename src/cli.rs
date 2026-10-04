@@ -173,6 +173,13 @@ acknowledged ones included) and collapses overlapping matches to the one finding
 that covers them, so one transaction and one sanitized publication remove every
 copy. Overlaps that no single finding covers are refused without changes.
 
+While recovery is quarantined, a selected retained finding that is already
+absent from live state is resolved by replacing both retained generations
+from the clean live store. --all-blocking also performs that sanitized reset
+when no live blocking finding remains, including when retained-generation
+coverage is incomplete. This reset is audited with the supplied actor and
+reason; it does not create a byte-redaction receipt.
+
 EXAMPLES:
   bead redact --all-blocking --actor operator --reason \"credential rotation\" --dry-run
   bead redact --all-blocking --actor operator --reason \"credential rotation\" --json

@@ -129,6 +129,199 @@ fn copy_tree(source: &Path, target: &Path) {
     }
 }
 
+#[test]
+fn retained_only_finding_clears_quarantine_by_sanitized_republish() {
+    let workspace = temp_workspace("retained-only-quarantine");
+    let secret = shaped_value();
+    insert_issue(workspace.path(), "retained-only", &secret);
+    bead(workspace.path())
+        .args(["sync", "flush-only"])
+        .assert()
+        .success();
+
+    let conn = rusqlite::Connection::open(database(workspace.path())).unwrap();
+    conn.execute(
+        "UPDATE issues SET description = 'clean live description', revision = revision + 1
+         WHERE id = 'retained-only'",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO events (issue_id, kind, actor, time, detail)
+         VALUES ('retained-only', 'fixture_update', 'publication-test',
+                 '2026-10-04T00:00:00Z', '{}')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    bead(workspace.path())
+        .args(["sync", "flush-only"])
+        .assert()
+        .success();
+
+    let clean_source = temp_workspace("retained-only-source");
+    bead(clean_source.path())
+        .args(["sync", "flush-only"])
+        .assert()
+        .success();
+    bead(workspace.path())
+        .args([
+            "sync",
+            "import-only",
+            "--input",
+            clean_source
+                .path()
+                .join(".beads/checkpoint")
+                .to_str()
+                .unwrap(),
+            "--merge",
+            "--actor",
+            "publication-test",
+            "--no-auto-flush",
+        ])
+        .assert()
+        .success();
+
+    let previous = pointer(workspace.path(), "previous.json");
+    let old_generation = previous["generation_id"].as_str().unwrap().to_string();
+    let finding = checkpoint_description_finding(workspace.path(), "previous");
+    let fingerprint = finding["fingerprint"].as_str().unwrap();
+    let conn = rusqlite::Connection::open(database(workspace.path())).unwrap();
+    let (blocking_count, coverage_incomplete): (i64, i64) = conn
+        .query_row(
+            "SELECT blocking_count, coverage_incomplete FROM secret_quarantine WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    drop(conn);
+    assert!(blocking_count > 0);
+    assert_eq!(coverage_incomplete, 0);
+
+    let reset = bead(workspace.path())
+        .args([
+            "redact",
+            "--finding",
+            fingerprint,
+            "--actor",
+            "publication-test",
+            "--reason",
+            "discard retained secret generation",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        reset.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reset.stderr)
+    );
+    let reset: Value = serde_json::from_slice(&reset.stdout).unwrap();
+    assert_eq!(reset["sanitized_republish"], true);
+    assert_eq!(reset["previous_generation_reset"], true);
+    assert!(reset.get("receipt_id").is_none());
+
+    let current = pointer(workspace.path(), "current.json");
+    let previous = pointer(workspace.path(), "previous.json");
+    assert_eq!(current["generation_id"], previous["generation_id"]);
+    assert_eq!(current["active_root"], previous["active_root"]);
+    assert_eq!(current["sanitized_recovery_reset"], true);
+    assert_eq!(previous["sanitized_recovery_reset"], true);
+    assert!(current["superseded_generations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|generation| generation == &old_generation));
+
+    let conn = rusqlite::Connection::open(database(workspace.path())).unwrap();
+    let (quarantine_count, reset_events, description): (i64, i64, String) = conn
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM secret_quarantine),
+                    (SELECT COUNT(*) FROM events WHERE kind = 'secret_quarantine_reset'),
+                    (SELECT description FROM issues WHERE id = 'retained-only')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    drop(conn);
+    assert_eq!(quarantine_count, 0);
+    assert_eq!(reset_events, 1);
+    assert_eq!(description, "clean live description");
+
+    let mut checkpoint_bytes = Vec::new();
+    read_tree(
+        &workspace.path().join(".beads/checkpoint"),
+        &mut checkpoint_bytes,
+    );
+    assert!(!checkpoint_bytes
+        .windows(secret.len())
+        .any(|window| window == secret.as_bytes()));
+}
+
+#[test]
+fn all_blocking_republishes_when_quarantine_has_only_incomplete_coverage() {
+    let workspace = temp_workspace("coverage-only-quarantine");
+    bead(workspace.path())
+        .args(["sync", "flush-only"])
+        .assert()
+        .success();
+    let conn = rusqlite::Connection::open(database(workspace.path())).unwrap();
+    conn.execute(
+        "INSERT INTO secret_quarantine (id, ruleset_version, blocking_count, coverage_incomplete)
+         VALUES (1, 1, 0, 1)",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let blocked_write = bead(workspace.path())
+        .args(["create", "--title", "blocked by recovery quarantine"])
+        .output()
+        .unwrap();
+    assert!(!blocked_write.status.success());
+    assert!(String::from_utf8_lossy(&blocked_write.stderr).contains("secret_quarantined"));
+
+    let blocked_flush = bead(workspace.path())
+        .args(["sync", "flush-only"])
+        .output()
+        .unwrap();
+    assert!(!blocked_flush.status.success());
+    assert!(String::from_utf8_lossy(&blocked_flush.stderr).contains("secret_quarantined"));
+
+    let reset = bead(workspace.path())
+        .args([
+            "redact",
+            "--all-blocking",
+            "--actor",
+            "publication-test",
+            "--reason",
+            "replace incomplete retained checkpoint coverage",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        reset.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reset.stderr)
+    );
+    let reset: Value = serde_json::from_slice(&reset.stdout).unwrap();
+    assert_eq!(reset["sanitized_republish"], true);
+    assert_eq!(reset["previous_generation_reset"], true);
+    let current = pointer(workspace.path(), "current.json");
+    let previous = pointer(workspace.path(), "previous.json");
+    assert_eq!(current["generation_id"], previous["generation_id"]);
+    assert_eq!(current["sanitized_recovery_reset"], true);
+    assert_eq!(previous["sanitized_recovery_reset"], true);
+    let conn = rusqlite::Connection::open(database(workspace.path())).unwrap();
+    let quarantine_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM secret_quarantine", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(quarantine_count, 0);
+}
+
 fn assert_publication(mode: &str) {
     let workspace = temp_workspace(mode);
     force_mode(workspace.path(), mode);
@@ -456,6 +649,8 @@ fn stale_checkpoint_fingerprint_conflicts_without_redacting_live_description() {
         .output()
         .unwrap();
     assert_eq!(redaction.status.code(), Some(4));
+    assert!(String::from_utf8_lossy(&redaction.stderr)
+        .contains("selected finding no longer matches the current live field"));
     assert!(!redaction
         .stderr
         .windows(secret.len())

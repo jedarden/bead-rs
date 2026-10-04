@@ -152,6 +152,74 @@ pub fn redact_finding_holding(
     )
 }
 
+/// Return whether an exact retained-checkpoint finding has already been
+/// removed from live state while the workspace remains quarantined. In that
+/// case the safe remedy is to replace the retained generation set from clean
+/// live state, rather than manufacture a semantic redaction receipt.
+pub fn retained_finding_needs_sanitized_republish_holding(
+    store: &mut SqliteStore,
+    locks: &RedactionLocks,
+    fingerprint: &str,
+) -> Result<bool, RedactionError> {
+    verify_workspace(store.conn(), locks)?;
+    let quarantined: bool = store
+        .conn()
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM secret_quarantine)",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|_| integrity("could not inspect recovery quarantine"))?;
+    if !quarantined {
+        return Ok(false);
+    }
+
+    let tx = Transaction::new_unchecked(store.conn(), TransactionBehavior::Immediate)
+        .map_err(|_| integrity("could not open retained-finding check"))?;
+    let Some(location) = resolve_redaction_finding(&tx, locks.checkpoint_dir(), fingerprint)?
+    else {
+        tx.rollback()
+            .map_err(|_| integrity("could not close retained-finding check"))?;
+        return Ok(false);
+    };
+    if !location.finding.selector.starts_with("checkpoint:") {
+        tx.rollback()
+            .map_err(|_| integrity("could not close retained-finding check"))?;
+        return Ok(false);
+    }
+
+    let current = read_target_text(&tx, &location)?;
+    let still_present = scan::scan(
+        &ScanConfig::new(Mode::Advisory),
+        &location.finding.selector,
+        &[Field::new(&location.finding.field_path, &current)],
+    )
+    .findings
+    .iter()
+    .any(|finding| finding.fingerprint == fingerprint);
+    if still_present {
+        tx.rollback()
+            .map_err(|_| integrity("could not close retained-finding check"))?;
+        return Ok(false);
+    }
+
+    let policy = crate::service::secret_boundary::policy(&tx)
+        .map_err(|error| RedactionError::Conflict(error.to_string()))?;
+    let live_findings = crate::service::secret_diagnostics::scan_live_findings(&tx)
+        .map_err(|error| RedactionError::Conflict(error.to_string()))?;
+    if live_findings
+        .iter()
+        .any(|finding| finding.is_blocking_match() && !policy.is_acknowledged(&finding.fingerprint))
+    {
+        tx.rollback()
+            .map_err(|_| integrity("could not close retained-finding check"))?;
+        return Ok(false);
+    }
+    tx.rollback()
+        .map_err(|_| integrity("could not close retained-finding check"))?;
+    Ok(true)
+}
+
 /// Revalidate and describe one redaction without committing any change.
 pub fn preview_redaction_holding(
     store: &mut SqliteStore,
@@ -703,7 +771,9 @@ fn apply_redaction(
     .into_iter()
     .find(|finding| finding.fingerprint == fingerprint)
     .ok_or_else(|| {
-        RedactionError::Conflict("finding changed before the redaction transaction".to_string())
+        RedactionError::Conflict(
+            "selected finding no longer matches the current live field; refresh `bead doctor --scope secrets` and select a current finding".to_string(),
+        )
     })?;
     if revalidated.start != location.finding.start
         || revalidated.end != location.finding.end

@@ -217,7 +217,7 @@ pub fn ensure_not_quarantined(conn: &Connection) -> Result<()> {
             row.get(0)
         })?;
         if count != 0 {
-            return Err(Error::conflict("secret_quarantined: recovery contains blocking findings; inspect 'bead doctor --scope secrets' and remove each finding with 'bead redact'"));
+            return Err(Error::conflict("secret_quarantined: recovery contains blocking findings or incomplete retained-generation coverage; inspect 'bead doctor --scope secrets' and run 'bead redact --all-blocking' to redact live findings or republish a clean live store"));
         }
     }
     Ok(())
@@ -279,6 +279,40 @@ pub(crate) fn verify_quarantine_cleanup(conn: &Connection) -> Result<()> {
         .any(|finding| finding.is_blocking_match() && !config.is_acknowledged(&finding.fingerprint))
     {
         return Err(Error::conflict("secret_quarantined: other blocking findings remain; redact them before resuming sanitized publication"));
+    }
+    Ok(())
+}
+
+/// A quarantine reset may discard unreadable or finding-bearing retained
+/// generations only after the complete live store has been scanned and has
+/// no unacknowledged blocking finding. The exceptional publisher holds an
+/// IMMEDIATE transaction across pointer replacement so recovery cannot race
+/// this verdict.
+pub(crate) fn verify_quarantine_republish(conn: &Connection) -> Result<()> {
+    let quarantined: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM secret_quarantine)",
+        [],
+        |row| row.get(0),
+    )?;
+    if !quarantined {
+        return Err(Error::conflict(
+            "secret_quarantine_reset: workspace is not quarantined",
+        ));
+    }
+    if let Some(receipt) = super::secret_maintenance::pending_redaction(conn)? {
+        return Err(Error::conflict(format!(
+            "secret_redaction_pending: finish sanitized publication with 'bead redact --resume {receipt}'"
+        )));
+    }
+    let config = policy(conn)?;
+    let findings = super::secret_diagnostics::scan_live_findings(conn)?;
+    if findings
+        .iter()
+        .any(|finding| finding.is_blocking_match() && !config.is_acknowledged(&finding.fingerprint))
+    {
+        return Err(Error::conflict(
+            "secret_quarantined: live state still contains blocking findings; redact them before republishing",
+        ));
     }
     Ok(())
 }

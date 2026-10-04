@@ -1213,6 +1213,11 @@ struct PointerRedactionReset {
     superseded_generations: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+struct PointerQuarantineReset {
+    superseded_generations: Vec<String>,
+}
+
 /// Checkpoint status for `bead sync status` (plan 6.2)
 ///
 /// `ready_to_commit` is the pre-commit gate: it holds only when the
@@ -7465,8 +7470,47 @@ pub fn publish_forensic_checkpoint_holding(
     config: &CheckpointConfig,
     checkpoint_base: &Path,
 ) -> Result<ForensicFlushResult> {
-    publish_forensic_checkpoint_inner(publication_lock, store, config, checkpoint_base, None)
+    publish_forensic_checkpoint_inner(publication_lock, store, config, checkpoint_base, None, None)
         .map(|(checkpoint, _)| checkpoint)
+}
+
+/// Replace a quarantined retained-generation set from the checked live store.
+/// Both pointers select the new snapshot and every prior generation object is
+/// tombstoned before quarantine is cleared. The caller holds the publication
+/// lock, and the publisher holds an IMMEDIATE database transaction across the
+/// snapshot and pointer replacement so another recovery cannot race clearance.
+pub fn publish_sanitized_recovery_checkpoint_holding(
+    publication_lock: &CheckpointPublicationLock,
+    store: &mut SqliteStore,
+    config: &CheckpointConfig,
+    checkpoint_base: &Path,
+    actor: &str,
+    reason: &str,
+) -> Result<ForensicFlushResult> {
+    crate::model::redaction::validate_actor(actor)?;
+    crate::model::redaction::validate_reason(reason)?;
+    let metadata_report = crate::scan::scan(
+        &crate::scan::ScanConfig::enforce(),
+        "secret-quarantine-reset",
+        &[
+            crate::scan::Field::new("actor", actor),
+            crate::scan::Field::new("reason", reason),
+        ],
+    );
+    if let Some(rejection) =
+        crate::scan::reject_if_blocked(&crate::scan::ScanConfig::enforce(), &metadata_report)
+    {
+        anyhow::bail!("{}", rejection.message);
+    }
+    publish_forensic_checkpoint_inner(
+        publication_lock,
+        store,
+        config,
+        checkpoint_base,
+        None,
+        Some((actor, reason)),
+    )
+    .map(|(checkpoint, _)| checkpoint)
 }
 
 /// Publish a redaction epoch without retaining any pre-redaction generation.
@@ -7494,6 +7538,7 @@ pub fn publish_redaction_checkpoint_holding(
             receipt_id: receipt.receipt_id.clone(),
             epoch_id: epoch_id.to_string(),
         }),
+        None,
     )?;
     Ok(RedactionPublicationResult {
         checkpoint,
@@ -7508,16 +7553,45 @@ fn publish_forensic_checkpoint_inner(
     config: &CheckpointConfig,
     checkpoint_base: &Path,
     redaction_request: Option<RedactionPublicationRequest>,
+    quarantine_reset: Option<(&str, &str)>,
 ) -> Result<(ForensicFlushResult, Option<RedactionReceipt>)> {
     let conn = store.conn();
     if redaction_request.is_none() {
-        crate::service::secret_maintenance::ensure_publication_allowed(conn)?;
+        if quarantine_reset.is_some() {
+            crate::service::secret_boundary::verify_quarantine_republish(conn)?;
+        } else {
+            crate::service::secret_maintenance::ensure_publication_allowed(conn)?;
+        }
     } else {
         crate::service::secret_boundary::verify_quarantine_cleanup(conn)?;
     }
 
-    // Begin read transaction to capture snapshot
-    let tx = conn.unchecked_transaction()?;
+    let resets_generations = redaction_request.is_some() || quarantine_reset.is_some();
+
+    // Hold an IMMEDIATE transaction throughout quarantine-reset publication.
+    // This blocks another explicit recovery from changing live rows after the
+    // scan while the old pointers are being replaced. Other publication paths
+    // retain the existing short snapshot transaction behavior.
+    let mut snapshot_tx = Some(Transaction::new_unchecked(
+        conn,
+        if quarantine_reset.is_some() {
+            TransactionBehavior::Immediate
+        } else {
+            TransactionBehavior::Deferred
+        },
+    )?);
+    let tx = snapshot_tx.as_ref().expect("snapshot transaction exists");
+    if let Some((actor, reason)) = quarantine_reset {
+        crate::service::secret_boundary::verify_quarantine_republish(tx)?;
+        tx.execute(
+            "INSERT INTO events (kind, actor, time, detail) VALUES ('secret_quarantine_reset', ?1, ?2, ?3)",
+            params![
+                actor,
+                format_rfc3339(SystemTime::now()),
+                serde_json::json!({"reason": reason}).to_string(),
+            ],
+        )?;
+    }
 
     // Get current state
     let current_sequence: i64 = tx
@@ -7532,20 +7606,26 @@ fn publish_forensic_checkpoint_inner(
         })?;
 
     // Read all records needed for forensic checkpoint
-    let issues = read_all_issues(&tx)?;
-    let events = read_all_events(&tx)?;
-    let receipts = read_all_provenance_receipts(&tx)?;
-    let attempt_outcomes = read_all_attempt_outcomes(&tx)?;
-    let redaction = read_all_redaction_records(&tx)?;
+    let issues = read_all_issues(tx)?;
+    let events = read_all_events(tx)?;
+    let receipts = read_all_provenance_receipts(tx)?;
+    let attempt_outcomes = read_all_attempt_outcomes(tx)?;
+    let redaction = read_all_redaction_records(tx)?;
 
     // Read all graph data for dependencies and labels
     let graph_data = IssueGraphData {
-        dependencies: read_all_dependencies(&tx)?,
-        labels: read_all_labels(&tx)?,
+        dependencies: read_all_dependencies(tx)?,
+        labels: read_all_labels(tx)?,
     };
 
-    // Commit the read transaction
-    tx.commit()?;
+    // A normal publisher releases its read snapshot before writing files.
+    // Quarantine reset keeps its write lock through the pointer pair.
+    if quarantine_reset.is_none() {
+        snapshot_tx
+            .take()
+            .expect("snapshot transaction exists")
+            .commit()?;
+    }
 
     // Sort records for deterministic ordering
     let mut sorted_issues = issues;
@@ -7605,7 +7685,7 @@ fn publish_forensic_checkpoint_inner(
     // projects the eventual Published state into the serialized snapshot;
     // SQLite is updated only after the new pointer pair is durable.
     let previous = read_previous_generation(&checkpoint_dir)?;
-    let mut superseded_generations = if redaction_request.is_some() {
+    let mut superseded_generations = if resets_generations {
         read_superseded_generation_ids(&checkpoint_dir)?
     } else {
         Vec::new()
@@ -7711,8 +7791,10 @@ fn publish_forensic_checkpoint_inner(
     // Update checkpoint pointers in a write transaction
     let root_hash = publication.root_hash;
     let root_path = publication.root_path;
-    let conn = store.conn();
-    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let tx = match snapshot_tx.take() {
+        Some(tx) => tx,
+        None => Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?,
+    };
 
     // Carry additive top-level pointer fields into this generation: the union
     // of what checkpoint_state holds (where a restore staged the restored
@@ -7732,7 +7814,7 @@ fn publish_forensic_checkpoint_inner(
     let current_pointer_path = checkpoint_dir.join("current.json");
     let previous_pointer_path = checkpoint_dir.join("previous.json");
 
-    let previous_files = if redaction_request.is_some() {
+    let previous_files = if resets_generations {
         // The pre-redaction generation is intentionally not retained. The
         // sanitized current pointer is copied to previous.json only after it
         // is durable below.
@@ -7803,7 +7885,7 @@ fn publish_forensic_checkpoint_inner(
     // generation's changed-path set carries a tombstone for it (plan 6.1.1).
     // Everything else the outgoing generation referenced stays retained by
     // previous.json for one more generation, per the rule above.
-    if redaction_request.is_none() {
+    if !resets_generations {
         if let Some(previous) = &previous {
             if let (Some(previous_mode), Some(root_path)) = (&previous.mode, &previous.root_path) {
                 if *previous_mode != mode
@@ -7847,12 +7929,15 @@ fn publish_forensic_checkpoint_inner(
                 epoch_id: request.epoch_id.clone(),
                 superseded_generations: superseded_generations.clone(),
             }),
+        quarantine_reset: quarantine_reset.is_some().then(|| PointerQuarantineReset {
+            superseded_generations: superseded_generations.clone(),
+        }),
         extensions: carried_pointer_extensions.clone(),
     };
     write_current_pointer(&current_pointer_path, &pointer_config, scratch_dir)?;
     changed_paths.push("current.json".to_string());
 
-    if redaction_request.is_some() {
+    if resets_generations {
         // Both retained pointers now select the new sanitized root. Writing
         // current first ensures there is always at least one authoritative
         // clean pointer before the dirty previous pointer is replaced.
@@ -7887,14 +7972,19 @@ fn publish_forensic_checkpoint_inner(
     };
     update_forensic_checkpoint_state(&tx, &state_config)?;
 
+    if quarantine_reset.is_some() {
+        tx.execute("DELETE FROM secret_quarantine", [])?;
+    }
+
     tx.commit()?;
+    drop(snapshot_tx);
 
     if let Some(request) = &redaction_request {
         // The epoch stays committed across pointer publication and local
         // byte cleanup, so another process cannot stage a dirty predecessor
         // after an interrupted attempt. VACUUM cannot run in a transaction.
-        crate::service::secret_maintenance::purge_local_remnants(store.conn())?;
-        let tx = Transaction::new_unchecked(store.conn(), TransactionBehavior::Immediate)?;
+        crate::service::secret_maintenance::purge_local_remnants(conn)?;
+        let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
         mark_redaction_published(
             &tx,
             request,
@@ -9074,6 +9164,7 @@ const POINTER_KNOWN_KEYS: &[&str] = &[
     "redaction_epoch_id",
     "previous_generation_reset",
     "superseded_generations",
+    "sanitized_recovery_reset",
 ];
 
 /// Extract a pointer's unknown top-level fields.
@@ -9184,6 +9275,23 @@ fn write_current_pointer(
         object.insert(
             "superseded_generations".to_string(),
             serde_json::to_value(&reset.superseded_generations)?,
+        );
+    }
+    if let Some(reset) = &config.quarantine_reset {
+        let object = pointer
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("checkpoint pointer is not an object"))?;
+        object.insert(
+            "previous_generation_reset".to_string(),
+            serde_json::Value::Bool(true),
+        );
+        object.insert(
+            "superseded_generations".to_string(),
+            serde_json::to_value(&reset.superseded_generations)?,
+        );
+        object.insert(
+            "sanitized_recovery_reset".to_string(),
+            serde_json::Value::Bool(true),
         );
     }
 
@@ -10179,6 +10287,7 @@ struct PointerConfig {
     replaced_paths: Vec<String>,
     deleted_paths: Vec<String>,
     redaction_reset: Option<PointerRedactionReset>,
+    quarantine_reset: Option<PointerQuarantineReset>,
     /// Additive top-level pointer fields carried in from an earlier
     /// generation or a restored pointer, re-projected verbatim on publish.
     extensions: RecordExtensions,

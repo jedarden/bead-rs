@@ -424,9 +424,30 @@ fn cmd_redact(opts: cli::RedactOptions) -> Result<()> {
         .reason
         .as_deref()
         .ok_or_else(|| Error::cli_usage("--reason is required with --finding"))?;
+    validate_sanitized_republish_metadata(actor, reason)?;
     let selected = if opts.all_blocking {
         let selection = service::select_all_blocking_holding(&mut store, &locks)?;
         if selection.fingerprints.is_empty() {
+            let quarantined: bool = store.conn().query_row(
+                "SELECT EXISTS(SELECT 1 FROM secret_quarantine)",
+                [],
+                |row| row.get(0),
+            )?;
+            if quarantined {
+                service::secret_boundary::verify_quarantine_republish(store.conn())?;
+                return finish_sanitized_republish(
+                    &mut store,
+                    &locks,
+                    &checkpoint_config,
+                    &checkpoint_base,
+                    SanitizedRepublishRequest {
+                        actor,
+                        reason,
+                        dry_run: opts.dry_run,
+                        json: opts.json,
+                    },
+                );
+            }
             if opts.json {
                 println!(
                     "{}",
@@ -451,6 +472,33 @@ fn cmd_redact(opts: cli::RedactOptions) -> Result<()> {
     } else {
         opts.finding.clone()
     };
+    if !selected.is_empty() {
+        let mut retained_only = true;
+        for fingerprint in &selected {
+            if !service::retained_finding_needs_sanitized_republish_holding(
+                &mut store,
+                &locks,
+                fingerprint,
+            )? {
+                retained_only = false;
+                break;
+            }
+        }
+        if retained_only {
+            return finish_sanitized_republish(
+                &mut store,
+                &locks,
+                &checkpoint_config,
+                &checkpoint_base,
+                SanitizedRepublishRequest {
+                    actor,
+                    reason,
+                    dry_run: opts.dry_run,
+                    json: opts.json,
+                },
+            );
+        }
+    }
     let fingerprint = selected
         .first()
         .ok_or_else(|| Error::cli_usage("--finding, --all-blocking, or --resume is required"))?;
@@ -548,6 +596,82 @@ fn cmd_redact(opts: cli::RedactOptions) -> Result<()> {
         )?
     };
     print_redaction_receipt(&receipt, opts.json)
+}
+
+fn validate_sanitized_republish_metadata(actor: &str, reason: &str) -> Result<()> {
+    crate::model::redaction::validate_actor(actor)?;
+    crate::model::redaction::validate_reason(reason)?;
+    let config = scan::ScanConfig::enforce();
+    let report = scan::scan(
+        &config,
+        "secret-quarantine-reset",
+        &[
+            scan::Field::new("actor", actor),
+            scan::Field::new("reason", reason),
+        ],
+    );
+    if let Some(rejection) = scan::reject_if_blocked(&config, &report) {
+        return Err(Error::validation(rejection.message));
+    }
+    Ok(())
+}
+
+struct SanitizedRepublishRequest<'a> {
+    actor: &'a str,
+    reason: &'a str,
+    dry_run: bool,
+    json: bool,
+}
+
+fn finish_sanitized_republish(
+    store: &mut store::SqliteStore,
+    locks: &service::RedactionLocks,
+    checkpoint_config: &service::CheckpointConfig,
+    checkpoint_base: &std::path::Path,
+    request: SanitizedRepublishRequest<'_>,
+) -> Result<()> {
+    service::secret_boundary::verify_quarantine_republish(store.conn())?;
+    if request.dry_run {
+        if request.json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "dry_run": true,
+                    "sanitized_republish": true,
+                    "previous_generation_reset": true,
+                }))?
+            );
+        } else {
+            println!("Dry-run: clean live state can replace both retained generations");
+        }
+        return Ok(());
+    }
+
+    let result = service::publish_sanitized_recovery_checkpoint_holding(
+        locks.checkpoint_publication_lock(),
+        store,
+        checkpoint_config,
+        checkpoint_base,
+        request.actor,
+        request.reason,
+    )?;
+    if request.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "sanitized_republish": true,
+                "previous_generation_reset": true,
+                "generation_id": result.generation_id,
+                "covered_sequence": result.covered_sequence,
+                "changed_paths": result.changed_paths,
+            }))?
+        );
+    } else {
+        println!("Sanitized checkpoint generation set published");
+        println!("  Generation: {}", result.generation_id);
+        println!("  Both retained pointers reset; quarantine cleared");
+    }
+    Ok(())
 }
 
 fn publish_redaction_or_split(
