@@ -312,6 +312,21 @@ fn workspace_configuration_defaults_to_enforce_and_loads_exact_acknowledgments()
 }
 
 #[test]
+fn kubernetes_secret_yaml_does_not_cross_document_boundary() {
+    let text = "kind: Secret\n---\nkind: ConfigMap\ndata:\n  APP_ENVIRONMENT: production-east-1\n";
+    let report = scan(
+        &ScanConfig::enforce(),
+        "issue:multi-document-yaml",
+        &[Field::new("description", text)],
+    );
+
+    assert!(!report
+        .findings
+        .iter()
+        .any(|finding| finding.rule_id == "kubernetes-secret-data"));
+}
+
+#[test]
 fn workspace_configuration_fails_closed_without_echoing_content() {
     let workspace = tempfile::tempdir().unwrap();
     std::fs::create_dir(workspace.path().join(".beads")).unwrap();
