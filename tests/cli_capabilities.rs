@@ -27,6 +27,14 @@ fn secret_scan_capability_uses_compiled_default_without_workspace() {
         bead_rs::scan::RULESET_VERSION
     );
     assert_eq!(capabilities["secret_scan"]["effective_mode"], "enforce");
+    assert_eq!(
+        capabilities["secret_scan"]["compiled_policy"],
+        if cfg!(feature = "managed-secret-policy") {
+            "managed-enforce-no-ack"
+        } else {
+            "workspace-configurable"
+        }
+    );
     assert_eq!(capabilities["secret_scan"]["blocking"], true);
     assert_eq!(capabilities["secret_scan"]["advisory"], true);
     assert_eq!(
@@ -62,6 +70,15 @@ fn secret_scan_capability_reports_effective_workspace_mode() {
     assert!(output.status.success());
     let capabilities: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(capabilities["secret_scan"]["effective_mode"], "off");
+    assert_eq!(
+        capabilities["secret_scan"]["compiled_policy"],
+        "workspace-configurable"
+    );
+    assert!(
+        capabilities["secret_scan"]["exact_fingerprint_acknowledgment"]
+            .as_bool()
+            .unwrap()
+    );
 }
 
 #[test]

@@ -309,14 +309,10 @@ pub fn generate_capabilities_with_secret_mode(
             effective_mode: secret_mode.as_str().to_string(),
             blocking: true,
             advisory: true,
-            exact_fingerprint_acknowledgment: !cfg!(feature = "managed-secret-policy"),
+            exact_fingerprint_acknowledgment:
+                crate::scan::exact_fingerprint_acknowledgment_supported(),
             ruleset_contract: crate::scan::rules::RULESET_CONTRACT.to_string(),
-            compiled_policy: if cfg!(feature = "managed-secret-policy") {
-                "managed-enforce-no-ack"
-            } else {
-                "workspace-configurable"
-            }
-            .to_string(),
+            compiled_policy: crate::scan::compiled_policy_identity().to_string(),
             service_write_gate: true,
             recovery_quarantine: true,
         }),

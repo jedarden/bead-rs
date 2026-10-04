@@ -103,6 +103,24 @@ pub enum Mode {
     Off,
 }
 
+/// Stable operator-facing identity for this artifact's workspace policy.
+///
+/// This is compiled into the binary so a workspace file cannot make a
+/// managed artifact advertise itself as general purpose (or vice versa).
+pub(crate) const fn compiled_policy_identity() -> &'static str {
+    if cfg!(feature = "managed-secret-policy") {
+        "managed-enforce-no-ack"
+    } else {
+        "workspace-configurable"
+    }
+}
+
+/// Whether an operator may admit an exact finding by fingerprint in this
+/// build. Managed artifacts deliberately expose no such override.
+pub(crate) const fn exact_fingerprint_acknowledgment_supported() -> bool {
+    !cfg!(feature = "managed-secret-policy")
+}
+
 impl Mode {
     pub fn as_str(self) -> &'static str {
         match self {

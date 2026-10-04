@@ -16,6 +16,11 @@ pub struct SecretDiagnosticsReport {
     pub contract_identity: String,
     pub ruleset_version: u32,
     pub effective_mode: String,
+    /// Artifact policy identity, fixed at build time and independent of
+    /// workspace-controlled settings.
+    pub compiled_policy: String,
+    /// Whether this artifact permits exact-fingerprint acknowledgments.
+    pub exact_fingerprint_acknowledgment: bool,
     pub live_fields_scanned: usize,
     pub checkpoint_generations_scanned: Vec<String>,
     pub blocking_findings: usize,
@@ -275,6 +280,8 @@ pub fn run_secret_diagnostics(store: &impl Store) -> Result<SecretDiagnosticsRep
         contract_identity: CONTRACT_IDENTITY.to_string(),
         ruleset_version: scan::RULESET_VERSION,
         effective_mode: effective.mode().as_str().to_string(),
+        compiled_policy: scan::compiled_policy_identity().to_string(),
+        exact_fingerprint_acknowledgment: scan::exact_fingerprint_acknowledgment_supported(),
         live_fields_scanned,
         checkpoint_generations_scanned,
         blocking_findings,

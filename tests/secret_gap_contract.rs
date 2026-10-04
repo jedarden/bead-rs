@@ -803,6 +803,18 @@ fn first_checkpoint_publication_reports_previous_generation_absent() {
         .find(|check| check.name == "secret_scan")
         .unwrap();
     let details = check.details.as_ref().unwrap();
+    assert_eq!(
+        details["compiled_policy"],
+        if cfg!(feature = "managed-secret-policy") {
+            "managed-enforce-no-ack"
+        } else {
+            "workspace-configurable"
+        }
+    );
+    assert_eq!(
+        details["exact_fingerprint_acknowledgment"],
+        !cfg!(feature = "managed-secret-policy")
+    );
     assert!(details["coverage"]
         .as_array()
         .unwrap()
@@ -1056,16 +1068,72 @@ fn managed_policy_refuses_workspace_downgrades_and_acknowledgments() {
     let (root, mut store) = workspace();
     let path = root.path().join(".beads/config.json");
     let original: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let config = WorkspaceConfig {
+        root: root.path().to_path_buf(),
+        uuid: store
+            .conn()
+            .query_row("SELECT uuid FROM workspace", [], |row| row.get(0))
+            .unwrap(),
+        prefix: "gap".to_string(),
+    };
+    let candidate = provider();
     for mode in ["off", "advisory"] {
         let mut altered = original.clone();
         altered["secret_scan"]["mode"] = Value::String(mode.to_string());
         std::fs::write(&path, serde_json::to_vec(&altered).unwrap()).unwrap();
+        let direct_error = issues::create_issue(
+            store.conn(),
+            &config,
+            "clean title".to_string(),
+            Some(candidate.clone()),
+            2,
+            None,
+            None,
+            vec![],
+            vec![],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(!direct_error.contains(&candidate));
         let output = bead(root.path())
             .args(["create", "--title", "clean"])
             .output()
             .unwrap();
         assert!(!output.status.success());
     }
+
+    // A malformed policy value that itself resembles a credential is never
+    // echoed by service failures, doctor details, or capability diagnostics.
+    let mut altered = original.clone();
+    altered["secret_scan"]["mode"] = Value::String(candidate.clone());
+    std::fs::write(&path, serde_json::to_vec(&altered).unwrap()).unwrap();
+    let direct_error = issues::create_issue(
+        store.conn(),
+        &config,
+        "clean title".to_string(),
+        Some(candidate.clone()),
+        2,
+        None,
+        None,
+        vec![],
+        vec![],
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(!direct_error.contains(&candidate));
+    let diagnostics = bead_rs::service::doctor::run_diagnostics_with_scopes(
+        &store,
+        &[bead_rs::service::doctor::DiagnosticScope::Secrets],
+    )
+    .unwrap();
+    assert!(diagnostics.has_errors);
+    assert!(!serde_json::to_string(&diagnostics)
+        .unwrap()
+        .contains(&candidate));
+    let output = bead(root.path()).args(["capabilities"]).output().unwrap();
+    assert!(!output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stderr).contains(&candidate));
+
     std::fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
     let output = bead(root.path())
         .args([
@@ -1092,6 +1160,24 @@ fn managed_policy_refuses_workspace_downgrades_and_acknowledgments() {
     );
     assert_eq!(
         capabilities["secret_scan"]["exact_fingerprint_acknowledgment"],
+        false
+    );
+    let diagnostics = bead_rs::service::doctor::run_diagnostics_with_scopes(
+        &store,
+        &[bead_rs::service::doctor::DiagnosticScope::Secrets],
+    )
+    .unwrap();
+    let secret_check = diagnostics
+        .checks
+        .iter()
+        .find(|check| check.name == "secret_scan")
+        .unwrap();
+    assert_eq!(
+        secret_check.details.as_ref().unwrap()["compiled_policy"],
+        "managed-enforce-no-ack"
+    );
+    assert_eq!(
+        secret_check.details.as_ref().unwrap()["exact_fingerprint_acknowledgment"],
         false
     );
 }
