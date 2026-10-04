@@ -97,6 +97,13 @@ fn copy_tree(source: &Path, target: &Path) {
     }
 }
 
+fn isolated_workspace_root(prefix: &str) -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix(prefix)
+        .tempdir_in("/var/tmp")
+        .unwrap()
+}
+
 #[test]
 fn direct_services_reject_without_cli_and_without_audit_side_effects() {
     let (root, mut store) = workspace();
@@ -1153,7 +1160,7 @@ fn imported_secret_is_quarantined_across_restart_until_redaction() {
 
 #[test]
 fn verified_restore_admits_secret_locally_but_withholds_new_checkpoint() {
-    let source_root = tempfile::tempdir().unwrap();
+    let source_root = isolated_workspace_root("bead-secret-restore-");
     bead(source_root.path())
         .args(["init", "--prefix", "gap"])
         .assert()
@@ -1197,7 +1204,7 @@ fn verified_restore_admits_secret_locally_but_withholds_new_checkpoint() {
         .unwrap()
         .to_string();
 
-    let target_root = tempfile::tempdir().unwrap();
+    let target_root = isolated_workspace_root("bead-secret-restore-target-");
     let output = bead(target_root.path())
         .args([
             "restore",
@@ -1256,7 +1263,7 @@ fn verified_restore_admits_secret_locally_but_withholds_new_checkpoint() {
 
 #[test]
 fn reconcile_secret_recovery_succeeds_locally_without_republishing() {
-    let source_root = tempfile::tempdir().unwrap();
+    let source_root = isolated_workspace_root("bead-secret-reconcile-");
     bead(source_root.path())
         .args(["init", "--prefix", "gap"])
         .assert()
@@ -1280,7 +1287,7 @@ fn reconcile_secret_recovery_succeeds_locally_without_republishing() {
     // Build a clean clone from the source's committed identity and checkpoint,
     // then activate it locally before the source advances. This mirrors the
     // transport shape without putting a candidate value in a fixture file.
-    let target_root = tempfile::tempdir().unwrap();
+    let target_root = isolated_workspace_root("bead-secret-reconcile-target-");
     fs::create_dir_all(target_root.path().join(".beads")).unwrap();
     fs::copy(
         source_root.path().join(".beads/config.json"),
