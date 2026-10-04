@@ -1,24 +1,25 @@
 # BR-T35 integrated independent review — secret ruleset v4
 
-Date: 2026-10-03.
+Date: 2026-10-04.
 
 Reviewer: OpenAI Codex, independent of the ADR/specification authors and
 implementation owners.
 
 ## Review boundary and method
 
-This is the integrated BR-T35 decision after the four focused predecessor
-reviews. The review used only the repository's ADRs, accepted specifications,
-the supplied repository fixture, and the four predecessor review records named
-below. No other implementation's source, tests, fixtures, scanner output, or
+This review integrates the four focused BR-T35 findings listed below and their
+subsequent scoped re-reviews where available. It checks the exact repository
+inputs identified in this record. Evidence comes only from repository ADRs,
+accepted specifications, the repository's independent fixture material, the
+focused review records, and harmless synthetic range examples in the raw-range
+review. No other bead implementation's source, tests, fixtures, output, or
 prose was inspected or used.
 
-The artifact hashes below were recomputed from the committed `HEAD` using
-`git show HEAD:<path> | sha256sum`. The section references were checked against
-those exact bytes. The supplied JSON fixture was checked as a nine-case
-manifest; it is a write-boundary fixture, not a ruleset-v4 truth table.
+Hashes below identify the committed inputs reviewed for this decision. The
+fixture JSON was parsed and checked for the nine expected write-boundary cases;
+it is not a ruleset-v4 detector truth table.
 
-## Reviewed artifact identities
+## Reviewed input identities
 
 | Artifact | SHA-256 |
 | --- | --- |
@@ -28,9 +29,22 @@ manifest; it is a write-boundary fixture, not a ruleset-v4 truth table.
 | `docs/adr/025-surface-advisory-findings-and-partial-scan-coverage.md` | `e13bda45279d2b875c9c2dce6d2bdc3e0471e91512cff22ec40487f1a0de4a33` |
 | `research/specs/secret-rejection-v1.md` | `f6aa7639a8ef1dd509b431853abf64db78d0923ef9e9d59b09e0a4e0e55df231` |
 | `research/specs/needle-cli-contract-v1.md` | `64a4057bdec893d81e42a3f23bff86f225a302fc3b5fec18d8ab5cf414ad7233` |
+| `research/specs/historical-redaction-v1.md` | `5658ac80cf9594283ddf65742aff2f4b2020a0a7869a612ee2230ed99033a016` |
+| `man/man1/bead-redact.1` | `957b8b72fee4ecbd0a71520b045794b219dbaae5c5d2d0d96eef3dd60f746153` |
+| `research/fixtures/README.md` | `dfd99a8d7a5272dc92e5ec5be16a5f50a426e507bcf3ea866e41bbd910284b64` |
 | `research/fixtures/secret-write-boundary-v1.json` | `c75f4dbf6242ced3c7e21e501e1de7a0fbef2a5371c601957c809043f0996710` |
+| `docs/reviews/r038-specification-acceptance-2026-09-03.md` | `a7622b292729a33788ea36340946fd8be5495554510ecc839aebf8763903da8a` |
 
-The target artifact for this decision is therefore exactly:
+The three committed focused-review artifacts also used to integrate the
+evidence are:
+
+| Focused review artifact | SHA-256 |
+| --- | --- |
+| `docs/reviews/br-t41-randomness-excluded-identifiers-independent-review-2026-10-04.md` | `5d222327393f9155e5ee21fd2474952b5a5a5f7c30efb0ba33c6b068eb7e28e4` |
+| `docs/reviews/beadrs-524683b8-ruleset-v4-decoded-jwt-table-row-review-2026-10-04.md` | `a0b8293c6152647ce9807fb6afcf5f65ad1b8b0320c3ab20511b50cc830ad8be` |
+| `docs/reviews/beadrs-db0131b7-ruleset-v4-raw-range-redact-review-2026-10-04.md` | `0746141e99d947464e3233d1da8174e7698c8c8b7d78215da4fd8245d72a17c0` |
+
+The exact target of the integrated decision is:
 
 ```text
 research/specs/secret-ruleset-v4.md
@@ -39,82 +53,53 @@ SHA-256: bad7c8102086d8128465e284b839673ceceb84b28e3ea7bf55835dfaee5ad5a9
 
 ## Integrated predecessor findings
 
-All four focused findings are actionable rejections of the current hash:
+| Focused finding | Integrated evidence and disposition |
+| --- | --- |
+| `beadrs-cf4b2115`, randomness qualifier and identifier truth table; reaffirmed by `beadrs-7ee540ac` and its review artifact above | **Actionable rejection.** Section 2.2 does not define word-run consumption/advancement or provide the required exact Q boundary rows. Section 4.4 leaves identifier/exclusion tokenization and assignment/value-span precedence underspecified. The write-boundary fixture contains no Q or exclusion cases. |
+| `beadrs-ba83ea53`, decoded views, JWTs, and table rows; re-reviewed by `beadrs-524683b8` and its review artifact above | **Actionable rejection.** Section 3.2 does not define qualifying-run selection, over-limit disposition/slot accounting, or a complete lenient base64 grammar. JWT and table-row blocking intent is present, but decoded-view reach and pipe-row parsing are not deterministic. The fixture set has no v4 decoded/JWT/table-row truth cases. |
+| `beadrs-e78cea45`, raw ranges and `bead redact`; narrowed by `beadrs-db0131b7` and its review artifact above | **Section 3.4 accepted for range construction only.** The later review's independent vectors support valid raw half-open covering ranges and the v1 fingerprint/redaction revalidation contract. This scoped acceptance does not establish runtime conformance or resolve the earlier URI percent-decoding ambiguity between sections 3.2 and 4.3. The wider decoded-run redaction cost remains an explicit privacy/content-preservation tradeoff. |
+| `beadrs-aaaebec9`, write-time advisory output and threat model | **Actionable rejection.** ADR-025 and section 5.2 do not fix the advisory JSON type/location, count and deduplication basis, stable rule order, or exact one-line stderr serialization. NEEDLE permits stderr diagnostics and additive JSON, but does not supply those missing semantics. |
 
-1. `beadrs-cf4b2115` reviewed ADR-023 Decision item 5, ruleset-v4 §§2.2
-   and 4.4, and the accepted v1 contract. It found no published Q/exclusion
-   truth table or v4 fixture rows, and found undefined word-run consumption,
-   identifier and bead-ID shape, overlapping assignment operators, whitespace
-   precedence, pipe-row delimiter precedence, and exact value/quote/trimming
-   spans. The integer predicates are deterministic only after those parsing
-   choices are fixed.
-
-2. `beadrs-ba83ea53` reviewed ADR-023 Decision items 2–5, ADR-024 Decision
-   items 1–5, ruleset-v4 §§3.1–3.4, 4.1, 4.4, and 4.5, plus the supplied
-   fixture. It found that the first-64 decoded-run selection, over-limit
-   handling, run-slot accounting, independent-run boundaries, and lenient
-   base64 grammar are unspecified. Direct JWT and unambiguous table-row
-   intent is present, but decoded-view JWTs and pipe-form rows are not
-   deterministic. It also confirms the fixture has no v4 decoded/JWT/table
-   truth rows.
-
-3. `beadrs-e78cea45` reviewed ruleset-v4 §3.4 against ADR-024 and accepted
-   secret-rejection-v1. It found that a derived-view match lacks a normative
-   per-byte source map and half-open raw envelope, including nonempty-range and
-   UTF-8-boundary invariants. It also found that the URI requirement to apply
-   percent-decoding conflicts with the normalized view's printable-only
-   decoding. Until resolved, a fingerprint may not be portable to
-   `bead redact` even though redaction revalidation rejects mismatched ranges.
-
-4. `beadrs-aaaebec9` reviewed ADR-025 Decision item 2 and consequence note,
-   ruleset-v4 §5.2, NEEDLE CLI contract v1, and secret-rejection-v1. It found
-   that `secret_scan.advisory_findings` has no normative JSON type, placement,
-   count/deduplication basis, or rule-ID order, and that the exact one-line
-   stderr serialization is unspecified. Stderr routing and additive JSON are
-   compatible in principle, but the exact contract is not.
-
-These records agree on the release consequence: the current contract cannot
-produce deterministic findings, fingerprints, redaction ranges, or advisory
-output across independent conforming implementations.
+Together, the focused findings leave the full ruleset-v4 contract unable to
+produce deterministic blocking/advisory verdicts and machine-readable notices
+across independent implementations. The scoped section 3.4 acceptance removes
+the earlier raw-range-construction concern for that section; it does not
+resolve the independent URI-view ambiguity or the remaining findings above.
 
 ## Compatibility disposition
 
-**ACTIONABLE REJECTION.** The proposed ruleset-v4 direction is compatible in
-principle with the accepted v1 contract only if it preserves v1's raw-byte
-fingerprints and coordinates, exact-fingerprint acknowledgments, redaction
-revalidation, complete pre-transaction blocking scan, atomic rejection, and
-additive machine output. The current artifact does not specify enough of the
-new qualifier, parser, derived-view mapping, URI decoding, or advisory-output
-contract to make that compatibility reproducible. No v4 compatibility or
-conformance claim is accepted for the hash above.
+**ACTIONABLE REJECTION.** The v4 direction is compatible in principle as an
+explicitly versioned extension that preserves the accepted v1 contract's raw
+byte coordinates and fingerprints, exact-fingerprint acknowledgments,
+redaction revalidation, complete pre-transaction scan, atomic rejection, and
+additive machine output. The focused range review supports the section 3.4
+mapping and `bead redact` interface for unchanged content. However, unresolved
+qualifier/parser semantics, decoded-run selection and decoding, URI
+percent-decoding, and advisory output prevent independent implementations from
+reproducing the full v4 contract. No compatibility or conformance claim is
+accepted for the target hash.
 
 ## Threat-model disposition
 
-**ACTIONABLE REJECTION.** Undefined word-run and row parsing can change both
-the blocking verdict and the bytes selected for redaction. Undefined decoded
-run selection and base64 grammar can create detection gaps for encoded JWTs or
-private keys. Undefined source mapping and URI decoding can make a finding
-unredactable or cause divergent raw-byte replacement. Undefined advisory
-count/type/order can cause missed triage or incompatible automation; exposing
-unredacted values would also violate the accepted v1 no-value diagnostic rule.
-The offline, bounded, one-level-decoding, redacted-output goals are sound, but
-they are not enforceable as a deterministic threat-model boundary until the
-listed semantics are made normative.
+**ACTIONABLE REJECTION.** Undefined Q and label parsing can miss a labelled
+credential or reject ordinary metadata. Undefined decoded-run selection and
+grammar can miss encoded credentials or make JWT results implementation
+dependent. URI-view disagreement can change whether a finding exists, while
+divergent parsing changes its raw fingerprint and redaction reach. Advisory
+count/type/order ambiguity can break secret triage and automation; all emitted
+diagnostics must continue to omit matched bytes. Section 3.4's raw covering
+ranges provide a defensible redaction boundary for its scoped transforms, but
+the remaining gaps prevent this exact ruleset from serving as a reproducible
+release security boundary.
 
 ## Decision
 
-**REJECTED — actionable specification revision required.**
+**REJECTED — actionable specification and fixture revision required.**
 
-BR-T39 through BR-T44 must remain blocked. Before any of those beads can
-proceed, revise the specification and its fixtures to define:
-
-- the normative Q and exclusion truth table, word-run/maximal-consumption
-  semantics, identifier and bead-ID grammar, assignment precedence, and exact
-  value spans;
-- decoded-run selection and over-limit behavior, independent-run boundaries,
-  and an exact lenient-base64 grammar, with JWT and table-row truth rows;
-- the derived-view source-span map, raw half-open envelope invariants, and the
-  URI percent-decoding relationship;
-- the exact advisory JSON type/location/count semantics and stable redacted
-  stderr record; and
-- a new exact-hash independent review after those bytes change.
+BR-T39 through BR-T44 must remain blocked. Before release review, define the Q
+truth table and maximal word-run semantics; formalize identifier, exclusion,
+assignment, and value-span parsing; specify decoded-run ordering, overflow,
+and base64 grammar; resolve URI percent-decoding relative to the normalized
+view; define advisory JSON and stderr serialization; and add synthetic v4
+fixtures for these boundaries. Then review the changed bytes at a new exact
+hash. The scoped section 3.4 acceptance does not waive those requirements.
