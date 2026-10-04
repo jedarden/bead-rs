@@ -1152,6 +1152,109 @@ fn imported_secret_is_quarantined_across_restart_until_redaction() {
 }
 
 #[test]
+fn verified_restore_admits_secret_locally_but_withholds_new_checkpoint() {
+    let source_root = tempfile::tempdir().unwrap();
+    bead(source_root.path())
+        .args(["init", "--prefix", "gap"])
+        .assert()
+        .success();
+    bead(source_root.path())
+        .args(["create", "--title", "clean restore base"])
+        .assert()
+        .success();
+    bead(source_root.path())
+        .args(["sync", "flush-only"])
+        .assert()
+        .success();
+
+    // Model a legacy, already-published artifact: the direct SQL fixture is
+    // deliberately outside the public mutation gate, so it can be flushed
+    // into the source checkpoint without placing the candidate in this test
+    // file or in any diagnostic output.
+    let value = provider();
+    let mut source_store = SqliteStore::from_conn(
+        open_configured_connection(&source_root.path().join(".beads/beads.db")).unwrap(),
+    );
+    insert(source_store.conn(), &value);
+    source_store
+        .conn()
+        .execute(
+            "INSERT INTO events (issue_id, kind, actor, time, detail)
+             VALUES ('gap-1', 'legacy_fixture', 'fixture',
+                     '2026-10-03T00:02:00Z', '{}')",
+            [],
+        )
+        .unwrap();
+    bead(source_root.path())
+        .args(["sync", "flush-only"])
+        .assert()
+        .success();
+    let generation = serde_json::from_slice::<Value>(
+        &fs::read(source_root.path().join(".beads/checkpoint/current.json")).unwrap(),
+    )
+    .unwrap()["generation_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let target_root = tempfile::tempdir().unwrap();
+    let output = bead(target_root.path())
+        .args([
+            "restore",
+            "--source",
+            source_root
+                .path()
+                .join(".beads/checkpoint")
+                .to_str()
+                .unwrap(),
+            "--generation",
+            &generation,
+            "--actor",
+            "restore-operator",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.contains("\"secret_quarantined\": true"));
+    assert!(stdout.contains("\"checkpoint_publication_withheld\": true"));
+    assert!(stderr.contains("secret_quarantined"));
+    assert!(!stdout.contains(&value));
+    assert!(!stderr.contains(&value));
+
+    let conn = open_configured_connection(&target_root.path().join(".beads/beads.db")).unwrap();
+    assert_eq!(stored(&conn), value);
+    let quarantine: i64 = conn
+        .query_row("SELECT COUNT(*) FROM secret_quarantine", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(quarantine, 1);
+    assert!(!target_root
+        .path()
+        .join(".beads/checkpoint/current.json")
+        .exists());
+
+    for args in [
+        vec!["sync", "flush-only"],
+        vec!["sync", "commit", "--dry-run"],
+    ] {
+        let blocked = bead(target_root.path()).args(args).output().unwrap();
+        assert!(!blocked.status.success());
+        let message = String::from_utf8_lossy(&blocked.stderr);
+        assert!(message.contains("secret_quarantined"));
+        assert!(!message.contains(&value));
+    }
+}
+
+#[test]
 fn reconcile_secret_recovery_succeeds_locally_without_republishing() {
     let source_root = tempfile::tempdir().unwrap();
     bead(source_root.path())
