@@ -18,11 +18,15 @@ restore contract:
 
 The sentinel names are not native-v1 fields and are deliberately distinct.
 `expected.json` is the comparison companion: it identifies each location and
-records the exact JSON value that must survive. The test compares these
-sentinels after native `sync import-only --restore-into-empty` and a fresh
-`sync flush-only` publication. It does not compare generated generation IDs,
-restore receipt IDs, publication timestamps, or content hashes; those are
-documented native rewrites.
+records the exact selector and JSON value that must survive. The test compares
+these sentinels after native `sync import-only --restore-into-empty` and a
+fresh `sync flush-only` publication. It also compares every source record and
+pointer member; the only differences it permits are the exact paths listed in
+`allowed_native_rewrites`. Each allowance names a scope, one JSON path, a
+rewrite kind, and a reason. Generated receipt fields are selected by their
+record type, kind, and actor rather than being ignored as an entire record.
+Malformed or incomplete sentinel coverage is rejected with a path-specific
+diagnostic before restore runs.
 
 The fixture uses monolithic mode so the complete restore input is easy to
 review: `current.json` selects `objects/unknown-fields.jsonl`, and the
