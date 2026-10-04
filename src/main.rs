@@ -3526,16 +3526,23 @@ fn load_dependencies(
     issue_id: &str,
 ) -> Result<Vec<serde_json::Value>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT blocker_issue_id, kind FROM dependencies WHERE blocked_issue_id = ?",
+        "SELECT dependency.blocker_issue_id, dependency.kind, blocker.base_status
+         FROM dependencies AS dependency
+         LEFT JOIN issues AS blocker ON blocker.id = dependency.blocker_issue_id
+         WHERE dependency.blocked_issue_id = ?",
     )?;
 
     let deps = stmt
         .query_map([issue_id], |row| {
             let blocker: String = row.get(0)?;
             let kind: String = row.get(1)?;
+            let blocker_status: Option<String> = row.get(2)?;
+            let finished = blocker_status.as_deref() == Some("closed");
             Ok(serde_json::json!({
                 "blocker": blocker,
-                "kind": kind
+                "kind": kind,
+                "blocker_status": blocker_status,
+                "finished": finished
             }))
         })?
         .collect::<std::result::Result<Vec<_>, _>>()
