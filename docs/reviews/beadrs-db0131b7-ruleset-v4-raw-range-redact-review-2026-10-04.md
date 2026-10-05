@@ -1,6 +1,6 @@
 # Ruleset v4 raw-range and redact compatibility review
 
-- Date: 2026-10-05 (post decoded-view review)
+- Date: 2026-10-04
 - Decision: **accepted for section 3.4 at the exact input hash below**
 - Scope: contract review only; this does not accept the rest of ruleset v4 or
   claim implementation conformance.
@@ -20,7 +20,7 @@ format-valid credential.
 | `research/specs/secret-rejection-v1.md` | `f6aa7639a8ef1dd509b431853abf64db78d0923ef9e9d59b09e0a4e0e55df231` |
 | `research/specs/historical-redaction-v1.md` | `5658ac80cf9594283ddf65742aff2f4b2020a0a7869a612ee2230ed99033a016` |
 | `man/man1/bead-redact.1` | `957b8b72fee4ecbd0a71520b045794b219dbaae5c5d2d0d96eef3dd60f746153` |
-| `research/fixtures/README.md` | `23af7f702d57f71cce99ec9e13807cce66285be996ba277f8c2074c8c9bc5b7d` |
+| `research/fixtures/README.md` | `dfd99a8d7a5272dc92e5ec5be16a5f50a426e507bcf3ea866e41bbd910284b64` |
 | `research/fixtures/secret-write-boundary-v1.json` | `c75f4dbf6242ced3c7e21e501e1de7a0fbef2a5371c601957c809043f0996710` |
 
 The committed fixture describes service and publication outcomes; it contains
@@ -87,26 +87,6 @@ intentional in the stated contract and favors removing all source material
 that contributed to the decoded candidate. The current dry-run path lets an
 operator inspect the selected effect before mutation. Fingerprints and
 diagnostics still contain no matched bytes.
-
-**Compatibility disposition: ACCEPTED, scoped to section 3.4.** The raw
-half-open range and range-byte fingerprint preserve the accepted v1 finding
-coordinates and let the existing fingerprint-only `bead redact` request
-recompute the same finding against unchanged live bytes. Ruleset-v4 findings
-must be re-derived by the same binary/ruleset; stale or changed live bytes
-conflict under the historical-redaction contract. No request or receipt shape
-change is needed. This does not accept other v4 view-selection or parser
-semantics, nor establish implementation conformance.
-
-**Threat-model disposition: ACCEPTED for source erasure, with bounded
-coverage and deliberate over-redaction.** Replacing the whole raw cover removes
-the stored syntax that contributed to a derived finding, including the full
-encoded run for decoded findings. That may also remove benign bytes, and the
-raw cover can exceed the normalized decoded-run limit when escapes or deleted
-controls enlarge its source span. This favors eliminating the contributing
-secret material over preserving adjacent content. The decision makes no claim
-that the scanner detects every credential; dry-run review, value-free output,
-and stale-fingerprint conflict remain the applicable controls. The synthetic
-vectors below contain no real or format-valid credentials.
 
 ## Decision
 
