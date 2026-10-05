@@ -1150,6 +1150,50 @@ fn redaction_rewrite_preserves_unknown_fields_on_the_rewritten_event() {
             .contains(&secret),
         "the redacted bytes must not survive anywhere in the published generation"
     );
+
+    // The redaction rewrite is only complete when its sanitized generation
+    // can make one more native export/import hop without dropping the
+    // untouched event extensions or any of the other object-level extras.
+    // This is deliberately after the redaction assertions above: checking
+    // only the first export would miss a restore projection that strips the
+    // fields from the sanitized history.
+    let redacted_checkpoint = round_tripped.join(".beads/checkpoint");
+    let final_round_trip = tempfile::Builder::new()
+        .prefix("ufk-redacted-round-trip-")
+        .tempdir_in("/var/tmp")
+        .unwrap();
+    init_workspace(final_round_trip.path());
+    restore_into_empty(
+        &redacted_checkpoint,
+        final_round_trip.path(),
+        "ufk-redacted-round-trip",
+        7,
+    );
+    create_issue(
+        final_round_trip.path(),
+        "generation probe 5 — forces the final redacted re-export",
+    );
+    flush(final_round_trip.path());
+    let generation_5 = active_generation_records(final_round_trip.path());
+
+    assert_levels_preserved(&generation_5, &generations, true);
+    assert_receipt_extension(&generation_5, &generations.receipt_with_extensions);
+    assert_pointer_extension(
+        &read_pointer(final_round_trip.path()),
+        "final redacted round-trip",
+    );
+    let final_rewritten = extended_event(&generation_5);
+    assert_eq!(
+        final_rewritten["detail"],
+        json!({ "credential": REDACTION_MARKER }),
+        "the final redacted export/import must retain the sanitized event detail"
+    );
+    assert!(
+        !serde_json::to_string(&generation_5)
+            .unwrap()
+            .contains(&secret),
+        "the redacted bytes must not reappear after the final export/import"
+    );
 }
 
 /// Remove one member from an object, refusing to continue when the member
