@@ -53,6 +53,18 @@ fn insert_issue(root: &Path, id: &str, description: &str) {
     .unwrap();
 }
 
+/// Assemble a historical secret-bearing checkpoint for redaction tests. The
+/// explicit CLI flush path is intentionally covered by these tests as a
+/// refusal boundary, so source construction uses the direct publisher to
+/// represent bytes that predate that boundary.
+fn publish_fixture_checkpoint(root: &Path) {
+    let conn = bead_rs::store::open_configured_connection(&database(root)).unwrap();
+    let mut store = bead_rs::store::SqliteStore::from_conn(conn);
+    let checkpoint_base = root.join(".beads");
+    let config = bead_rs::service::load_checkpoint_config(&checkpoint_base).unwrap();
+    bead_rs::service::publish_forensic_checkpoint(&mut store, &config, &checkpoint_base).unwrap();
+}
+
 fn finding(root: &Path) -> String {
     let conn = rusqlite::Connection::open(database(root)).unwrap();
     scan_live_findings(&conn)
@@ -134,10 +146,7 @@ fn retained_only_finding_clears_quarantine_by_sanitized_republish() {
     let workspace = temp_workspace("retained-only-quarantine");
     let secret = shaped_value();
     insert_issue(workspace.path(), "retained-only", &secret);
-    bead(workspace.path())
-        .args(["sync", "flush-only"])
-        .assert()
-        .success();
+    publish_fixture_checkpoint(workspace.path());
 
     let conn = rusqlite::Connection::open(database(workspace.path())).unwrap();
     conn.execute(
@@ -154,10 +163,7 @@ fn retained_only_finding_clears_quarantine_by_sanitized_republish() {
     )
     .unwrap();
     drop(conn);
-    bead(workspace.path())
-        .args(["sync", "flush-only"])
-        .assert()
-        .success();
+    publish_fixture_checkpoint(workspace.path());
 
     let clean_source = temp_workspace("retained-only-source");
     bead(clean_source.path())
@@ -334,10 +340,7 @@ fn assert_publication(mode: &str) {
         "redact-publish",
         &format!("before {secret} after"),
     );
-    bead(workspace.path())
-        .args(["sync", "flush-only"])
-        .assert()
-        .success();
+    publish_fixture_checkpoint(workspace.path());
 
     let dirty_pointer = pointer(workspace.path(), "current.json");
     let dirty_generation = dirty_pointer["generation_id"].as_str().unwrap().to_string();
@@ -516,10 +519,7 @@ fn retained_checkpoint_issue_fingerprint_redacts_live_description() {
             "redact-checkpoint-fingerprint",
             &format!("before {secret} after"),
         );
-        bead(workspace.path())
-            .args(["sync", "flush-only"])
-            .assert()
-            .success();
+        publish_fixture_checkpoint(workspace.path());
         if generation == "previous" {
             bead(workspace.path())
                 .args(["create", "--title", "advance checkpoint generation"])
@@ -622,10 +622,7 @@ fn stale_checkpoint_fingerprint_conflicts_without_redacting_live_description() {
         "stale-checkpoint-fingerprint",
         &format!("before {secret} after"),
     );
-    bead(workspace.path())
-        .args(["sync", "flush-only"])
-        .assert()
-        .success();
+    publish_fixture_checkpoint(workspace.path());
     let finding = checkpoint_description_finding(workspace.path(), "current");
     let fingerprint = finding["fingerprint"].as_str().unwrap();
 
@@ -675,10 +672,7 @@ fn resume_publishes_an_already_committed_semantic_redaction() {
     let workspace = temp_workspace("resume");
     let secret = shaped_value();
     insert_issue(workspace.path(), "redact-resume", &secret);
-    bead(workspace.path())
-        .args(["sync", "flush-only"])
-        .assert()
-        .success();
+    publish_fixture_checkpoint(workspace.path());
     let fingerprint = finding(workspace.path());
     let mut store = bead_rs::store::SqliteStore::from_conn(
         bead_rs::store::open_configured_connection(&database(workspace.path())).unwrap(),
@@ -714,10 +708,7 @@ fn old_restore_and_newer_merge_cannot_resurrect_redacted_bytes() {
     let workspace = temp_workspace("anti-resurrection");
     let secret = shaped_value();
     insert_issue(workspace.path(), "redact-recovery", &secret);
-    bead(workspace.path())
-        .args(["sync", "flush-only"])
-        .assert()
-        .success();
+    publish_fixture_checkpoint(workspace.path());
     let old_generation = pointer(workspace.path(), "current.json")["generation_id"]
         .as_str()
         .unwrap()
@@ -781,10 +772,7 @@ fn old_restore_and_newer_merge_cannot_resurrect_redacted_bytes() {
     )
     .unwrap();
     drop(conn);
-    bead(stale_source.path())
-        .args(["sync", "flush-only"])
-        .assert()
-        .success();
+    publish_fixture_checkpoint(stale_source.path());
     let source_pointer = pointer(stale_source.path(), "current.json");
     let source_root = stale_source
         .path()

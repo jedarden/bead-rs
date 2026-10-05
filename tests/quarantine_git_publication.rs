@@ -111,11 +111,11 @@ fn quarantine_withholds_staging_and_commit_until_sanitized_republish() {
         .assert()
         .success();
 
-    let secret = seed_secret_issue(workspace);
     bead(workspace)
         .args(["sync", "flush-only"])
         .assert()
         .success();
+    let secret = seed_secret_issue(workspace);
     git_ok(workspace, &["add", ".beads/checkpoint"]);
     git_ok(workspace, &["commit", "-q", "-m", "baseline checkpoint"]);
     let baseline_head = head(workspace);

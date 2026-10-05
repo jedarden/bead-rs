@@ -2248,7 +2248,11 @@ fn cmd_sync_flush_only(opts: cli::SyncFlushOptions) -> Result<()> {
 
     // Create store wrapper
     let mut store = store::SqliteStore::from_conn(conn);
-    service::secret_maintenance::ensure_publication_allowed(store.conn())?;
+
+    // Scan before either output mode. An explicit issue-only export is still
+    // a caller-requested checkpoint write, and the forensic path below has an
+    // idempotent short-circuit that must not hide a newly detected finding.
+    service::secret_boundary::detect_publication_quarantine(store.conn(), "sync flush-only")?;
 
     // If explicit output path provided, use pre-F017 issue-only export
     if let Some(ref output) = opts.output {

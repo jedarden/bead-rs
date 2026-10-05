@@ -1,7 +1,7 @@
 //! Workspace-bound scanner gate shared by CLI and direct public services.
 use crate::error::{Error, Result};
 use crate::scan::{self, Field, ScanConfig};
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -235,6 +235,66 @@ pub fn ensure_not_quarantined(conn: &Connection) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Scan the complete publication input before a checkpoint is created.
+///
+/// Recovery callers perform this scan inside their activation transaction,
+/// where the recovery audit event is the durable proof of the operation. A
+/// normal flush has no semantic mutation to audit, so a newly discovered
+/// blocking finding gets its own small transaction: the hold and its
+/// value-free audit event commit together, while no checkpoint file or Git
+/// index entry can be created before this function returns.
+///
+/// The caller must hold the workspace operation or checkpoint publication
+/// lock. The database transaction still makes concurrent callers serialize at
+/// the SQLite boundary, and the existing hold is never cleared by a scan.
+#[allow(dead_code)]
+pub(crate) fn detect_publication_quarantine(conn: &Connection, operation: &str) -> Result<()> {
+    super::secret_maintenance::ensure_publication_allowed(conn)?;
+
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let held_before: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM secret_quarantine)",
+        [],
+        |row| row.get(0),
+    )?;
+
+    // A held workspace is rejected by the final gate below. Avoid rescanning
+    // it here: the hold is durable evidence that an audited resolution is
+    // required, not a state an ordinary publisher may re-evaluate away.
+    if !held_before {
+        quarantine_recovery(&tx)?;
+    }
+
+    let held_after: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM secret_quarantine)",
+        [],
+        |row| row.get(0),
+    )?;
+    if held_after && !held_before {
+        let (blocking_count, coverage_incomplete): (i64, bool) = tx.query_row(
+            "SELECT blocking_count, coverage_incomplete
+             FROM secret_quarantine WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        tx.execute(
+            "INSERT INTO events (kind, actor, time, detail)
+             VALUES ('secret_quarantine_detected', 'system', datetime('now'), ?1)",
+            [serde_json::json!({
+                "operation": operation,
+                "blocking_count": blocking_count,
+                "coverage_incomplete": coverage_incomplete,
+            })
+            .to_string()],
+        )?;
+    }
+    tx.commit()?;
+
+    // This second gate reports only stable, redacted hold metadata and also
+    // catches a hold committed by a concurrent publisher while this scan ran.
+    super::secret_maintenance::ensure_publication_allowed(conn)
 }
 
 /// Return only scanner rule identities for an active quarantine. Findings are

@@ -199,6 +199,18 @@ fn set_auto_flush(root: &Path, enabled: bool) {
     fs::write(&path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
 }
 
+/// Build a deliberately secret-bearing source checkpoint for recovery tests.
+/// The explicit CLI flush path is the behavior under test and now refuses to
+/// create this source artifact; the direct publisher is used only to assemble
+/// the pre-existing historical input that restore/import/reconcile must hold.
+fn publish_source_checkpoint(root: &Path) {
+    let conn = open_configured_connection(&root.join(".beads/beads.db")).unwrap();
+    let mut store = SqliteStore::from_conn(conn);
+    let checkpoint_base = root.join(".beads");
+    let config = bead_rs::service::load_checkpoint_config(&checkpoint_base).unwrap();
+    bead_rs::service::publish_forensic_checkpoint(&mut store, &config, &checkpoint_base).unwrap();
+}
+
 fn retained_secret_reconcile_pair() -> (tempfile::TempDir, tempfile::TempDir, String) {
     let source_root = isolated_workspace_root("bead-secret-reconcile-retained-");
     bead(source_root.path())
@@ -272,10 +284,7 @@ fn retained_secret_reconcile_pair() -> (tempfile::TempDir, tempfile::TempDir, St
             [&issue_id],
         )
         .unwrap();
-    bead(target_root.path())
-        .args(["sync", "flush-only"])
-        .assert()
-        .success();
+    publish_source_checkpoint(target_root.path());
 
     target_store
         .conn()
@@ -293,10 +302,7 @@ fn retained_secret_reconcile_pair() -> (tempfile::TempDir, tempfile::TempDir, St
             [&issue_id],
         )
         .unwrap();
-    bead(target_root.path())
-        .args(["sync", "flush-only"])
-        .assert()
-        .success();
+    publish_source_checkpoint(target_root.path());
     drop(target_store);
 
     let source_checkpoint = source_root.path().join(".beads/checkpoint");
@@ -337,13 +343,7 @@ fn published_secret_generation(prefix: &str) -> (tempfile::TempDir, String) {
             [],
         )
         .unwrap();
-    let output = bead(source_root.path())
-        .args(["sync", "flush-only"])
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-    assert!(!String::from_utf8_lossy(&output.stdout).contains(&value));
-    assert!(!String::from_utf8_lossy(&output.stderr).contains(&value));
+    publish_source_checkpoint(source_root.path());
     let generation = serde_json::from_slice::<Value>(
         &fs::read(source_root.path().join(".beads/checkpoint/current.json")).unwrap(),
     )
@@ -1338,6 +1338,101 @@ fn historical_resource_identity_is_admitted_to_quarantine_then_rekeyed() {
 }
 
 #[test]
+fn explicit_flush_detects_new_finding_before_idempotent_short_circuit() {
+    let (root, mut store) = workspace();
+    bead(root.path())
+        .args(["sync", "flush-only"])
+        .assert()
+        .success();
+    let checkpoint = root.path().join(".beads/checkpoint");
+    let published_before = checkpoint_state_snapshot(&checkpoint);
+
+    let value = provider();
+    insert(store.conn(), &value);
+    // Deliberately do not add an event: the pointer is still numerically
+    // aligned, so the command must scan before its idempotent return.
+    let refused = bead(root.path())
+        .args(["sync", "flush-only"])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    let stdout = String::from_utf8_lossy(&refused.stdout);
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(!stdout.contains(&value));
+    assert!(!stderr.contains(&value));
+    assert!(stderr.contains("secret_quarantined"));
+    assert_eq!(checkpoint_state_snapshot(&checkpoint), published_before);
+
+    let (quarantine_count, audit_count): (i64, i64) = store
+        .conn()
+        .query_row(
+            "SELECT
+                (SELECT COUNT(*) FROM secret_quarantine),
+                (SELECT COUNT(*) FROM events WHERE kind = 'secret_quarantine_detected')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(quarantine_count, 1);
+    assert_eq!(audit_count, 1);
+
+    let repeated = bead(root.path())
+        .args(["sync", "flush-only"])
+        .output()
+        .unwrap();
+    assert!(!repeated.status.success());
+    assert!(String::from_utf8_lossy(&repeated.stderr).contains("secret_quarantined"));
+    assert!(!String::from_utf8_lossy(&repeated.stderr).contains(&value));
+    let audit_count: i64 = store
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE kind = 'secret_quarantine_detected'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(audit_count, 1);
+    assert_eq!(checkpoint_state_snapshot(&checkpoint), published_before);
+}
+
+#[test]
+fn flush_quarantine_audit_failure_rolls_back_the_hold_and_checkpoint() {
+    let (root, mut store) = workspace();
+    bead(root.path())
+        .args(["sync", "flush-only"])
+        .assert()
+        .success();
+    let checkpoint = root.path().join(".beads/checkpoint");
+    let published_before = checkpoint_state_snapshot(&checkpoint);
+
+    let value = provider();
+    insert(store.conn(), &value);
+    let before = recovery_snapshot(store.conn());
+    store
+        .conn()
+        .execute_batch(
+            "CREATE TRIGGER fail_secret_quarantine_audit
+             BEFORE INSERT ON events
+             WHEN NEW.kind = 'secret_quarantine_detected'
+             BEGIN SELECT RAISE(ABORT, 'synthetic quarantine audit failure'); END",
+        )
+        .unwrap();
+
+    let refused = bead(root.path())
+        .args(["sync", "flush-only"])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    let stdout = String::from_utf8_lossy(&refused.stdout);
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(!stdout.contains(&value));
+    assert!(!stderr.contains(&value));
+    assert!(stderr.contains("synthetic quarantine audit failure"));
+    assert_eq!(recovery_snapshot(store.conn()), before);
+    assert_eq!(checkpoint_state_snapshot(&checkpoint), published_before);
+}
+
+#[test]
 fn imported_secret_is_quarantined_across_restart_until_redaction() {
     let (root, mut store) = workspace();
     let value = provider();
@@ -1705,10 +1800,7 @@ fn verified_restore_rolls_back_recovery_and_quarantine_together_on_quarantine_fa
         .args(["init", "--prefix", "gap", "--no-auto-flush"])
         .assert()
         .success();
-    bead(target_root.path())
-        .args(["sync", "flush-only"])
-        .assert()
-        .success();
+    publish_source_checkpoint(target_root.path());
     let pointer_before =
         fs::read(target_root.path().join(".beads/checkpoint/current.json")).unwrap();
     let mut target_store = SqliteStore::from_conn(
@@ -1894,10 +1986,7 @@ fn reconcile_secret_recovery_succeeds_locally_without_republishing() {
             [],
         )
         .unwrap();
-    bead(target_root.path())
-        .args(["sync", "flush-only"])
-        .assert()
-        .success();
+    publish_source_checkpoint(target_root.path());
 
     let source_checkpoint = source_root.path().join(".beads/checkpoint");
     fs::remove_dir_all(&source_checkpoint).unwrap();
