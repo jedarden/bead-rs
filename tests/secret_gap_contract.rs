@@ -1748,6 +1748,85 @@ fn verified_restore_rolls_back_recovery_and_quarantine_together_on_quarantine_fa
 }
 
 #[test]
+fn clean_restore_cannot_clear_an_existing_recovery_quarantine() {
+    let (target_root, mut target_store) = workspace();
+    let value = provider();
+    let import_input = target_root.path().join("historical.jsonl");
+    let (_secret_source, mut secret_source_store) = workspace();
+    insert(secret_source_store.conn(), &value);
+    bead_rs::service::flush_checkpoint(&mut secret_source_store, &import_input).unwrap();
+
+    let imported = bead(target_root.path())
+        .args([
+            "sync",
+            "import-only",
+            "--input",
+            "historical.jsonl",
+            "--restore-into-empty",
+            "--actor",
+            "recovery-operator",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(imported.status.success());
+    let imported_report: Value = serde_json::from_slice(&imported.stdout).unwrap();
+    assert_eq!(imported_report["secret_quarantined"], true);
+    assert!(!String::from_utf8_lossy(&imported.stdout).contains(&value));
+    assert!(!String::from_utf8_lossy(&imported.stderr).contains(&value));
+
+    let (_clean_source, mut clean_source_store) = workspace();
+    insert(clean_source_store.conn(), "clean recovery content");
+    bead(_clean_source.path())
+        .args(["sync", "flush-only"])
+        .assert()
+        .success();
+    let clean_checkpoint = _clean_source.path().join(".beads/checkpoint");
+    let clean_generation =
+        serde_json::from_slice::<Value>(&fs::read(clean_checkpoint.join("current.json")).unwrap())
+            .unwrap()["generation_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+    let restore = bead(target_root.path())
+        .args([
+            "restore",
+            "--source",
+            clean_checkpoint.to_str().unwrap(),
+            "--generation",
+            &clean_generation,
+            "--actor",
+            "recovery-operator",
+            "--allow-non-empty",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        restore.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restore.stderr)
+    );
+    let report: Value = serde_json::from_slice(&restore.stdout).unwrap();
+    assert_eq!(report["local_recovery_succeeded"], true);
+    assert_eq!(report["secret_quarantined"], true);
+    assert_eq!(report["checkpoint_publication_withheld"], true);
+    assert!(String::from_utf8_lossy(&restore.stderr).contains("secret_quarantined"));
+    assert!(!String::from_utf8_lossy(&restore.stdout).contains(&value));
+    assert!(!String::from_utf8_lossy(&restore.stderr).contains(&value));
+
+    let held: i64 = target_store
+        .conn()
+        .query_row("SELECT COUNT(*) FROM secret_quarantine", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(held, 1);
+}
+
+#[test]
 fn reconcile_secret_recovery_succeeds_locally_without_republishing() {
     let source_root = isolated_workspace_root("bead-secret-reconcile-");
     bead(source_root.path())

@@ -304,7 +304,20 @@ pub(crate) fn quarantine_recovery(conn: &Connection) -> Result<()> {
             ON CONFLICT(id) DO UPDATE SET ruleset_version=excluded.ruleset_version, blocking_count=excluded.blocking_count, coverage_incomplete=excluded.coverage_incomplete",
             rusqlite::params![scan::RULESET_VERSION, blocking as i64, incomplete])?;
     } else {
-        conn.execute("DELETE FROM secret_quarantine", [])?;
+        // Recovery is deliberately not a quarantine-clear transition. A
+        // repeated restore/import may replace the live state with clean data,
+        // but the durable hold must survive until an audited redaction or an
+        // explicitly reviewed resolution completes its publication protocol.
+        // Only those resolution paths may delete this row.
+        let held: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM secret_quarantine)",
+            [],
+            |row| row.get(0),
+        )?;
+        if !held {
+            // Keep the clean state canonical without manufacturing a row.
+            return Ok(());
+        }
     }
     Ok(())
 }
