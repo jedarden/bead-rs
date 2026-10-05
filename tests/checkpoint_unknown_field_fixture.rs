@@ -924,6 +924,111 @@ fn active_records(workspace: &Path, pointer: &Value) -> Vec<Value> {
     read_records(&root)
 }
 
+fn restore_and_export(source: &Path) -> TempDir {
+    let target = TempDir::new().unwrap();
+    bead(
+        target.path(),
+        &[
+            "init",
+            "--prefix",
+            "ufx",
+            "--no-auto-flush",
+            "--skip-foreign-workspace",
+        ],
+    )
+    .assert()
+    .success();
+    bead(
+        target.path(),
+        &[
+            "sync",
+            "import-only",
+            "--input",
+            source.to_str().unwrap(),
+            "--restore-into-empty",
+            "--actor",
+            "unknown-field-fixture-test",
+        ],
+    )
+    .assert()
+    .success();
+    bead(target.path(), &["sync", "flush-only"])
+        .assert()
+        .success();
+    target
+}
+
+fn remove_sentinel(records: &mut [Value], pointer: &mut Value, sentinel: &SentinelExpectation) {
+    if sentinel.level == "pointer" {
+        pointer
+            .as_object_mut()
+            .unwrap()
+            .remove(&sentinel.field)
+            .unwrap_or_else(|| panic!("pointer sentinel {} is missing", sentinel.field));
+        return;
+    }
+
+    let selector = object(&sentinel.selector, "sentinel selector");
+    if matches!(sentinel.level.as_str(), "issue" | "event" | "receipt") {
+        let record_type = selector["record_type"].as_str().unwrap();
+        let record = records
+            .iter_mut()
+            .find(|record| {
+                if record["record_type"] != record_type {
+                    return false;
+                }
+                let payload = &record[record_type];
+                selector
+                    .iter()
+                    .filter(|(key, _)| key.as_str() != "record_type")
+                    .all(|(key, value)| payload.get(key) == Some(value))
+            })
+            .unwrap_or_else(|| panic!("{} sentinel selector did not match", sentinel.level));
+        record[record_type]
+            .as_object_mut()
+            .unwrap()
+            .remove(&sentinel.field)
+            .unwrap_or_else(|| panic!("{} sentinel {} is missing", sentinel.level, sentinel.field));
+        return;
+    }
+
+    let issue_id = selector["id"].as_str().unwrap();
+    let issue_record = records
+        .iter_mut()
+        .find(|record| record["record_type"] == "issue" && record["issue"]["id"] == issue_id)
+        .unwrap_or_else(|| panic!("issue {issue_id} is missing"));
+    let issue = issue_record["issue"].as_object_mut().unwrap();
+    let selected = match sentinel.level.as_str() {
+        "dependency" => issue["dependencies"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|entry| entry["blocker"] == selector["dependency_blocker"])
+            .unwrap_or_else(|| panic!("dependency selector did not match")),
+        "external reference" => issue["external_references"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|entry| entry["key"] == selector["reference_key"])
+            .unwrap_or_else(|| panic!("external-reference selector did not match")),
+        "structured data" => issue["data"]
+            .get_mut(selector["data_namespace"].as_str().unwrap())
+            .unwrap_or_else(|| panic!("structured-data selector did not match")),
+        "resource key" => issue["resource_keys"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|entry| entry["resource_key"] == selector["resource_key"])
+            .unwrap_or_else(|| panic!("resource-key selector did not match")),
+        other => panic!("unsupported sentinel level {other:?}"),
+    };
+    selected
+        .as_object_mut()
+        .unwrap()
+        .remove(&sentinel.field)
+        .unwrap_or_else(|| panic!("{} sentinel {} is missing", sentinel.level, sentinel.field));
+}
+
 #[test]
 fn unknown_field_fixture_restores_and_republishes_all_required_levels() {
     let fixture = fixture_dir();
@@ -996,6 +1101,71 @@ fn unknown_field_fixture_restores_and_republishes_all_required_levels() {
         &expectations,
         "restored publication",
     );
+}
+
+#[test]
+fn unknown_field_fixture_survives_three_restore_export_generations() {
+    let expectations = fixture_expectations();
+    let pointer_allowances = pointer_allowances(&expectations);
+    let mut source = fixture_dir();
+    let mut expected_pointer = fixture_pointer();
+    let mut expected_records = fixture_records();
+    let mut generations = Vec::new();
+
+    for generation in 1..=3 {
+        let target = restore_and_export(&source);
+        let actual_pointer = read_json(&target.path().join(".beads/checkpoint/current.json"));
+        let actual_records = active_records(target.path(), &actual_pointer);
+        let phase = format!("generation {generation}");
+
+        assert_json_equal_except_allowances(
+            &expected_pointer,
+            &actual_pointer,
+            "",
+            &pointer_allowances,
+            &format!("{phase} pointer"),
+        );
+        assert_source_records_preserved(
+            &expected_records,
+            &actual_records,
+            &expectations,
+            &format!("{phase} records"),
+        );
+        assert_sentinels(&actual_records, &actual_pointer, &expectations, &phase);
+
+        expected_pointer = actual_pointer;
+        expected_records = actual_records;
+        source = target.path().join(".beads/checkpoint");
+        generations.push(target);
+    }
+}
+
+#[test]
+fn dropping_any_fixture_sentinel_trips_its_preservation_assertion() {
+    let expectations = fixture_expectations();
+    let records = fixture_records();
+    let pointer = fixture_pointer();
+
+    for sentinel in &expectations.sentinels {
+        let mut changed_records = records.clone();
+        let mut changed_pointer = pointer.clone();
+        remove_sentinel(&mut changed_records, &mut changed_pointer, sentinel);
+
+        let result = std::panic::catch_unwind(|| {
+            assert_sentinels(
+                &changed_records,
+                &changed_pointer,
+                &expectations,
+                "deliberately dropped field",
+            );
+        });
+        assert!(
+            result.is_err(),
+            "dropping the {} sentinel {} must fail preservation",
+            sentinel.level,
+            sentinel.field
+        );
+    }
 }
 
 #[test]
