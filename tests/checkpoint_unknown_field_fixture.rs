@@ -10,7 +10,10 @@
 //! permitted.
 
 use assert_cmd::Command;
-use serde_json::{Map, Value};
+use bead_rs::model::redaction::REDACTION_MARKER;
+use bead_rs::service::secret_diagnostics::scan_live_findings;
+use bead_rs::store::open_configured_connection;
+use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -128,6 +131,25 @@ const ISSUE_REWRITE_PATHS: &[&str] = &[
     "/labels",
     "/resource_keys",
     "/dependencies",
+];
+
+const REDACTION_POINTER_REWRITE_PATHS: &[&str] = &[
+    // Redaction marks that previous.json was reset to a sanitized generation.
+    "/previous_generation_reset",
+    "/superseded_generations",
+    "/generation_id",
+    "/active_root/path",
+    "/active_root/sha256",
+    "/snapshot_sequence",
+    "/added_paths",
+    "/replaced_paths",
+    "/deleted_paths",
+    "/event_count",
+    "/receipt_count",
+    "/redaction_record_count",
+    "/redaction_epoch_id",
+    "/total_record_count",
+    "/created_at",
 ];
 
 #[derive(Debug)]
@@ -715,6 +737,22 @@ fn record_key(record: &Value) -> String {
         "provenance_receipt" => {
             format!("id={}", record["provenance_receipt"]["receipt_id"])
         }
+        "redaction_receipt" => {
+            format!("id={}", record["redaction_receipt"]["receipt_id"])
+        }
+        "redaction_finding" => {
+            format!("fingerprint={}", record["redaction_finding"]["fingerprint"])
+        }
+        "redaction_acknowledgment" => {
+            format!(
+                "fingerprint={}",
+                record["redaction_acknowledgment"]["fingerprint"]
+            )
+        }
+        "redaction_epoch" => format!("id={}", record["redaction_epoch"]["epoch_id"]),
+        "redaction_tombstone" => {
+            format!("id={}", record["redaction_tombstone"]["tombstone_id"])
+        }
         other => panic!("unsupported checkpoint record type {other:?}"),
     };
     format!("{record_type}:{payload_key}")
@@ -725,6 +763,11 @@ fn record_payload(record: &Value) -> &Value {
         Some("issue") => &record["issue"],
         Some("event") => &record["event"],
         Some("provenance_receipt") => &record["provenance_receipt"],
+        Some("redaction_receipt") => &record["redaction_receipt"],
+        Some("redaction_finding") => &record["redaction_finding"],
+        Some("redaction_acknowledgment") => &record["redaction_acknowledgment"],
+        Some("redaction_epoch") => &record["redaction_epoch"],
+        Some("redaction_tombstone") => &record["redaction_tombstone"],
         Some(other) => panic!("unsupported checkpoint record type {other:?}"),
         None => panic!("record has no string record_type: {record}"),
     }
@@ -958,6 +1001,200 @@ fn restore_and_export(source: &Path) -> TempDir {
     target
 }
 
+fn restore_for_redaction(source: &Path) -> TempDir {
+    let target = TempDir::new().unwrap();
+    bead(
+        target.path(),
+        &[
+            "init",
+            "--prefix",
+            "ufx",
+            "--no-auto-flush",
+            "--skip-foreign-workspace",
+        ],
+    )
+    .assert()
+    .success();
+    bead(
+        target.path(),
+        &[
+            "sync",
+            "import-only",
+            "--input",
+            source.to_str().unwrap(),
+            "--restore-into-empty",
+            "--actor",
+            "unknown-field-fixture-test",
+        ],
+    )
+    .assert()
+    .success();
+    target
+}
+
+fn redaction_source(secret: &str) -> TempDir {
+    let source = TempDir::new().unwrap();
+    let mut pointer = fixture_pointer();
+    let records = redaction_fixture_records(secret);
+    let mut root_bytes = Vec::new();
+    for record in &records {
+        root_bytes.extend_from_slice(serde_json::to_string(record).unwrap().as_bytes());
+        root_bytes.push(b'\n');
+    }
+    pointer["active_root"]["sha256"] = json!(format!("{:x}", Sha256::digest(&root_bytes)));
+    fs::create_dir_all(source.path().join("objects")).unwrap();
+    fs::write(
+        source.path().join("objects/unknown-fields.jsonl"),
+        root_bytes,
+    )
+    .unwrap();
+    fs::write(
+        source.path().join("current.json"),
+        serde_json::to_vec_pretty(&pointer).unwrap(),
+    )
+    .unwrap();
+    source
+}
+
+fn redaction_fixture_records(secret: &str) -> Vec<Value> {
+    let mut records = fixture_records();
+    let event = records
+        .iter_mut()
+        .find(|record| {
+            record["record_type"] == "event"
+                && record["event"]["origin_store_uuid"] == "11111111-1111-4111-8111-111111111111"
+                && record["event"]["origin_event_sequence"] == 1
+        })
+        .expect("historical fixture event must exist");
+    event["event"]["detail"]["archived_excerpt"] =
+        json!(format!("Archived note contains {secret}"));
+    records
+}
+
+fn assert_redaction_preserved_records(
+    expected_records: &[Value],
+    after: &[Value],
+    expectations: &FixtureExpectations,
+    secret: &str,
+    phase: &str,
+) {
+    let mut after_by_key = HashMap::new();
+    for record in after {
+        let key = record_key(record);
+        assert!(
+            after_by_key.insert(key.clone(), record).is_none(),
+            "{phase}: duplicate checkpoint record {key}"
+        );
+    }
+
+    let mut redacted_source_events = 0;
+    for source_record in expected_records {
+        let key = record_key(source_record);
+        let actual = after_by_key
+            .get(&key)
+            .unwrap_or_else(|| panic!("{phase}: source checkpoint record {key} disappeared"));
+        let mut expected = source_record.clone();
+        if expected["record_type"] == "event"
+            && expected["event"]["origin_store_uuid"] == "11111111-1111-4111-8111-111111111111"
+            && expected["event"]["origin_event_sequence"] == 1
+        {
+            redacted_source_events += 1;
+            assert_eq!(
+                expected["event"]["detail"]["archived_excerpt"],
+                format!("Archived note contains {secret}"),
+                "{phase}: the selected historical event must contain the fixture value"
+            );
+            expected["event"]["detail"]["archived_excerpt"] =
+                json!(format!("Archived note contains {REDACTION_MARKER}"));
+        }
+        assert_json_equal_except_allowances(
+            record_payload(&expected),
+            record_payload(actual),
+            "",
+            &record_allowances(expectations, source_record),
+            &format!("{phase} source record {key}"),
+        );
+    }
+    assert_eq!(
+        redacted_source_events, 1,
+        "{phase}: one source event must be redacted"
+    );
+
+    let expected_keys: HashSet<_> = expected_records.iter().map(record_key).collect();
+    let extra: Vec<_> = after_by_key
+        .iter()
+        .filter(|(key, _)| !expected_keys.contains(*key))
+        .map(|(_, record)| *record)
+        .collect();
+    assert_eq!(
+        extra.len(),
+        6,
+        "{phase}: restore and redaction should append their receipt, audit, and redaction records"
+    );
+    assert_eq!(
+        extra
+            .iter()
+            .filter(|record| record["record_type"] == "event"
+                && record["event"]["kind"] == "historical_redaction")
+            .count(),
+        1,
+        "{phase}: expected exactly one historical-redaction audit event"
+    );
+    let receipts: Vec<_> = extra
+        .iter()
+        .filter(|record| record["record_type"] == "redaction_receipt")
+        .collect();
+    assert_eq!(
+        receipts.len(),
+        1,
+        "{phase}: expected exactly one redaction receipt"
+    );
+    assert_eq!(
+        receipts[0]["redaction_receipt"]["selector"]["field_path"], "detail",
+        "{phase}: receipt must identify the rewritten event field"
+    );
+    assert_eq!(
+        receipts[0]["redaction_receipt"]["selector"]["record_kind"],
+        "events"
+    );
+    assert_eq!(
+        receipts[0]["redaction_receipt"]["publication_state"],
+        "published"
+    );
+    let restore_receipts: Vec<_> = extra
+        .iter()
+        .filter(|record| record["record_type"] == "provenance_receipt")
+        .collect();
+    assert_eq!(
+        restore_receipts.len(),
+        1,
+        "{phase}: expected one restore receipt"
+    );
+    assert_eq!(restore_receipts[0]["provenance_receipt"]["kind"], "restore");
+    assert_eq!(
+        restore_receipts[0]["provenance_receipt"]["actor"],
+        "unknown-field-fixture-test"
+    );
+    for record_type in [
+        "redaction_finding",
+        "redaction_epoch",
+        "redaction_tombstone",
+    ] {
+        assert_eq!(
+            extra
+                .iter()
+                .filter(|record| record["record_type"] == record_type)
+                .count(),
+            1,
+            "{phase}: expected one generated {record_type}"
+        );
+    }
+    assert!(
+        !serde_json::to_string(after).unwrap().contains(secret),
+        "{phase}: sanitized checkpoint records still contain the selected value"
+    );
+}
+
 fn remove_sentinel(records: &mut [Value], pointer: &mut Value, sentinel: &SentinelExpectation) {
     if sentinel.level == "pointer" {
         pointer
@@ -1138,6 +1375,106 @@ fn unknown_field_fixture_survives_three_restore_export_generations() {
         source = target.path().join(".beads/checkpoint");
         generations.push(target);
     }
+}
+
+#[test]
+fn unknown_fields_survive_redaction_of_a_historical_event() {
+    let secret = ["AK", "IA", "7Q9W2E4R6T8Y1U3I"].concat();
+    let source = redaction_source(&secret);
+    let target = restore_for_redaction(source.path());
+    let expectations = fixture_expectations();
+    let source_pointer = read_json(&source.path().join("current.json"));
+    let source_records = redaction_fixture_records(&secret);
+    assert_sentinels(
+        &source_records,
+        &source_pointer,
+        &expectations,
+        "redaction source corpus",
+    );
+
+    let finding_fingerprint = {
+        let connection = open_configured_connection(&target.path().join(".beads/beads.db"))
+            .expect("restored fixture database must open");
+        let findings = scan_live_findings(&connection).expect("historical data must scan");
+        let matches: Vec<_> = findings
+            .into_iter()
+            .filter(|finding| {
+                finding.selector.starts_with("live:events:")
+                    && finding.field_path == "detail"
+                    && finding.rule_id == "aws-access-key-id"
+            })
+            .collect();
+        assert_eq!(matches.len(), 1, "fixture should expose one event finding");
+        matches[0].fingerprint.clone()
+    };
+
+    let output = bead(target.path(), &["redact"])
+        .args([
+            "--finding",
+            finding_fingerprint.as_str(),
+            "--actor",
+            "unknown-field-redaction-test",
+            "--reason",
+            "sanitize historical event fixture",
+            "--skip-foreign-workspace",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "redaction should publish the sanitized historical event: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains(&secret));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains(&secret));
+
+    let after_pointer = read_json(&target.path().join(".beads/checkpoint/current.json"));
+    let after_records = active_records(target.path(), &after_pointer);
+    assert_eq!(after_pointer["previous_generation_reset"], true);
+    assert!(after_pointer["redaction_epoch_id"].as_str().is_some());
+    assert!(after_pointer["superseded_generations"].is_array());
+    let mut pointer_allowances = pointer_allowances(&expectations);
+    pointer_allowances.extend(
+        REDACTION_POINTER_REWRITE_PATHS
+            .iter()
+            .map(|path| (*path).to_string()),
+    );
+    assert_json_equal_except_allowances(
+        &source_pointer,
+        &after_pointer,
+        "",
+        &pointer_allowances,
+        "redaction publication pointer",
+    );
+    assert_redaction_preserved_records(
+        &source_records,
+        &after_records,
+        &expectations,
+        &secret,
+        "redaction publication records",
+    );
+    assert_sentinels(
+        &after_records,
+        &after_pointer,
+        &expectations,
+        "redaction publication",
+    );
+
+    let previous_pointer = read_json(&target.path().join(".beads/checkpoint/previous.json"));
+    let previous_records = active_records(target.path(), &previous_pointer);
+    assert_sentinels(
+        &previous_records,
+        &previous_pointer,
+        &expectations,
+        "redaction previous generation",
+    );
+    assert!(
+        !serde_json::to_string(&previous_records)
+            .unwrap()
+            .contains(&secret),
+        "the retained previous generation must also be sanitized"
+    );
 }
 
 #[test]
