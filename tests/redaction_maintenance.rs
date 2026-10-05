@@ -37,10 +37,11 @@ fn fixture() -> (tempfile::TempDir, SqliteStore, String) {
          VALUES ('maint-1','stable title',?1,2,'task','open','2026-10-03T00:00:00Z','2026-10-03T00:00:00Z',1)",
         [&synthetic],
     ).unwrap();
-    bead(root.path())
-        .args(["sync", "flush-only"])
-        .assert()
-        .success();
+    // This intentionally secret-bearing fixture predates the public flush
+    // quarantine boundary, so construct its historical checkpoint directly.
+    let checkpoint_base = root.path().join(".beads");
+    let config = bead_rs::service::load_checkpoint_config(&checkpoint_base).unwrap();
+    bead_rs::service::publish_forensic_checkpoint(&mut store, &config, &checkpoint_base).unwrap();
     (root, store, synthetic)
 }
 
