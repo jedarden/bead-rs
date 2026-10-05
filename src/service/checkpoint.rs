@@ -1733,6 +1733,11 @@ pub fn import_checkpoint_with_diagnostics(
         });
     }
 
+    // Serialize recovery activation with publishers. In particular, a
+    // checkpoint publisher must not pass its quarantine check and then race
+    // an import that commits a quarantine before the pointer is replaced.
+    let _publication_lock = acquire_store_checkpoint_publication_lock(store)?;
+
     // Activate the staged data in a single transaction
     let (inserted, activation_sequence) = activate_import(store, &staging)?;
 
@@ -1791,6 +1796,54 @@ pub fn import_forensic_checkpoint(
     mode: ImportMode,
     actor: &str,
     dry_run: bool,
+) -> Result<FullImportResult> {
+    let publication_lock = if dry_run {
+        None
+    } else {
+        acquire_store_checkpoint_publication_lock(store)?
+    };
+    import_forensic_checkpoint_with_lock(
+        store,
+        input_path,
+        profile,
+        mode,
+        actor,
+        dry_run,
+        publication_lock.as_ref(),
+    )
+}
+
+/// Run forensic recovery while the caller already holds the destination
+/// checkpoint publication lock. `sync reconcile` uses this entry after it
+/// classifies the remote generation under the same lock.
+pub(crate) fn import_forensic_checkpoint_holding(
+    publication_lock: &CheckpointPublicationLock,
+    store: &mut SqliteStore,
+    input_path: &Path,
+    profile: &str,
+    mode: ImportMode,
+    actor: &str,
+    dry_run: bool,
+) -> Result<FullImportResult> {
+    import_forensic_checkpoint_with_lock(
+        store,
+        input_path,
+        profile,
+        mode,
+        actor,
+        dry_run,
+        Some(publication_lock),
+    )
+}
+
+fn import_forensic_checkpoint_with_lock(
+    store: &mut SqliteStore,
+    input_path: &Path,
+    profile: &str,
+    mode: ImportMode,
+    actor: &str,
+    dry_run: bool,
+    _publication_lock: Option<&CheckpointPublicationLock>,
 ) -> Result<FullImportResult> {
     validate_restore_actor(actor)?;
     let (staging, loss_report) = if profile == "native-v1" {
@@ -4416,6 +4469,10 @@ pub fn restore_verified_generation(
 ) -> Result<RestoreReport> {
     validate_restore_actor(actor)?;
     validate_forensic_contents(&verified.staging)?;
+    // The target publication lock also protects a restore into this
+    // workspace from racing an ordinary publisher that already checked its
+    // quarantine state but has not yet replaced the checkpoint pointers.
+    let _publication_lock = acquire_store_checkpoint_publication_lock(store)?;
 
     // Recheck the immutable root immediately before target inspection. The
     // CLI verifies the full source a second time after any auto-initialization;
@@ -7398,6 +7455,24 @@ pub fn acquire_checkpoint_publication_lock(
     checkpoint_dir: &Path,
 ) -> Result<CheckpointPublicationLock> {
     acquire_checkpoint_publication_lock_within(checkpoint_dir, PUBLICATION_LOCK_TIMEOUT)
+}
+
+/// Serialize a recovery activation with checkpoint publishers when its store
+/// belongs to a native workspace. In-memory and embedded stores have no
+/// durable checkpoint directory to coordinate with.
+fn acquire_store_checkpoint_publication_lock(
+    store: &mut SqliteStore,
+) -> Result<Option<CheckpointPublicationLock>> {
+    let Some(database_path) = store.conn().path().filter(|path| !path.is_empty()) else {
+        return Ok(None);
+    };
+    let checkpoint_dir = Path::new(database_path)
+        .parent()
+        .filter(|parent| parent.file_name().is_some_and(|name| name == ".beads"))
+        .map(|beads_dir| beads_dir.join("checkpoint"));
+    checkpoint_dir
+        .map(|path| acquire_checkpoint_publication_lock(&path))
+        .transpose()
 }
 
 fn acquire_checkpoint_publication_lock_within(
@@ -11024,6 +11099,41 @@ mod tests {
             std::time::Duration::from_millis(150),
         );
         assert!(reacquired.is_ok(), "a released lock must be acquirable");
+    }
+
+    /// Recovery activation uses this same store-derived lock before opening
+    /// its write transaction, so a publisher holding the lock completes its
+    /// quarantine verdict and pointer update first.
+    #[test]
+    fn recovery_activation_waits_for_the_publication_lock() {
+        let temp_dir = TempDir::new().unwrap();
+        let beads_dir = temp_dir.path().join(".beads");
+        fs::create_dir_all(&beads_dir).unwrap();
+        let database = beads_dir.join("beads.db");
+        let initial_store = SqliteStore::with_path(&database).unwrap();
+        drop(initial_store);
+
+        let held = acquire_checkpoint_publication_lock(&beads_dir.join("checkpoint")).unwrap();
+        let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+        let contender_database = database.clone();
+        let contender = std::thread::spawn(move || {
+            let mut store = SqliteStore::with_path(&contender_database).unwrap();
+            let lock = acquire_store_checkpoint_publication_lock(&mut store)
+                .unwrap()
+                .expect("native workspace recovery must take its publication lock");
+            acquired_tx.send(()).unwrap();
+            drop(lock);
+        });
+
+        assert!(matches!(
+            acquired_rx.recv_timeout(std::time::Duration::from_millis(150)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        drop(held);
+        acquired_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("recovery should continue after publication releases the lock");
+        contender.join().unwrap();
     }
 
     /// The lock file lives where publication can create it before its first

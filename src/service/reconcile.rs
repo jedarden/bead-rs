@@ -477,7 +477,8 @@ pub fn reconcile_checkpoint(
         }
     }
 
-    checkpoint::import_forensic_checkpoint(
+    checkpoint::import_forensic_checkpoint_holding(
+        &_publication,
         store,
         &checkpoint_base.join("checkpoint"),
         "native-v1",
