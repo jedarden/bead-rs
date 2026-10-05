@@ -119,7 +119,7 @@ a different blocking/advisory result depending on the choice.
 
 | Exclusion or shape | Synthetic evidence | Unresolved contract question |
 | --- | --- | --- |
-| Exact `acknowledge-secret` | `acknowledge-secret = a1B2c3D4e5F6g7H8` | Is this exact exclusion checked before Q, and does it suppress only `credential-assignment` or also the advisory fallback? |
+| Exact `acknowledge-secret` | `acknowledge-secret` paired with the exact Q12 boundary probe above | Is this exact exclusion checked before Q, and does it suppress only `credential-assignment` or also the advisory fallback? |
 | `secret_scan` / `secret-scan` prefix | `secret_scan_job`, `secret_scanX`, `secret-scan-job` | Does “beginning” mean raw byte prefix, a complete component, or a component followed by a separator? |
 | Fencing names | `fencing-token`, `fencing_token`, `fencing.tokens` | Are only the two spellings excluded, or are dot/camel variants equivalent under the undefined component lexer? |
 | Exact `max_tokens` | `max_tokens`, `max-tokens`, `maxTokens` | Does the statement that `-` substitutes for `_` apply to this exact exclusion, and does ASCII case-insensitivity apply before or after exclusion matching? |
