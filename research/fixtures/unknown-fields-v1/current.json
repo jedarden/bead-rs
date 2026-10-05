@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "generation_id": "generation-unknown-fields-v1",
+  "mode": "monolithic",
+  "store_uuid": "00000000-0000-4000-8000-000000000001",
+  "snapshot_sequence": 2,
+  "active_root": {
+    "path": "checkpoint.jsonl",
+    "sha256": "757f4e1a12d6dc7629aef6ae3d913262b0f191b664c6721d47c61af822c1a945"
+  },
+  "added_paths": ["checkpoint.jsonl"],
+  "replaced_paths": [],
+  "deleted_paths": [],
+  "issue_count": 2,
+  "event_count": 2,
+  "receipt_count": 1,
+  "total_record_count": 5,
+  "created_at": "2030-01-02T03:04:08.000000000Z",
+  "x-fixture-pointer": {
+    "marker": "pointer-extension",
+    "preserve": true
+  }
+}

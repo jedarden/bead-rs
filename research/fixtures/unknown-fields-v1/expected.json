@@ -1,0 +1,101 @@
+{
+  "fixture": "unknown-fields-v1",
+  "format": "checkpoint-set-v1",
+  "record_counts": {
+    "issues": 2,
+    "events": 2,
+    "provenance_receipts": 1,
+    "total": 5
+  },
+  "known_semantics": {
+    "issue_a": {
+      "id": "bead-unknown-a",
+      "title": "Unknown-field corpus anchor",
+      "base_status": "open",
+      "priority": 1,
+      "labels": ["fixture", "unknown-fields"],
+      "dependency": {
+        "blocker": "bead-unknown-b",
+        "kind": "blocks",
+        "condition": null
+      },
+      "external_reference": {
+        "namespace": "tracker",
+        "key": "case",
+        "value": "UF-001"
+      },
+      "resource_keys": ["build-cache/unknown-fields"],
+      "structured_data": {
+        "namespace": "fixture.namespace",
+        "schema_ref": "urn:fixture:schema:structured:v1",
+        "value": {
+          "answer": 42,
+          "enabled": true
+        }
+      }
+    },
+    "issue_b": {
+      "id": "bead-unknown-b",
+      "title": "Unknown-field corpus blocker",
+      "base_status": "closed",
+      "closed_at": "2030-01-02T03:04:07.000000000Z",
+      "close_reason": "fixture complete"
+    },
+    "event_a": {
+      "origin_store_uuid": "00000000-0000-4000-8000-000000000001",
+      "origin_event_sequence": 1,
+      "issue_id": "bead-unknown-a",
+      "kind": "updated"
+    },
+    "event_b": {
+      "origin_store_uuid": "00000000-0000-4000-8000-000000000001",
+      "origin_event_sequence": 2,
+      "issue_id": "bead-unknown-b",
+      "kind": "closed"
+    },
+    "receipt": {
+      "receipt_id": "receipt-unknown-fields-v1",
+      "kind": "restore",
+      "result": "success",
+      "counts": {
+        "issues": 2,
+        "events": 2,
+        "provenance_receipts": 0
+      }
+    },
+    "resource_key_probe": {
+      "key": "build-cache/unknown-fields"
+    }
+  },
+  "unknown_members": {
+    "/issue/bead-unknown-a/x-fixture-issue": {
+      "marker": "issue-extension",
+      "ordinal": 1
+    },
+    "/issue/bead-unknown-a/dependencies/0/x-fixture-dependency": true,
+    "/issue/bead-unknown-a/external_references/0/x-fixture-external-reference": null,
+    "/issue/bead-unknown-a/data/fixture.namespace/x-fixture-structured-data": {
+      "nested": ["keep", null, 3.5]
+    },
+    "/issue/bead-unknown-b/x-fixture-issue": ["issue-extension", false, null],
+    "/event/1/x-fixture-event": ["event-extension", 2],
+    "/event/2/x-fixture-event": {
+      "second": true
+    },
+    "/provenance_receipt/receipt-unknown-fields-v1/x-fixture-receipt": {
+      "marker": "receipt-extension",
+      "preserve": true
+    },
+    "/resource_key/build-cache~1unknown-fields/x-fixture-resource-key": "resource-extension",
+    "/pointer/current.json/x-fixture-pointer": {
+      "marker": "pointer-extension",
+      "preserve": true
+    }
+  },
+  "checksums": {
+    "checkpoint.jsonl": "757f4e1a12d6dc7629aef6ae3d913262b0f191b664c6721d47c61af822c1a945",
+    "current.json": "54334046f00ac8c4f2c906548061ba774dc3eb91957bc560dcac093521e28388",
+    "source_records_without_receipt": "6ccb48987debd5e611b5ef9235d287deb775947cd74b73ac6c8391adf0cfa0fb",
+    "receipt_without_digest": "93b4da5a2a74da421f706bc563171ca815f3b6923b6d1f7fc2ed5e3379fe7ae9"
+  }
+}

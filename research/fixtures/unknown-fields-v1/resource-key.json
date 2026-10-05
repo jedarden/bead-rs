@@ -1,0 +1,12 @@
+{
+  "resource_key": {
+    "key": "build-cache/unknown-fields",
+    "x-fixture-resource-key": "resource-extension"
+  },
+  "expected": {
+    "key": "build-cache/unknown-fields",
+    "unknown": {
+      "x-fixture-resource-key": "resource-extension"
+    }
+  }
+}
