@@ -192,6 +192,13 @@ fn checkpoint_state_snapshot(checkpoint: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     files
 }
 
+fn set_auto_flush(root: &Path, enabled: bool) {
+    let path = root.join(".beads/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    config["checkpoint"]["auto_flush"] = Value::Bool(enabled);
+    fs::write(&path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+}
+
 fn retained_secret_reconcile_pair() -> (tempfile::TempDir, tempfile::TempDir, String) {
     let source_root = isolated_workspace_root("bead-secret-reconcile-retained-");
     bead(source_root.path())
@@ -1418,6 +1425,177 @@ fn imported_secret_is_quarantined_across_restart_until_redaction() {
         .args(["sync", "flush-only"])
         .assert()
         .success();
+}
+
+#[test]
+fn checkpoint_publication_stays_withheld_across_restart_until_redaction() {
+    let (root, _) = workspace();
+    let value = provider();
+    let input = root.path().join("historical.jsonl");
+    let (_source, mut source_store) = workspace();
+    insert(source_store.conn(), &value);
+    bead_rs::service::flush_checkpoint(&mut source_store, &input).unwrap();
+
+    set_auto_flush(root.path(), true);
+    bead(root.path())
+        .args(["sync", "flush-only"])
+        .assert()
+        .success();
+    let checkpoint = root.path().join(".beads/checkpoint");
+    let published_before_recovery = checkpoint_state_snapshot(&checkpoint);
+
+    // This explicit recovery is allowed to commit locally. Its enabled
+    // automatic publisher must report the hold without changing the fileset.
+    let recovery = bead(root.path())
+        .args([
+            "sync",
+            "import-only",
+            "--input",
+            "historical.jsonl",
+            "--merge",
+            "--actor",
+            "tester",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(recovery.status.success());
+    let recovery_stdout = String::from_utf8_lossy(&recovery.stdout);
+    let recovery_stderr = String::from_utf8_lossy(&recovery.stderr);
+    assert!(recovery_stdout.contains("local_recovery_succeeded"));
+    assert!(recovery_stderr.contains("secret_quarantined"));
+    assert!(!recovery_stdout.contains(&value));
+    assert!(!recovery_stderr.contains(&value));
+    assert_eq!(
+        checkpoint_state_snapshot(&checkpoint),
+        published_before_recovery
+    );
+
+    // Exercise the locked public publisher directly as well as the CLI tail.
+    // Neither legacy export nor forensic publication may write while held.
+    let conn = open_configured_connection(&root.path().join(".beads/beads.db")).unwrap();
+    let mut store = SqliteStore::from_conn(conn);
+    let checkpoint_config =
+        bead_rs::service::load_checkpoint_config(&root.path().join(".beads")).unwrap();
+    let forensic = bead_rs::service::publish_forensic_checkpoint(
+        &mut store,
+        &checkpoint_config,
+        &root.path().join(".beads"),
+    )
+    .unwrap_err();
+    assert!(format!("{forensic:#}").contains("secret_quarantined"));
+    assert!(!format!("{forensic:#}").contains(&value));
+    let legacy_output = root.path().join("blocked-export.jsonl");
+    let legacy = bead_rs::service::flush_checkpoint(&mut store, &legacy_output).unwrap_err();
+    assert!(format!("{legacy:#}").contains("secret_quarantined"));
+    assert!(!format!("{legacy:#}").contains(&value));
+    assert!(!legacy_output.exists());
+    assert_eq!(
+        checkpoint_state_snapshot(&checkpoint),
+        published_before_recovery
+    );
+
+    // A second recovery under the per-invocation opt-out and later CLI
+    // invocations model process restarts. These settings cannot clear the
+    // durable quarantine, and repeated manual flushes remain refused.
+    let repeated_recovery = bead(root.path())
+        .args([
+            "--no-auto-flush",
+            "sync",
+            "import-only",
+            "--input",
+            "historical.jsonl",
+            "--merge",
+            "--actor",
+            "tester",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(repeated_recovery.status.success());
+    assert!(String::from_utf8_lossy(&repeated_recovery.stdout).contains("secret_quarantined"));
+    assert!(!String::from_utf8_lossy(&repeated_recovery.stdout).contains(&value));
+    set_auto_flush(root.path(), false);
+    for args in [
+        vec!["sync", "flush-only"],
+        vec!["--no-auto-flush", "sync", "flush-only"],
+    ] {
+        let blocked = bead(root.path()).args(args).output().unwrap();
+        assert!(!blocked.status.success());
+        let stdout = String::from_utf8_lossy(&blocked.stdout);
+        let stderr = String::from_utf8_lossy(&blocked.stderr);
+        assert!(stderr.contains("secret_quarantined"));
+        assert!(!stdout.contains(&value));
+        assert!(!stderr.contains(&value));
+        assert_eq!(
+            checkpoint_state_snapshot(&checkpoint),
+            published_before_recovery
+        );
+    }
+
+    let fingerprint = fingerprints(store.conn()).remove(0);
+    let redaction = bead(root.path())
+        .args([
+            "redact",
+            "--finding",
+            &fingerprint,
+            "--actor",
+            "tester",
+            "--reason",
+            "remove recovered synthetic finding",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        redaction.status.success(),
+        "{}",
+        String::from_utf8_lossy(&redaction.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&redaction.stdout).contains(&value));
+    assert!(!String::from_utf8_lossy(&redaction.stderr).contains(&value));
+    let diagnostics = bead(root.path())
+        .args(["doctor", "--scope", "secrets", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(diagnostics.status.success());
+    let diagnostic_json: Value = serde_json::from_slice(&diagnostics.stdout).unwrap();
+    let secret_report = &diagnostic_json["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["name"] == "secret_scan")
+        .unwrap()["details"];
+    assert_eq!(secret_report["quarantined"], false);
+    assert_eq!(secret_report["blocking_findings"], 0);
+    for generation in ["current", "previous"] {
+        assert!(secret_report["coverage"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|source| source["source"] == generation && source["status"] == "scanned"));
+    }
+    assert_eq!(
+        serde_json::from_slice::<Value>(&fs::read(checkpoint.join("current.json")).unwrap())
+            .unwrap()["generation_id"],
+        serde_json::from_slice::<Value>(&fs::read(checkpoint.join("previous.json")).unwrap())
+            .unwrap()["generation_id"]
+    );
+    assert_eq!(
+        store
+            .conn()
+            .query_row("SELECT COUNT(*) FROM secret_quarantine", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    for bytes in checkpoint_state_snapshot(&checkpoint).values() {
+        assert!(!bytes
+            .windows(value.len())
+            .any(|window| window == value.as_bytes()));
+    }
 }
 
 #[test]
