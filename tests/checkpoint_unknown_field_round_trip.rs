@@ -185,6 +185,19 @@ fn restore(source: &Path) -> TempDir {
     workspace
 }
 
+/// Publish a synthetic fixture directly. The fixture intentionally omits the
+/// retained-generation coverage required by the public flush boundary, so the
+/// deterministic re-export test uses the publisher only to manufacture its
+/// historical bytes. The explicit CLI path is covered by the flush tests.
+fn publish_fixture_checkpoint(workspace: &Path) {
+    let checkpoint_base = workspace.join(".beads");
+    let conn =
+        bead_rs::store::open_configured_connection(&checkpoint_base.join("beads.db")).unwrap();
+    let mut store = bead_rs::store::SqliteStore::from_conn(conn);
+    let config = bead_rs::service::load_checkpoint_config(&checkpoint_base).unwrap();
+    bead_rs::service::publish_forensic_checkpoint(&mut store, &config, &checkpoint_base).unwrap();
+}
+
 /// The `issue_extensions` rows of a workspace: issue ID -> key -> parsed
 /// JSON value.
 fn read_extensions(workspace: &Path) -> HashMap<String, serde_json::Map<String, Value>> {
@@ -666,11 +679,9 @@ fn sharded_flush_reprojects_unknown_fields() {
 /// deterministic: export loads the unknown fields from `issue_extensions`
 /// into a `HashMap`, so any leakage of its iteration order into the
 /// serialized generation would desynchronize two publications of the same
-/// unchanged store. The republication is triggered the way an interrupted
-/// publication triggers one in production (plan 6.2.1 item 8): the pointer
-/// is lost, so a clean `sync flush-only` must publish -- and because the
-/// root is content-addressed, byte-identical generation bytes must address
-/// the same object under the same hash.
+/// unchanged store. The pointer is removed between direct fixture
+/// publications to model the interrupted-publication state while keeping
+/// this byte-level test independent of the quarantine boundary.
 #[test]
 fn republishing_a_restored_store_reproduces_byte_identical_roots() {
     let workspace = restore(&fixture_dir().join("checkpoint.jsonl"));
@@ -678,13 +689,9 @@ fn republishing_a_restored_store_reproduces_byte_identical_roots() {
     let checkpoint_dir = workspace.path().join(".beads/checkpoint");
     let expected = expected_extensions(&fixture_issue_records());
 
-    // First publication. Losing the pointer makes flush-only publish even
-    // though the restored store is otherwise clean.
+    // First publication after losing the pointer.
     let _ = fs::remove_file(checkpoint_dir.join("current.json"));
-    bead(workspace.path(), &["sync", "flush-only"])
-        .assert()
-        .success()
-        .stderr(predicate::str::contains("Flushed forensic checkpoint:"));
+    publish_fixture_checkpoint(workspace.path());
     let first = read_pointer(checkpoint_dir.join("current.json"));
     let first_root = first["active_root"]["path"].as_str().unwrap().to_string();
     let first_bytes = fs::read(checkpoint_dir.join(&first_root)).unwrap();
@@ -692,10 +699,7 @@ fn republishing_a_restored_store_reproduces_byte_identical_roots() {
     // Second publication of the same unchanged store: the generation bytes
     // must reproduce exactly, so both generations address the same root.
     let _ = fs::remove_file(checkpoint_dir.join("current.json"));
-    bead(workspace.path(), &["sync", "flush-only"])
-        .assert()
-        .success()
-        .stderr(predicate::str::contains("Flushed forensic checkpoint:"));
+    publish_fixture_checkpoint(workspace.path());
     let second = read_pointer(checkpoint_dir.join("current.json"));
     let second_root = second["active_root"]["path"].as_str().unwrap().to_string();
 
