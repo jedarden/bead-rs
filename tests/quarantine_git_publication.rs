@@ -62,6 +62,34 @@ fn staged_paths(workspace: &Path) -> Vec<String> {
         .collect()
 }
 
+fn checkpoint_contains(workspace: &Path, candidate: &str) -> bool {
+    let checkpoint = workspace.join(".beads/checkpoint");
+    let mut pending = vec![checkpoint];
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = fs::read_dir(directory) else {
+            return true;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().ends_with(".lock"))
+            {
+                continue;
+            } else if fs::read(path).is_ok_and(|contents| {
+                contents
+                    .windows(candidate.len())
+                    .any(|w| w == candidate.as_bytes())
+            }) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn database(workspace: &Path) -> PathBuf {
     workspace.join(".beads/beads.db")
 }
@@ -198,4 +226,197 @@ fn quarantine_withholds_staging_and_commit_until_sanitized_republish() {
     );
     assert_ne!(head(workspace), baseline_head);
     assert!(staged_paths(workspace).contains(&"rival.txt".to_string()));
+}
+
+#[test]
+fn sync_commit_detects_a_new_finding_before_staging_and_commits_redaction_once() {
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = directory.path();
+    git_ok(workspace, &["init", "-q"]);
+    bead(workspace)
+        .args(["init", "--prefix", "qnew", "--no-auto-flush"])
+        .assert()
+        .success();
+    bead(workspace)
+        .args(["sync", "flush-only"])
+        .assert()
+        .success();
+    git_ok(workspace, &["add", ".beads/checkpoint"]);
+    git_ok(workspace, &["commit", "-q", "-m", "baseline checkpoint"]);
+
+    let baseline_head = head(workspace);
+    let baseline_index = index(workspace);
+    let checkpoint_status = git(
+        workspace,
+        &[
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+            "--",
+            ".beads/checkpoint",
+        ],
+    );
+    assert!(checkpoint_status.status.success());
+    let checkpoint_status = checkpoint_status.stdout;
+    let candidate = seed_secret_issue(workspace);
+
+    let dry_run = bead(workspace)
+        .args(["sync", "commit", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(!dry_run.status.success());
+    let dry_run_output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&dry_run.stdout),
+        String::from_utf8_lossy(&dry_run.stderr)
+    );
+    assert!(!dry_run_output.contains(&candidate));
+    assert_eq!(head(workspace), baseline_head);
+    assert_eq!(index(workspace), baseline_index);
+
+    // A quarantine-row failure rolls back the new hold and audit together.
+    // This is a local recovery failure only; it cannot write the Git index or
+    // checkpoint, and the source record remains available for a retry.
+    let conn = rusqlite::Connection::open(database(workspace)).unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER fail_quarantine_insert
+         BEFORE INSERT ON secret_quarantine
+         BEGIN SELECT RAISE(ABORT, 'synthetic quarantine persistence failure'); END;",
+    )
+    .unwrap();
+    let failed_scan = bead(workspace).args(["sync", "commit"]).output().unwrap();
+    assert!(!failed_scan.status.success());
+    let failed_scan_output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&failed_scan.stdout),
+        String::from_utf8_lossy(&failed_scan.stderr)
+    );
+    assert!(failed_scan_output.contains("synthetic quarantine persistence failure"));
+    assert!(!failed_scan_output.contains(&candidate));
+    let quarantine_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM secret_quarantine", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(quarantine_count, 0);
+    let retained_description: String = conn
+        .query_row(
+            "SELECT description FROM issues WHERE id='quarantine-git'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(retained_description == candidate);
+    assert_eq!(head(workspace), baseline_head);
+    assert_eq!(index(workspace), baseline_index);
+    let checkpoint_after_failure = git(
+        workspace,
+        &[
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+            "--",
+            ".beads/checkpoint",
+        ],
+    );
+    assert!(checkpoint_after_failure.status.success());
+    assert_eq!(checkpoint_after_failure.stdout, checkpoint_status);
+    conn.execute_batch("DROP TRIGGER fail_quarantine_insert")
+        .unwrap();
+    drop(conn);
+
+    // The newly inserted local finding makes the checkpoint dirty. Commit
+    // must discover and durably quarantine it before reaching the staging
+    // code, leaving both the shared index and Git-trackable checkpoint as-is.
+    let refused = bead(workspace).args(["sync", "commit"]).output().unwrap();
+    assert!(!refused.status.success());
+    let refused_output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&refused.stdout),
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert!(refused_output.contains("secret_quarantined"));
+    assert!(!refused_output.contains(&candidate));
+    assert_eq!(head(workspace), baseline_head);
+    assert_eq!(index(workspace), baseline_index);
+    let checkpoint_after = git(
+        workspace,
+        &[
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+            "--",
+            ".beads/checkpoint",
+        ],
+    );
+    assert!(checkpoint_after.status.success());
+    assert_eq!(checkpoint_after.stdout, checkpoint_status);
+    assert!(!checkpoint_contains(workspace, &candidate));
+
+    let status = bead(workspace)
+        .args(["sync", "status", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    let status_output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&status.stdout),
+        String::from_utf8_lossy(&status.stderr)
+    );
+    assert!(!status_output.contains(&candidate));
+    assert!(status_output.contains("secret_quarantined"));
+
+    let redacted = bead(workspace)
+        .args([
+            "redact",
+            "--all-blocking",
+            "--actor",
+            "publication-test",
+            "--reason",
+            "remove synthetic fixture",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        redacted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&redacted.stderr)
+    );
+    let redacted_output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&redacted.stdout),
+        String::from_utf8_lossy(&redacted.stderr)
+    );
+    assert!(!redacted_output.contains(&candidate));
+    assert!(!checkpoint_contains(workspace, &candidate));
+
+    let committed = bead(workspace).args(["sync", "commit"]).output().unwrap();
+    assert!(
+        committed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&committed.stderr)
+    );
+    let committed_output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&committed.stdout),
+        String::from_utf8_lossy(&committed.stderr)
+    );
+    assert!(!committed_output.contains(&candidate));
+    let resolved_head = head(workspace);
+    assert_ne!(resolved_head, baseline_head);
+    let resolved_index = index(workspace);
+
+    // Retrying after the resolved generation is committed is a no-op. This
+    // pins the split outcome to one sanitized publication commit exactly.
+    let retry = bead(workspace).args(["sync", "commit"]).output().unwrap();
+    assert!(retry.status.success());
+    let retry_output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&retry.stdout),
+        String::from_utf8_lossy(&retry.stderr)
+    );
+    assert!(!retry_output.contains(&candidate));
+    assert_eq!(head(workspace), resolved_head);
+    assert_eq!(index(workspace), resolved_index);
 }

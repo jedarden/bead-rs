@@ -10,7 +10,7 @@
 //!   worker's unrelated staged file survives the command still staged;
 //! - the gates refuse before anything is touched: a dirty checkpoint (live
 //!   store ahead), a remote-advanced checkpoint (pull ahead of the store),
-//!   a damaged checkpoint (missing referenced file), and a detached HEAD;
+//!   an incomplete retained checkpoint, and a detached HEAD;
 //! - an up-to-date workspace commits nothing and exits 0;
 //! - `--dry-run` reports without touching the index or history;
 //! - a rejecting pre-commit hook rejects the commit: the command never
@@ -373,13 +373,13 @@ fn commit_refuses_a_remote_advanced_checkpoint() {
 }
 
 #[test]
-fn commit_refuses_a_damaged_checkpoint_with_missing_referenced_files() {
+fn commit_quarantines_incomplete_checkpoint_coverage_before_staging() {
     let dir = repo_with_current_checkpoint("sdmg");
     let workspace = dir.path();
 
-    // Remove a non-root object the pointer references: the status gate
-    // only verifies the root, so this shape reaches the commit command,
-    // which must refuse rather than enshrine the damage in history.
+    // Remove a non-root object the pointer references. Commit's discovery
+    // scan must fail closed by persisting quarantine before staging, rather
+    // than merely returning the lower-level damaged-fileset refusal.
     git_ok(workspace, &["add", ".beads/checkpoint"]);
     git_ok(workspace, &["commit", "-q", "-m", "checkpoint"]);
     let pointer: Value = serde_json::from_str(
@@ -403,6 +403,7 @@ fn commit_refuses_a_damaged_checkpoint_with_missing_referenced_files() {
         fs::remove_file(workspace.join(".beads/checkpoint/objects").join(&victim)).unwrap();
 
         let before = head(workspace);
+        let staged_before = changed_files(workspace, &["diff", "--cached", "--name-only"]);
         let out = bead(workspace)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_SYSTEM", "/dev/null")
@@ -415,12 +416,17 @@ fn commit_refuses_a_damaged_checkpoint_with_missing_referenced_files() {
             victim
         );
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        assert!(stderr.contains("secret_quarantined"), "{stderr}");
         assert!(
-            stderr.contains("missing from disk"),
-            "the refusal must name the damage: {}",
-            stderr
+            stderr.contains("retained-generation coverage incomplete: true"),
+            "the refusal must report incomplete coverage: {stderr}"
         );
         assert_eq!(before, head(workspace), "a refused commit created history");
+        assert_eq!(
+            staged_before,
+            changed_files(workspace, &["diff", "--cached", "--name-only"]),
+            "a refused commit changed the shared index"
+        );
     }
 }
 

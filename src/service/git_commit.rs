@@ -143,7 +143,17 @@ fn commit_with(
     // commit. Recovery and automatic publication cannot change the quarantine
     // verdict or replace the verified fileset between those operations.
     let publication_lock = checkpoint::acquire_checkpoint_publication_lock(&checkpoint_dir)?;
-    super::secret_maintenance::ensure_publication_allowed(store.conn())?;
+    // A finding can appear in the live store or a retained checkpoint after
+    // the last recovery scan. Detect it while holding the publication lock,
+    // before readiness checks can lead to any index mutation. Detection
+    // durably records the value-free hold, then refuses this publication.
+    if dry_run {
+        // A dry run must remain read-only. It has no path to staging or Git
+        // publication; still recheck the durable hold after taking the lock.
+        super::secret_maintenance::ensure_publication_allowed(store.conn())?;
+    } else {
+        super::secret_boundary::detect_publication_quarantine(store.conn(), "sync commit")?;
+    }
 
     // The checkpoint gates. These key on the same report `sync status`
     // prints, so the command and the report cannot disagree about
