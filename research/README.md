@@ -12,6 +12,7 @@ tests, SQL, documentation prose, or implementation plans.
 - [Extended bead payload v1](specs/extended-bead-payload-v1.md)
 - [NEEDLE CLI contract v1](specs/needle-cli-contract-v1.md)
 - [Conformance plan](specs/conformance-v1.md)
+- [Recovery finding quarantine v1](specs/recovery-finding-quarantine-v1.md)
 
 `docs/notes/` contains non-normative architectural discussion. When a note and
 a specification disagree, the specification controls.

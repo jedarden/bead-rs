@@ -1,0 +1,57 @@
+{
+  "contract": "urn:bead-rs:spec:recovery-finding-quarantine:v1",
+  "status": "accepted",
+  "provenance": {
+    "kind": "independent-value-free-scenario-manifest",
+    "source": "Invented for bead-rs from the governing specifications and ADR-022; no other implementation or real workspace was consulted.",
+    "candidate_values": "assembled at runtime by conformance tests",
+    "contains_candidate_values": false
+  },
+  "states": [
+    "clean",
+    "quarantined",
+    "redaction_pending",
+    "review_pending"
+  ],
+  "transitions": [
+    {"from": "clean", "event": "clean_recovery", "to": "clean"},
+    {"from": "clean", "event": "blocking_or_incomplete_recovery", "to": "quarantined"},
+    {"from": "quarantined", "event": "repeated_recovery", "to": "quarantined"},
+    {"from": "quarantined", "event": "audited_redaction_commit", "to": "redaction_pending"},
+    {"from": "redaction_pending", "event": "sanitized_publication", "to": "clean"},
+    {"from": "quarantined", "event": "reviewed_resolution_commit", "to": "review_pending"},
+    {"from": "review_pending", "event": "reviewed_publication", "to": "clean"},
+    {"from": "quarantined", "event": "precommit_failure", "to": "quarantined"}
+  ],
+  "diagnostic_fields": [
+    "local_recovery_succeeded",
+    "secret_quarantined",
+    "checkpoint_publication_withheld",
+    "ruleset_version",
+    "blocking_count",
+    "coverage_incomplete",
+    "rule_ids",
+    "remedy"
+  ],
+  "scenarios": [
+    {"id": "restore-clean-publish", "operation": "restore", "outcome": "published"},
+    {"id": "restore-blocking-split", "operation": "restore", "outcome": "local_success_quarantined"},
+    {"id": "import-blocking-rollback", "operation": "sync import-only", "outcome": "rolled_back"},
+    {"id": "reconcile-retained-blocking-split", "operation": "sync reconcile", "outcome": "local_success_quarantined"},
+    {"id": "recovery-retry-holds", "operation": "recovery retry", "outcome": "local_success_quarantined"},
+    {"id": "scanner-incomplete-holds", "operation": "recovery scan", "outcome": "local_success_quarantined"},
+    {"id": "quarantined-publication-refuses", "operation": "sync flush-only", "outcome": "publication_refused_quarantine"},
+    {"id": "quarantined-commit-refuses", "operation": "sync commit", "outcome": "publication_refused_quarantine"},
+    {"id": "live-redaction-clears", "operation": "bead redact", "outcome": "published"},
+    {"id": "retained-only-sanitized-reset", "operation": "bead redact", "outcome": "published"},
+    {"id": "stale-redaction-rolls-back", "operation": "bead redact", "outcome": "rolled_back"},
+    {"id": "reviewed-resolution-capability-gated", "operation": "reviewed resolution", "outcome": "review_pending"}
+  ],
+  "forbidden_fixture_fields": [
+    "matched_value",
+    "matched_bytes",
+    "raw_value",
+    "replacement_text",
+    "source_excerpt"
+  ]
+}
