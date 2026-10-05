@@ -4096,7 +4096,8 @@ fn validate_forensic_receipts(staging: &ForensicStaging) -> Result<()> {
         hasher.update(&receipt.created_at);
         hasher.update(&receipt.result);
         let expected = format!("{:x}", hasher.finalize());
-        if receipt.receipt_sha256 != expected {
+        let canonical_expected = canonical_receipt_hash(receipt)?;
+        if receipt.receipt_sha256 != expected && receipt.receipt_sha256 != canonical_expected {
             bail!(
                 "Provenance receipt '{}' hash mismatch (declared {}, calculated {})",
                 receipt.receipt_id,
@@ -4106,6 +4107,31 @@ fn validate_forensic_receipts(staging: &ForensicStaging) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Compute the content-addressed receipt digest used by the independent v1
+/// corpus. Keep this alongside the historical concatenated-field recipe above:
+/// native writers before the canonical JSON recipe continue to emit the
+/// historical form, while a newer producer may include additive fields in the
+/// sorted receipt object it attests.
+fn canonical_receipt_hash(receipt: &SerializedReceipt) -> Result<String> {
+    let value = serde_json::to_value(receipt)?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| anyhow!("serialized provenance receipt is not an object"))?;
+    let mut canonical = serde_json::Map::new();
+    for (key, value) in object {
+        if key != "receipt_sha256" {
+            canonical.insert(key.clone(), value.clone());
+        }
+    }
+    let mut hasher = Sha256::new();
+    let mut encoded = serde_json::to_vec(&canonical)?;
+    // The v1 corpus hashes the canonical JSONL payload, so the compact JSON
+    // object carries its terminating line feed in the attested bytes.
+    encoded.push(b'\n');
+    hasher.update(encoded);
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 /// Validate canonical ordering of records
