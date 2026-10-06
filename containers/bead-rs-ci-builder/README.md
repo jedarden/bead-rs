@@ -27,7 +27,7 @@ The tag is for humans; **the digest is the pin**. The repo is private
 | Rust stable | exact `1.98.1`, installed as the **default** toolchain | deliberate rebuild |
 | Rust MSRV | installed under the exact name `1.85` (what the workflow resolves with `cargo +1.85`) | deliberate rebuild + MSRV bump |
 | Release targets | the four release triples' std, pre-installed | deliberate rebuild |
-| gh | `gh=2.101.0` from GitHub's apt repo | deliberate rebuild |
+| gh | official `2.101.0` release .deb + published SHA-256 | deliberate rebuild |
 | crane | `v0.22.1` + published checksum (cache transport) | deliberate rebuild |
 | aarch64 cross gcc | `gcc-aarch64-linux-gnu` from bookworm (distro-pinned, not point-pinned) | deliberate rebuild |
 
@@ -35,8 +35,10 @@ Debian packages are pinned to the *bookworm distribution*, not to
 point-release versions: `deb.debian.org` rotates `.debs` on security
 updates, so an exact-version pin there would break every rebuild within
 months. The versions actually installed at build time are recorded in
-`PROVENANCE-1.0.0.md`, and the pushed image digest is what consumers pin,
-so rebuild drift cannot silently reach CI.
+`PROVENANCE-<version>.md`, and the pushed image digest is what consumers pin,
+so rebuild drift cannot silently reach CI. The first release attempt on
+2026-10-05 proved that the apt repository no longer supplied `gh=2.101.0`;
+1.0.1 uses the official immutable release asset and its verified digest.
 
 The Dockerfile ends with a build-time verification block that refuses to
 produce the image unless every pin resolved to what the file records
@@ -119,8 +121,8 @@ written.
 
 Cold/warm setup time, build time, cache hit/bytes, peak CPU/RSS (incl.
 the Argo `wait` executor), queue time and pod/node-hours are recorded
-from the live bead-rs-ci runs that validated this change; the sampler in
+from the live bead-rs-ci runs that validate the image; the sampler in
 the workflow logs `cpu_us`/`mem` every 5s and the container's
 `memory.peak` at the end. Numbers and the run IDs they came from are in
-`PROVENANCE-1.0.0.md`. Resource requests on the `ci` template
+`PROVENANCE-<version>.md` once measured. Resource requests on the `ci` template
 (1000m/2Gi) are unchanged from the proven fit for 2-vCPU nodes.

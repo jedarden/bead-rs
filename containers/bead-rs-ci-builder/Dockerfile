@@ -13,15 +13,15 @@
 #   - rustup-init:           versioned archive URL on static.rust-lang.org
 #                            (frozen forever) + published SHA-256.
 #   - Rust toolchains:       exact patch releases (channel manifests freeze).
-#   - gh:                    exact version from GitHub's apt repo, which
-#                            retains every published version.
+#   - gh:                    exact release .deb + published SHA-256. The
+#                            apt repository does not retain every version.
 #   - crane:                 exact release + published SHA-256.
 #   - Debian packages:       pinned to the bookworm distribution, not to
 #                            point-release versions. deb.debian.org rotates
 #                            .debs on security updates, so an exact-version
 #                            pin here would break every rebuild within
 #                            months. The versions actually installed at
-#                            build time are recorded in PROVENANCE-1.0.0.md,
+#                            build time are recorded in PROVENANCE-1.0.1.md,
 #                            and the pushed image digest is what consumers
 #                            pin, so rebuild drift cannot silently reach CI.
 FROM debian:bookworm-slim@sha256:f3034a6ec3c1205360777c4aae76234998866ad18806ae62b63a3f84ccad782b
@@ -49,15 +49,16 @@ RUN apt-get update \
         gcc-aarch64-linux-gnu \
     && rm -rf /var/lib/apt/lists/*
 
-# gh CLI, pinned to the exact version in GitHub's apt repo (the same source
-# the per-run install pulled from).
-RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-        -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
-    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-        > /etc/apt/sources.list.d/github-cli.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends gh=2.101.0 \
-    && rm -rf /var/lib/apt/lists/*
+# gh CLI: the 1.0.0 build failed because the apt repository no longer
+# supplied this exact version. Use the immutable official release asset,
+# verified against its published digest, rather than weakening the pin.
+ARG GH_VERSION=2.101.0
+ARG GH_DEB_SHA256=f876a3b87bf67c94f773d17becca4dc7340b056dab901473a9260ee2a73e237b
+RUN curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.deb" \
+        -o /tmp/gh.deb \
+    && echo "${GH_DEB_SHA256}  /tmp/gh.deb" | sha256sum -c - \
+    && dpkg -i /tmp/gh.deb \
+    && rm /tmp/gh.deb
 
 # Rust: rustup (pinned build tool) + exact toolchains.
 #
