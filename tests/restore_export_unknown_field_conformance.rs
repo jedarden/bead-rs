@@ -84,6 +84,60 @@ fn semantic_records(records: &[Value]) -> BTreeMap<String, Value> {
         .collect()
 }
 
+fn assert_json_semantics(expected: &Value, actual: &Value, path: &str) {
+    match (expected, actual) {
+        (Value::Object(expected), Value::Object(actual)) => {
+            for (key, expected_value) in expected {
+                let member_path = format!("{path}/{key}");
+                let Some(actual_value) = actual.get(key) else {
+                    // Native serialization omits some optional null members,
+                    // empty collections, and empty objects, which are
+                    // semantically equivalent to their explicit forms.
+                    // Unknown sentinels are checked separately and do not use
+                    // this exception.
+                    assert!(
+                        expected_value.is_null()
+                            || expected_value.as_array().is_some_and(Vec::is_empty)
+                            || expected_value
+                                .as_object()
+                                .is_some_and(serde_json::Map::is_empty),
+                        "{member_path}: known member was dropped"
+                    );
+                    continue;
+                };
+                assert_json_semantics(expected_value, actual_value, &member_path);
+            }
+        }
+        (Value::Array(expected), Value::Array(actual)) => {
+            assert_eq!(
+                actual.len(),
+                expected.len(),
+                "{path}: semantic array length changed"
+            );
+            for (index, (expected_value, actual_value)) in expected.iter().zip(actual).enumerate() {
+                assert_json_semantics(expected_value, actual_value, &format!("{path}/{index}"));
+            }
+        }
+        _ => assert_eq!(expected, actual, "{path}: semantic value changed"),
+    }
+}
+
+fn assert_records_contain_semantics(
+    expected_records: &[Value],
+    actual_records: &[Value],
+    label: &str,
+) {
+    let expected = semantic_records(expected_records);
+    let actual = semantic_records(actual_records);
+
+    for (key, record) in expected {
+        let actual_record = actual
+            .get(&key)
+            .unwrap_or_else(|| panic!("{label}: semantic record {key} was dropped"));
+        assert_json_semantics(&record, actual_record, &format!("{label}/{key}"));
+    }
+}
+
 struct PublishedGeneration {
     workspace: TempDir,
     source_generation_id: String,
@@ -355,6 +409,13 @@ fn restore_into_empty_then_three_connected_exports_preserve_corpus_unknown_field
             "{label}: receipt count"
         );
         assert_eq!(generation.records.len(), 6 + index, "{label}: record count");
+
+        // Match records by their stable wire identities before comparing the
+        // complete JSON values. `serde_json::Value` compares object members by
+        // key, so this assertion is independent of object insertion order,
+        // while still requiring every known field and nested extension from
+        // the fixture to survive the restore/export hop.
+        assert_records_contain_semantics(&source_records, &generation.records, &label);
         assert_corpus_unknown_fields(&generation.records, &generation.pointer, &expected);
         assert_resource_key_known_semantics(&generation.records, &expected);
         assert_ne!(
