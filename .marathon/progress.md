@@ -1778,3 +1778,29 @@ snapshot re-verification corrected the record and repaired what it caught:
   beads' commands. Regeneration is deferred to a single shared closing
   gate rather than landed piecemeal under R027; no run-4 bead regenerated
   its pages, and R033's CLI surface is still moving.
+
+## 2026-10-06 — secret release JWT conformance increment (BR-T40)
+
+- Owner: beadrs-7740733d, reserved by codex-secret-release-operator; delivery
+  remains under beadrs-b3059276. Governing independently accepted contract:
+  secret-ruleset-v4 SHA256
+  0c79d76375b795a7e58daeda1241414e6ebcac038f62e32b927acefa598d7ebe.
+- Added complete duplicate-aware header validation and maximal JWT chain
+  boundaries. Syntax validation uses the ordinary serde_json RawValue API;
+  a heap traversal compares UTF-16 key identity without materializing numeric
+  values. Decoded bytes and copied keys are overwritten on release. No other
+  bead implementation or actual credential supplied implementation input.
+- Checksum failures now report advisory tier without losing mapped-view
+  candidates. Payload/signature validation remains explicitly out of scope.
+- Local targeted verification: four header unit tests and 49 integration
+  tests passed across jwt_header_contract, decoded_view_coverage,
+  secret_gap_contract and secret_rejection. The same targeted command with
+  --features managed-secret-policy passed 45 tests. cargo fmt --check and
+  cargo clippy --all-targets -- -D warnings (default and managed) passed.
+  Full dirty default run ended exit 101 on exactly
+  build_from_archive_checkout_untouched; its other-target passes do not make
+  this an exact-source full release proof. Managed/full-source, final-candidate
+  benchmark, fleet acceptance and two-host versioned release remain pending.
+- Preserve all unrelated shared changes and existing bead dependencies. Next:
+  literal credential-label/table grammar and counted advisory lifecycle, then
+  exact-source/default+managed verification before freezing a candidate.

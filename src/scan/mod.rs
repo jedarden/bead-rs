@@ -15,6 +15,7 @@
 mod credential_shape;
 pub mod external;
 pub mod fingerprint;
+mod jwt;
 pub mod rules;
 mod structured_credentials;
 mod text_views;
@@ -835,6 +836,15 @@ fn scan_raw_field(selector: &str, field: &Field<'_>) -> Vec<Finding> {
             {
                 continue;
             }
+            if rule.id == "json-web-token"
+                && (whole.start() > 0
+                    && matches!(field.text.as_bytes()[whole.start() - 1], b'.' | b'_' | b'-')
+                    || field.text.as_bytes().get(whole.end()) == Some(&b'.'))
+            {
+                // A three-segment prefix or suffix of a longer/adjacent-dot
+                // chain is not a JWT candidate (ruleset-v4 section 4.1).
+                continue;
+            }
             let body_character = |byte: u8| match rule.id {
                 "aws-access-key-id" | "age-secret-key" => {
                     byte.is_ascii_uppercase() || byte.is_ascii_digit()
@@ -914,11 +924,7 @@ fn scan_raw_field(selector: &str, field: &Field<'_>) -> Vec<Finding> {
                             .as_str()
                             .split('.')
                             .next()
-                            .and_then(text_views::decode_base64)
-                            .and_then(|bytes| {
-                                serde_json::from_slice::<serde_json::Value>(&bytes).ok()
-                            })
-                            .is_some_and(|value| value.is_object() && value.get("alg").is_some());
+                            .is_some_and(jwt::header_valid);
                         if valid {
                             Disposition::Confirmed
                         } else {
@@ -946,7 +952,11 @@ fn scan_raw_field(selector: &str, field: &Field<'_>) -> Vec<Finding> {
                 ruleset_version: RULESET_VERSION,
                 rule_id: rule.id.to_string(),
                 provider: rule.provider.to_string(),
-                tier: rule.tier,
+                tier: if disposition == Disposition::ChecksumFailed {
+                    Tier::Advisory
+                } else {
+                    rule.tier
+                },
                 disposition,
                 selector: selector.to_string(),
                 field_path: field.path.to_string(),
@@ -973,7 +983,9 @@ fn scan_field(selector: &str, field: &Field<'_>) -> (Vec<Finding>, BTreeSet<&'st
         let derived = Field::new(field.path, &view.text);
         let mut matches = scan_raw_field(selector, &derived);
         matches.retain(|finding| {
-            finding.tier == Tier::Blocking
+            rules::RULES
+                .iter()
+                .any(|rule| rule.id == finding.rule_id && rule.tier == Tier::Blocking)
                 && (!view.decoded
                     || !finding.rule_id.ends_with("-assignment")
                         && finding.rule_id != "vault-legacy-token")

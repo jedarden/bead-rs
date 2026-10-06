@@ -1,6 +1,6 @@
 # bead-rs Current Product and Software Factory Plan
 
-Plan revision: 22
+Plan revision: 23
 
 As of: 2026-10-06
 
@@ -116,6 +116,23 @@ performance acceptance remain outstanding. Other workers' tracked and
 untracked changes are preserved. The prior shared-target full test stopped
 on a removed temporary archive's fixture path; a focused recompilation of
 that test passed. This does not turn the interrupted full suite into a pass.
+
+Revision 23 records BR-T40's strict JWT correction against the independently
+accepted contract. Three-segment recognition refuses longer or adjacent-dot
+chains; headers require canonical unpadded base64url, complete UTF-8 JSON,
+unique member names at every depth and a nonempty string `alg`. Duplicate
+identity preserves escaped Unicode without normalizing keys; heap traversal
+does not impose a machine-number or recursive-depth constraint. Invalid JWT,
+GitHub and npm checksums report the advisory tier, including derived views
+with raw-range fingerprints. Four header unit tests and 49 focused decoder,
+JWT, write-boundary and redaction tests pass in the default profile; 45 pass
+in the managed profile. Formatting and both profiles' all-targets Clippy
+checks pass. The dirty full default suite
+finished with one failed archive-checkout integrity target; it is not full
+verification. The first corrected-builder Argo run also reported failure;
+later exact-source runs are pending/running. No new tag, public release or
+host installation is credited, and BR-T39–BR-T44 remain open for their full
+acceptance boundaries.
 
 Baseline verification ran locally against the dirty checkout: `cargo test
 --test secret_rejection --test redaction_transaction --test
