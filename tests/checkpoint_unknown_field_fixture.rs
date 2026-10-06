@@ -1056,6 +1056,85 @@ fn redaction_source(secret: &str) -> TempDir {
     source
 }
 
+fn stale_redacted_replay_source(secret: &str, sanitized_records: &[Value]) -> TempDir {
+    let source = TempDir::new().unwrap();
+    let mut pointer = fixture_pointer();
+    let mut records = redaction_fixture_records(secret);
+
+    let sanitized_event = sanitized_records
+        .iter()
+        .find(|record| {
+            record["record_type"] == "event"
+                && record["event"]["origin_store_uuid"] == "11111111-1111-4111-8111-111111111111"
+                && record["event"]["origin_event_sequence"] == 1
+        })
+        .expect("sanitized event identity must exist");
+    let stale_event = records
+        .iter_mut()
+        .find(|record| {
+            record["record_type"] == "event"
+                && record["event"]["origin_store_uuid"] == "11111111-1111-4111-8111-111111111111"
+                && record["event"]["origin_event_sequence"] == 1
+        })
+        .expect("stale event identity must exist");
+    stale_event["event"]["detail"] = sanitized_event["event"]["detail"].clone();
+    stale_event["event"]
+        .as_object_mut()
+        .unwrap()
+        .remove("future_event_fixture_sentinel")
+        .unwrap();
+    stale_event["event"]["earlier_event_extension"] = json!({"source": "older-writer"});
+
+    let stale_issue = records
+        .iter_mut()
+        .find(|record| record["record_type"] == "issue" && record["issue"]["id"] == "bead-ufv1-a")
+        .expect("stale issue must exist");
+    let stale_dependency = stale_issue["issue"]["dependencies"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|dependency| dependency["blocker"] == "bead-ufv1-b")
+        .expect("stale dependency must exist");
+    stale_dependency
+        .as_object_mut()
+        .unwrap()
+        .remove("future_dependency_fixture_sentinel")
+        .unwrap();
+    stale_dependency["earlier_dependency_extension"] = json!({"source": "older-writer"});
+
+    let stale_receipt = records
+        .iter_mut()
+        .find(|record| {
+            record["record_type"] == "provenance_receipt"
+                && record["provenance_receipt"]["receipt_id"] == "receipt-unknown-fields-v1"
+        })
+        .expect("stale receipt must exist");
+    stale_receipt["provenance_receipt"]
+        .as_object_mut()
+        .unwrap()
+        .remove("future_receipt_fixture_sentinel")
+        .unwrap();
+    stale_receipt["provenance_receipt"]["earlier_receipt_extension"] =
+        json!({"source": "older-writer"});
+
+    let mut root_bytes = Vec::new();
+    for record in &records {
+        root_bytes.extend_from_slice(serde_json::to_string(record).unwrap().as_bytes());
+        root_bytes.push(b'\n');
+    }
+    let root_path = "objects/stale-redacted.jsonl";
+    fs::create_dir_all(source.path().join("objects")).unwrap();
+    fs::write(source.path().join(root_path), &root_bytes).unwrap();
+    pointer["active_root"]["path"] = json!(root_path);
+    pointer["active_root"]["sha256"] = json!(format!("{:x}", Sha256::digest(&root_bytes)));
+    fs::write(
+        source.path().join("current.json"),
+        serde_json::to_vec_pretty(&pointer).unwrap(),
+    )
+    .unwrap();
+    source
+}
+
 fn redaction_fixture_records(secret: &str) -> Vec<Value> {
     let mut records = fixture_records();
     let event = records
@@ -1475,6 +1554,225 @@ fn unknown_fields_survive_redaction_of_a_historical_event() {
             .contains(&secret),
         "the retained previous generation must also be sanitized"
     );
+}
+
+#[test]
+fn stale_replay_cannot_restore_redacted_event_or_drop_sentinels() {
+    let secret = ["AK", "IA", "7Q9W2E4R6T8Y1U3I"].concat();
+    let stale_source = redaction_source(&secret);
+    let target = restore_for_redaction(stale_source.path());
+    let expectations = fixture_expectations();
+
+    let finding_fingerprint = {
+        let connection = open_configured_connection(&target.path().join(".beads/beads.db"))
+            .expect("restored fixture database must open");
+        let findings = scan_live_findings(&connection).expect("historical data must scan");
+        let matches: Vec<_> = findings
+            .into_iter()
+            .filter(|finding| {
+                finding.selector.starts_with("live:events:")
+                    && finding.field_path == "detail"
+                    && finding.rule_id == "aws-access-key-id"
+            })
+            .collect();
+        assert_eq!(matches.len(), 1, "fixture should expose one event finding");
+        matches[0].fingerprint.clone()
+    };
+
+    bead(target.path(), &[])
+        .args([
+            "redact",
+            "--finding",
+            &finding_fingerprint,
+            "--actor",
+            "unknown-field-redaction-test",
+            "--reason",
+            "sanitize event before replaying its stale checkpoint",
+            "--skip-foreign-workspace",
+        ])
+        .assert()
+        .success();
+
+    let redacted_pointer = read_json(&target.path().join(".beads/checkpoint/current.json"));
+    let redacted_records = active_records(target.path(), &redacted_pointer);
+    assert_redaction_preserved_records(
+        &redaction_fixture_records(&secret),
+        &redacted_records,
+        &expectations,
+        &secret,
+        "before stale replay",
+    );
+    assert_sentinels(
+        &redacted_records,
+        &redacted_pointer,
+        &expectations,
+        "before stale replay",
+    );
+
+    let mut previous_replay = None;
+    for replay in 1..=2 {
+        let output = bead(target.path(), &[])
+            .args([
+                "sync",
+                "import-only",
+                "--input",
+                stale_source.path().to_str().unwrap(),
+                "--merge",
+                "--actor",
+                "unknown-field-redaction-test",
+                "--no-auto-flush",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "stale replay {replay} unexpectedly accepted the pre-redaction event"
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("Event identity conflict")
+                && !stdout.contains(&secret)
+                && !stderr.contains(&secret),
+            "stale replay must fail on the rewritten event identity without disclosing its old content: stdout={stdout} stderr={stderr}"
+        );
+        let replay_result = (
+            output.status.code(),
+            stdout.into_owned(),
+            stderr.into_owned(),
+        );
+        if let Some(previous) = &previous_replay {
+            assert_eq!(
+                &replay_result, previous,
+                "replaying the same stale checkpoint must return the same result"
+            );
+        }
+        previous_replay = Some(replay_result);
+
+        let current_pointer = read_json(&target.path().join(".beads/checkpoint/current.json"));
+        let current_records = active_records(target.path(), &current_pointer);
+        assert_eq!(
+            current_pointer, redacted_pointer,
+            "stale replay {replay} must not publish a changed pointer"
+        );
+        assert_eq!(
+            current_records, redacted_records,
+            "stale replay {replay} must not alter the redacted export"
+        );
+        assert_sentinels(
+            &current_records,
+            &current_pointer,
+            &expectations,
+            &format!("after stale replay {replay}"),
+        );
+        assert!(
+            !serde_json::to_string(&current_records)
+                .unwrap()
+                .contains(&secret),
+            "stale replay {replay} resurrected the redacted event content"
+        );
+    }
+
+    let compatible_stale_source = stale_redacted_replay_source(&secret, &redacted_records);
+    let mut previous_merge_summary = None;
+    let mut previous_imported_projection = None;
+    for replay in 1..=2 {
+        let output = bead(target.path(), &["sync", "import-only"])
+            .args([
+                "--input",
+                compatible_stale_source.path().to_str().unwrap(),
+                "--merge",
+                "--actor",
+                "unknown-field-redaction-test",
+                "--no-auto-flush",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "compatible stale replay {replay} failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let summary = stderr
+            .lines()
+            .find(|line| line.starts_with("Merge completed:"))
+            .expect("merge must report its replay counts")
+            .to_owned();
+        if let Some(previous) = &previous_merge_summary {
+            assert_eq!(
+                &summary, previous,
+                "replaying the same stale input must produce stable merge counts"
+            );
+        }
+        previous_merge_summary = Some(summary);
+
+        bead(target.path(), &["sync", "flush-only"])
+            .assert()
+            .success();
+        let current_pointer = read_json(&target.path().join(".beads/checkpoint/current.json"));
+        let current_records = active_records(target.path(), &current_pointer);
+        assert_sentinels(
+            &current_records,
+            &current_pointer,
+            &expectations,
+            &format!("after compatible stale replay {replay}"),
+        );
+        assert!(
+            !serde_json::to_string(&current_records)
+                .unwrap()
+                .contains(&secret),
+            "compatible stale replay {replay} resurrected the redacted event content"
+        );
+
+        let event_identity_count = current_records
+            .iter()
+            .filter(|record| {
+                record["record_type"] == "event"
+                    && record["event"]["origin_store_uuid"]
+                        == "11111111-1111-4111-8111-111111111111"
+                    && record["event"]["origin_event_sequence"] == 1
+            })
+            .count();
+        assert_eq!(
+            event_identity_count, 1,
+            "replay {replay} must not duplicate the historical event"
+        );
+
+        let event = selected_record(&current_records, &expectations.sentinels[1].selector);
+        let receipt = selected_record(&current_records, &expectations.sentinels[6].selector);
+        let dependency = nested_selected_record(
+            &current_records,
+            &expectations.sentinels[2].selector,
+            "dependency",
+        );
+        assert_eq!(
+            event["earlier_event_extension"],
+            json!({"source": "older-writer"})
+        );
+        assert_eq!(
+            receipt["earlier_receipt_extension"],
+            json!({"source": "older-writer"})
+        );
+        assert_eq!(
+            dependency["earlier_dependency_extension"],
+            json!({"source": "older-writer"})
+        );
+
+        let imported_projection = json!({
+            "event": event,
+            "receipt": receipt,
+            "dependency": dependency,
+        });
+        if let Some(previous) = &previous_imported_projection {
+            assert_eq!(
+                &imported_projection, previous,
+                "replay must be idempotent for the imported event, receipt, and dependency"
+            );
+        }
+        previous_imported_projection = Some(imported_projection);
+    }
 }
 
 #[test]

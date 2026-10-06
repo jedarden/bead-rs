@@ -165,6 +165,25 @@ pub(crate) fn decode_record_extensions(
     Ok(object.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
 }
 
+/// Combine a replayed extension map with fields already retained locally.
+/// Stored values win for keys both writers know: a replay may be older, and
+/// opaque fields have no version signal that would justify replacing the
+/// destination's value. New keys widen the map without erasing its history.
+fn preserve_record_extensions(
+    existing: Option<String>,
+    incoming: &RecordExtensions,
+    label: &str,
+) -> Result<Option<String>> {
+    let mut preserved = decode_record_extensions(existing, label)?;
+    for (key, value) in incoming {
+        preserved
+            .entry(key.clone())
+            .or_insert_with(|| value.clone());
+    }
+    validate_record_extensions(&preserved, &[], label)?;
+    Ok(encode_record_extensions(&preserved))
+}
+
 /// Parse one entry of a projected `dependencies` array: the v1 envelope's
 /// `blocker` (required) and `kind` (defaulted), plus every key this reader
 /// does not know preserved opaquely for re-projection.
@@ -5251,22 +5270,27 @@ fn import_issues(tx: &Transaction, staging: &ForensicStaging) -> Result<usize> {
 /// Import dependencies into database
 fn import_dependencies(tx: &Transaction, staging: &ForensicStaging) -> Result<()> {
     for edge in &staging.dependencies {
-        // The edge identity is immutable, but its extension map is not part
-        // of that identity: a staged edge carrying additive fields a live
-        // row (or an earlier import) lacks refreshes them, and a staged edge
-        // with none never erases what is already stored.
+        // The edge identity is immutable. Keep locally retained extension
+        // values on replay and add only fields this checkpoint contributes.
+        let existing: Option<String> = tx
+            .query_row(
+                "SELECT extensions_json FROM dependencies
+                 WHERE blocked_issue_id = ?1 AND blocker_issue_id = ?2 AND kind = ?3",
+                params![edge.blocked, edge.blocker, edge.kind],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let extensions = preserve_record_extensions(
+            existing,
+            &edge.extensions,
+            &format!("dependency {} -> {}", edge.blocked, edge.blocker),
+        )?;
         tx.execute(
             "INSERT INTO dependencies (blocked_issue_id, blocker_issue_id, kind, extensions_json)
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT (blocked_issue_id, blocker_issue_id, kind) DO UPDATE
-             SET extensions_json = excluded.extensions_json
-             WHERE excluded.extensions_json IS NOT NULL",
-            params![
-                edge.blocked,
-                edge.blocker,
-                edge.kind,
-                encode_record_extensions(&edge.extensions)
-            ],
+             SET extensions_json = excluded.extensions_json",
+            params![edge.blocked, edge.blocker, edge.kind, extensions],
         )?;
     }
     Ok(())
@@ -5297,12 +5321,24 @@ fn import_events(tx: &Transaction, staging: &ForensicStaging) -> Result<()> {
         if already_imported {
             // A stale replay of an event the destination already holds never
             // rewrites recorded history: identity fields stay as first
-            // imported. It may only refresh the additive fields a newer
-            // producer attached, which carry no native semantics and are
-            // outside the event identity, and only ever widen — a replay
-            // carrying no extension map never erases one already stored.
-            let encoded = encode_record_extensions(&event.extensions);
-            if encoded.is_some() {
+            // imported. Additive fields carry no native semantics and are
+            // outside the event identity, so a replay may widen the stored
+            // map while existing keys keep their destination values.
+            let existing: Option<String> = tx.query_row(
+                "SELECT extensions_json FROM events
+                 WHERE origin_store_uuid = ?1 AND origin_event_sequence = ?2",
+                params![&event.origin_store_uuid, event.origin_event_sequence],
+                |row| row.get(0),
+            )?;
+            let encoded = preserve_record_extensions(
+                existing.clone(),
+                &event.extensions,
+                &format!(
+                    "event {}/{}",
+                    event.origin_store_uuid, event.origin_event_sequence
+                ),
+            )?;
+            if encoded != existing {
                 tx.execute(
                     "UPDATE events SET extensions_json = ?1
                      WHERE origin_store_uuid = ?2 AND origin_event_sequence = ?3",
@@ -5391,10 +5427,19 @@ fn import_receipts(tx: &Transaction, staging: &ForensicStaging) -> Result<()> {
                 );
             }
             // Byte-equivalent replay: identity fields match, so only the
-            // additive fields may differ. Widen to whatever the replay
-            // carries; never erase what an earlier import already stored.
-            let encoded = encode_record_extensions(&receipt.extensions);
-            if encoded.is_some() {
+            // additive fields may differ. Widen the retained map and let
+            // destination values win when both sides carry the same key.
+            let existing_extensions: Option<String> = tx.query_row(
+                "SELECT extensions_json FROM provenance_receipts WHERE receipt_id = ?1",
+                [&receipt.receipt_id],
+                |row| row.get(0),
+            )?;
+            let encoded = preserve_record_extensions(
+                existing_extensions.clone(),
+                &receipt.extensions,
+                &format!("provenance receipt {}", receipt.receipt_id),
+            )?;
+            if encoded != existing_extensions {
                 tx.execute(
                     "UPDATE provenance_receipts SET extensions_json = ?1 WHERE receipt_id = ?2",
                     params![encoded, &receipt.receipt_id],
