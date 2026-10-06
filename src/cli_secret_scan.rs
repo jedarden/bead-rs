@@ -16,25 +16,37 @@ use crate::store::WorkspaceConfig;
 pub(crate) struct PreparedScan {
     report: ScanReport,
     actor: String,
+    write_notice: bool,
 }
 
 impl PreparedScan {
     pub(crate) fn report_advisories(&self) {
+        if !self.write_notice {
+            return;
+        }
         if let Some(summary) = scan::advisory_summary() {
-            let findings = summary["advisory_findings"]
+            let count = summary["advisory_findings"]
+                .as_u64()
+                .expect("advisory summary count");
+            let rules: Vec<_> = summary["rules"]
                 .as_array()
-                .expect("advisory summary array");
-            let rules: std::collections::BTreeSet<_> = findings
+                .expect("advisory summary rules")
                 .iter()
-                .filter_map(|finding| finding["rule_id"].as_str())
+                .map(|rule| rule.as_str().expect("compiled advisory rule identifier"))
                 .collect();
-            eprintln!("secret_scan advisory: {} finding(s), rules {}; inspect bead doctor --scope secrets. Matched bytes are not shown.",findings.len(),rules.into_iter().collect::<Vec<_>>().join(", "));
+            eprintln!("secret_scan advisory: {count} finding(s), rules {}; inspect bead doctor --scope secrets. Matched bytes are not shown.", rules.join(", "));
         }
     }
-    pub(crate) fn arm_audit(&self) -> (scan::AcknowledgmentAuditGuard, scan::AdvisoryNoticeGuard) {
+    pub(crate) fn arm_audit(
+        &self,
+    ) -> (
+        scan::AcknowledgmentAuditGuard,
+        Option<scan::AdvisoryNoticeGuard>,
+    ) {
         (
             scan::arm_acknowledgment_audit(&self.report, &self.actor),
-            scan::arm_advisory_notice(&self.report),
+            self.write_notice
+                .then(|| scan::arm_advisory_notice(&self.report)),
         )
     }
 
@@ -109,7 +121,7 @@ pub(crate) fn prepare(cli: &crate::cli::Cli) -> Result<Option<PreparedScan>> {
         };
         let config = configured_policy(cli, &workspace)?;
         let report = crate::service::manifest::scan_manifest(&config, &manifest);
-        let prepared = finalize(config, report, "cli")?;
+        let prepared = finalize(config, report, "cli", !command_is_dry_run(&cli.command))?;
         if matches!(command, crate::cli::ManifestCommand::DryRun(_)) {
             if let Some(scan) = &prepared {
                 scan.report_dry_run_findings();
@@ -134,7 +146,12 @@ pub(crate) fn prepare(cli: &crate::cli::Cli) -> Result<Option<PreparedScan>> {
     };
     let config = configured_policy(cli, &workspace)?;
     let report = scan::scan(&config, &request.selector, &request.fields);
-    let prepared = finalize(config, report, request.actor)?;
+    let prepared = finalize(
+        config,
+        report,
+        request.actor,
+        !command_is_dry_run(&cli.command),
+    )?;
     if command_is_dry_run(&cli.command) {
         if let Some(scan) = &prepared {
             scan.report_dry_run_findings();
@@ -191,11 +208,17 @@ fn configured_policy(cli: &crate::cli::Cli, workspace: &WorkspaceConfig) -> Resu
     Ok(config)
 }
 
-fn finalize(config: ScanConfig, report: ScanReport, actor: &str) -> Result<Option<PreparedScan>> {
+fn finalize(
+    config: ScanConfig,
+    report: ScanReport,
+    actor: &str,
+    write_notice: bool,
+) -> Result<Option<PreparedScan>> {
     if let Some(rejection) = scan::reject_if_blocked(&config, &report) {
         return Err(Error::cli_usage(rejection.message));
     }
     Ok(Some(PreparedScan {
+        write_notice,
         report,
         actor: actor.to_string(),
     }))

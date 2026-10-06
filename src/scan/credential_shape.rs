@@ -80,9 +80,44 @@ pub fn qualifies(value: &str, minimum: usize) -> bool {
 }
 
 pub fn credential_label(label: &str) -> bool {
+    if label.is_empty()
+        || label.len() > 64
+        || !label
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_.- ".contains(&byte))
+        || label.contains("  ")
+        || label.starts_with(' ')
+        || label.ends_with(' ')
+    {
+        return false;
+    }
+    // Exclusions are literal case-folded tests on the complete identifier,
+    // before separator/camel component splitting (ruleset-v4 section 4.4).
+    let folded = label.to_ascii_lowercase();
+    if folded.starts_with("secret_scan")
+        || folded.starts_with("secret-scan")
+        || [
+            "acknowledge-secret",
+            "fencing-token",
+            "fencing_token",
+            "max_tokens",
+        ]
+        .contains(&folded.as_str())
+        || [
+            "file", "path", "name", "ref", "label", "count", "limit", "budget", "usage",
+        ]
+        .iter()
+        .any(|suffix| {
+            ['_', '-']
+                .iter()
+                .any(|separator| folded.ends_with(&format!("{separator}{suffix}")))
+        })
+    {
+        return false;
+    }
     let mut normalized = String::new();
     let mut previous_lower = false;
-    for character in label.trim_start_matches('-').chars() {
+    for character in label.chars() {
         if character.is_ascii_uppercase() && previous_lower {
             normalized.push('_');
         }
@@ -92,16 +127,6 @@ pub fn credential_label(label: &str) -> bool {
             character.to_ascii_lowercase()
         });
         previous_lower = character.is_ascii_lowercase();
-    }
-    if normalized.starts_with("secret_scan")
-        || ["acknowledge_secret", "fencing_token", "max_tokens"].contains(&normalized.as_str())
-        || [
-            "file", "path", "name", "ref", "label", "count", "limit", "budget", "usage",
-        ]
-        .iter()
-        .any(|suffix| normalized.ends_with(&format!("_{suffix}")))
-    {
-        return false;
     }
     let components: Vec<_> = normalized
         .split('_')
@@ -117,7 +142,6 @@ pub fn credential_label(label: &str) -> bool {
             "token",
             "credential",
             "pat",
-            "apikey",
         ]
         .contains(component)
             || (*component == "key"
@@ -170,8 +194,149 @@ pub fn hash_shaped(value: &str) -> bool {
                 }
             }))
         || value.rsplit_once('-').is_some_and(|(prefix, suffix)| {
-            !prefix.is_empty()
-                && suffix.len() == 8
-                && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
+            (1..=32).contains(&prefix.len())
+                && prefix.as_bytes()[0].is_ascii_lowercase()
+                && prefix
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+                && (8..=64).contains(&suffix.len())
+                && suffix
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn qualifier_matches_each_normative_representative_at_all_thresholds() {
+        let pairs = "3a".repeat(4);
+        let hex31 = format!("{}{}", "a1".repeat(6), "1".repeat(19));
+        let hex32 = format!("{hex31}1");
+        let mixed32 = format!("A{}", &hex32[1..]);
+        let word_cursor = format!("abcde{}+b", "A3".repeat(7));
+        let cases = [
+            (
+                "bead_identifier",
+                format!("ticket-{pairs}"),
+                [true, false, false, false],
+            ),
+            (
+                "name_short_hash",
+                format!("alpha-{pairs}"),
+                [true, false, false, false],
+            ),
+            (
+                "timestamp",
+                ["2026-10-05", "T12:34:56Z"].concat(),
+                [false; 4],
+            ),
+            (
+                "version",
+                ["v12.34.56", "-rc7.89"].concat(),
+                [true, true, false, false],
+            ),
+            ("path", ["/alpha", "/beta/gamma"].concat(), [false; 4]),
+            ("camel_type", ["Alpha", "BetaGamma"].concat(), [false; 4]),
+            ("snake_name", ["alpha", "_beta_gamma"].concat(), [false; 4]),
+            ("base62_40", "a3".repeat(20), [true; 4]),
+            ("hex_40", "a3".repeat(20), [true; 4]),
+            ("base64_40", "aB3+/".repeat(8), [true; 4]),
+            ("hex_31_one_case", hex31, [false; 4]),
+            ("hex_32_one_case", hex32, [true; 4]),
+            ("hex_32_mixed_case", mixed32, [false; 4]),
+            (
+                "maximal_word_cursor",
+                word_cursor,
+                [true, true, false, false],
+            ),
+        ];
+        for (name, value, expected) in cases {
+            assert_eq!(
+                [8, 12, 16, 20].map(|minimum| qualifies(&value, minimum)),
+                expected,
+                "case {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn exclusions_are_literal_and_keywords_are_whole_components() {
+        for identifier in [
+            "acknowledge-secret",
+            "fencing-token",
+            "fencing_token",
+            "max_tokens",
+            "secret_scan",
+            "secret-scan-extra",
+            "tokens",
+            "passwords",
+            "apikey",
+            "apiKeyName",
+        ] {
+            assert!(
+                !credential_label(identifier),
+                "excluded/non-keyword identifier admitted"
+            );
+            assert!(
+                !credential_label(&identifier.to_ascii_uppercase()),
+                "case-folded exclusion admitted"
+            );
+        }
+        for identifier in [
+            "fencing.token",
+            "acknowledge_secret",
+            "secret_value",
+            "apiKey",
+            "API Key",
+            "prefix_access_key",
+            "1_token",
+            "personal_pat",
+            "token_v2",
+            "token_123",
+        ] {
+            assert!(
+                credential_label(identifier),
+                "literal near miss/keyword grammar rejected"
+            );
+        }
+        for suffix in [
+            "file", "path", "name", "ref", "label", "count", "limit", "budget", "usage",
+        ] {
+            for separator in ['_', '-'] {
+                assert!(!credential_label(&format!("token{separator}{suffix}")));
+            }
+        }
+        assert!(!credential_label(&format!("{}_token", "a".repeat(59))));
+        assert!(credential_label(&format!("{}_token", "a".repeat(58))));
+    }
+
+    #[test]
+    fn advisory_hash_shapes_match_complete_normative_grammar() {
+        for width in [32, 40, 56, 64, 96, 128] {
+            assert!(hash_shaped(&"a3".repeat(width / 2)));
+        }
+        for width in [8, 9, 63, 64] {
+            assert!(hash_shaped(&format!("a1-{}", "a".repeat(width))));
+        }
+        assert!(hash_shaped(&format!(
+            "{}-{}",
+            "a".repeat(32),
+            "3a".repeat(4)
+        )));
+        assert!(hash_shaped(&format!("gen-{}", "a3".repeat(16))));
+        for value in [
+            format!("Upper-{}", "a3".repeat(4)),
+            format!("a_-{}", "a3".repeat(4)),
+            format!("1a-{}", "a3".repeat(4)),
+            format!("a-{}", "A3".repeat(4)),
+            format!("a-{}", "a".repeat(7)),
+            format!("a-{}", "a".repeat(65)),
+            format!("{}-{}", "a".repeat(33), "a3".repeat(4)),
+        ] {
+            assert!(!hash_shaped(&value), "near-miss bead shape excluded");
+        }
+    }
 }

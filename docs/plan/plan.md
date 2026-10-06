@@ -1,6 +1,6 @@
 # bead-rs Current Product and Software Factory Plan
 
-Plan revision: 23
+Plan revision: 24
 
 As of: 2026-10-06
 
@@ -133,6 +133,34 @@ verification. The first corrected-builder Argo run also reported failure;
 later exact-source runs are pending/running. No new tag, public release or
 host installation is credited, and BR-T39–BR-T44 remain open for their full
 acceptance boundaries.
+
+Revision 24 records corrected production assignment/advisory behavior under
+the existing BR-T40, BR-T41 and BR-T43 owners. Exclusions now compare the
+complete case-folded literal identifier before component normalization;
+unlisted aliases do not become keywords. Required-marker tables consume
+their entire separator, prefer pipes, reject extra columns/quoted values,
+strip one closing bar and preserve value-only ranges at LF/CRLF/CR/EOF.
+The normative Q representatives pass at all four thresholds, including the
+explicitly permitted identifier/version counterexamples. Whole-run bead/hash
+exclusions use the accepted grammar. Invocation summaries contain only an
+integer count and sorted unique rules, collect only reported advisory-tier
+fingerprints, preserve scalar/array results and disappear on dry-run or
+rollback. Successful no-ops and post-commit publication failures retain their
+semantic notice. Fork results and successful attached analyses use the same
+object-only decoration. Context-bound provider windows count bytes, not
+Unicode characters; Backblaze label separators and lowercase bodies follow
+the accepted rule.
+
+Latest local verification: 346 library tests and 62 default-profile focused
+tests passed. After one managed CLI test observed a workspace-configurable
+executable in the shared target, an explicit managed rebuild advertised
+`managed-enforce-no-ack`; its policy witness and 51 managed detector/lifecycle
+tests passed. This is targeted dirty-checkout evidence, not exact-source
+release proof. Formatting and all-targets Clippy passed in both profiles.
+The ten-minute CI pod-log retention change is pushed to declarative-config
+as `551a5dca`; live GitOps reconciliation must still be observed. Full
+verification, final-candidate performance, fleet acceptance and the actual
+versioned release/two-host deployment remain open.
 
 Baseline verification ran locally against the dirty checkout: `cargo test
 --test secret_rejection --test redaction_transaction --test

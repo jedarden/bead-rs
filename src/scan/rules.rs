@@ -308,8 +308,16 @@ pub const RULES: &[Rule] = &[
         id: "backblaze-key-id-assignment",
         provider: "backblaze",
         tier: Tier::Blocking,
-        keywords: &["key_id", "keyid", "key id", "access_key_id", "account_id"],
-        pattern: r#"(?i)[A-Za-z_ -]*(?:key[_ -]?id|access_key_id|account_id)["']?\s*[:=]\s*["']?(00[0-9a-f]{23})"#,
+        keywords: &[
+            "key_id",
+            "key-id",
+            "keyid",
+            "key id",
+            "account_id",
+            "account-id",
+            "account id",
+        ],
+        pattern: r#"(?i)(?P<label>[A-Za-z0-9_ -]*(?:key[_ -]?id|account[_ -]id))["']?[ \t]*[:=][ \t]*["']?(?P<value>00[0-9a-f]{23})"#,
         checksum: None,
     },
     Rule {

@@ -59,15 +59,17 @@ fn scan_with_source(
     let mut findings = Vec::new();
     static ASSIGNMENTS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         [
-        r#"(?m)(?P<name>(?:--)?[A-Za-z][A-Za-z0-9_. -]{0,63})["')]*[ \t]*(?:=>|:=|=|:)[ \t]*["']?(?P<value>[^\s"'`,;]+)"#,
-        r#"(?m)(?P<name>--[A-Za-z][A-Za-z0-9_.-]{0,63})[ \t]+["']?(?P<value>[^\s"'`,;]+)"#,
-        r#"(?m)^[ \t]*[-*|]?[ \t]*(?P<name>[A-Za-z][A-Za-z0-9_. -]{0,63}?)(?:\t| {2,}|[ \t]*\|[ \t]*)(?P<value>[^\s"'`,;|]+)[ \t]*\|?[ \t]*$"#,
+        r#"(?m)(?:--)?(?P<name>[A-Za-z0-9_][A-Za-z0-9_. -]{0,63}?)["')]?[ \t]*(?:=>|:=|=|:)[ \t]*["']?(?P<value>[^\s"'`,;]+)"#,
+        r#"(?m)--(?P<name>[A-Za-z0-9_][A-Za-z0-9_.-]{0,63})[ \t]+["']?(?P<value>[^\s"'`,;]+)"#,
     ].iter().map(|pattern|Regex::new(pattern).unwrap()).collect()
     });
-    for (form, regex) in ASSIGNMENTS.iter().enumerate() {
+    for regex in ASSIGNMENTS.iter() {
         for capture in regex.captures_iter(field.text) {
             let name = capture.name("name").unwrap();
-            if name.start() > 0 && field.text.as_bytes()[name.start() - 1].is_ascii_alphanumeric() {
+            let start = capture.get(0).unwrap().start();
+            if start > 0 && field.text.as_bytes()[start - 1].is_ascii_alphanumeric()
+                || start > 0 && b"_.-".contains(&field.text.as_bytes()[start - 1])
+            {
                 continue;
             }
             if !credential_shape::credential_label(name.as_str()) {
@@ -78,8 +80,7 @@ fn scan_with_source(
             if text.is_empty() || credential_shape::placeholder(text) {
                 continue;
             }
-            let (rule, tier) = if credential_shape::qualifies(text, if form == 2 { 20 } else { 12 })
-            {
+            let (rule, tier) = if credential_shape::qualifies(text, 12) {
                 ("credential-assignment", Tier::Blocking)
             } else if text.len() >= 8 {
                 ("advisory-keyword-assignment", Tier::Advisory)
@@ -95,6 +96,31 @@ fn scan_with_source(
                 tier,
             ));
         }
+    }
+    let mut line_offset = 0;
+    for line in field.text.split_inclusive(['\r', '\n']) {
+        if let Some((name, start, end)) = table_value(line.trim_end_matches(['\r', '\n'])) {
+            let value = &line[start..end];
+            if credential_shape::credential_label(name) && !credential_shape::placeholder(value) {
+                let (rule, tier) = if credential_shape::qualifies(value, 20) {
+                    ("credential-assignment", Tier::Blocking)
+                } else if value.len() >= 8 {
+                    ("advisory-keyword-assignment", Tier::Advisory)
+                } else {
+                    line_offset += line.len();
+                    continue;
+                };
+                findings.push(finding(
+                    selector,
+                    field,
+                    rule,
+                    line_offset + start,
+                    line_offset + end,
+                    tier,
+                ));
+            }
+        }
+        line_offset += line.len();
     }
     for (start, end) in uri_userinfo_ranges(field.text, source_map) {
         let password = &field.text[start..end];
@@ -226,6 +252,64 @@ fn scan_with_source(
         }
     }
     findings
+}
+
+/// Parse one section 4.4 table row. Pipe separation takes precedence over
+/// whitespace inside its identifier; ranges exclude terminators and closing
+/// punctuation and retain offsets into the original line.
+fn table_value(line: &str) -> Option<(&str, usize, usize)> {
+    let mut content = line.trim_start_matches(' ');
+    if !matches!(content.as_bytes().first(), Some(b'-' | b'*' | b'|')) {
+        return None;
+    }
+    content = content[1..].trim_start_matches([' ', '\t']);
+    let content_start = line.len() - content.len();
+    content = content.trim_end_matches([' ', '\t']);
+    if let Some(without_bar) = content.strip_suffix('|') {
+        content = without_bar.trim_end_matches([' ', '\t']);
+    }
+    let (name, value) = if let Some(pipe) = content.find('|') {
+        (
+            content[..pipe].trim_end_matches([' ', '\t']),
+            content[pipe + 1..].trim_start_matches([' ', '\t']),
+        )
+    } else {
+        let bytes = content.as_bytes();
+        let mut index = 0;
+        let mut separator = None;
+        while index < bytes.len() {
+            if matches!(bytes[index], b' ' | b'\t') {
+                let start = index;
+                let mut has_tab = false;
+                while index < bytes.len() && matches!(bytes[index], b' ' | b'\t') {
+                    has_tab |= bytes[index] == b'\t';
+                    index += 1;
+                }
+                if has_tab || index - start >= 2 {
+                    separator = Some((start, index));
+                    break;
+                }
+            } else {
+                index += 1;
+            }
+        }
+        let (start, end) = separator?;
+        (&content[..start], &content[end..])
+    };
+    if name.is_empty()
+        || value.is_empty()
+        || value
+            .chars()
+            .any(|character| character.is_whitespace() || "\"'`,;|".contains(character))
+    {
+        return None;
+    }
+    let start = content_start + content.len() - value.len();
+    let value = value.trim_end_matches(['.', ')', ']', '}']);
+    if value.is_empty() {
+        return None;
+    }
+    Some((name, start, start + value.len()))
 }
 
 fn yaml_document_ranges(text: &str) -> Vec<Range<usize>> {

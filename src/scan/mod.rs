@@ -55,7 +55,7 @@ pub(crate) fn record_advisories(report: &ScanReport) {
             for finding in report
                 .findings
                 .iter()
-                .filter(|finding| !finding.is_blocking_match())
+                .filter(|finding| finding.tier == Tier::Advisory)
             {
                 if !findings
                     .iter()
@@ -73,7 +73,13 @@ pub fn advisory_summary() -> Option<serde_json::Value> {
             .borrow()
             .as_ref()
             .filter(|findings| !findings.is_empty())
-            .map(|findings| serde_json::json!({"advisory_findings":findings}))
+            .map(|findings| {
+                let rules: BTreeSet<_> = findings
+                    .iter()
+                    .map(|finding| finding.rule_id.as_str())
+                    .collect();
+                serde_json::json!({"advisory_findings":findings.len(), "rules":rules})
+            })
     })
 }
 pub fn decorate_mutation<T: serde::Serialize>(
@@ -831,7 +837,10 @@ fn scan_raw_field(selector: &str, field: &Field<'_>) -> Vec<Finding> {
         }
         for capture in regex.captures_iter(field.text) {
             let whole = capture.get(0).expect("pattern has a group 0");
-            let body = capture.get(1).unwrap_or(whole);
+            let body = capture
+                .name("value")
+                .or_else(|| capture.get(1))
+                .unwrap_or(whole);
             if whole.start() > 0 && field.text.as_bytes()[whole.start() - 1].is_ascii_alphanumeric()
             {
                 continue;
@@ -886,18 +895,42 @@ fn scan_raw_field(selector: &str, field: &Field<'_>) -> Vec<Finding> {
                 continue;
             }
             if rule.id == "vault-legacy-token" {
-                let context = &field.text[..whole.start()];
-                let line = context.rsplit('\n').next().unwrap_or(context);
-                let start = line
-                    .char_indices()
-                    .rev()
-                    .nth(63)
-                    .map(|(index, _)| index)
-                    .unwrap_or(0);
-                let context = line[start..].to_ascii_lowercase();
-                if !["vault", "bao", "token"]
+                let bytes = field.text.as_bytes();
+                let line_start = bytes[..whole.start()]
                     .iter()
-                    .any(|label| context.contains(label))
+                    .rposition(|byte| matches!(byte, b'\r' | b'\n'))
+                    .map_or(0, |index| index + 1);
+                let start = line_start.max(whole.start().saturating_sub(64));
+                let context = &bytes[start..whole.start()];
+                if !["vault", "bao", "token"].iter().any(|label| {
+                    context
+                        .windows(label.len())
+                        .any(|window| window.eq_ignore_ascii_case(label.as_bytes()))
+                }) {
+                    continue;
+                }
+            }
+            if rule.id == "backblaze-key-id-assignment" {
+                let label = capture.name("label").expect("compiled context label");
+                let folded = label.as_str().to_ascii_lowercase();
+                let in_window = [
+                    "key_id",
+                    "key-id",
+                    "key id",
+                    "keyid",
+                    "account_id",
+                    "account-id",
+                    "account id",
+                ]
+                .iter()
+                .any(|suffix| {
+                    folded.ends_with(suffix) && body.start() - (label.end() - suffix.len()) <= 64
+                });
+                if !in_window
+                    || !body
+                        .as_str()
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
                 {
                     continue;
                 }

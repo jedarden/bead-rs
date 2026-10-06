@@ -1804,3 +1804,38 @@ snapshot re-verification corrected the record and repaired what it caught:
 - Preserve all unrelated shared changes and existing bead dependencies. Next:
   literal credential-label/table grammar and counted advisory lifecycle, then
   exact-source/default+managed verification before freezing a candidate.
+
+## 2026-10-06 — literal assignments and counted notices (BR-T40/41/43)
+
+- Owners remain beadrs-7740733d, beadrs-1d8b4c78 and beadrs-dfe88716 under the
+  existing beadrs-b3059276 release outcome. Exact independently accepted
+  ruleset-v4 input is unchanged; no full/fleet/release gate is self-approved.
+- Literal exclusion tests precede camel/separator normalization. Complete
+  identifier boundaries and required-marker table parsing now preserve exact
+  value ranges, full separators, pipe precedence, closing bars, punctuation
+  and all four line endings. Q truth-table and whole-run hash-shape witnesses
+  are committed tests, not categorical claims that every identifier fails Q.
+- Advisory collection uses reported tier, fingerprint deduplication, integer
+  count and sorted unique rules only. Dry-run/rollback emit no write-time
+  summary; semantic no-ops and post-commit publication failure retain valid
+  semantic notices. Existing scalar/array types are unchanged. Fork and
+  attached analysis object results use the same decoration after success.
+- Provider context windows use 64 bytes on one matching-view line. Backblaze
+  accepts normative label separators and rejects uppercase value bodies. One
+  initial cross-line test incorrectly ignored intentional token dewrapping;
+  the corrected witness tests both permitted dewrapping and a space-protected
+  line boundary rather than weakening the production behavior.
+- Actual local verification: cargo test --lib passed346; seven focused default
+  targets passed62. A managed run failed one policy test while the shared CLI
+  advertised workspace-configurable; explicit managed cargo build restored
+  managed-enforce-no-ack, the policy witness passed, and six managed targets
+  passed51. Formatting and all-targets Clippy in both profiles passed. This
+  dirty shared-source evidence is not final source/artifact acceptance.
+- CI diagnostic retention is delivered separately through GitOps commit
+  551a5dca in declarative-config. Argo lint passed with both referenced status
+  templates; resource limits reported zero critical findings, capacity showed
+  a fitting node, and pre-commit/gitleaks passed. Relevant live Application
+  reconciliation remains pending; no direct managed resource mutation.
+- Next: exact-source CI diagnosis/full verification, remaining structural
+  conformance and native/Git parity, then final candidate performance/fleet
+  receipt and immutable version publication before installation on both hosts.

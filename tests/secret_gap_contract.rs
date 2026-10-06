@@ -1045,10 +1045,16 @@ fn advisory_success_emits_one_counted_notice_and_additive_manifest_json() {
     assert!(stderr.contains("advisory-high-entropy-string"));
     assert!(!stderr.contains(&value));
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(!report["secret_scan"]["advisory_findings"]
-        .as_array()
-        .unwrap()
-        .is_empty());
+    let count = report["secret_scan"]["advisory_findings"].as_u64().unwrap();
+    assert!(count > 0);
+    assert_eq!(
+        report["secret_scan"]["rules"],
+        serde_json::json!(["advisory-high-entropy-string"])
+    );
+    assert!(stderr.contains(&format!(
+        "secret_scan advisory: {count} finding(s), rules advisory-high-entropy-string;"
+    )));
+    assert_eq!(report["secret_scan"].as_object().unwrap().len(), 2);
 }
 
 #[test]

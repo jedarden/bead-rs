@@ -2520,7 +2520,10 @@ fn cmd_sync_fork(opts: cli::SyncForkOptions) -> Result<()> {
     // Print results
     match opts.format.as_str() {
         "json" => {
-            println!("{}", serde_json::to_string_pretty(&report)?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&scan::decorate_mutation(&report)?)?
+            );
         }
         "text" => {
             eprintln!("Workspace forked successfully:");
@@ -4579,20 +4582,6 @@ fn cmd_analyze_exclusion(opts: cli::AnalyzeExclusionOptions) -> Result<()> {
     // Run exclusion analysis
     let analysis = service::analyze_exclusion(&conn, &opts.limit, opts.show_sql)?;
 
-    if opts.json {
-        // Output machine-readable JSON
-        let output = serde_json::to_string_pretty(&analysis).map_err(|e| {
-            Error::Internal(anyhow::anyhow!(
-                "Failed to serialize exclusion analysis: {}",
-                e
-            ))
-        })?;
-        println!("{}", output);
-    } else {
-        // Human-readable analysis
-        print_human_readable_exclusion_analysis(&analysis);
-    }
-
     // Attach as comment if requested
     if let Some(target_id) = &opts.attach {
         let comment_body = if opts.json {
@@ -4637,6 +4626,19 @@ fn cmd_analyze_exclusion(opts: cli::AnalyzeExclusionOptions) -> Result<()> {
         // Use "system" as the default actor for automated comments
         service::add_comment(&conn, target_id, &comment_body, "system")?;
         eprintln!("Analysis attached as comment to bead {}", target_id);
+    }
+
+    // Render only after the optional semantic attachment succeeds. A failed
+    // attachment must not emit a write-time success summary.
+    if opts.json {
+        let output = if opts.attach.is_some() {
+            serde_json::to_string_pretty(&scan::decorate_mutation(&analysis)?)?
+        } else {
+            serde_json::to_string_pretty(&analysis)?
+        };
+        println!("{}", output);
+    } else {
+        print_human_readable_exclusion_analysis(&analysis);
     }
 
     Ok(())
