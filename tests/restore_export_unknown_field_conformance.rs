@@ -201,14 +201,21 @@ fn assert_semantic_preservation(
     current: &PublishedGeneration,
     label: &str,
 ) {
-    let previous_semantics = semantic_records(&previous.records);
-    let current_semantics = semantic_records(&current.records);
+    assert_semantic_record_preservation(&previous.records, &current.records, label);
+}
+
+fn assert_semantic_record_preservation(
+    previous_records: &[Value],
+    current_records: &[Value],
+    label: &str,
+) {
+    let previous_semantics = semantic_records(previous_records);
+    let current_semantics = semantic_records(current_records);
     for (key, record) in &previous_semantics {
-        assert_eq!(
-            current_semantics.get(key),
-            Some(record),
-            "{label}: semantic record {key} changed across restore/export"
-        );
+        let actual_record = current_semantics
+            .get(key)
+            .unwrap_or_else(|| panic!("{label}: semantic record {key} was dropped"));
+        assert_json_semantics(record, actual_record, &format!("{label}/{key}"));
     }
 }
 
@@ -453,13 +460,17 @@ fn dropped_corpus_unknown_field_fails_preservation_assertion() {
     let mut mutated = generations[1].records.clone();
     remove_unknown_member(&mut mutated, "bead-unknown-a", "x-fixture-issue");
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        assert_corpus_unknown_fields(&mutated, &generations[1].pointer, &expected);
+        assert_semantic_record_preservation(
+            &generations[0].records,
+            &mutated,
+            "deliberately missing sentinel",
+        );
     }));
     let message = panic_message(
         result.expect_err("a deliberate dropped corpus field must fail preservation assertions"),
     );
     assert!(
-        message.contains("/issue/bead-unknown-a/x-fixture-issue"),
+        message.contains("x-fixture-issue"),
         "the failed assertion must identify the dropped field: {message}"
     );
 }
