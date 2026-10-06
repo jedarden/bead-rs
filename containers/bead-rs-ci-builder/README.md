@@ -22,18 +22,18 @@ The tag is for humans; **the digest is the pin**. The repo is private
 
 | Component | Pin | Rotation trigger |
 |---|---|---|
-| Base image | `debian:bookworm-slim@sha256:f3034a6e…` (amd64 OCI manifest) | deliberate rebuild |
+| Base image | `ubuntu:24.04@sha256:f610ab94…` (amd64 OCI manifest) | deliberate rebuild |
 | rustup | archive `1.29.1` + published SHA-256 (frozen URL) | deliberate rebuild |
 | Rust stable | exact `1.98.1`, installed as the **default** toolchain | deliberate rebuild |
 | Rust MSRV | installed under the exact name `1.85` (what the workflow resolves with `cargo +1.85`) | deliberate rebuild + MSRV bump |
 | Release targets | the four release triples' std, pre-installed | deliberate rebuild |
 | gh | official `2.101.0` release .deb + published SHA-256 | deliberate rebuild |
 | crane | `v0.22.1` + published checksum (cache transport) | deliberate rebuild |
-| jq and Python 3 | bookworm packages (release evidence/contract checks) | deliberate rebuild |
-| aarch64 cross gcc | `gcc-aarch64-linux-gnu` from bookworm (distro-pinned, not point-pinned) | deliberate rebuild |
+| jq and Python 3 | noble packages (release evidence/contract checks) | deliberate rebuild |
+| aarch64 cross gcc | `gcc-aarch64-linux-gnu` from noble (distro-pinned, not point-pinned) | deliberate rebuild |
 
-Debian packages are pinned to the *bookworm distribution*, not to
-point-release versions: `deb.debian.org` rotates `.debs` on security
+Ubuntu packages are pinned to the *noble distribution*, not to
+point-release versions: the distribution repositories rotate `.debs` on security
 updates, so an exact-version pin there would break every rebuild within
 months. The versions actually installed at build time are recorded in
 `PROVENANCE-<version>.md`, and the pushed image digest is what consumers pin,
@@ -45,6 +45,14 @@ The Dockerfile ends with a build-time verification block that refuses to
 produce the image unless every pin resolved to what the file records
 (rustc/clippy/fmt/gh/crane versions, MSRV resolution, target presence). A
 wrong pin fails the build, not a CI run three layers downstream.
+
+Version 1.2.0 also requires glibc 2.39 and verifies the SHA-256 and compiled
+policy of the unchanged historical managed pin by executing it with the
+system loader. The failed 1.1.0 run proved that bookworm's glibc 2.36 was
+too old; supplying its Nix interpreter pathname alone did not fix its ABI.
+The exact Ubuntu base digest was read from official Docker Hub metadata and
+pulled/executed locally. This compatibility witness is not proof that final
+new release binaries run on both hosts; they must still be tested there.
 
 ## Building and pushing the image
 

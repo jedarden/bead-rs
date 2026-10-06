@@ -16,15 +16,19 @@
 #   - gh:                    exact release .deb + published SHA-256. The
 #                            apt repository does not retain every version.
 #   - crane:                 exact release + published SHA-256.
-#   - Debian packages:       pinned to the bookworm distribution, not to
-#                            point-release versions. deb.debian.org rotates
+#   - Ubuntu packages:       pinned to the noble distribution, not to
+#                            point-release versions. Distro repositories rotate
 #                            .debs on security updates, so an exact-version
 #                            pin here would break every rebuild within
 #                            months. The versions actually installed at
 #                            build time are recorded in PROVENANCE-<version>.md,
 #                            and the pushed image digest is what consumers
 #                            pin, so rebuild drift cannot silently reach CI.
-FROM debian:bookworm-slim@sha256:f3034a6ec3c1205360777c4aae76234998866ad18806ae62b63a3f84ccad782b
+# Historical managed pins require GLIBC_2.39. Bookworm's 2.36 cannot run
+# them even after their recorded Nix interpreter path is supplied. Noble
+# provides 2.39, below lab's observed 2.40 and codinghome's 2.42. Actual
+# candidate execution on both fleet hosts remains a separate delivery gate.
+FROM ubuntu:24.04@sha256:f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7bdb646106b
 
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -122,6 +126,18 @@ RUN mkdir -p /usr/local/share/bead-rs-ci-builder \
     && printf 'version=%s\ndate=%s\nsource_revision=%s\n' \
         "${BUILDER_VERSION}" "${BUILD_DATE}" "${SOURCE_REVISION}" \
         > /usr/local/share/bead-rs-ci-builder/IDENTITY
+
+# Execute the unchanged historical managed pin on the chosen libc, not only
+# a guessed version number. The production workflow supplies its recorded
+# interpreter path; direct invocation here tests the actual runtime ABI.
+COPY pinned-binaries/bead-managed-secret-policy-cd4986c /usr/local/share/bead-rs-ci-builder/historical-managed-pin
+RUN printf '%s  %s\n' \
+        6a5969ed9c1c5215d3f0f93505aa0603d7375281f6fb3f64ea6101ece149a50f \
+        /usr/local/share/bead-rs-ci-builder/historical-managed-pin | sha256sum -c - \
+    && /lib64/ld-linux-x86-64.so.2 /usr/local/share/bead-rs-ci-builder/historical-managed-pin capabilities \
+        > /tmp/historical-pin-capabilities.json \
+    && jq -e '.secret_scan.compiled_policy == "managed-enforce-no-ack"' /tmp/historical-pin-capabilities.json \
+    && test "$(getconf GNU_LIBC_VERSION)" = 'glibc 2.39'
 
 # Build-time verification: refuse to produce the image unless every pin
 # actually resolved to what this Dockerfile records. A wrong version string
