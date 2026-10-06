@@ -94,7 +94,7 @@
   },
   "checksums": {
     "checkpoint.jsonl": "757f4e1a12d6dc7629aef6ae3d913262b0f191b664c6721d47c61af822c1a945",
-    "current.json": "54334046f00ac8c4f2c906548061ba774dc3eb91957bc560dcac093521e28388",
+    "current.json": "541bc193bc3b2d5679e6233396148e7cf47ab81ed6d0c55cfb0763944f2ae702",
     "source_records_without_receipt": "6ccb48987debd5e611b5ef9235d287deb775947cd74b73ac6c8391adf0cfa0fb",
     "receipt_without_digest": "93b4da5a2a74da421f706bc563171ca815f3b6923b6d1f7fc2ed5e3379fe7ae9"
   }

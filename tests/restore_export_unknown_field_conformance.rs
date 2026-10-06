@@ -279,6 +279,49 @@ fn assert_resource_key_known_semantics(records: &[Value], expected: &Value) {
     );
 }
 
+#[test]
+fn native_restore_of_fixture_generation_preserves_corpus_unknown_fields() {
+    let source = corpus_dir();
+    let expected = read_json(&source.join("expected.json"));
+    let source_pointer = read_json(&source.join("current.json"));
+    let generation = source_pointer["generation_id"].as_str().unwrap();
+    let workspace = fresh_workspace();
+
+    let output = bead(
+        workspace.path(),
+        &[
+            "restore",
+            "--source",
+            source.to_str().unwrap(),
+            "--generation",
+            generation,
+            "--actor",
+            "unknown-fields-native-restore",
+            "--format",
+            "json",
+        ],
+    )
+    .assert()
+    .success()
+    .get_output()
+    .stdout
+    .clone();
+    let report: Value = serde_json::from_slice(&output).unwrap();
+    let restored_pointer = pointer(workspace.path());
+    let restored_records = active_records(workspace.path());
+
+    assert_eq!(report["generation_id"], generation);
+    assert_eq!(report["issues_restored"], source_pointer["issue_count"]);
+    assert_eq!(report["events_restored"], source_pointer["event_count"]);
+    assert_eq!(
+        report["provenance_receipts_restored"],
+        source_pointer["receipt_count"]
+    );
+    assert_eq!(restored_records.len(), 7);
+    assert_corpus_unknown_fields(&restored_records, &restored_pointer, &expected);
+    assert_resource_key_known_semantics(&restored_records, &expected);
+}
+
 fn build_three_generations() -> Vec<PublishedGeneration> {
     let corpus = corpus_dir();
     let first = restore_and_publish(&corpus, "unknown-fields-generation-1");

@@ -13,10 +13,13 @@ values. The checkpoint records are ordered as required by
 
 ## Files
 
-- `checkpoint.jsonl` is the five-record monolithic checkpoint corpus: two
-  issues, two events, and one provenance receipt.
-- `current.json` selects `checkpoint.jsonl` and contains the pointer-level
-  unknown member.
+- `objects/757f4e1a12d6dc7629aef6ae3d913262b0f191b664c6721d47c61af822c1a945.jsonl`
+  is the five-record, content-addressed monolithic generation: two issues, two
+  events, and one provenance receipt. Its bytes are also kept as
+  `checkpoint.jsonl` for import-only consumers.
+- `current.json` selects the content-addressed object as a named `gen-`
+  generation and contains the pointer-level unknown member. The directory is a
+  valid source for native `bead restore`.
 - `expected.json` records the semantic keys/values, JSON pointers, and hashes
   expected by later restore/export tests.
 - `resource-key.json` is the resource-key object probe. The native resource
@@ -25,7 +28,14 @@ values. The checkpoint records are ordered as required by
   This companion preserves that required probe without changing the native
   checkpoint shape.
 - `verify.sh` checks JSON validity, record ordering/counts, exact unknown
-  values, pointer linkage, and all deterministic hashes.
+  values, native restore path shape, pointer linkage, and all deterministic
+  hashes.
+
+The native restore path is exercised with:
+
+```text
+cargo test --test restore_export_unknown_field_conformance native_restore_of_fixture_generation_preserves_corpus_unknown_fields -- --exact
+```
 
 The corpus uses no live workspace IDs, timestamps, generated IDs, or producer
 output. Its UUID, instants, keys, and values are fixed fixture data. The

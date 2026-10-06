@@ -1,14 +1,14 @@
 {
   "schema_version": 1,
-  "generation_id": "generation-unknown-fields-v1",
+  "generation_id": "gen-unknown-fields-v1",
   "mode": "monolithic",
   "store_uuid": "00000000-0000-4000-8000-000000000001",
   "snapshot_sequence": 2,
   "active_root": {
-    "path": "checkpoint.jsonl",
+    "path": "objects/757f4e1a12d6dc7629aef6ae3d913262b0f191b664c6721d47c61af822c1a945.jsonl",
     "sha256": "757f4e1a12d6dc7629aef6ae3d913262b0f191b664c6721d47c61af822c1a945"
   },
-  "added_paths": ["checkpoint.jsonl"],
+  "added_paths": ["objects/757f4e1a12d6dc7629aef6ae3d913262b0f191b664c6721d47c61af822c1a945.jsonl"],
   "replaced_paths": [],
   "deleted_paths": [],
   "issue_count": 2,
