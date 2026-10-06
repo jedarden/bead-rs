@@ -9,6 +9,7 @@
 use assert_cmd::Command;
 use rusqlite::params;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -90,6 +91,31 @@ fn checkpoint_contains(workspace: &Path, candidate: &str) -> bool {
     false
 }
 
+fn checkpoint_files(workspace: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    fn collect(directory: &Path, root: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        let entries = fs::read_dir(directory).expect("checkpoint directory should be readable");
+        for entry in entries {
+            let path = entry.expect("checkpoint entry").path();
+            if path.is_dir() {
+                collect(&path, root, files);
+            } else if path
+                .file_name()
+                .is_some_and(|name| !name.to_string_lossy().ends_with(".lock"))
+            {
+                files.insert(
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    fs::read(path).expect("checkpoint file should be readable"),
+                );
+            }
+        }
+    }
+
+    let checkpoint = workspace.join(".beads/checkpoint");
+    let mut files = BTreeMap::new();
+    collect(&checkpoint, &checkpoint, &mut files);
+    files
+}
+
 fn database(workspace: &Path) -> PathBuf {
     workspace.join(".beads/beads.db")
 }
@@ -127,6 +153,132 @@ fn quarantine(workspace: &Path) {
         [],
     )
     .unwrap();
+}
+
+fn published_secret_source() -> (tempfile::TempDir, String, String) {
+    let source = tempfile::tempdir().unwrap();
+    bead(source.path())
+        .args(["init", "--prefix", "qsrc", "--no-auto-flush"])
+        .assert()
+        .success();
+    let secret = seed_secret_issue(source.path());
+    let conn = rusqlite::Connection::open(database(source.path())).unwrap();
+    let mut store = bead_rs::store::SqliteStore::from_conn(conn);
+    let checkpoint_base = source.path().join(".beads");
+    let config = bead_rs::service::load_checkpoint_config(&checkpoint_base).unwrap();
+    bead_rs::service::publish_forensic_checkpoint(&mut store, &config, &checkpoint_base).unwrap();
+    drop(store);
+    let pointer: Value = serde_json::from_slice(
+        &fs::read(source.path().join(".beads/checkpoint/current.json")).unwrap(),
+    )
+    .unwrap();
+    (
+        source,
+        secret,
+        pointer["generation_id"].as_str().unwrap().to_string(),
+    )
+}
+
+fn initialized_git_target(prefix: &str) -> tempfile::TempDir {
+    let target = tempfile::tempdir().unwrap();
+    git_ok(target.path(), &["init", "-q"]);
+    bead(target.path())
+        .args(["init", "--prefix", prefix])
+        .assert()
+        .success();
+    git_ok(target.path(), &["add", ".beads/checkpoint"]);
+    git_ok(
+        target.path(),
+        &["commit", "-q", "-m", "baseline checkpoint"],
+    );
+    target
+}
+
+#[test]
+fn secret_recovery_keeps_local_state_without_publishing_or_staging() {
+    let (source, secret, generation) = published_secret_source();
+
+    for operation in ["restore", "import-only"] {
+        let target = initialized_git_target(if operation == "restore" {
+            "qrestore"
+        } else {
+            "qimport"
+        });
+        let checkpoint_before = checkpoint_files(target.path());
+        let index_before = index(target.path());
+        let head_before = head(target.path());
+
+        let output = if operation == "restore" {
+            bead(target.path())
+                .args([
+                    "restore",
+                    "--source",
+                    source.path().join(".beads/checkpoint").to_str().unwrap(),
+                    "--generation",
+                    &generation,
+                    "--actor",
+                    "recovery-operator",
+                    "--allow-non-empty",
+                    "--format",
+                    "json",
+                ])
+                .output()
+                .unwrap()
+        } else {
+            bead(target.path())
+                .args([
+                    "sync",
+                    "import-only",
+                    "--input",
+                    source.path().join(".beads/checkpoint").to_str().unwrap(),
+                    "--restore-into-empty",
+                    "--actor",
+                    "recovery-operator",
+                    "--format",
+                    "json",
+                ])
+                .output()
+                .unwrap()
+        };
+
+        assert!(
+            output.status.success(),
+            "{operation} should commit local recovery"
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["local_recovery_succeeded"], true);
+        assert_eq!(report["secret_quarantined"], true);
+        assert_eq!(report["checkpoint_publication_withheld"], true);
+        assert!(stderr.contains("secret_quarantined"));
+        assert!(!stdout.contains(&secret), "{operation} leaked to stdout");
+        assert!(!stderr.contains(&secret), "{operation} leaked to stderr");
+
+        let conn = rusqlite::Connection::open(database(target.path())).unwrap();
+        let retained: String = conn
+            .query_row(
+                "SELECT description FROM issues WHERE id='quarantine-git'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            retained == secret,
+            "{operation} did not retain local recovery state"
+        );
+        let held: i64 = conn
+            .query_row("SELECT COUNT(*) FROM secret_quarantine", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(held, 1);
+
+        assert_eq!(checkpoint_files(target.path()), checkpoint_before);
+        assert_eq!(index(target.path()), index_before);
+        assert_eq!(head(target.path()), head_before);
+        assert!(!checkpoint_contains(target.path(), &secret));
+    }
 }
 
 #[test]
