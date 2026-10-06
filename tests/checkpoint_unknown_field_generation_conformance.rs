@@ -833,6 +833,13 @@ fn build_generations() -> Generations {
         event_payload(),
         "an idempotent replay must leave the stored extension map exactly as stored: {after_idempotent}"
     );
+    merge_replay(restored.path(), &replay_log, "ufk-replay-idempotent-again");
+    let after_repeated_idempotent =
+        stored_event_extensions(restored.path(), &extended_event_identity);
+    assert_eq!(
+        after_repeated_idempotent, after_idempotent,
+        "repeating an idempotent replay must reproduce the same extension map"
+    );
 
     // Widen: a newer producer replays the extension-bearing event with a
     // wider map -- the seeded key's value grown by shapes only a later
@@ -860,6 +867,12 @@ fn build_generations() -> Generations {
         after_widen,
         widened_event_payload(),
         "a newer producer's wider extension value must replace the stored one: {after_widen}"
+    );
+    merge_replay(restored.path(), widened.path(), "ufk-replay-widen-again");
+    let after_repeated_widen = stored_event_extensions(restored.path(), &extended_event_identity);
+    assert_eq!(
+        after_repeated_widen, after_widen,
+        "replaying the same wider event again must deterministically preserve its full map"
     );
 
     // Strip/narrow: the same log as an older producer would have written it
@@ -890,6 +903,12 @@ fn build_generations() -> Generations {
     assert_eq!(
         after_strip, after_widen,
         "a stripped replay must not erase what earlier generations stored: {after_strip}"
+    );
+    merge_replay(restored.path(), stripped.path(), "ufk-replay-strip-again");
+    let after_repeated_strip = stored_event_extensions(restored.path(), &extended_event_identity);
+    assert_eq!(
+        after_repeated_strip, after_strip,
+        "repeating a stripped replay must deterministically retain the widened map"
     );
 
     create_issue(restored.path(), "generation probe 2 — forces the export");
@@ -1137,7 +1156,7 @@ fn redaction_rewrite_preserves_unknown_fields_on_the_rewritten_event() {
             "UPDATE events SET detail = ?1
              WHERE origin_store_uuid = ?2 AND origin_event_sequence = ?3",
             rusqlite::params![
-                format!(r#"{{"credential":"{secret}"}}"#),
+                format!(r#"{{"credential":"{secret}","future_context":{{"preserve":true}}}}"#),
                 origin_uuid,
                 origin_sequence
             ],
@@ -1190,6 +1209,7 @@ fn redaction_rewrite_preserves_unknown_fields_on_the_rewritten_event() {
 
     assert_levels_preserved(&generation_4, &generations, true);
     assert_receipt_extension(&generation_4, &generations.receipt_with_extensions);
+    assert_pointer_extension(&read_pointer(round_tripped), "post-redaction");
 
     let rewritten = extended_event(&generation_4);
     // The documented marker semantics (historical-redaction-v1 §3): the
@@ -1198,8 +1218,11 @@ fn redaction_rewrite_preserves_unknown_fields_on_the_rewritten_event() {
     // intact, just as the extension keys beside it did above.
     assert_eq!(
         rewritten["detail"],
-        json!({ "credential": REDACTION_MARKER }),
-        "redaction must replace the value and change no other byte: {}",
+        json!({
+            "credential": REDACTION_MARKER,
+            "future_context": { "preserve": true },
+        }),
+        "redaction must replace only the matched value and preserve the rest of the detail: {}",
         rewritten["detail"]
     );
     assert!(
@@ -1243,8 +1266,11 @@ fn redaction_rewrite_preserves_unknown_fields_on_the_rewritten_event() {
     let final_rewritten = extended_event(&generation_5);
     assert_eq!(
         final_rewritten["detail"],
-        json!({ "credential": REDACTION_MARKER }),
-        "the final redacted export/import must retain the sanitized event detail"
+        json!({
+            "credential": REDACTION_MARKER,
+            "future_context": { "preserve": true },
+        }),
+        "the final redacted export/import must retain the sanitized span and unrelated detail"
     );
     assert!(
         !serde_json::to_string(&generation_5)
