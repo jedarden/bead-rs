@@ -3512,6 +3512,18 @@ release-backed until the exact-hash review is recorded and BR-T44 passes,
 with the exception of the BR-T36 through BR-T38 corrections, which restore
 behavior the accepted `secret-rejection-v1` already requires.
 
+The user-directed versioned scrubber release is owned by `beadrs-b3059276`:
+repair the digest-pinned Argo builder and controlled promotion flow, publish
+checksummed default and managed-enforcement artifacts, and verify installation
+on lab and codinghome. The actionable contract corrections are the distinct
+prerequisite `beadrs-74512e84`; its value-free, runtime-assembled contract
+witnesses do not substitute for independent exact-hash approval, production
+conformance, or BR-T44 fleet replay. Neither release ownership nor a new Cargo
+version releases the BR-T35 gate. Deployment-only edits in
+`declarative-config/k8s/iad-ci/argo-workflows/bead-rs-ci-workflowtemplate.yml`
+remain owned by the application release bead and reconcile through
+`argo-workflows-ns-iad-ci`.
+
 ## 13. Release gates
 
 ### Bootstrap and handoff gates
