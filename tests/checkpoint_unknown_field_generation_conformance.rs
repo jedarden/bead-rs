@@ -1031,6 +1031,46 @@ fn assert_receipt_extension(generation: &[Value], receipt_id: &str) {
     );
 }
 
+/// The semantic portion of the checkpoint that must survive the stale-event
+/// merge and following restore/export hop. Generation IDs, timestamps, and
+/// operation receipts are intentionally absent: this compares the event by
+/// wire identity, the seeded receipt by receipt ID, and the pointer by its
+/// `current.json` role while retaining each object's exact unknown members.
+fn rewritten_history_unknown_semantics(
+    generation: &[Value],
+    pointer: &Value,
+    identity: &(String, i64),
+    receipt_id: &str,
+) -> Value {
+    let event = extended_event(generation);
+    assert_eq!(
+        event_identity(event),
+        *identity,
+        "the semantic snapshot event must retain its wire identity"
+    );
+
+    let receipt = records_of_type(generation, "provenance_receipt")
+        .into_iter()
+        .map(|record| &record["provenance_receipt"])
+        .find(|receipt| receipt["receipt_id"] == receipt_id)
+        .unwrap_or_else(|| panic!("receipt {receipt_id} missing from generation"));
+
+    json!({
+        "event": {
+            "origin_store_uuid": identity.0,
+            "origin_event_sequence": identity.1,
+            "unknown_members": unknown_members(event, &KNOWN_EVENT_KEYS),
+        },
+        "receipt": {
+            "receipt_id": receipt_id,
+            "unknown_members": unknown_members(receipt, &KNOWN_RECEIPT_KEYS),
+        },
+        "pointer/current.json": {
+            "unknown_members": unknown_members(pointer, &KNOWN_POINTER_KEYS),
+        },
+    })
+}
+
 #[test]
 fn unknown_fields_survive_every_level_across_generations() {
     let generations = build_generations();
@@ -1056,6 +1096,24 @@ fn unknown_fields_survive_every_level_across_generations() {
     assert_pointer_extension(
         &read_pointer(generations.workspace(2)),
         "round-tripped republish",
+    );
+
+    let after_stale_merge = rewritten_history_unknown_semantics(
+        &generations.generation_2,
+        &read_pointer(generations.workspace(1)),
+        &generations.extended_event_identity,
+        &generations.receipt_with_extensions,
+    );
+    let after_reexport = rewritten_history_unknown_semantics(
+        &generations.generation_3,
+        &read_pointer(generations.workspace(2)),
+        &generations.extended_event_identity,
+        &generations.receipt_with_extensions,
+    );
+    assert_eq!(
+        after_reexport,
+        after_stale_merge,
+        "semantic unknown-field state for the replayed event, receipt metadata, and current.json pointer must survive re-export"
     );
 }
 
