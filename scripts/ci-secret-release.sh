@@ -22,6 +22,9 @@ mkdir -p "$assets_dir"
 [[ -z "$(find "$assets_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]] || { echo 'Candidate assets directory must start empty' >&2; exit 1; }
 export CARGO_TARGET_DIR="$PWD/target"
 export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-2}
+ # Keep dependency caching, but rebuild the application so an earlier tree's
+ # cached build-script provenance cannot reach a new release candidate.
+cargo clean --package bead-rs
 
 for profile in default managed; do
   feature_args=()
@@ -56,6 +59,11 @@ cp install.sh "$assets_dir/install.sh"
 "$assets_dir/bead-managed-x86_64-unknown-linux-gnu" capabilities --format json > /tmp/managed-capabilities.json
 jq -e '.. | objects | select(.compiled_policy? == "managed-enforce-no-ack")' /tmp/managed-capabilities.json >/dev/null
 "$assets_dir/bead-managed-x86_64-unknown-linux-gnu" --version
+for native_binary in bead-x86_64-unknown-linux-gnu bead-managed-x86_64-unknown-linux-gnu; do
+  native_version=$("$assets_dir/$native_binary" --version)
+  short_revision=$(git rev-parse --short HEAD)
+  [[ "$native_version" == "bead $version ($short_revision "* ]] || { echo 'Packaged source/version provenance mismatch' >&2; exit 1; }
+done
 
 inventory=$(find "$assets_dir" -maxdepth 1 -type f -name 'bead-*' -printf '%f\n' | LC_ALL=C sort | jq -Rsc 'split("\n") | map(select(length > 0))')
 jq -n --arg source "$requested_revision" --arg version "$version" \
