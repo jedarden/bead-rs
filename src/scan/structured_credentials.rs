@@ -64,7 +64,9 @@ fn scan_with_source(
     ].iter().map(|pattern|Regex::new(pattern).unwrap()).collect()
     });
     for regex in ASSIGNMENTS.iter() {
-        for capture in regex.captures_iter(field.text) {
+        let mut offset = 0;
+        while let Some(capture) = regex.captures_at(field.text, offset) {
+            offset = capture.get(0).unwrap().end();
             let name = capture.name("name").unwrap();
             let start = capture.get(0).unwrap().start();
             if start > 0 && field.text.as_bytes()[start - 1].is_ascii_alphanumeric()
@@ -73,6 +75,10 @@ fn scan_with_source(
                 continue;
             }
             if !credential_shape::credential_label(name.as_str()) {
+                // A noncredential prose field can consume another assignment's
+                // name as its value. Revisit that complete value rather than
+                // hiding a following credential behind the earlier separator.
+                offset = capture.name("value").unwrap().start();
                 continue;
             }
             let value = capture.name("value").unwrap();
@@ -145,13 +151,19 @@ fn scan_with_source(
     }
     static STRUCTURES: LazyLock<Vec<(&str, Regex, usize)>> = LazyLock::new(|| {
         [
-        ("authorization-header-credential",r#"(?i)(?:authorization["']?[ \t]*[:=][ \t]*["']?[ \t]*(?:bearer|basic|token|apikey)|(?:^|[^A-Za-z0-9])bearer)[ \t]+(?P<value>[A-Za-z0-9_+/=.-]{20,})"#,12),
+        ("authorization-header-credential",r#"(?i)(?:(?P<header>authorization["']?[ \t]*[:=][ \t]*["']?[ \t]*(?:bearer|basic|token|apikey))|(?:^|[^A-Za-z0-9])bearer)[ \t]+(?P<value>[^\s"'`,;]{12,})"#,12),
         ("curl-user-credential",r#"(?:^|[ \t])(?:-u(?:=|[ \t]*)|--user(?:=|[ \t]+))["']?[^:\s"']+:(?P<value>[^\s"'`,;]+)"#,8),
     ].iter().map(|(rule,pattern,min)|(*rule,Regex::new(pattern).unwrap(),*min)).collect()
     });
     for (rule, regex, minimum) in STRUCTURES.iter() {
         for capture in regex.captures_iter(field.text) {
             let value = capture.name("value").unwrap();
+            if *rule == "authorization-header-credential"
+                && capture.name("header").is_none()
+                && value.len() < 20
+            {
+                continue;
+            }
             if credential_shape::qualifies(value.as_str(), *minimum) {
                 findings.push(finding(
                     selector,

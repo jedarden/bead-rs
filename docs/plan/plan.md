@@ -1,6 +1,6 @@
 # bead-rs Current Product and Software Factory Plan
 
-Plan revision: 24
+Plan revision: 25
 
 As of: 2026-10-06
 
@@ -161,6 +161,35 @@ The ten-minute CI pod-log retention change is pushed to declarative-config
 as `551a5dca`; live GitOps reconciliation must still be observed. Full
 verification, final-candidate performance, fleet acceptance and the actual
 versioned release/two-host deployment remain open.
+
+Revision 25 closes two further detector false negatives under BR-T41/BR-T42:
+authorization headers retain complete Q-qualified printable values (including
+punctuation), use the header's 12-byte qualifier floor, and retain the distinct
+20-byte bare-bearer minimum. Noncredential prose captures revisit their value
+position so an earlier colon cannot consume a following credential identifier.
+Whole-range, fingerprint, boundary and real atomic-redaction witnesses cover
+these paths. The earlier overlap diagnosis is corrected: `--all-blocking`
+already collapses contained ranges; incomplete detection was the defect.
+
+The batch-redaction fixtures now construct private, identity-fenced historical
+data without fingerprint acknowledgment, preserving managed enforcement.
+Both native and actual organization-scanner rejection, overlap scrubbing,
+retained-copy erasure, one epoch/revision and idempotence are exercised.
+Eight targeted suites passed 58 default and 59 managed tests with the real
+organization scanner enabled; formatting and all-targets Clippy passed in both
+profiles. A dirty full baseline was interrupted after shared-input/profile
+changes and an archive-integrity failure; it is not full verification.
+
+Argo run `jdfdp` at `1fd5bb4e` completed its default test lane with failures in
+exactly three targets: the historical managed pin needs GLIBC_2.39 but the
+bookworm builder provides 2.36; the shallow clone has no release tags; and
+disposable Git commit tests have no author identity. The managed lane was not
+reached. Builder/runtime and exact-clone corrections are delivery work under
+`beadrs-b3059276`, not permission to skip those tests. The ten-minute pod-log
+retention setting is now observed on the live template and queued snapshots;
+the aggregate GitOps Application remains degraded for unrelated resources.
+The versioned release, final candidate/fleet gates and both installations are
+still incomplete.
 
 Baseline verification ran locally against the dirty checkout: `cargo test
 --test secret_rejection --test redaction_transaction --test

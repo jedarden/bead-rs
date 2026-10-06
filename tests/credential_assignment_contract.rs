@@ -152,3 +152,26 @@ fn assignment_exclusion_does_not_suppress_independent_provider_rule() {
         .iter()
         .any(|finding| finding.rule_id == "credential-assignment"));
 }
+
+#[test]
+fn noncredential_prose_separators_do_not_hide_a_following_assignment() {
+    let value = "aB3".repeat(12);
+    for prefix in [
+        "deploy notes: ",
+        "diagnostic: output=",
+        "url=https://site.invalid/?",
+    ] {
+        let text = format!("{prefix}service_token = {value}");
+        let findings = assignment_findings(&text);
+        assert_eq!(
+            findings.len(),
+            1,
+            "prose consumed the credential identifier"
+        );
+        assert_eq!(findings[0].tier, Tier::Blocking);
+        assert_eq!(
+            (findings[0].start, findings[0].end),
+            (text.len() - value.len(), text.len())
+        );
+    }
+}

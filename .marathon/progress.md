@@ -1839,3 +1839,39 @@ snapshot re-verification corrected the record and repaired what it caught:
 - Next: exact-source CI diagnosis/full verification, remaining structural
   conformance and native/Git parity, then final candidate performance/fleet
   receipt and immutable version publication before installation on both hosts.
+
+## 2026-10-06 — whole authorization values and real managed batch witnesses
+
+- Owners: beadrs-3cf43a16/BR-T42 and beadrs-1d8b4c78/BR-T41 under the existing
+  beadrs-b3059276 release outcome. Accepted normative hashes are unchanged.
+- Authorization extraction now retains punctuation and differentiates the
+  header's Q(value,12) floor from the bare-bearer 20-byte minimum. Three new
+  independently assembled tests assert complete raw ranges/fingerprints,
+  single findings across views, inert preview and one-revision atomic scrub.
+  The first CLI witness used unsupported --format json; corrected to the
+  actual redact --json interface. Existing all-blocking overlap coalescence
+  was not the defect; the earlier obstruction hypothesis is withdrawn.
+- Enabling the real organization scanner exposed a native false negative:
+  noncredential prose preceding a colon consumed service_token as its value.
+  Revisit that value position instead of losing the following assignment.
+  Contextual witnesses assert the exact candidate-only range.
+- Batch tests seed only private historical synthetic state, never acknowledge
+  a managed finding, and retain live/current/previous erasure, dry-run,
+  one-epoch/revision and idempotence assertions. Runtime candidate bytes use
+  private manifest files/SQL parameters, not process arguments. Both native
+  and actual organization-scanner paths reject the contextual assignment.
+- Actual local verification: eight targeted suites with BEAD_TEST_ORG_SCANNER
+  pointing to the installed scanner passed58 default/59 managed tests.
+  cargo fmt --check and all-targets Clippy -D warnings passed in both profiles.
+  An attempted dirty default full baseline was interrupted after concurrent
+  own source/profile changes; its archive integrity witness failed on changed
+  shared inputs. This is not exact-profile full verification or release proof.
+- Read-only Argo jdfdp diagnostics identify three default failed targets:
+  managed_policy_pin (bookworm lacks required GLIBC_2.39), plan_tag_consistency
+  (no tags fetched), quarantine_git_publication (missing author identity).
+  Managed lane not reached. No tests are waived. GitOps551a5dca log retention
+  is live; unrelated aggregate Application degradation is not claimed fixed.
+- Next: versioned compatible builder and exact-clone setup, full exact-source
+  default/managed gates, final candidate performance/replay, immutable release
+  promotion and actual managed installations on lab/codinghome. No feature
+  ledger, completion sentinel, real credential or other app store was changed.

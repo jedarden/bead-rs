@@ -5,6 +5,7 @@
 //! Secret-shaped values are assembled at runtime from fragments; no complete
 //! credential appears in this file.
 
+use bead_rs::store::{open_configured_connection, SqliteStore};
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -30,35 +31,81 @@ fn ok(workspace: &Path, args: &[&str], org_scanner: Option<&str>) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
-/// Run a mutation, admitting each blocking finding by its exact fingerprint
-/// (simulating secrets that entered before a rule existed).
-fn admit(workspace: &Path, args: &[&str], org_scanner: Option<&str>) {
-    let mut acknowledgments: Vec<String> = Vec::new();
-    for _ in 0..12 {
-        let mut full: Vec<&str> = args.to_vec();
-        for fingerprint in &acknowledgments {
-            full.push("--acknowledge-secret");
-            full.push(fingerprint);
-        }
-        let output = bead(workspace, &full, org_scanner);
-        if output.status.success() {
-            return;
-        }
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let fingerprint = stderr
-            .split("--acknowledge-secret ")
-            .nth(1)
-            .and_then(|rest| rest.get(..64))
-            .unwrap_or_else(|| panic!("mutation failed without a fingerprint: {stderr}"))
-            .to_string();
-        acknowledgments.push(fingerprint);
-    }
-    panic!("too many findings to admit");
+/// Private test construction of history predating the public write boundary.
+/// Managed builds must never need an acknowledgment to exercise remediation.
+fn historical_copy(workspace: &Path, id: &str, description: &str, notes: &str) {
+    let mut store = SqliteStore::from_conn(
+        open_configured_connection(&workspace.join(".beads/beads.db")).unwrap(),
+    );
+    store
+        .conn()
+        .execute(
+            "UPDATE issues SET description=?1,notes=?2,revision=revision+1 WHERE id=?3",
+            rusqlite::params![description, notes, id],
+        )
+        .unwrap();
+    store
+        .conn()
+        .execute(
+            "INSERT INTO events (issue_id,kind,actor,time,detail)
+         VALUES (?1,'fixture_history','fixture-operator','2026-10-06T00:00:00Z','{}')",
+            [id],
+        )
+        .unwrap();
+    let base = workspace.join(".beads");
+    let config = bead_rs::service::load_checkpoint_config(&base).unwrap();
+    bead_rs::service::publish_forensic_checkpoint(&mut store, &config, &base).unwrap();
+}
+
+fn revision(workspace: &Path, id: &str) -> i64 {
+    let connection = open_configured_connection(&workspace.join(".beads/beads.db")).unwrap();
+    connection
+        .query_row("SELECT revision FROM issues WHERE id=?1", [id], |row| {
+            row.get(0)
+        })
+        .unwrap()
+}
+
+/// Feed invented candidate bytes through a private file, not process arguments.
+fn create_manifest(workspace: &Path, description: &str, scanner: Option<&str>) -> Output {
+    let input = serde_json::json!({"manifest_version":1,"operations":[{
+        "op":"create","local_id":"probe","title":"probe","description":description
+    }]});
+    let mut file = tempfile::NamedTempFile::new_in(workspace).unwrap();
+    serde_json::to_writer(file.as_file_mut(), &input).unwrap();
+    bead(
+        workspace,
+        &[
+            "manifest",
+            "commit",
+            "--input",
+            file.path().to_str().unwrap(),
+        ],
+        scanner,
+    )
 }
 
 fn workspace() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("tempdir");
-    ok(dir.path(), &["init", "--skip-foreign-workspace"], None);
+    let dir = tempfile::Builder::new()
+        .prefix("all-blocking-")
+        .tempdir_in("/var/tmp")
+        .unwrap();
+    std::fs::create_dir(dir.path().join(".beads")).unwrap();
+    let uuid = uuid::Uuid::new_v4().to_string();
+    std::fs::write(
+        dir.path().join(".beads/config.json"),
+        serde_json::to_vec(&serde_json::json!({"version":1,"uuid":uuid,"prefix":"all"})).unwrap(),
+    )
+    .unwrap();
+    ok(dir.path(), &["init", "--no-auto-flush"], None);
+    let connection = open_configured_connection(&dir.path().join(".beads/beads.db")).unwrap();
+    let initialized: String = connection
+        .query_row("SELECT uuid FROM workspace", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        initialized, uuid,
+        "fixture escaped its private identity fence"
+    );
     dir
 }
 
@@ -100,23 +147,12 @@ fn all_blocking_redacts_every_copy_in_one_epoch_and_is_idempotent() {
     let root = dir.path();
     let key_id = ["AKIA", "Q7XZ3M", "PL9RTW4K2B"].concat();
     let secret = ["wJalrXUtnF", "EMI/K7MDENG", "/bPxRfiCYQ9x7Rk2Lp4"].concat();
-    admit(
-        root,
-        &[
-            "create",
-            "--title",
-            "probe",
-            "--description",
-            &format!("aws_access_key_id = {key_id} and aws_secret_access_key = {secret}"),
-        ],
-        None,
-    );
+    ok(root, &["create", "--title", "probe"], None);
     let id = issue_id(root, "probe");
-    admit(
-        root,
-        &["update", &id, "--notes", &format!("again {key_id}")],
-        None,
-    );
+    let description = format!("aws_access_key_id = {key_id} and aws_secret_access_key = {secret}");
+    historical_copy(root, &id, &description, "");
+    historical_copy(root, &id, &description, &format!("again {key_id}"));
+    let prior_revision = revision(root, &id);
     assert!(!bytes_present(root, &[&key_id, &secret]).is_empty());
 
     let preview = ok(
@@ -138,6 +174,7 @@ fn all_blocking_redacts_every_copy_in_one_epoch_and_is_idempotent() {
         !bytes_present(root, &[&key_id, &secret]).is_empty(),
         "dry run changes nothing"
     );
+    assert_eq!(revision(root, &id), prior_revision);
 
     let output = ok(
         root,
@@ -161,6 +198,7 @@ fn all_blocking_redacts_every_copy_in_one_epoch_and_is_idempotent() {
         .map(|receipt| receipt["epoch_id"].to_string())
         .collect();
     assert_eq!(epochs.len(), 1, "one atomic epoch");
+    assert_eq!(revision(root, &id), prior_revision + 1);
 
     assert_eq!(
         bytes_present(root, &[&key_id, &secret]),
@@ -205,45 +243,28 @@ fn org_scanner_findings_block_writes_and_redact_with_native_overlaps() {
     let password = ["Zq8Lm2Np", "Kx7Rt4Vw", "9Hs3Jd6F"].concat();
     let description = format!("deploy notes: service_token = {token} (rotate quarterly)");
 
-    // Native rules alone admit this text; the organization scanner blocks it.
-    ok(
-        root,
-        &[
-            "create",
-            "--title",
-            "native-only",
-            "--description",
-            &description,
-        ],
-        None,
-    );
-    let rejected = bead(
-        root,
-        &["create", "--title", "probe", "--description", &description],
-        scanner,
-    );
+    // Ruleset 4 now detects the assignment natively as well. Both paths must
+    // reject it without leaking bytes or admitting a partial mutation.
+    let native_rejected = create_manifest(root, &description, None);
+    assert!(!native_rejected.status.success());
+    assert!(String::from_utf8_lossy(&native_rejected.stderr).contains("credential-assignment"));
+    assert!(!String::from_utf8_lossy(&native_rejected.stderr).contains(&token));
+    let rejected = create_manifest(root, &description, scanner);
     assert!(!rejected.status.success());
     let stderr = String::from_utf8_lossy(&rejected.stderr);
     assert!(stderr.contains("org-scanner:"), "{stderr}");
     assert!(!stderr.contains(&token));
 
-    admit(
-        root,
-        &["create", "--title", "probe", "--description", &description],
-        scanner,
-    );
+    ok(root, &["create", "--title", "probe"], None);
     let id = issue_id(root, "probe");
     // Both the native URI rule and the organization basic-auth rule match
     // this password with different ranges.
-    admit(
+    historical_copy(root, &id, &description, "");
+    historical_copy(
         root,
-        &[
-            "update",
-            &id,
-            "--notes",
-            &format!("db: postgresql://app:{password}@db.internal:5432/app"),
-        ],
-        scanner,
+        &id,
+        &description,
+        &format!("db: postgresql://app:{password}@db.internal:5432/app"),
     );
 
     let output = ok(
