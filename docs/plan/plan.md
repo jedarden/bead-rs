@@ -1,8 +1,8 @@
 # bead-rs Current Product and Software Factory Plan
 
-Plan revision: 20
+Plan revision: 21
 
-As of: 2026-10-03
+As of: 2026-10-06
 
 Status owner: bead-rs maintainers
 
@@ -89,6 +89,20 @@ redaction (BR-T47). The implementation instruction admits this repository
 work; it does not constitute an independent exact-hash specification review,
 a fleet credential-rotation instruction, or release evidence. BR-T30, BR-T35,
 BR-T44, and BR-T45 retain their separate acceptance boundaries.
+
+Revision 21 adds the owner's fully released, two-host deployment outcome under
+`beadrs-b3059276`. The digest-pinned Argo builder and candidate-only defaults
+are reconciled from declarative-config commit `435475d0`; normal pushes cannot
+publish a version merely because Cargo.toml changes. Promotion requires exact
+source, distinct full-contract acceptance, conformance and fleet evidence;
+promotion restores the approved immutable candidate without rebuilding, tags
+its tested source revision, and verifies uploaded bytes before publication.
+Deployment then verifies published managed artifacts on lab and codinghome.
+`scripts/smoke-secret-release.py` exercises an executable in a private,
+identity-fenced disposable store, including selected atomic text/key scrubbing,
+reader-held cleanup, write fencing, receipt resume and local-byte absence.
+Passing this synthetic smoke is neither fleet replay nor release acceptance.
+The new versioned release and two-host installation remain incomplete.
 
 Baseline verification ran locally against the dirty checkout: `cargo test
 --test secret_rejection --test redaction_transaction --test
@@ -477,7 +491,7 @@ boundaries in dependency order. The existing `secret-scanner` fleet beads
 `fss-3aa3e0b6` and `fss-5f007601` own the independent Forgejo and fleet
 transport checks; they do not substitute for the bead-rs write gate.
 
-### 5.3 Owner-directed ruleset 4 (R040; independent acceptance pending)
+### 5.3 Owner-directed ruleset 4 (R040; accepted contract, production/release pending)
 
 R039 decides where the scan runs and who may weaken it. R040 decides what the
 scan detects. The two are independent and neither waits for the other,
@@ -505,10 +519,15 @@ excludes hash shapes; a successful mutation that admitted advisory findings
 says so in one redacted line; and doctor reports coverage per source instead
 of aborting.
 
-ADR-023 through ADR-025 and `research/specs/secret-ruleset-v4.md` remain
-proposed review artifacts, not current release claims. The 2026-10-03 owner
-instruction admits repository implementation but not fleet activation. BR-T34
-authors the documents and BR-T35 independently reviews their exact hash.
+The corrected `research/specs/secret-ruleset-v4.md` contract at SHA-256
+`0c79d76375b795a7e58daeda1241414e6ebcac038f62e32b927acefa598d7ebe`
+has a committed full-artifact independent acceptance in
+`docs/reviews/beadrs-32204e01-ruleset-v4-corrected-exact-input-review-2026-10-06.md`
+(`7a5880c5`). The review includes the exact ADR-023–025 inputs; do not edit
+those inputs and reuse this acceptance. Reviewer bead closure and BR-T35 graph
+reconciliation are still in progress. This is not production conformance,
+fleet activation, remediation authorization, or a current release claim.
+BR-T34 authors the documents and BR-T35 independently reviews their exact hash.
 BR-T36 through BR-T38 correct defects against the accepted contract and
 proceed immediately. BR-T39 through BR-T43 implement the accepted contract,
 and BR-T44 replays it across the fleet before the version is frozen. Rule

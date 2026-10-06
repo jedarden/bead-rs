@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fail-closed promotion check for a committed secret-scrubbing approval.
 
-CI always builds candidates, but publication also needs independently reviewed
+CI can build candidates, but publication also needs independently reviewed
 and hashed evidence. This checker does not generate approvals or accept its own
 review. A missing/incomplete record is a release hold, not a reason to bypass it.
 """
@@ -27,8 +27,8 @@ def sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def source_tree_hash(root):
-    result = subprocess.run(['git', 'ls-tree', '-r', '--full-tree', 'HEAD'],
+def source_tree_hash(root, revision='HEAD'):
+    result = subprocess.run(['git', 'ls-tree', '-r', '--full-tree', revision],
                             cwd=root, check=True, capture_output=True)
     # Checkpoint/task activity and approval/evidence commits must not change the
     # tested source identity. Everything else, including scripts and pins, does.
@@ -54,6 +54,24 @@ def validate(root, record, version, expected_tree):
             and record['schema_version'] == 1, 'unsupported approval schema')
     require(record.get('version') == version, 'approval version mismatch')
     require(record.get('source_tree_sha256') == expected_tree, 'approval does not match candidate source tree')
+    candidate = record.get('candidate', {})
+    require(isinstance(candidate, dict)
+            and isinstance(candidate.get('source_commit'), str)
+            and re.fullmatch(r'[0-9a-f]{40}', candidate['source_commit']),
+            'candidate needs an exact source commit')
+    require(isinstance(candidate.get('payload_ref'), str)
+            and re.fullmatch(r'ronaldraygun/bead-rs-ci-cargo-cache@sha256:[0-9a-f]{64}', candidate['payload_ref']),
+            'candidate needs the immutable application payload reference')
+    manifest_path = evidence_file(root, candidate.get('checksums'))
+    names = set()
+    for line in manifest_path.read_text(encoding='ascii').splitlines():
+        match = re.fullmatch(r'[0-9a-f]{64}  (bead-[a-z0-9_-]+|install\.sh|provenance\.json)', line)
+        require(match is not None and match[1] not in names, 'invalid approved candidate checksums')
+        names.add(match[1])
+    required_assets = {'bead-x86_64-unknown-linux-gnu', 'bead-aarch64-unknown-linux-gnu',
+                       'bead-managed-x86_64-unknown-linux-gnu', 'bead-managed-aarch64-unknown-linux-gnu',
+                       'install.sh', 'provenance.json'}
+    require(required_assets <= names, 'approved candidate is missing required profiles/targets')
     spec = root / 'research/specs/secret-ruleset-v4.md'
     review = record.get('independent_review', {})
     require(review.get('decision') == 'accepted' and review.get('scope') == 'complete_contract', 'complete independent acceptance required')
@@ -91,8 +109,9 @@ def validate(root, record, version, expected_tree):
 
 
 def main():
-    if len(sys.argv) != 2 or re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', sys.argv[1]) is None:
-        print('usage: verify-secret-release.py VERSION', file=sys.stderr)
+    if (len(sys.argv) not in (2, 3) or re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', sys.argv[1]) is None
+            or (len(sys.argv) == 3 and sys.argv[2] != '--candidate-info')):
+        print('usage: verify-secret-release.py VERSION [--candidate-info]', file=sys.stderr)
         return 2
     version = sys.argv[1]
     root = Path(__file__).resolve().parent.parent
@@ -100,13 +119,24 @@ def main():
     try:
         require(approval.is_file(), 'committed release approval is missing')
         record = json.loads(approval.read_text())
-        validate(root, record, version, source_tree_hash(root))
+        expected_tree = source_tree_hash(root)
+        validate(root, record, version, expected_tree)
+        candidate = record['candidate']
+        require(source_tree_hash(root, candidate['source_commit']) == expected_tree,
+                'tested candidate differs from approved source tree')
+        subprocess.run(['git', 'merge-base', '--is-ancestor', candidate['source_commit'], 'HEAD'],
+                       cwd=root, check=True, capture_output=True)
+        manifest_path = evidence_file(root, candidate['checksums'])
     except (Refused, ValueError, OSError, subprocess.CalledProcessError, TypeError, AttributeError, KeyError) as error:
         # Never print a JSON payload, malformed field value, or subprocess stderr.
         reason = str(error) if isinstance(error, Refused) else 'malformed approval or unavailable evidence'
         print('release approval refused: ' + reason, file=sys.stderr)
         return 1
-    print('Secret-scrubbing promotion approved for v' + version)
+    if len(sys.argv) == 3:
+        print(json.dumps({'source_commit': candidate['source_commit'], 'payload_ref': candidate['payload_ref'],
+                          'checksums_path': str(manifest_path)}))
+    else:
+        print('Secret-scrubbing promotion approved for v' + version)
     return 0
 
 
