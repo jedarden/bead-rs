@@ -5293,9 +5293,10 @@ fn import_dependencies(tx: &Transaction, staging: &ForensicStaging) -> Result<()
                 "SELECT extensions_json FROM dependencies
                  WHERE blocked_issue_id = ?1 AND blocker_issue_id = ?2 AND kind = ?3",
                 params![edge.blocked, edge.blocker, edge.kind],
-                |row| row.get(0),
+                |row| row.get::<_, Option<String>>(0),
             )
-            .optional()?;
+            .optional()?
+            .flatten();
         let extensions = preserve_record_extensions(
             existing,
             &edge.extensions,
@@ -5344,7 +5345,7 @@ fn import_events(tx: &Transaction, staging: &ForensicStaging) -> Result<()> {
                 "SELECT extensions_json FROM events
                  WHERE origin_store_uuid = ?1 AND origin_event_sequence = ?2",
                 params![&event.origin_store_uuid, event.origin_event_sequence],
-                |row| row.get(0),
+                |row| row.get::<_, Option<String>>(0),
             )?;
             let encoded = preserve_record_extensions(
                 existing.clone(),
@@ -5448,7 +5449,7 @@ fn import_receipts(tx: &Transaction, staging: &ForensicStaging) -> Result<()> {
             let existing_extensions: Option<String> = tx.query_row(
                 "SELECT extensions_json FROM provenance_receipts WHERE receipt_id = ?1",
                 [&receipt.receipt_id],
-                |row| row.get(0),
+                |row| row.get::<_, Option<String>>(0),
             )?;
             let encoded = preserve_record_extensions(
                 existing_extensions.clone(),
