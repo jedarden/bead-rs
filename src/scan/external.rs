@@ -157,12 +157,14 @@ pub(crate) fn scan(selector: &str, field: &Field<'_>) -> Vec<Finding> {
         .collect()
 }
 
-/// The text as a JSON string body (no surrounding quotes), escaped the way
+/// The text as a complete JSON string, escaped the way
 /// `serde_json` writes checkpoint records, with each output byte mapped to
 /// the raw byte range of the character it encodes.
 fn json_escaped_view(text: &str) -> (String, Vec<(usize, usize)>) {
-    let mut escaped = String::with_capacity(text.len() + 16);
-    let mut map = Vec::with_capacity(text.len() + 16);
+    let mut escaped = String::with_capacity(text.len() + 18);
+    let mut map = Vec::with_capacity(text.len() + 18);
+    escaped.push('"');
+    map.push((0, 0));
     for (offset, character) in text.char_indices() {
         let range = (offset, offset + character.len_utf8());
         let before = escaped.len();
@@ -181,6 +183,8 @@ fn json_escaped_view(text: &str) -> (String, Vec<(usize, usize)>) {
         }
         map.extend(std::iter::repeat_n(range, escaped.len() - before));
     }
+    escaped.push('"');
+    map.push((text.len(), text.len()));
     (escaped, map)
 }
 
@@ -305,10 +309,7 @@ mod tests {
     fn escaped_view_maps_every_byte_back_to_its_raw_character() {
         let text = "a\"b\\c\nd\u{1}é";
         let (escaped, map) = json_escaped_view(text);
-        assert_eq!(
-            escaped,
-            serde_json::to_string(text).unwrap().trim_matches('"')
-        );
+        assert_eq!(escaped, serde_json::to_string(text).unwrap());
         assert_eq!(map.len(), escaped.len());
         // "\n" occupies two escaped bytes, both mapping to the one raw byte.
         let newline = text.find('\n').unwrap();
@@ -317,7 +318,12 @@ mod tests {
         assert_eq!(map[escaped_newline + 1], (newline, newline + 1));
         // A multi-byte character maps to its whole raw range.
         let accent = text.find('é').unwrap();
-        assert_eq!(*map.last().unwrap(), (accent, accent + 2));
+        assert_eq!(map[map.len() - 2], (accent, accent + 2));
+        assert_eq!(map[0], (0, 0));
+        assert_eq!(*map.last().unwrap(), (text.len(), text.len()));
+        let (empty, empty_map) = json_escaped_view("");
+        assert_eq!(empty, "\"\"");
+        assert_eq!(empty_map, [(0, 0), (0, 0)]);
     }
 
     #[test]

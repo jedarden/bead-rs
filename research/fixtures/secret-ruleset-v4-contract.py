@@ -116,6 +116,62 @@ def excluded(identifier):
     )
 
 
+def whole_hash_shape(value):
+    return (
+        len(value) in (32, 40, 56, 64, 96, 128)
+        and re.fullmatch(r'[0-9a-fA-F]+', value) is not None
+        or re.fullmatch(r'gen-[0-9a-fA-F]{32}', value) is not None
+        or re.fullmatch(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', value) is not None
+        or re.fullmatch(r'[a-z][a-z0-9]{0,31}-[0-9a-f]{8,64}', value) is not None
+    )
+
+
+def compound_identifier(value):
+    value = value.rstrip('.')
+    if whole_hash_shape(value):
+        return True
+    if not re.search(r'[/_.~-]', value) or '+' in value or '=' in value:
+        return False
+    chunks = re.split(r'[/_.~]', value)
+    nix_chunk = 3 if value.startswith('/nix/store/') else 2 if value.startswith('nix/store/') else -1
+    atoms = 0
+    for chunk_index, chunk in enumerate(chunks):
+        if whole_hash_shape(chunk):
+            atoms += 1
+            continue
+        parts = chunk.split('-')
+        cursor = 0
+        if (chunk_index == nix_chunk and len(parts) > 1 and parts[1]
+                and re.fullmatch(r'[0123456789abcdfghijklmnpqrsvwxyz]{32}', parts[0])):
+            atoms += 1
+            cursor = 1
+        while cursor < len(parts):
+            group = parts[cursor:cursor + 5]
+            if len(group) == 5 and all(
+                    len(part) == width and re.fullmatch(r'[0-9a-fA-F]+', part)
+                    for part, width in zip(group, (8, 4, 4, 4, 12))):
+                atoms += 1
+                cursor += 5
+                continue
+            part = parts[cursor]
+            cursor += 1
+            if not part:
+                continue
+            if len(part) in (8, 12, 16, 32, 40, 56, 64, 96, 128) and re.fullmatch(r'[0-9a-fA-F]+', part):
+                atoms += 1
+                continue
+            if re.fullmatch(r'[A-Za-z0-9]+', part) is None:
+                return False
+            if all(re.search(pattern, part) for pattern in (r'[a-z]', r'[A-Z]', r'[0-9]')):
+                return False
+            if sum(left.isdigit() != right.isdigit() for left, right in zip(part, part[1:])) > 2:
+                return False
+            if sum(left.isalpha() and right.isalpha() and left.islower() != right.islower()
+                   for left, right in zip(part, part[1:])) > 4:
+                return False
+    return atoms > 0
+
+
 def decode_run(run):
     if re.fullmatch(r'[A-Za-z0-9+/_=-]+', run) is None:
         return None
@@ -190,6 +246,51 @@ def table_value_span(line):
 
 
 class ContractWitnesses(unittest.TestCase):
+    def test_compound_identifier_exclusion_preserves_opaque_siblings(self):
+        hex32 = ''.join(chr(97) + str(3) for _ in range(16))
+        short_hex = hex32[:8]
+        opaque = ''.join(chr(103) + chr(72) + str(3) for _ in range(12))
+        alphabetic = ''.join(chr(103) + chr(72) for _ in range(20))
+        encoded = ''.join(chr(97) + chr(66) + str(3) + '+' + '/' for _ in range(8))
+        uuid = '-'.join(hex32[start:end] for start, end in ((0, 8), (8, 12), (12, 16), (16, 20), (20, 32)))
+        nix = ''.join(('0123456789', 'abcdfghijklmnpqrsvwxyz'))
+        self.assertEqual(len(nix), 32)
+        for case, value in (
+                ('hex_path', 'cache/' + hex32 + '/result-v2.json'),
+                ('short_hex_identifier', 'build-' + short_hex + '-linux'),
+                ('uuid_path', 'cache/' + uuid + '-record.json'),
+                ('generation_path', 'objects/gen-' + hex32 + '/result'),
+                ('bead_path', 'tasks/ticket-' + short_hex + '/details'),
+                ('nix_store', '/nix/store/' + nix + '-package-1.2/bin'),
+                ('nix_relative', 'nix/store/' + nix + '-package/bin'),
+                ('hash_terminal_prose', hex32 + '...'),
+                ('compound_terminal_prose', 'cache/' + hex32 + '.json.')):
+            self.assertTrue(compound_identifier(value), case)
+        for case, value in (
+                ('base62', opaque), ('base64', encoded),
+                ('hash_opaque_sibling', 'cache/' + hex32 + '/' + opaque),
+                ('uuid_opaque_sibling', uuid + '-' + opaque),
+                ('hash_substring', 'g' + hex32 + 'H'),
+                ('mixed_case_digit_part', 'cache/' + hex32 + '/Type3Name'),
+                ('nix_unanchored', 'cache/' + nix + '-package'),
+                ('no_atom', 'alpha/beta-v2/gamma'),
+                ('bare_nonstandard_hex', hex32[:20]),
+                ('plus_is_not_identifier_syntax', hex32 + '+' + opaque),
+                ('equals_is_not_identifier_syntax', hex32 + '=' + opaque)):
+            self.assertFalse(compound_identifier(value), case)
+        for value in (opaque, encoded, 'cache/' + hex32 + '/' + opaque, uuid + '-' + opaque, hex32[:20]):
+            self.assertEqual(verdict(value, 16), 0, 'positive eligibility must survive')
+        for case, value in (
+                ('hash_alphabetic_sibling', 'cache/' + hex32 + '/' + alphabetic),
+                ('uuid_alphabetic_sibling', uuid + '-' + alphabetic),
+                ('generation_alphabetic_sibling', 'gen-' + hex32 + '/' + alphabetic),
+                ('nix_alphabetic_sibling', '/nix/store/' + nix + '-package/' + alphabetic)):
+            self.assertEqual(verdict(value, 16), 0, case + ' must qualify')
+            self.assertFalse(compound_identifier(value), case + ' must remain eligible')
+        for changes, name in ((4, 'aBcDe'), (5, 'aBcDeF')):
+            value = hex32 + '/' + name
+            self.assertEqual(compound_identifier(value), changes == 4, 'strict case-change boundary')
+
     def test_qualifier_metrics_and_truth_table(self):
         expected = {
             'bead_identifier': ((15, 14, 4, 6, 9), (0, 5, 5, 5)),

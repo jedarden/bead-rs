@@ -5,7 +5,7 @@ before implementation of sections 3 through 6.
 
 Artifact identity: `urn:bead-rs:spec:secret-ruleset:v4`.
 
-Date: 2026-10-03.
+Date: 2026-10-03. Compound-identifier correction proposed 2026-10-06.
 
 This contract extends `secret-rejection-v1`. That contract's mutation
 behavior, finding shape, fingerprint, acknowledgment, mode, and output
@@ -320,7 +320,51 @@ bead identifier. A UUID has exactly the case-insensitive hexadecimal
 `8-4-4-4-12` shape; a bead identifier is a lowercase ASCII letter followed
 by zero to 31 lowercase letters/digits, a hyphen, and 8 to 64 lowercase
 hexadecimal digits. Generation identifiers use exactly the lowercase `gen-`
-prefix. Exclusions test the whole maximal run, not a substring. At most 32
+prefix. Exclusions test the whole maximal run, not a substring.
+
+**Compound identifiers (2026-10-06 correction).** This additional exclusion
+applies only to this unlabelled advisory rule; it never suppresses a blocking
+rule or the labelled-assignment advisory fallback. It does not change `P`, `Q`,
+reported raw ranges, fingerprints, or the conformance/release gates.
+
+For exclusion testing only, remove the complete terminal run of `.` bytes.
+If the remainder is a whole hash shape above, exclude it. Otherwise require
+at least one separator from `/_.~-`, no `+` or `=`, and at least one recognized
+identifier atom. Split the entire remainder on `/`, `_`, `.`, and `~`. For
+each resulting chunk, recognize a whole hash shape before splitting on `-`.
+In a hyphen-split chunk, recognize a consecutive UUID group of exactly five
+parts with hexadecimal widths `8-4-4-4-12` before evaluating individual parts.
+Otherwise a recognized atom is an entire hexadecimal part of length 8, 12,
+16, 32, 40, 56, 64, 96, or 128. Hash and UUID comparisons are case-insensitive
+except the generation and bead prefixes specified above.
+
+One further atom is a 32-byte Nix base32 store hash, alphabet
+`0123456789abcdfghijklmnpqrsvwxyz`, immediately followed by `-` and a nonempty
+name in the first store component after the exact initial `/nix/store/` or
+`nix/store/`. It is not recognized in an arbitrary path or as a bare token.
+Evaluate its name and all remaining components by the same rules below.
+
+Every nonempty part not consumed by a recognized atom must consist entirely
+of ASCII alphanumerics, must not contain lowercase, uppercase and digits
+together, may have at most two adjacent digit/non-digit transitions, and may
+have at most four adjacent alphabetic lower/upper-case changes (count a pair
+only when both bytes are letters). This last bound preserves bounded CamelCase
+names without letting an opaque alphabetic sibling borrow a hash's digits to
+pass `Q` and then disappear from the advisory scan.
+Empty parts are separator syntax and contribute no atom. The entire run is
+excluded only if every part passes and at least one atom was recognized.
+A hash substring inside a larger part is not an atom. A hash/path prefix
+must not hide a following opaque base62/base64 component. Runs containing
+`+` or `=` remain eligible unless they satisfy the original whole-hash test.
+Bare nonstandard-width hex tokens keep their original eligibility.
+
+The independently assembled fixture adds positive opaque siblings, embedded
+hash near misses, Nix anchoring negatives, UUID/generation/bead path atoms,
+mixed-case identifier boundaries and punctuation cases. The amendment is
+pending a new complete-contract exact-hash independent acceptance; the earlier
+acceptance does not authorize this correction's implementation.
+
+At most 32
 eligible findings are reported per field, in ascending raw start offset;
 ineligible runs do not consume a slot. The
 per-character Shannon threshold of ruleset 3 is removed: it cannot exceed 4

@@ -2,6 +2,106 @@ use super::*;
 use std::time::{Duration, Instant};
 
 #[test]
+fn compound_identifier_exclusion_is_advisory_only_and_preserves_opaque_siblings() {
+    let hex = "a3".repeat(16);
+    let uuid = format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    );
+    let nix = ["0123456789", "abcdfghijklmnpqrsvwxyz"].concat();
+    let opaque = "gH3".repeat(12);
+    let alphabetic = "gH".repeat(20);
+    for value in [
+        format!("cache/{hex}/result-v2.json"),
+        format!("build-{}-linux", &hex[..8]),
+        format!("cache/{uuid}-record.json"),
+        format!("objects/gen-{hex}/result"),
+        format!("tasks/ticket-{}/details", &hex[..8]),
+        format!("/nix/store/{nix}-package-1.2/bin"),
+        format!("nix/store/{nix}-package/bin"),
+        format!("cache/{hex}.json."),
+        format!("{hex}/aBcDe"),
+    ] {
+        assert!(credential_shape::advisory_identifier_shaped(&value));
+        let report = scan(
+            &ScanConfig::enforce(),
+            "issue:new",
+            &[Field::new("description", &value)],
+        );
+        assert!(!report
+            .findings
+            .iter()
+            .any(|finding| finding.rule_id == ADVISORY_ENTROPY_RULE_ID));
+    }
+    for value in [
+        opaque.clone(),
+        "aB3+/".repeat(8),
+        format!("cache/{hex}/{opaque}"),
+        format!("{uuid}-{opaque}"),
+        format!("cache/{hex}/{alphabetic}"),
+        format!("{uuid}-{alphabetic}"),
+        format!("gen-{hex}/{alphabetic}"),
+        format!("/nix/store/{nix}-package/{alphabetic}"),
+        format!("g{hex}H"),
+        hex[..20].to_owned(),
+        format!("{hex}+{opaque}"),
+        format!("{hex}={opaque}"),
+    ] {
+        assert!(credential_shape::qualifies(&value, 16));
+        assert!(!credential_shape::advisory_identifier_shaped(&value));
+        let report = scan(
+            &ScanConfig::enforce(),
+            "issue:new",
+            &[Field::new("description", &value)],
+        );
+        let findings: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.rule_id == ADVISORY_ENTROPY_RULE_ID)
+            .collect();
+        assert_eq!(findings.len(), 1);
+        assert_eq!((findings[0].start, findings[0].end), (0, value.len()));
+        assert_eq!(
+            findings[0].fingerprint,
+            fingerprint::compute(
+                RULESET_VERSION,
+                ADVISORY_ENTROPY_RULE_ID,
+                "issue:new",
+                "description",
+                0,
+                value.len(),
+                value.as_bytes()
+            )
+        );
+    }
+    for value in [
+        format!("cache/{nix}-package"),
+        format!("cache/{hex}/Type3Name"),
+        format!("{hex}/aBcDeF"),
+    ] {
+        assert!(!credential_shape::advisory_identifier_shaped(&value));
+    }
+    // A benign-looking compound never suppresses the independent label rule.
+    let value = format!("cache/{hex}/result-v2.json");
+    assert!(credential_shape::advisory_identifier_shaped(&value));
+    assert!(credential_shape::qualifies(&value, 12));
+    let assignment = format!("api_key={value}");
+    let report = scan(
+        &ScanConfig::enforce(),
+        "issue:new",
+        &[Field::new("description", &assignment)],
+    );
+    assert!(report
+        .blocking
+        .iter()
+        .any(|finding| finding.rule_id == "credential-assignment"));
+}
+
+#[test]
 fn integer_qualifier_excludes_identifiers_and_accepts_labelled_randomness() {
     for value in [
         "bead-19d43acf",

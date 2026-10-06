@@ -788,3 +788,46 @@ SHA-256 and full-file digest
 This header-only promotion cites and does not supersede the independent
 acceptance of digest
 `8d26bb1297d91e147cb60a230a2f3653bed6b78d4518b5bc02c3d2d07834ad0e`.
+
+## Secret-release detector amendments — exact-input acceptance (2026-10-06)
+
+Author: `/root` (Codex). Independent reviewer: `/root/secret_release_review`,
+who authored neither contract nor its corrections. Application outcome owner:
+`beadrs-b3059276`; native advisory implementation owner: `beadrs-dfe88716`.
+The user explicitly admitted the scoped detector corrections, without changing
+credential-cleanup authority or any release gate.
+
+The reviewer first rejected the compound-identifier exclusion because an
+opaque alphabetic sibling could disappear. The corrected **complete**
+`research/specs/secret-ruleset-v4.md`, SHA-256
+`e81a63de397e3612b79b03680ee64115f5c26696895ff2e0ad9be20bf132ea89`,
+and independent fixture `research/fixtures/secret-ruleset-v4-contract.py`,
+SHA-256 `5b98bab331317c32ca4613690716ecbb967dc6b6ebc8c9ad65c922659880af97`,
+were unconditionally accepted before native implementation. The exact review
+is `docs/reviews/beadrs-b3059276-compound-identifiers-complete-contract-review-round-2-2026-10-06.md`.
+The initial rejection is retained. No accepted artifact header was changed.
+Implementation uses only this accepted grammar and independent witnesses;
+the new exclusion is confined to unlabelled advisory findings.
+
+The complete quoted-view correction in
+`research/specs/org-scanner-parity-v1.md`, SHA-256
+`314ca8dc63e52016973094f787f3c7fd43a071be93872c8558971025e6c94321`,
+and `research/fixtures/org-scanner-json-view-contract.py`, SHA-256
+`d3c7aabcc900e54d8a67c738a161464b53059cf4f8eb4aa8d7a643108606140d`,
+were independently accepted before changing native field serialization.
+The exact review is
+`docs/reviews/beadrs-b3059276-org-json-view-contract-review-2026-10-06.md`.
+The native adapter preserves raw-range mapping and fingerprints; the external
+detector correction belongs to `fss-2272b3b4` in the separate organization
+scanner repository, not another bead implementation.
+
+These are contract/fixture acceptances, not production, fleet or publication
+approval. Real values were not inspected or scrubbed. All full-source,
+optimized-artifact, fleet, disposition, parity and cost gates remain required.
+
+The same distinct reviewer subsequently accepted the four-file native
+implementation amendment at exact hashes in
+`docs/reviews/beadrs-b3059276-compound-and-json-view-implementation-review-2026-10-06.md`
+(SHA-256 `7695111ad29a90b801b15bf6918dc8aeb28e7c7327cd100b901ca4d925c717aa`).
+Independent targeted default/managed library tests and Clippy passed. That
+decision is scoped to the amendment, not whole-source or release acceptance.

@@ -1,6 +1,6 @@
 # bead-rs Current Product and Software Factory Plan
 
-Plan revision: 27
+Plan revision: 28
 
 As of: 2026-10-06
 
@@ -229,6 +229,33 @@ run and its descendants were stopped; the worker's files were preserved.
 This is incomplete verification, not a full pass. Exact committed-source
 default and managed CI remain mandatory. Every release and
 two-host deployment gate remains outstanding until real evidence passes.
+
+Revision 28 records the user-admitted detector corrections without relaxing
+any release gate. Compound identifier/path exclusions are advisory-only and
+preserve opaque alphabetic and base62/base64 siblings. The complete amended
+ruleset-v4 contract and its independent fixture have distinct exact-hash
+acceptance in the 2026-10-06 round-two review under `beadrs-b3059276`.
+The quoted organization-scanner JSON-view contract has separate independent
+acceptance; formatting escapes must not supply password evidence or extend
+password ranges, and literal backslashes remain data. The organization
+scanner correction is owned by `fss-2272b3b4` in `secret-scanner`; real
+credential rotation/scrubbing and global hook activation remain excluded.
+
+The immutable 0.3.0 candidate from `2cfc7abc` now exists, with all four mandatory
+GNU profile/architecture binaries verified against its checksum manifest and
+builder1.3.0 provenance. Its managed binary passed the ten-check disposable
+atomic scrub/rekey smoke on codinghome; seven interleaved 4 MiB measurements
+were 1.5655x wall and 1.5687x child CPU versus the published ruleset3 baseline.
+That candidate predates the admitted corrections and cannot be promoted as
+their delivery artifact. A new exact-source candidate and all fleet gates
+remain required; no tag, public release or bead CLI installation is credited.
+
+The user requires declarative release initiation. Candidate and promotion
+requests will be pinned GitOps resources in `declarative-config` under
+`k8s/iad-ci/argo-workflows/`, reconciled by `argo-workflows-ns-iad-ci`.
+Requests must run at most once, stop on success or failure, preserve existing
+resources/cleanup and reference the unchanged fail-closed approval guard.
+Do not depend on workstation cluster-write credentials or manual submissions.
 
 Baseline verification ran locally against the dirty checkout: `cargo test
 --test secret_rejection --test redaction_transaction --test

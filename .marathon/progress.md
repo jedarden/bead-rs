@@ -1976,3 +1976,56 @@ snapshot re-verification corrected the record and repaired what it caught:
   resource audit532files/zero critical and actual capacity inspection passed.
 - Live template still1.2.0 at11:00:50UTC. Await reconciliation before new
   exact-source candidate. No application release or CLI deployment is credited.
+
+## 2026-10-06 — independently reviewed detector corrections and declarative release
+
+- Outcome owner remains beadrs-b3059276. The user admitted scoped native
+  advisory and organization-scanner false-positive corrections, and requires
+  declarative release requests rather than workstation cluster-write access.
+  Plan28 records those boundaries; real credential cleanup and global hooks
+  remain outside this increment.
+- The independent reviewer rejected opaque alphabetic sibling suppression;
+  the corrected complete ruleset-v4 specification and independent fixture
+  received unconditional exact-hash acceptance before implementation. The
+  quoted organization JSON-view contract and mapping fixture received separate
+  exact-hash acceptance. Both decisions and their hashes are in PROVENANCE.md;
+  initial rejection evidence remains intact.
+- Native whole-run compound identifier exclusions affect only unlabelled
+  advisories; opaque siblings, blocking rules, ranges and fingerprints remain
+  covered. Full quoted JSON strings now preserve raw-byte span mapping,
+  including empty wrapper ranges, Unicode, controls and literal backslashes.
+- Actual resource-limited local checks: cargo test --lib scan:: passed49
+  default tests; cargo test --lib --features managed-secret-policy scan::
+  passed47 managed tests. Both have zero failures/ignored. Formatting and
+  both profiles' all-targets Clippy -D warnings passed. These are targeted
+  checks, not complete source or fleet verification.
+- Retrieved the immutable 2cfc7abc candidate payload, independently validated
+  all four mandatory GNU profile/architecture files and provenance. Its
+  managed codinghome disposable smoke passed10 checks; seven interleaved
+  4MiB measurements gave1.5655x wall and1.5687x CPU versus public ruleset3.
+  Archived workflow final phase is unavailable; no unsupported phase claim
+  is made. This older payload predates the corrections and cannot be promoted.
+- Organization dependency fss-2272b3b4 now has password-only qualification,
+  complete validated JSON semantics and encoded-span controls. Independent
+  review and dependency delivery are pending. No real credential was viewed,
+  changed or classified, and no bead CLI was installed.
+- Next: independently accept and deliver the detector dependency, legitimately
+  resolve the clean-store quarantine if complete coverage proves no blocking
+  findings, record owning-bead evidence, then pin the corrected source in a
+  one-shot GitOps candidate request. Preserve every final-artifact/fleet and
+  promotion gate; do not renew cluster credentials for manual submission.
+
+### Scoped implementation acceptance and actual organization integration
+
+- Distinct reviewer accepted the frozen four-file native implementation
+  amendment; the exact artifact/hash is recorded in PROVENANCE.md. Independent
+  targeted default49/managed47 library checks pass. This does not substitute
+  for complete-source or actual-artifact/fleet approval.
+- BEAD_TEST_ORG_SCANNER set to the built0.2.8 dependency: cargo test --test
+  redact_all_blocking passed2 default and2 managed tests, zero failed/ignored,
+  exercising native/organization overlap and exact atomic all-blocking scrub.
+  cargo test --test plan_tag_consistency passed4/zeroignored at plan28.
+- Scanner review also identified inherited decoded-password path-label
+  exposure outside its framed adapter. The narrowly scoped safety fix records
+  only an unsafe-path flag and keeps qualification/spans unchanged; complete
+  dependency verification and independent re-review precede installation.

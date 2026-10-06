@@ -2,6 +2,10 @@
 
 Status: implemented (beadrs-1c110ec3). Owner bead records verification.
 
+Fully quoted JSON-view correction proposed 2026-10-06 under
+`beadrs-b3059276`; independent exact-hash review required before activating
+the correction. The framing protocol and all other behavior remain unchanged.
+
 ## Problem
 
 The fleet's Git hooks and Forgejo pre-receive gate run the organization
@@ -22,10 +26,25 @@ bead-rs itself reports, and `.beads/` must never be hand-edited.
    byte offsets into the document, or `{"skipped": ...}` for binary or
    oversized input. The scanner never writes matched bytes; bead-rs validates
    rule IDs as `[A-Za-z0-9_-]+` and discards out-of-range spans.
-3. **Views.** Each field is sent twice: its raw text, and its JSON string
-   escaping exactly as a checkpoint line carries it (what the Git-side scanner
-   reads). Spans in the escaped view map back to the raw byte range of the
-   characters they cover.
+3. **Views.** Each field is sent twice: its raw text, and a complete quoted
+   JSON string, escaping its body exactly as a checkpoint line carries it
+   (what the Git-side scanner reads). Surrounding quotes supply explicit valid
+   JSON context; they are not stored field bytes. The opening quote maps to
+   the empty raw range `(0,0)`, and the closing quote to `(len,len)`, where len
+   is the raw UTF-8 byte length. Each body byte maps to the full raw UTF-8
+   character range that produced it, including all bytes of an escape.
+   Spans map back to the smallest covering raw range as before; an empty,
+   reversed or out-of-range mapped span is discarded. Raw input is unchanged.
+   No new option or response schema is required from an adapter.
+
+   The correction prevents an organization scanner from confusing formatting
+   escapes with literal password material: actual LF/CR/tab characters at a
+   password boundary do not become password length/entropy evidence, while
+   JSON-encoded literal backslashes remain password bytes. Recognition of
+   JSON semantics must validate a complete JSON string/document, not guess
+   from a prefix. Invalid JSON must retain ordinary raw scanning, not become
+   an empty/clean result through the JSON path. The independent runtime
+   witnesses are `research/fixtures/org-scanner-json-view-contract.py`.
 4. **Findings.** Each span becomes a blocking, confirmed finding with rule ID
    `org-scanner:<rule>`, provider `org-secret-scanner`, and ruleset version
    1000 (disjoint from native numbering). Fingerprints use the standard v1

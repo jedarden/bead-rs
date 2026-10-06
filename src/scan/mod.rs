@@ -1092,7 +1092,7 @@ fn scan_entropy(selector: &str, field: &Field<'_>) -> Vec<Finding> {
         }
         let value = &field.text[start..end];
         if findings.len() >= 32
-            || credential_shape::hash_shaped(value)
+            || credential_shape::advisory_identifier_shaped(value)
             || !credential_shape::qualifies(value, 16)
         {
             return;

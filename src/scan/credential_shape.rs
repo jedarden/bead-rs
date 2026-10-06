@@ -206,6 +206,98 @@ pub fn hash_shaped(value: &str) -> bool {
         })
 }
 
+/// Whole-run advisory exclusion from the independently accepted 2026-10-06
+/// amendment to secret-ruleset-v4 §5.1. Never used by blocking rules.
+pub fn advisory_identifier_shaped(value: &str) -> bool {
+    if value.len() > 512 {
+        return false;
+    }
+    let value = value.trim_end_matches('.');
+    if hash_shaped(value) {
+        return true;
+    }
+    if !value.bytes().any(|byte| b"/_.~-".contains(&byte))
+        || value.bytes().any(|byte| b"+=".contains(&byte))
+    {
+        return false;
+    }
+    let nix_chunk = if value.starts_with("/nix/store/") {
+        Some(3)
+    } else if value.starts_with("nix/store/") {
+        Some(2)
+    } else {
+        None
+    };
+    let mut atom = false;
+    for (index, chunk) in value.split(['/', '_', '.', '~']).enumerate() {
+        if hash_shaped(chunk) {
+            atom = true;
+            continue;
+        }
+        let parts: Vec<_> = chunk.split('-').collect();
+        let mut cursor = 0;
+        if nix_chunk == Some(index)
+            && parts.len() > 1
+            && !parts[1].is_empty()
+            && parts[0].len() == 32
+            && parts[0]
+                .bytes()
+                .all(|byte| b"0123456789abcdfghijklmnpqrsvwxyz".contains(&byte))
+        {
+            atom = true;
+            cursor = 1;
+        }
+        while cursor < parts.len() {
+            if parts.len() - cursor >= 5
+                && parts[cursor..cursor + 5]
+                    .iter()
+                    .zip([8, 4, 4, 4, 12])
+                    .all(|(part, width)| {
+                        part.len() == width && part.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    })
+            {
+                atom = true;
+                cursor += 5;
+                continue;
+            }
+            let part = parts[cursor];
+            cursor += 1;
+            if part.is_empty() {
+                continue;
+            }
+            if [8, 12, 16, 32, 40, 56, 64, 96, 128].contains(&part.len())
+                && part.bytes().all(|byte| byte.is_ascii_hexdigit())
+            {
+                atom = true;
+                continue;
+            }
+            if !part.bytes().all(|byte| byte.is_ascii_alphanumeric())
+                || (part.bytes().any(|byte| byte.is_ascii_lowercase())
+                    && part.bytes().any(|byte| byte.is_ascii_uppercase())
+                    && part.bytes().any(|byte| byte.is_ascii_digit()))
+                || part
+                    .as_bytes()
+                    .windows(2)
+                    .filter(|pair| pair[0].is_ascii_digit() != pair[1].is_ascii_digit())
+                    .count()
+                    > 2
+                || part
+                    .as_bytes()
+                    .windows(2)
+                    .filter(|pair| {
+                        pair.iter().all(u8::is_ascii_alphabetic)
+                            && pair[0].is_ascii_lowercase() != pair[1].is_ascii_lowercase()
+                    })
+                    .count()
+                    > 4
+            {
+                return false;
+            }
+        }
+    }
+    atom
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
