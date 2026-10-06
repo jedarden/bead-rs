@@ -359,6 +359,55 @@ pub fn scan_recovery_artifact(path: &Path) -> Result<ScanReport> {
     Ok(ScanReport::merge(reports))
 }
 
+/// Scan every retained pointer that a publisher could carry forward.
+///
+/// This is stricter than the general recovery-artifact reporting surface:
+/// pointer presence is determined with `symlink_metadata`, so a dangling or
+/// malformed retained pointer is a coverage failure rather than an empty
+/// result. Findings contain only the scanner's redacted identity metadata.
+pub(crate) fn scan_retained_checkpoint_findings(
+    checkpoint_dir: &Path,
+) -> Result<(Vec<Finding>, usize)> {
+    let config = ScanConfig::new(Mode::Advisory);
+    let mut reports = Vec::new();
+    let mut pointers = 0;
+
+    for generation in ["current", "previous"] {
+        let pointer = checkpoint_dir.join(format!("{generation}.json"));
+        match std::fs::symlink_metadata(&pointer) {
+            Ok(_) => {
+                pointers += 1;
+                scan_pointer(&pointer, generation, &config, &mut reports)?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(Error::Io {
+                    path: pointer,
+                    msg: error,
+                });
+            }
+        }
+    }
+
+    // A legacy monolithic export is a retained publication input when the
+    // pointer pair is absent, so it must be covered as well.
+    if pointers == 0 {
+        let forensic = checkpoint_dir.join("forensic.jsonl");
+        match std::fs::symlink_metadata(&forensic) {
+            Ok(_) => scan_jsonl(&forensic, "retained", &config, &mut reports)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(Error::Io {
+                    path: forensic,
+                    msg: error,
+                });
+            }
+        }
+    }
+
+    Ok((ScanReport::merge(reports).findings, pointers))
+}
+
 fn scan_live_rows(
     conn: &rusqlite::Connection,
     config: &ScanConfig,

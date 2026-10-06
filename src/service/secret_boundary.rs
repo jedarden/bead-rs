@@ -401,6 +401,7 @@ pub(crate) fn verify_quarantine_cleanup(conn: &Connection) -> Result<()> {
     {
         return Err(Error::conflict("secret_quarantined: other blocking findings remain; redact them before resuming sanitized publication"));
     }
+    recheck_retained_generations(conn)?;
     Ok(())
 }
 
@@ -435,5 +436,44 @@ pub(crate) fn verify_quarantine_republish(conn: &Connection) -> Result<()> {
             "secret_quarantined: live state still contains blocking findings; redact them before republishing",
         ));
     }
+    recheck_retained_generations(conn)?;
     Ok(())
+}
+
+/// A sanitized resolution may discard findings from an old generation, so
+/// retained findings are not themselves a veto. The complete retained set
+/// must still be visited, and malformed or unreadable input fails closed.
+fn recheck_retained_generations(conn: &Connection) -> Result<()> {
+    let Some(path) = conn.path().filter(|path| !path.is_empty()) else {
+        return Ok(());
+    };
+    let Some(beads_dir) = Path::new(path)
+        .parent()
+        .filter(|parent| parent.file_name().is_some_and(|name| name == ".beads"))
+    else {
+        return Ok(());
+    };
+    let checkpoint_dir = beads_dir.join("checkpoint");
+    match std::fs::symlink_metadata(&checkpoint_dir) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => {
+            return Err(Error::conflict(
+                "secret_quarantined: retained-generation scan incomplete; sanitized publication refused",
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => {
+            return Err(Error::conflict(
+                "secret_quarantined: retained-generation scan incomplete; sanitized publication refused",
+            ));
+        }
+    }
+
+    super::secret_diagnostics::scan_retained_checkpoint_findings(&checkpoint_dir)
+        .map(|_| ())
+        .map_err(|_| {
+            Error::conflict(
+                "secret_quarantined: retained-generation scan incomplete; sanitized publication refused",
+            )
+        })
 }

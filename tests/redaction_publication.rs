@@ -262,6 +262,41 @@ fn retained_only_finding_clears_quarantine_by_sanitized_republish() {
     assert!(!checkpoint_bytes
         .windows(secret.len())
         .any(|window| window == secret.as_bytes()));
+
+    // A replay after the hold has been cleared is a no-op: it must not mint
+    // another reset event or generation.
+    let current_before_replay =
+        fs::read(workspace.path().join(".beads/checkpoint/current.json")).unwrap();
+    let replay = bead(workspace.path())
+        .args([
+            "redact",
+            "--all-blocking",
+            "--actor",
+            "publication-test",
+            "--reason",
+            "discard retained secret generation",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        replay.status.success(),
+        "{}",
+        String::from_utf8_lossy(&replay.stderr)
+    );
+    assert_eq!(
+        fs::read(workspace.path().join(".beads/checkpoint/current.json")).unwrap(),
+        current_before_replay
+    );
+    let conn = rusqlite::Connection::open(database(workspace.path())).unwrap();
+    let reset_events: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE kind = 'secret_quarantine_reset'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(reset_events, 1);
 }
 
 #[test]
@@ -329,6 +364,70 @@ fn all_blocking_republishes_when_quarantine_has_only_incomplete_coverage() {
         })
         .unwrap();
     assert_eq!(quarantine_count, 0);
+}
+
+#[test]
+fn sanitized_republish_fails_closed_on_malformed_retained_pointer() {
+    let workspace = temp_workspace("malformed-retained-reset");
+    bead(workspace.path())
+        .args(["sync", "flush-only"])
+        .assert()
+        .success();
+
+    // Assemble the candidate at runtime and keep it out of all diagnostics.
+    let secret = shaped_value();
+    fs::write(
+        workspace.path().join(".beads/checkpoint/previous.json"),
+        format!("not-json {secret}"),
+    )
+    .unwrap();
+    let current_before = fs::read(workspace.path().join(".beads/checkpoint/current.json")).unwrap();
+    let conn = rusqlite::Connection::open(database(workspace.path())).unwrap();
+    conn.execute(
+        "INSERT INTO secret_quarantine
+            (id, ruleset_version, blocking_count, coverage_incomplete)
+         VALUES (1, 4, 0, 1)",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let refused = bead(workspace.path())
+        .args([
+            "redact",
+            "--all-blocking",
+            "--actor",
+            "publication-test",
+            "--reason",
+            "reject incomplete retained coverage",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    let output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&refused.stdout),
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert!(output.contains("retained-generation scan incomplete"));
+    assert!(!output.contains(&secret));
+    assert_eq!(
+        fs::read(workspace.path().join(".beads/checkpoint/current.json")).unwrap(),
+        current_before
+    );
+
+    let conn = rusqlite::Connection::open(database(workspace.path())).unwrap();
+    let (quarantine_count, reset_events): (i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM secret_quarantine),
+                    (SELECT COUNT(*) FROM events WHERE kind = 'secret_quarantine_reset')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(quarantine_count, 1);
+    assert_eq!(reset_events, 0);
 }
 
 fn assert_publication(mode: &str) {
