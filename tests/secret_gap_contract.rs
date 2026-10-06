@@ -1433,6 +1433,41 @@ fn flush_quarantine_audit_failure_rolls_back_the_hold_and_checkpoint() {
 }
 
 #[test]
+fn flush_quarantine_persistence_failure_rolls_back_the_hold_and_checkpoint() {
+    let (root, mut store) = workspace();
+    bead(root.path())
+        .args(["sync", "flush-only"])
+        .assert()
+        .success();
+    let checkpoint = root.path().join(".beads/checkpoint");
+    let published_before = checkpoint_state_snapshot(&checkpoint);
+
+    let value = provider();
+    insert(store.conn(), &value);
+    let before = recovery_state_snapshot(store.conn());
+    fail_quarantine_insert(store.conn());
+
+    let refused = bead(root.path())
+        .args(["sync", "flush-only"])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    let stdout = String::from_utf8_lossy(&refused.stdout);
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(!stdout.contains(&value));
+    assert!(!stderr.contains(&value));
+    assert!(stderr.contains("synthetic quarantine persistence failure"));
+    assert!(
+        recovery_state_snapshot(store.conn()) == before,
+        "failed flush changed local or quarantine state"
+    );
+    assert!(
+        checkpoint_state_snapshot(&checkpoint) == published_before,
+        "failed flush changed the published checkpoint set"
+    );
+}
+
+#[test]
 fn imported_secret_is_quarantined_across_restart_until_redaction() {
     let (root, mut store) = workspace();
     let value = provider();
@@ -1730,6 +1765,90 @@ fn import_only_rolls_back_recovery_and_quarantine_together_on_quarantine_failure
     assert!(
         fs::read(root.path().join(".beads/checkpoint/current.json")).unwrap() == pointer_before
     );
+}
+
+#[test]
+fn restore_publication_failure_keeps_one_committed_recovery_for_later_flush() {
+    let (source_root, mut source_store) = workspace();
+    insert(source_store.conn(), "clean synthetic recovery");
+    publish_source_checkpoint(source_root.path());
+    let source_checkpoint = source_root.path().join(".beads/checkpoint");
+    let generation =
+        serde_json::from_slice::<Value>(&fs::read(source_checkpoint.join("current.json")).unwrap())
+            .unwrap()["generation_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+    let (target_root, mut target_store) = workspace();
+    set_auto_flush(target_root.path(), true);
+    bead(target_root.path())
+        .args(["sync", "flush-only"])
+        .assert()
+        .success();
+    let checkpoint = target_root.path().join(".beads/checkpoint");
+    let published_before = checkpoint_state_snapshot(&checkpoint);
+    let before_restore = recovery_snapshot(target_store.conn());
+
+    let config_path = target_root.path().join(".beads/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["checkpoint"]["auto_flush"] = Value::String("invalid".to_string());
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+
+    let output = bead(target_root.path())
+        .args([
+            "restore",
+            "--source",
+            source_checkpoint.to_str().unwrap(),
+            "--generation",
+            &generation,
+            "--actor",
+            "tester",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["local_recovery_succeeded"], true);
+    assert_eq!(report["secret_quarantined"], false);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected a post-commit publication error (reported={:?}, split_message={})",
+        report["checkpoint_publication_withheld"],
+        stderr.contains("checkpoint publication failed after the mutation committed")
+    );
+    assert!(stdout.contains("\"local_recovery_succeeded\": true"));
+    assert!(stdout.contains("\"secret_quarantined\": false"));
+    assert!(stderr.contains("checkpoint publication failed after the mutation committed"));
+    assert!(stderr.contains("sync flush-only"));
+    assert!(stderr.contains("checkpoint.auto_flush must be a boolean"));
+
+    let committed = recovery_snapshot(target_store.conn());
+    assert_eq!(committed.1, before_restore.1 + 1);
+    assert_eq!(committed.2, before_restore.2 + 1);
+    assert_eq!(committed.3, before_restore.3 + 1);
+    assert_eq!(committed.5, 0, "clean recovery must not create quarantine");
+    assert!(checkpoint_state_snapshot(&checkpoint) == published_before);
+
+    set_auto_flush(target_root.path(), true);
+    bead(target_root.path())
+        .args(["sync", "flush-only"])
+        .assert()
+        .success();
+
+    let after_flush = recovery_snapshot(target_store.conn());
+    assert_eq!(after_flush, committed);
+    let pointer: Value =
+        serde_json::from_slice(&fs::read(checkpoint.join("current.json")).unwrap()).unwrap();
+    assert_eq!(pointer["issue_count"], 1);
+    assert_eq!(pointer["event_count"], committed.2);
+    assert_eq!(pointer["receipt_count"], committed.3);
+    assert_ne!(checkpoint_state_snapshot(&checkpoint), published_before);
 }
 
 #[test]
