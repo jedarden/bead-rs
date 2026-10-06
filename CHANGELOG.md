@@ -2,6 +2,24 @@
 
 All notable changes to bead-rs are documented in this file.
 
+## [0.3.0] - Unreleased (candidate)
+
+- Controlled atomic secret scrubbing, including metadata rekeying with
+  preserved references, one-epoch batches and resumable local-byte cleanup.
+- Service-level secret rejection, managed enforcement without acknowledgment
+  bypasses, and recovery quarantine that withholds unsafe checkpoints.
+- Ruleset 4 provider/structured credentials, mapped normalized and decoded
+  views, complete JWT headers, exact raw-range fingerprints and bounded
+  decoded-view coverage diagnostics.
+- Counted value-free advisory summaries without changing scalar/array output
+  shapes; complete authorization values and contextual assignment detection.
+- Digest-pinned Argo verification, checksummed default/managed candidates,
+  fail-closed evidence approval and promotion of the exact tested payload.
+
+Publication and lab/codinghome installation remain gated on exact-source,
+candidate and fleet evidence. This entry is not a release receipt. Historical
+Git copies are not rewritten; real exposed credentials require rotation.
+
 ## [0.2.4] - 2026-08-30
 
 Same content as the 0.2.2 entry below plus the test-suite update for the

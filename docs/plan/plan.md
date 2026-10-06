@@ -1,6 +1,6 @@
 # bead-rs Current Product and Software Factory Plan
 
-Plan revision: 25
+Plan revision: 26
 
 As of: 2026-10-06
 
@@ -191,6 +191,29 @@ the aggregate GitOps Application remains degraded for unrelated resources.
 The versioned release, final candidate/fleet gates and both installations are
 still incomplete.
 
+Revision 26 prepares package 0.3.0 as an unreleased candidate, not a new tag
+or public release. The plan checker distinguishes an explicitly declared
+candidate from the latest shipped tag while still rejecting missing/wrong
+tags, a wrong manifest version, or contradictory equality claims. Assignment
+matching now separates bounded labels from values: noncredential labels do
+not repeatedly rescan an unbounded opaque suffix. Repeated-chain and exact
+range fixtures preserve the contextual correction without quadratic scans.
+Builder 1.2.0 at `dd61a61a` uses a digest-pinned Ubuntu 24.04 base and refuses
+to build unless the unchanged historical managed pin's checksum, runtime
+capabilities and glibc 2.39 witness pass. Standalone Argo build `4m6ds` succeeded
+at `2026-10-06T06:51:21Z`, producing immutable digest `71760356a17f03dc…`.
+GitOps commit `1231c6c6` pins that image with authoritative tag fetching and
+process-scoped Git identity. The live template matches all three corrections;
+the owning Application successfully synchronized that revision at
+`2026-10-06T06:57:10Z`. Its unrelated aggregate OutOfSync/Degraded state is
+not claimed resolved. A dirty full default run passed the three real archive
+integrity probes, but was stopped with exit 130 when an uncommitted worker's
+reproducibility test bypassed the wrapper and built below `/home`. Only that
+run and its descendants were stopped; the worker's files were preserved.
+This is incomplete verification, not a full pass. Exact committed-source
+default and managed CI remain mandatory. Every release and
+two-host deployment gate remains outstanding until real evidence passes.
+
 Baseline verification ran locally against the dirty checkout: `cargo test
 --test secret_rejection --test redaction_transaction --test
 redaction_publication --test redaction_event_identity` passed all 23 tests.
@@ -251,14 +274,15 @@ The installed binary is `bead`, and `native-v1` plus `needle-v1` expose public
 process contracts.
 
 The latest tag is v0.2.6 at `d9a32b3` (tagged 2026-09-05, present in this
-checkout and on origin); it matches the package version 0.2.6 declared in
-`Cargo.toml` and reported by the installed fleet binary. Edition 2024 and MSRV
+checkout and on origin). The package version 0.3.0 is a release candidate.
+It is not tagged, published or installed; the installed fleet binaries still
+report 0.2.6. Edition 2024 and MSRV
 1.85 are unchanged. The tag went out ahead of its release evidence — BR-T18
 (`beadrs-559d3bfe`) remains open and gates 11–14 of section 7 have no recorded
 proof against it — so it is a mid-transition snapshot, not an evidenced
 release. The repository has continued to receive diagnostic,
-attempt-resolution, and starvation-recovery work after the tag with no version
-bump; those checkout artifacts are not release evidence until their
+attempt-resolution, and starvation-recovery work after the tag; the current
+candidate bump does not constitute release evidence until its
 specifications, capabilities, tests, tag, and release report agree.
 
 ### 1.1 Shipped capability baseline
@@ -765,7 +789,7 @@ infrastructure workflow and remains outside this repository implementation.
 | BR-T27 | exact-source packaging and NEEDLE consumer conformance | Build one pinned artifact and run the old/new consumer matrix plus duplicate-worker replay before release | source/binary hashes, archive-build proof, restore rehearsal, NEEDLE canary and rollback receipt agree | blocked by BR-T23–BR-T26; `beadrs-41b9130e` |
 | BR-T28 | existing manifest transaction, planner guidance, dependency graph and resource declarations | Make manifest-based atomic materialization the required/default planner path; retain assigned-staging only for shapes the manifest cannot express | concurrent claimer observes zero wins before graph commit; create resource keys are present at first visibility; cycle, missing-ID and replay failures leave no partial issue or edge | transition; `beadrs-57c668be` |
 | BR-T29 | ADR-020 through ADR-022, plan, proposed contract and fixtures | Specify the public service gate, managed policy, and recovery quarantine without claiming approval | Link and scope audit; no secret-shaped values committed | proposed documents committed in `bc5da50`; independent review pending; `beadrs-b49b7f22` |
-| BR-T30 | independent exact-hash contract review | Accept or reject `secret-write-boundary-v1` and resolve the false-positive recovery path before release | Reviewer identity, exact spec/fixture hashes, compatibility and threat-model disposition | independent exact-hash acceptance pending; not self-approved; `beadrs-b1bb3723` |
+| BR-T30 | independent exact-hash contract review | Accept or reject `secret-write-boundary-v1` and resolve the false-positive recovery path before release | Reviewer identity, exact spec/fixture hashes, compatibility and threat-model disposition | exact contract independently accepted in the 2026-10-03 BR-T30 review; current spec/fixture hashes match; `beadrs-b1bb3723` closed; production/fleet acceptance remains separate |
 | BR-T31 | public service mutation API | Enforce canonical scan before every public write and generated text commit | Direct library plus CLI atomicity, redaction, audit, recurrence and manifest tests; full Rust gates | repository implementation under owner admission; acceptance pending; `beadrs-235ead28` |
 | BR-T32 | managed artifact, capabilities and policy | Reject workspace downgrade and worker acknowledgment in the managed fleet build | Both build profiles, downgrade/tamper, capability, installed-binary and fleet pin evidence | managed build and committed fleet pin implemented; external installation pending; `beadrs-d527e9dc` |
 | BR-T33 | restore/import/reconcile, publication and commit | Quarantine newly detected blocking findings before Git-trackable publication | Clean and finding-bearing recovery, restart, concurrency, redaction clearance, flush/commit refusal | durable quarantine implemented; independent acceptance pending; `beadrs-297416cc` |
@@ -775,14 +799,14 @@ infrastructure workflow and remains outside this repository implementation.
 | BR-T37 | keyword prefilter | Evaluate every rule whose anchor occurs, including overlapping anchors | Overlapping-anchor test; natural AWS anchors restored; benchmark within budget | overlap defect corrected; benchmark acceptance pending; `beadrs-0ba44859` |
 | BR-T38 | doctor secret diagnostics | Scan live rows and each retained generation independently; report `coverage` | Missing previous root yields live findings plus an `unreadable` or `absent` entry | per-source coverage and tombstoned-root handling implemented; acceptance pending; `beadrs-9e6f9b9e` |
 | BR-T39 | scanner matcher | Explicit boundaries; normalized, dewrapped and decoded views with an offset map; raw-range reporting | Five-encoding GitHub fixture blocks and is redactable; Unicode ranges; 4 MiB benchmark within three times ruleset 3 | bounded mapped views implemented/tested; parity and performance acceptance pending; `beadrs-5cf44cfe` |
-| BR-T40 | rule table, capabilities | Provider and context-bound formats of ruleset 4; `ruleset_contract` capability | One true positive and two near misses per rule; label-absent negatives; inventory test | compiled ruleset 4 and inventory tests implemented; review/replay pending; `beadrs-7740733d` |
-| BR-T41 | qualifier and labelled-assignment rule | Predicates `P` and `Q`; `credential-assignment`; replacement advisory keyword rule | Qualifier truth table; excluded identifiers non-blocking; prefixed, camel-case, option and title-case labels block | integer qualifier and assignments implemented/tested; review pending; `beadrs-1d8b4c78` |
+| BR-T40 | rule table, capabilities | Provider and context-bound formats of ruleset 4; `ruleset_contract` capability | One true positive and two near misses per rule; label-absent negatives; inventory test | provider/context/JWT corrections targeted-tested against accepted exact contract; final conformance/replay pending; `beadrs-7740733d` |
+| BR-T41 | qualifier and labelled-assignment rule | Predicates `P` and `Q`; `credential-assignment`; replacement advisory keyword rule | Qualifier truth table; excluded identifiers non-blocking; prefixed, camel-case, option and title-case labels block | literal predicates, tables and bounded contextual assignments targeted-tested against accepted contract; final conformance pending; `beadrs-1d8b4c78` |
 | BR-T42 | structural rules | URI userinfo, authorization header, curl user option, Kubernetes Secret data | Positives block; word and variable passwords do not; Git-layer parity fixtures pass both ways | structural rules implemented/tested; Git-layer parity pending; `beadrs-3cf43a16` |
-| BR-T43 | advisory rule, mutation output, doctor | Shape-based advisory selection; one redacted write-time notice; additive machine member | Hash shapes unreported; unlabelled token reported; NEEDLE CLI contract suite passes | notice and object-shaped JSON metadata implemented; independent contract acceptance pending; `beadrs-dfe88716` |
+| BR-T43 | advisory rule, mutation output, doctor | Shape-based advisory selection; one redacted write-time notice; additive machine member | Hash shapes unreported; unlabelled token reported; NEEDLE CLI contract suite passes | counted notices and output lifecycle targeted-tested against accepted exact contract; final conformance pending; `beadrs-dfe88716` |
 | BR-T44 | exact-source artifact, fleet replay evidence | Replay ruleset 4 over every reachable fleet workspace, disposition every blocking fingerprint, freeze the version | Zero undispositioned findings; advisory volume at most one tenth of ruleset 3; parity, benchmark and installed-binary evidence | blocked by BR-T36–BR-T43; `beadrs-de9b30a6` |
 | BR-T45 | fleet bead stores | Redact findings that predate ruleset 4 after their credentials are rotated | Receipts, sanitized generations, zero unacknowledged blocking findings per workspace | proposal awaiting operator admission; blocked by BR-T44; `beadrs-fdfbaa7b` |
-| BR-T46 | redaction transaction, checkpoint publisher, Git staging/commit, SQLite cleanup | Hold ordinary publication while maintenance is pending; securely remove local database/WAL remnants before completion | Interrupted transaction/publication, active-reader refusal/resume, raw-file absence, checkpoint cleanup and concurrency; full Rust gates | source gates passed; whole-checkout gate held by `beadrs-049cfb7b` and unrelated formatting; `beadrs-25768cbe` |
-| BR-T47 | redaction selectors, metadata handling, batch CLI and recovery precedence | Make diagnostic metadata findings removable and selected batches atomic without deleting beads/events | Metadata/key collision, stale batch rollback, exact replay, recovery and one-generation publication tests; full Rust gates | rekeying/batches source-verified; whole-checkout and independent acceptance pending; `beadrs-ebec169c` |
+| BR-T46 | redaction transaction, checkpoint publisher, Git staging/commit, SQLite cleanup | Hold ordinary publication while maintenance is pending; securely remove local database/WAL remnants before completion | Interrupted transaction/publication, active-reader refusal/resume, raw-file absence, checkpoint cleanup and concurrency; full Rust gates | implementation owner `beadrs-25768cbe` closed; historical full gates/review with nits recorded; `beadrs-049cfb7b` closed; current candidate full verification remains separate |
+| BR-T47 | redaction selectors, metadata handling, batch CLI and recovery precedence | Make diagnostic metadata findings removable and selected batches atomic without deleting beads/events | Metadata/key collision, stale batch rollback, exact replay, recovery and one-generation publication tests; full Rust gates | implementation owner `beadrs-ebec169c` closed with historical whole-checkout evidence/review with nits; current candidate conformance/fleet acceptance remains separate |
 
 General mutation idempotency remains a separate potential feature. BR-T03–T08
 adopt idempotency only for the attempt-resolution boundary required by the

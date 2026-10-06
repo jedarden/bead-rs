@@ -1875,3 +1875,62 @@ snapshot re-verification corrected the record and repaired what it caught:
   default/managed gates, final candidate performance/replay, immutable release
   promotion and actual managed installations on lab/codinghome. No feature
   ledger, completion sentinel, real credential or other app store was changed.
+
+## 2026-10-06 — versioned candidate preparation and compatible CI builder
+
+- Release owner remains beadrs-b3059276. Cargo.toml/Cargo.lock now prepare
+  0.3.0, with CHANGELOG explicitly unreleased. No tag, GitHub release or
+  installation is credited. Existing publication approval remains fail-closed.
+- The plan checker permits only a separately declared release-candidate
+  package version, not a contradictory equality or a false tag/manifest claim.
+  Existing negative controls are retained; five additional malformed claim
+  controls reject missing candidate declaration, wrong package/source/tag and
+  an equality contradiction. Plan26 records actual current bead states without
+  confusing historical implementation closure with new release conformance.
+- Bounded assignment-label recognition consumes a value only after validating
+  its label. This preserves contextual detection without repeatedly rereading
+  unbounded suffixes in noncredential assignment chains. The 1/32/4096-chain
+  witness and value-only ranges pass; final optimized cost remains a gate.
+- Local 0.3.0 targeted verification with the actual organization scanner:
+  plan_tag_consistency, credential_assignment_contract, authorization_value_contract,
+  secret_gap_contract and redact_all_blocking passed47 default/48 managed tests.
+  cargo fmt --check and cargo clippy --all-targets -- -D warnings in both
+  profiles passed. Full exact-source and final artifact gates remain pending.
+- Builder source dd61a61a produced actual image1.2.0 digest71760356a17f03dc…
+  in standalone Argo4m6ds, Succeeded06:51:21UTC. Source, base, hash/runtime
+  witness and honest missing measurements are in PROVENANCE-1.2.0.md. No pin
+  bytes were rewritten. Five obsolete1.1.0 runs were normally stopped after
+  verifying their exact incompatible image and lack of GitOps ownership;
+  records and failure evidence remain, with no workflow deletion.
+- Declarative-config1231c6c6 pins the actual image and adds --tags fetching
+  plus process-scoped Git author/committer identity. Strict Argo lint with both
+  referenced templates, resource audit (zero critical), capacity inspection
+  and normal pre-commit/gitleaks passed. Live reconciliation is still pending;
+  the namespace Application's unrelated aggregate degradation is not fixed.
+- Next: observe relevant GitOps pin, run full default/managed source gates,
+  build immutable private0.3.0 candidate, replay exact bytes and metrics, then
+  promote verified public assets and atomically deploy managed CLI on both hosts.
+  Real other-app credential remediation remains an unadmitted proposal.
+
+## 2026-10-06 — live builder reconciliation and resource-safe verification
+
+- Observed actual bead-rs-ci template: builder1.2.0 digest71760356a17f03dc,
+  authoritative --tags fetch and four scoped Git identity variables match
+  declarative-config1231c6c6. ArgoCD operation Succeeded06:57:10UTC and the
+  template is Synced; unrelated aggregate OutOfSync/Degraded is not resolved.
+- A private calibration against the actual organization scanner passed eight
+  credential classes and both known false-positive controls. Native blocking
+  fingerprints resolved by inert redaction dry-run. Debug calibration only:
+  not final candidate parity, fleet replay or approval.
+- Actual local default command with BEAD_TEST_ORG_SCANNER set and
+  TMPDIR=/var/tmp/bead-release-tests.0jSl6SDq was cargo test --no-fail-fast
+  -- --test-threads=1. The three real host archive-integrity tests passed,
+  together with the preceding targets; no test failure was observed before
+  reproducible_build. This untracked worker test invoked real nested cargo
+  below /home/coding/bead-rs/target, bypassing the enforced /build directory.
+  With /home95% full, stopped only own test process2172898 and descendants;
+  command exited130, so full default verification remains incomplete.
+  No worker files or generated artifacts were removed or committed.
+- Use exact committed-source Argo default/managed verification on the live
+  corrected builder for the candidate. The unrelated uncommitted test is not
+  part of that source; no committed check or release requirement is waived.

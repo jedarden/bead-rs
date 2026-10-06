@@ -175,3 +175,17 @@ fn noncredential_prose_separators_do_not_hide_a_following_assignment() {
         );
     }
 }
+
+#[test]
+fn repeated_noncredential_assignments_preserve_the_final_complete_identifier() {
+    let value = "aB3".repeat(12);
+    for copies in [1, 32, 4096] {
+        let text = format!("{}service_token={value}", "noop=".repeat(copies));
+        let findings = assignment_findings(&text);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(
+            (findings[0].start, findings[0].end),
+            (text.len() - value.len(), text.len())
+        );
+    }
+}

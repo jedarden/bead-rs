@@ -59,8 +59,8 @@ fn scan_with_source(
     let mut findings = Vec::new();
     static ASSIGNMENTS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         [
-        r#"(?m)(?:--)?(?P<name>[A-Za-z0-9_][A-Za-z0-9_. -]{0,63}?)["')]?[ \t]*(?:=>|:=|=|:)[ \t]*["']?(?P<value>[^\s"'`,;]+)"#,
-        r#"(?m)--(?P<name>[A-Za-z0-9_][A-Za-z0-9_.-]{0,63})[ \t]+["']?(?P<value>[^\s"'`,;]+)"#,
+        r#"(?m)(?:--)?(?P<name>[A-Za-z0-9_][A-Za-z0-9_. -]{0,63}?)["')]?[ \t]*(?:=>|:=|=|:)[ \t]*["']?"#,
+        r#"(?m)--(?P<name>[A-Za-z0-9_][A-Za-z0-9_.-]{0,63})[ \t]+["']?"#,
     ].iter().map(|pattern|Regex::new(pattern).unwrap()).collect()
     });
     for regex in ASSIGNMENTS.iter() {
@@ -75,14 +75,20 @@ fn scan_with_source(
                 continue;
             }
             if !credential_shape::credential_label(name.as_str()) {
-                // A noncredential prose field can consume another assignment's
-                // name as its value. Revisit that complete value rather than
-                // hiding a following credential behind the earlier separator.
-                offset = capture.name("value").unwrap().start();
+                // Do not consume a noncredential field's value. Its first
+                // token can name a following credential assignment. Matching
+                // the bounded label separately also avoids repeatedly reading
+                // a whole unbounded value in a chain of prose assignments.
                 continue;
             }
-            let value = capture.name("value").unwrap();
-            let text = value.as_str().trim_end_matches(['.', ')', ']', '}']);
+            let value_start = offset;
+            let tail = &field.text[value_start..];
+            let length = tail
+                .char_indices()
+                .find(|(_, character)| character.is_whitespace() || "\"'`,;".contains(*character))
+                .map_or(tail.len(), |(index, _)| index);
+            offset = value_start + length;
+            let text = tail[..length].trim_end_matches(['.', ')', ']', '}']);
             if text.is_empty() || credential_shape::placeholder(text) {
                 continue;
             }
@@ -97,8 +103,8 @@ fn scan_with_source(
                 selector,
                 field,
                 rule,
-                value.start(),
-                value.start() + text.len(),
+                value_start,
+                value_start + text.len(),
                 tier,
             ));
         }

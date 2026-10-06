@@ -28,7 +28,9 @@
 //!    must not coexist with a latest-tag assertion; a tag-existence denial
 //!    scoped to the asserted version ("no v0.2.6 tag") must not coexist with
 //!    asserting that same version; and a claimed tag version must equal the
-//!    claimed package version, because the plan itself asserts they match.
+//!    claimed package version when the plan asserts they match. A separately
+//!    declared release-candidate version may precede its shipped tag, without
+//!    excusing an equality claim or any manifest/tag reality check.
 //! 2. *Manifest cross-check* (everywhere): every `package version X.Y.Z`
 //!    claim in the window must equal the version declared in `Cargo.toml`.
 //! 3. *Tag cross-check* (real checkouts only): the asserted latest tag must
@@ -103,6 +105,10 @@ struct PlanClaims {
     latest_tag_assertions: Vec<(String, String)>,
     /// Every `package version X.Y.Z` mention.
     package_version_claims: Vec<String>,
+    /// Explicit development candidate declarations, not shipped-tag claims.
+    candidate_versions: Vec<String>,
+    /// An explicit equality cannot be excused by a candidate declaration.
+    tag_package_equality_asserted: bool,
     /// Absolute tag-existence denials, verbatim.
     absolute_denials: Vec<String>,
     /// Version-scoped denials: (denied version, verbatim phrase).
@@ -116,6 +122,9 @@ fn extract_claims(window: &str) -> PlanClaims {
         Regex::new(r"(?i)tag v(\d+\.\d+\.\d+) at `([0-9a-f]{7,40})` as the latest tag")
             .expect("static regex");
     let package_version = Regex::new(r"(?i)package version (\d+\.\d+\.\d+)").expect("static regex");
+    let candidate_version =
+        Regex::new(r"(?i)package version (\d+\.\d+\.\d+) is a release candidate")
+            .expect("static regex");
     let no_version_tag = Regex::new(r"(?i)no v(\d+\.\d+\.\d+) tag").expect("static regex");
     let not_tagged =
         Regex::new(r"(?i)\bv?(\d+\.\d+\.\d+) (?:has|have) not been tagged").expect("static regex");
@@ -134,6 +143,12 @@ fn extract_claims(window: &str) -> PlanClaims {
     for caps in package_version.captures_iter(window) {
         claims.package_version_claims.push(caps[1].to_string());
     }
+    for caps in candidate_version.captures_iter(window) {
+        claims.candidate_versions.push(caps[1].to_string());
+    }
+    claims.tag_package_equality_asserted = window
+        .to_ascii_lowercase()
+        .contains("matches the package version");
     // The denial phrases are lowercase constants, matched against a
     // lowercased window so sentence position cannot hide them.
     let lowered = window.to_lowercase();
@@ -334,14 +349,17 @@ fn contradictions(plan_text: &str, actual: &ActualState) -> Vec<String> {
         }
     }
 
-    // A claimed latest tag and a claimed package version must be the same
-    // version: the plan's own rule (section 1) is that the tag matches the
-    // package version declared in Cargo.toml.
+    // A separately declared development candidate can precede its release
+    // tag. Never let that declaration excuse a contradictory equality or a
+    // missing/wrong/latest tag: those independent checks still apply above.
     if let (Some((tag_version, _)), Some(package_version)) = (
         claims.latest_tag_assertions.first(),
         claims.package_version_claims.first(),
     ) {
-        if tag_version != package_version {
+        if tag_version != package_version
+            && (claims.tag_package_equality_asserted
+                || !claims.candidate_versions.contains(package_version))
+        {
             problems.push(format!(
                 "normative sections 0-8 cite latest tag v{tag_version} and \
                  package version {package_version}; the plan asserts they match"
@@ -350,6 +368,24 @@ fn contradictions(plan_text: &str, actual: &ActualState) -> Vec<String> {
     }
 
     problems
+}
+
+#[test]
+fn candidate_version_is_distinct_from_shipped_tag_without_waiving_reality_checks() {
+    let mut state = fixture_state();
+    state.package_version = "0.3.0".to_string();
+    let declaration =
+        "The latest tag is v0.2.6 at `d9a32b3`. The package version 0.3.0 is a release candidate.";
+    assert!(contradictions(&fixture_plan(declaration), &state).is_empty());
+    for incorrect in [
+        declaration.replace("is a release candidate", "is declared in Cargo.toml"),
+        declaration.replace("0.3.0", "0.3.1"),
+        declaration.replace("d9a32b3", "aaaaaaaa"),
+        declaration.replace("latest tag is v0.2.6", "latest tag is v0.2.7"),
+        format!("{declaration} The tag matches the package version 0.3.0."),
+    ] {
+        assert!(!contradictions(&fixture_plan(&incorrect), &state).is_empty());
+    }
 }
 
 fn repo_root() -> PathBuf {
