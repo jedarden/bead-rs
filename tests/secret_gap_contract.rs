@@ -1748,7 +1748,7 @@ fn import_only_rolls_back_recovery_and_quarantine_together_on_quarantine_failure
         .assert()
         .success();
     let pointer_before = fs::read(root.path().join(".beads/checkpoint/current.json")).unwrap();
-    let before = recovery_snapshot(store.conn());
+    let before = recovery_state_snapshot(store.conn());
     fail_quarantine_insert(store.conn());
     let output = bead(root.path())
         .args([
@@ -1767,7 +1767,8 @@ fn import_only_rolls_back_recovery_and_quarantine_together_on_quarantine_failure
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stdout.contains(&value));
     assert!(!stderr.contains(&value));
-    assert!(recovery_snapshot(store.conn()) == before);
+    assert!(stderr.contains("synthetic quarantine persistence failure"));
+    assert!(recovery_state_snapshot(store.conn()) == before);
     assert!(
         fs::read(root.path().join(".beads/checkpoint/current.json")).unwrap() == pointer_before
     );
@@ -1931,7 +1932,7 @@ fn verified_restore_rolls_back_recovery_and_quarantine_together_on_quarantine_fa
     let mut target_store = SqliteStore::from_conn(
         open_configured_connection(&target_root.path().join(".beads/beads.db")).unwrap(),
     );
-    let before = recovery_snapshot(target_store.conn());
+    let before = recovery_state_snapshot(target_store.conn());
     fail_quarantine_insert(target_store.conn());
 
     let output = bead(target_root.path())
@@ -1957,7 +1958,8 @@ fn verified_restore_rolls_back_recovery_and_quarantine_together_on_quarantine_fa
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stdout.contains(&value));
     assert!(!stderr.contains(&value));
-    assert!(recovery_snapshot(target_store.conn()) == before);
+    assert!(stderr.contains("synthetic quarantine persistence failure"));
+    assert!(recovery_state_snapshot(target_store.conn()) == before);
     assert!(
         fs::read(target_root.path().join(".beads/checkpoint/current.json")).unwrap()
             == pointer_before
@@ -2250,6 +2252,7 @@ fn failed_reconcile_rolls_back_quarantine_and_local_state() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stdout.contains(&value));
     assert!(!stderr.contains(&value));
+    assert!(stderr.contains("synthetic quarantine persistence failure"));
 
     let conn = open_configured_connection(&source_db).unwrap();
     assert!(
