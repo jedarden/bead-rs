@@ -12,6 +12,12 @@ profiles. Default assets remain `bead-<target>`; fleet assets are explicitly
 `bead-managed-<target>`. `provenance.json` records the source revision, version,
 builder/toolchain identity and profile inventory. Optional Darwin builds are
 included only when that invocation actually succeeds, never from stale cache.
+Since the controller has no default artifact repository, candidates are
+retained in the existing private `bead-rs-ci-cargo-cache` registry under
+`<version>-candidate.<full-source-sha>` (not a Cargo cache key). Tags are not
+overwritten; the workflow's `candidate-digest` output identifies the immutable
+payload for retrieval with `crane export <repository>@<digest> -`. It contains
+only release assets, never semantic bead stores or registry credentials.
 
 Promotion additionally requires a committed
 `docs/releases/v<VERSION>-secret-scrubbing.json` accepted by

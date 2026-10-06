@@ -68,6 +68,20 @@ for name in bead-x86_64-unknown-linux-gnu bead-aarch64-unknown-linux-gnu \
             bead-managed-x86_64-unknown-linux-gnu bead-managed-aarch64-unknown-linux-gnu install.sh provenance.json; do
   [[ -s "$assets_dir/$name" ]] || { echo 'Required release artifact missing' >&2; exit 1; }
 done
+# The controller has no default artifact repository. Retain candidates in the
+# existing private application CI registry, using a distinct immutable semver
+# candidate tag (never a Cargo cache key or a mutable deployment image).
+candidate_ref="ronaldraygun/bead-rs-ci-cargo-cache:$version-candidate.$requested_revision"
+if ! candidate_digest=$(crane digest "$candidate_ref" 2>/dev/null); then
+  candidate_layer=$(mktemp /tmp/bead-release-candidate.XXXXXXXX.tar)
+  tar -C "$assets_dir" -cf "$candidate_layer" .
+  crane append -f "$candidate_layer" -t "$candidate_ref"
+  candidate_digest=$(crane digest "$candidate_ref")
+fi
+[[ "$candidate_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'Candidate digest unavailable' >&2; exit 1; }
+crane export "${candidate_ref%:*}@$candidate_digest" - | python3 scripts/verify-release-candidate.py "$assets_dir/checksums.txt"
+printf '%s@%s\n' "${candidate_ref%:*}" "$candidate_digest" > /tmp/candidate-digest
+echo "Verified candidate retained: $candidate_ref@$candidate_digest"
 if [[ "$publish_release" != true ]]; then
   echo "Candidate v$version built; publication is disabled"
   exit 0
