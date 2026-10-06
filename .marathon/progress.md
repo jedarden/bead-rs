@@ -1961,3 +1961,18 @@ snapshot re-verification corrected the record and repaired what it caught:
   through GitOps, then run complete exact-source candidate and actual-artifact
   host/fleet gates. Await missing classification/spec/migration direction
   where required; do not fabricate dispositions or self-assert new review.
+
+### Verified builder image and desired-state pin
+
+- Source1973ad08 built actual1.3.0 in sanctioned standalone Argo24csm,
+  Succeeded10:56:24UTC. Independent registry digest matches workflow output
+  79601fb9957da1057f78f8c297cead00a711e6c6b829da2299f8aa1e2c999281.
+  ARM libc2.39 headers, actual C link/ELF witness, historical managed pin and
+  all tool/target assertions passed. No foreign-machine code was executed.
+- Full provenance is containers/bead-rs-ci-builder/PROVENANCE-1.3.0.md.
+  GitOps15a1e9d2 pins both runtime image and packaged builder provenance;
+  normal push followed a replay of only this task's unpushed commit, preserving
+  concurrent infrastructure work. Strict Argo lint, all five normal hooks,
+  resource audit532files/zero critical and actual capacity inspection passed.
+- Live template still1.2.0 at11:00:50UTC. Await reconciliation before new
+  exact-source candidate. No application release or CLI deployment is credited.

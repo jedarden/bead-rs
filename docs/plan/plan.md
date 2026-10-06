@@ -84,8 +84,10 @@ without treating failed packaging as a release. Candidate `fcjj8` failed
 after its optimized x86 build during bundled SQLite's ARM compilation.
 Actual builder 1.2.0 probes reproduce missing ARM libc development headers
 despite a present cross compiler. The same release owner `beadrs-b3059276`
-now supplies builder 1.3.0's explicit sysroot and compile/link/ELF witness;
-image build, immutable GitOps pin and new exact-source candidate are pending.
+now supplies builder 1.3.0's explicit sysroot and compile/link/ELF witness.
+Standalone Argo `24csm` built the actual digest `79601fb9957da105…`; GitOps
+commit `15a1e9d2` pins it. Live reconciliation and the new exact-source
+candidate remain pending.
 All required ARM assets, source gates, fleet volume/disposition gates and
 independent review requirements remain unchanged. This repository's active
 organization-scanner quarantine currently refuses owning-bead updates; new
