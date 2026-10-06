@@ -2,8 +2,11 @@
 
 use assert_cmd::Command;
 use bead_rs::model::redaction::REDACTION_MARKER;
+use bead_rs::service::redaction::redact_finding;
 use bead_rs::service::secret_diagnostics::scan_live_findings;
+use bead_rs::store::{open_configured_connection, SqliteStore};
 use serde_json::Value;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 fn bead(workspace: &Path) -> Command {
@@ -36,6 +39,27 @@ fn database(root: &Path) -> PathBuf {
 
 fn shaped_value() -> String {
     ["AK", "IA", "7Q9W2E4R6T8Y1U3I"].concat()
+}
+
+fn use_monolithic_checkpoint(root: &Path) {
+    let path = root.join(".beads/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    config["checkpoint"]["mode"] = Value::String("monolithic".to_string());
+    fs::write(path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+}
+
+fn current_checkpoint(root: &Path) -> (Value, Vec<Value>) {
+    let checkpoint = root.join(".beads/checkpoint");
+    let pointer: Value =
+        serde_json::from_slice(&fs::read(checkpoint.join("current.json")).unwrap()).unwrap();
+    assert_eq!(pointer["mode"], "monolithic");
+    let object_path = checkpoint.join(pointer["active_root"]["path"].as_str().unwrap());
+    let records = fs::read_to_string(object_path)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    (pointer, records)
 }
 
 fn redact(root: &Path, fingerprint: &str, dry_run: bool) -> Value {
@@ -275,4 +299,151 @@ fn duplicate_native_events_redact_by_stable_wire_identity_and_round_trip() {
         .unwrap()
         .iter()
         .any(|finding| finding.rule_id == "aws-access-key-id" && finding.is_blocking_match()));
+}
+
+#[test]
+fn event_redaction_preserves_unknown_fields_in_checkpoint_records_and_pointer() {
+    let source = workspace("unknown-fields");
+    use_monolithic_checkpoint(source.path());
+
+    let event_sentinel = serde_json::json!({
+        "shape": ["event", 23, {"opaque": true}],
+        "version": 7
+    });
+    let pointer_sentinel = serde_json::json!({
+        "shape": {"pointer": [null, false, "stable"]},
+        "version": 11
+    });
+    let receipt_sentinel = serde_json::json!({
+        "shape": ["receipt", {"opaque": "retained"}],
+        "version": 5
+    });
+    let event_extensions = serde_json::json!({
+        "future_event_fixture_sentinel": event_sentinel
+    });
+    let receipt_extensions = serde_json::json!({
+        "future_redaction_receipt_fixture_sentinel": receipt_sentinel
+    });
+
+    let secret = shaped_value();
+    let detail_value = serde_json::json!({
+        "credential": secret,
+        "context": {"label": "stable fixture", "values": [1, true, null]}
+    });
+    let detail = serde_json::to_string(&detail_value).unwrap();
+    let mut store =
+        SqliteStore::from_conn(open_configured_connection(&database(source.path())).unwrap());
+    store
+        .conn()
+        .execute(
+            "INSERT INTO events (kind, actor, time, detail, extensions_json)
+             VALUES ('fixture', 'worker', '2026-09-03T00:00:00Z', ?1, ?2)",
+            rusqlite::params![detail, event_extensions.to_string()],
+        )
+        .unwrap();
+    let checkpoint_base = source.path().join(".beads");
+    let checkpoint_config = bead_rs::service::load_checkpoint_config(&checkpoint_base).unwrap();
+    bead_rs::service::publish_forensic_checkpoint(&mut store, &checkpoint_config, &checkpoint_base)
+        .unwrap();
+    let pointer_path = source.path().join(".beads/checkpoint/current.json");
+    let mut seeded_pointer: Value =
+        serde_json::from_slice(&fs::read(&pointer_path).unwrap()).unwrap();
+    seeded_pointer.as_object_mut().unwrap().insert(
+        "future_pointer_fixture_sentinel".to_string(),
+        pointer_sentinel.clone(),
+    );
+    fs::write(
+        &pointer_path,
+        serde_json::to_vec_pretty(&seeded_pointer).unwrap(),
+    )
+    .unwrap();
+    let (before_pointer, before_records) = current_checkpoint(source.path());
+    assert_eq!(
+        before_pointer["future_pointer_fixture_sentinel"],
+        pointer_sentinel
+    );
+    let before_event = before_records
+        .iter()
+        .find(|record| record["record_type"] == "event")
+        .unwrap()["event"]
+        .clone();
+    assert_eq!(
+        before_event["future_event_fixture_sentinel"],
+        event_sentinel
+    );
+    assert_eq!(before_event["detail"], detail_value);
+
+    let finding = scan_live_findings(store.conn())
+        .unwrap()
+        .into_iter()
+        .find(|finding| {
+            finding.selector.starts_with("live:events:")
+                && finding.field_path == "detail"
+                && finding.rule_id == "aws-access-key-id"
+                && finding.is_blocking_match()
+        })
+        .expect("the synthetic event credential must produce a blocking finding");
+    let outcome = redact_finding(
+        &mut store,
+        source.path(),
+        &finding.fingerprint,
+        "event-extension-test",
+        "remove synthetic fixture credential",
+    )
+    .unwrap();
+    assert_eq!(
+        outcome.receipt.publication_state,
+        bead_rs::model::redaction::PublicationState::Committed
+    );
+
+    let changed = store
+        .conn()
+        .execute(
+            "UPDATE redaction_receipts SET extensions_json = ?1 WHERE receipt_id = ?2",
+            rusqlite::params![receipt_extensions.to_string(), outcome.receipt.receipt_id],
+        )
+        .unwrap();
+    assert_eq!(changed, 1);
+    let rewritten_detail: String = store
+        .conn()
+        .query_row(
+            "SELECT detail FROM events WHERE kind = 'fixture'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(rewritten_detail, detail.replace(&secret, REDACTION_MARKER));
+    assert!(!rewritten_detail.contains(&secret));
+    drop(store);
+
+    bead(source.path())
+        .args(["redact", "--resume", &outcome.receipt.receipt_id, "--json"])
+        .assert()
+        .success();
+
+    let (after_pointer, after_records) = current_checkpoint(source.path());
+    assert_eq!(
+        after_pointer["future_pointer_fixture_sentinel"],
+        before_pointer["future_pointer_fixture_sentinel"]
+    );
+    let after_event = after_records
+        .iter()
+        .find(|record| record["record_type"] == "event")
+        .unwrap()["event"]
+        .clone();
+    let mut expected_event = before_event;
+    expected_event["detail"]["credential"] = Value::String(REDACTION_MARKER.to_string());
+    assert_eq!(after_event, expected_event);
+    assert_eq!(after_event["future_event_fixture_sentinel"], event_sentinel);
+    assert!(!after_event.to_string().contains(&secret));
+
+    let receipt = after_records
+        .iter()
+        .find(|record| record["record_type"] == "redaction_receipt")
+        .unwrap()["redaction_receipt"]
+        .clone();
+    assert_eq!(
+        receipt["future_redaction_receipt_fixture_sentinel"],
+        receipt_sentinel
+    );
 }
