@@ -1934,3 +1934,30 @@ snapshot re-verification corrected the record and repaired what it caught:
 - Use exact committed-source Argo default/managed verification on the live
   corrected builder for the candidate. The unrelated uncommitted test is not
   part of that source; no committed check or release requirement is waived.
+
+## 2026-10-06 — ARM packaging environment correction
+
+- Same outcome owner beadrs-b3059276; plan27 keeps all release/fleet gates.
+  Exact daa6613f candidate fcjj8 passed full default/managed source checks,
+  MSRV, formatting, all-targets Clippy, Python and contract checks. Cache
+  push succeeded (6,000,588,800 bytes, 374s) and optimized default x86 GNU
+  build passed; ARM bundled SQLite failed, workflow Failed10:36:25UTC.
+  No complete immutable payload, tag, GitHub release or installation exists.
+- Actual digest-pinned builder1.2.0 has aarch64 GCC but no ARM libc development
+  headers. Native C witness syntax passes; ARM standard headers fail under
+  that image. Builder1.3.0 explicitly adds libc6-dev-arm64-cross and requires
+  actual cross compile/link plus ELF machine/interpreter assertions. Preserve
+  Ubuntu2.39, historical-pin execution, toolchain pins and all four Rust stds.
+- Actual local plan_tag_consistency passed4/zeroignored; cargo fmt --check
+  and default all-targets Clippy -D warnings passed. Strict offline Argo lint
+  and git diff --check passed. New exact-source full gates remain pending.
+- Real host archive-integrity target passed all3/zeroignored at0c5cdb92,
+  local wrapper CPU2/Memory6G,113.34s total. No shared worker inputs changed.
+- Owning-bead evidence updates currently fail under persisted quarantine;
+  actual organization scanner reports9 curl-auth-user findings while native
+  reports0. No matched values were exposed and no hold was bypassed. Latest
+  evidence is durable in docs/releases/v0.3.0-candidate-verification.md.
+- Next: build immutable builder1.3.0 through sanctioned one-off Argo, pin it
+  through GitOps, then run complete exact-source candidate and actual-artifact
+  host/fleet gates. Await missing classification/spec/migration direction
+  where required; do not fabricate dispositions or self-assert new review.

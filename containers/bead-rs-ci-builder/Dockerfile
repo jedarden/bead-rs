@@ -40,6 +40,9 @@ ARG DEBIAN_FRONTEND=noninteractive
 #   gcc-aarch64-linux-gnu
 #               aarch64-unknown-linux-gnu cross linker (was a second apt
 #               round-trip in the release section of every run)
+#   libc6-dev-arm64-cross
+#               required ARM headers/startup objects; --no-install-recommends
+#               does not install them with the compiler alone
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -53,7 +56,20 @@ RUN apt-get update \
         binutils \
         xz-utils \
         gcc-aarch64-linux-gnu \
+        libc6-dev-arm64-cross \
     && rm -rf /var/lib/apt/lists/*
+
+# A compiler version is not a working sysroot. Refuse the image unless the
+# bundled-SQLite prerequisites compile and link an actual ARM64 ELF binary.
+# Do not execute foreign-machine code on this amd64 builder.
+COPY containers/bead-rs-ci-builder/cross-toolchain-witness.c /tmp/cross-toolchain-witness.c
+RUN aarch64-linux-gnu-gcc -Wall -Wextra -Werror \
+        /tmp/cross-toolchain-witness.c -o /tmp/cross-toolchain-witness \
+        -pthread -ldl -lm \
+    && readelf -h /tmp/cross-toolchain-witness | grep -Eq 'Class: *ELF64' \
+    && readelf -h /tmp/cross-toolchain-witness | grep -Eq 'Machine: *AArch64' \
+    && readelf -l /tmp/cross-toolchain-witness | grep -F '/lib/ld-linux-aarch64.so.1' \
+    && rm /tmp/cross-toolchain-witness.c /tmp/cross-toolchain-witness
 
 # gh CLI: the 1.0.0 build failed because the apt repository no longer
 # supplied this exact version. Use the immutable official release asset,

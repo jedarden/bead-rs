@@ -31,6 +31,7 @@ The tag is for humans; **the digest is the pin**. The repo is private
 | crane | `v0.22.1` + published checksum (cache transport) | deliberate rebuild |
 | jq and Python 3 | noble packages (release evidence/contract checks) | deliberate rebuild |
 | aarch64 cross gcc | `gcc-aarch64-linux-gnu` from noble (distro-pinned, not point-pinned) | deliberate rebuild |
+| aarch64 C sysroot | explicit `libc6-dev-arm64-cross` from noble | deliberate rebuild |
 
 Ubuntu packages are pinned to the *noble distribution*, not to
 point-release versions: the distribution repositories rotate `.debs` on security
@@ -54,6 +55,14 @@ The exact Ubuntu base digest was read from official Docker Hub metadata and
 pulled/executed locally. This compatibility witness is not proof that final
 new release binaries run on both hosts; they must still be tested there.
 
+Version 1.3.0 explicitly installs the ARM libc development sysroot. The
+1.2.0 compiler-version assertion passed without those recommended headers:
+the exact-source candidate passed all source checks but failed compiling
+bundled SQLite for ARM. The image now compiles and links an independent C
+witness using libc, pthreads, libdl and libm, then checks its ARM64 ELF class,
+machine and interpreter. It does not run foreign-machine code or waive the
+required default/managed ARM release builds.
+
 ## Building and pushing the image
 
 `build-image-workflow.yaml` is a **one-off** kaniko build+push Workflow.
@@ -62,14 +71,18 @@ image changes rarely, and every build must be a conscious act that ends
 with the resulting digest being pinned into the WorkflowTemplate.
 
 ```bash
-REV=$(git rev-parse HEAD)   # a pushed bead-rs commit containing this directory
-kubectl --kubeconfig=$HOME/.kube/iad-ci.kubeconfig create -f - <<EOF
-<build-image-workflow.yaml with:
-  parameters.revision  = $REV
-  parameters.version   = contents of VERSION
-  parameters.build-date = RFC3339 UTC timestamp>
-EOF
+argo lint --offline --strict <prepared-workflow.yaml>
+argo submit --kubeconfig /home/coding/.kube/iad-ci.kubeconfig \
+  --namespace argo-workflows --server-dry-run <prepared-workflow.yaml>
+argo submit --kubeconfig /home/coding/.kube/iad-ci.kubeconfig \
+  --namespace argo-workflows <prepared-workflow.yaml>
 ```
+
+Prepare a task-owned scratch copy of `build-image-workflow.yaml` with the
+full pushed source SHA, version from `VERSION`, and RFC3339 UTC build date.
+Use the installed official Argo CLI; unset unrelated `ARGO_SERVER` and
+`ARGO_TOKEN` overrides when using the kubeconfig. Submission is the approved
+one-off workflow path, not a mutation of an ArgoCD-managed resource.
 
 The init container fetches exactly that revision from Forgejo (retrying
 with backoff), cross-checks the `version` parameter against the `VERSION`

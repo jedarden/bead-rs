@@ -8,10 +8,12 @@
 #
 # Submit from a machine with ~/.kube/iad-ci.kubeconfig:
 #
-#   REV=$(git rev-parse HEAD)          # a commit containing this directory
-#   kubectl --kubeconfig=$HOME/.kube/iad-ci.kubeconfig create -f - <<EOF
-#   <this manifest, with revision/version/build-date/source-revision filled in>
-#   EOF
+#   Prepare a scratch copy with revision/version/build-date filled in.
+#   argo lint --offline --strict <prepared-workflow.yaml>
+#   argo submit --kubeconfig /home/coding/.kube/iad-ci.kubeconfig \
+#     --namespace argo-workflows --server-dry-run <prepared-workflow.yaml>
+#   argo submit --kubeconfig /home/coding/.kube/iad-ci.kubeconfig \
+#     --namespace argo-workflows <prepared-workflow.yaml>
 #
 # Read the digest from the workflow's output parameter and record it in
 # PROVENANCE-<version>.md and the WorkflowTemplate pin.

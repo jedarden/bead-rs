@@ -1,6 +1,6 @@
 # bead-rs Current Product and Software Factory Plan
 
-Plan revision: 26
+Plan revision: 27
 
 As of: 2026-10-06
 
@@ -78,6 +78,20 @@ independent exact-hash review accepts the contract and BR-T44 records the
 fleet replay.
 
 ## 0. How to read this plan
+
+Revision 27 records the exact-source `daa6613f` default/managed full CI pass
+without treating failed packaging as a release. Candidate `fcjj8` failed
+after its optimized x86 build during bundled SQLite's ARM compilation.
+Actual builder 1.2.0 probes reproduce missing ARM libc development headers
+despite a present cross compiler. The same release owner `beadrs-b3059276`
+now supplies builder 1.3.0's explicit sysroot and compile/link/ELF witness;
+image build, immutable GitOps pin and new exact-source candidate are pending.
+All required ARM assets, source gates, fleet volume/disposition gates and
+independent review requirements remain unchanged. This repository's active
+organization-scanner quarantine currently refuses owning-bead updates; new
+evidence is preserved under `docs/releases/` until a legitimate resolution.
+No new tag, GitHub release, host replacement or actual credential cleanup
+is credited.
 
 Revision 20 tracks the repository owner's 2026-10-03 instruction to close the
 secret-redaction and prevention gaps found in the current checkout. Existing
