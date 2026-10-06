@@ -2,7 +2,7 @@
 //!
 //! The corpus is deliberately supplied as a checkpoint-set directory rather
 //! than as hand-built SQL. This test therefore exercises the public
-//! `sync import-only --restore-into-empty` activation path, then publishes two
+//! `sync import-only --restore-into-empty` activation path, then publishes three
 //! native generations and compares their semantic records.
 
 use assert_cmd::Command;
@@ -30,7 +30,11 @@ fn fresh_workspace() -> TempDir {
 }
 
 fn read_json(path: &Path) -> Value {
-    serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+    serde_json::from_str(
+        &fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display())),
+    )
+    .unwrap_or_else(|error| panic!("parse {}: {error}", path.display()))
 }
 
 fn read_jsonl(path: &Path) -> Vec<Value> {
@@ -70,10 +74,113 @@ fn record_key(record: &Value) -> String {
 }
 
 fn semantic_records(records: &[Value]) -> BTreeMap<String, Value> {
+    // Normalize only the documented checkpoint ordering and stable record
+    // identities. Inherited values, including timestamps and opaque
+    // extensions, remain exact; newly generated restore metadata is additive
+    // and is not compared against an earlier generation.
     records
         .iter()
         .map(|record| (record_key(record), record.clone()))
         .collect()
+}
+
+struct PublishedGeneration {
+    workspace: TempDir,
+    source_generation_id: String,
+    pointer: Value,
+    records: Vec<Value>,
+}
+
+fn restore_and_publish(source: &Path, actor: &str) -> PublishedGeneration {
+    let source_generation_id = read_json(&source.join("current.json"))["generation_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let workspace = fresh_workspace();
+    bead(
+        workspace.path(),
+        &[
+            "init",
+            "--skip-foreign-workspace",
+            "--prefix",
+            "uf",
+            "--no-auto-flush",
+        ],
+    )
+    .assert()
+    .success();
+
+    bead(
+        workspace.path(),
+        &[
+            "sync",
+            "import-only",
+            "--input",
+            source.to_str().unwrap(),
+            "--restore-into-empty",
+            "--actor",
+            actor,
+            "--no-auto-flush",
+        ],
+    )
+    .assert()
+    .success()
+    .stderr(predicates::str::contains("Restored 2 issues, 2 events"));
+
+    bead(
+        workspace.path(),
+        &["sync", "flush-only", "--skip-foreign-workspace"],
+    )
+    .assert()
+    .success();
+
+    PublishedGeneration {
+        pointer: pointer(workspace.path()),
+        records: active_records(workspace.path()),
+        source_generation_id,
+        workspace,
+    }
+}
+
+fn assert_semantic_preservation(
+    previous: &PublishedGeneration,
+    current: &PublishedGeneration,
+    label: &str,
+) {
+    let previous_semantics = semantic_records(&previous.records);
+    let current_semantics = semantic_records(&current.records);
+    for (key, record) in &previous_semantics {
+        assert_eq!(
+            current_semantics.get(key),
+            Some(record),
+            "{label}: semantic record {key} changed across restore/export"
+        );
+    }
+}
+
+fn remove_unknown_member(records: &mut [Value], issue_id: &str, field: &str) {
+    let issue = records
+        .iter_mut()
+        .find(|record| record["record_type"] == "issue" && record["issue"]["id"] == issue_id)
+        .unwrap_or_else(|| panic!("missing issue {issue_id} in deliberate-drop mutation"));
+    assert!(
+        issue["issue"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field)
+            .is_some(),
+        "deliberate-drop mutation must remove an existing field"
+    );
+}
+
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<String>() {
+        return message.clone();
+    }
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        return (*message).to_string();
+    }
+    "unknown panic payload".to_string()
 }
 
 fn record_with_id<'a>(records: &'a [Value], record_type: &str, id: &str) -> &'a Value {
@@ -172,8 +279,18 @@ fn assert_resource_key_known_semantics(records: &[Value], expected: &Value) {
     );
 }
 
+fn build_three_generations() -> Vec<PublishedGeneration> {
+    let corpus = corpus_dir();
+    let first = restore_and_publish(&corpus, "unknown-fields-generation-1");
+    let second_source = first.workspace.path().join(".beads/checkpoint");
+    let second = restore_and_publish(&second_source, "unknown-fields-generation-2");
+    let third_source = second.workspace.path().join(".beads/checkpoint");
+    let third = restore_and_publish(&third_source, "unknown-fields-generation-3");
+    vec![first, second, third]
+}
+
 #[test]
-fn restore_into_empty_then_two_exports_preserve_corpus_unknown_fields() {
+fn restore_into_empty_then_three_connected_exports_preserve_corpus_unknown_fields() {
     let corpus = corpus_dir();
     let expected = read_json(&corpus.join("expected.json"));
     let source_records = read_jsonl(&corpus.join("checkpoint.jsonl"));
@@ -184,107 +301,61 @@ fn restore_into_empty_then_two_exports_preserve_corpus_unknown_fields() {
         expected["unknown_members"]["/pointer/current.json/x-fixture-pointer"]
     );
 
-    let workspace = fresh_workspace();
-    bead(
-        workspace.path(),
-        &[
-            "init",
-            "--skip-foreign-workspace",
-            "--prefix",
-            "uf",
-            "--no-auto-flush",
-        ],
-    )
-    .assert()
-    .success();
-
-    bead(
-        workspace.path(),
-        &[
-            "sync",
-            "import-only",
-            "--input",
-            corpus.to_str().unwrap(),
-            "--restore-into-empty",
-            "--actor",
-            "unknown-fields-conformance",
-            "--no-auto-flush",
-        ],
-    )
-    .assert()
-    .success()
-    .stderr(predicates::str::contains("Restored 2 issues, 2 events"));
-
-    bead(
-        workspace.path(),
-        &["sync", "flush-only", "--skip-foreign-workspace"],
-    )
-    .assert()
-    .success();
-    let first_pointer = pointer(workspace.path());
-    let first_records = active_records(workspace.path());
-    assert_eq!(first_pointer["issue_count"], 2);
-    assert_eq!(first_pointer["event_count"], 2);
-    assert_eq!(first_pointer["receipt_count"], 2);
-    assert_corpus_unknown_fields(&first_records, &first_pointer, &expected);
-    assert_resource_key_known_semantics(&first_records, &expected);
-
-    bead(
-        workspace.path(),
-        &["create", "--title", "second generation", "--no-auto-flush"],
-    )
-    .assert()
-    .success();
-    bead(
-        workspace.path(),
-        &["sync", "flush-only", "--skip-foreign-workspace"],
-    )
-    .assert()
-    .success();
-    let second_pointer = pointer(workspace.path());
-    let second_records = active_records(workspace.path());
-    assert_ne!(
-        first_pointer["generation_id"], second_pointer["generation_id"],
-        "the mutation must publish a second generation"
-    );
-    assert_eq!(
-        read_json(&workspace.path().join(".beads/checkpoint/previous.json"))["generation_id"],
-        first_pointer["generation_id"]
-    );
-    assert_corpus_unknown_fields(&second_records, &second_pointer, &expected);
-    assert_resource_key_known_semantics(&second_records, &expected);
-
-    let first_semantics = semantic_records(&first_records);
-    let second_semantics = semantic_records(&second_records);
-    for (key, record) in &first_semantics {
+    let generations = build_three_generations();
+    for (index, generation) in generations.iter().enumerate() {
+        let label = format!("generation {}", index + 1);
+        assert_eq!(generation.pointer["issue_count"], 2, "{label}: issue count");
+        assert_eq!(generation.pointer["event_count"], 2, "{label}: event count");
         assert_eq!(
-            second_semantics.get(key),
-            Some(record),
-            "semantic record {key} changed between generations"
+            generation.pointer["receipt_count"],
+            (index + 2) as i64,
+            "{label}: receipt count"
         );
-    }
-    let added: Vec<_> = second_semantics
-        .keys()
-        .filter(|key| !first_semantics.contains_key(*key))
-        .collect();
-    assert_eq!(
-        added.len(),
-        2,
-        "the second generation adds one issue and event"
-    );
-    assert!(added.iter().any(|key| key.starts_with("issue/uf-")));
-    assert!(added.iter().any(|key| key.starts_with("event/")));
+        assert_eq!(generation.records.len(), 6 + index, "{label}: record count");
+        assert_corpus_unknown_fields(&generation.records, &generation.pointer, &expected);
+        assert_resource_key_known_semantics(&generation.records, &expected);
+        assert_ne!(
+            generation.pointer["generation_id"].as_str().unwrap(),
+            generation.source_generation_id,
+            "{label}: restore/export must publish a new generation"
+        );
 
-    let expected_counts = expected["record_counts"].as_object().unwrap();
-    assert_eq!(
-        first_records.len(),
-        6,
-        "source records plus restore receipt"
+        if let Some(previous) = index.checked_sub(1) {
+            assert_eq!(
+                generation.source_generation_id,
+                generations[previous].pointer["generation_id"]
+                    .as_str()
+                    .unwrap(),
+                "{label}: restore input must be the connected predecessor"
+            );
+            assert_semantic_preservation(
+                &generations[previous],
+                generation,
+                &format!("{label} from predecessor"),
+            );
+        }
+    }
+
+    assert_semantic_preservation(&generations[0], &generations[2], "generation 3 from source");
+    assert_eq!(expected["record_counts"]["total"], 5);
+}
+
+#[test]
+fn dropped_corpus_unknown_field_fails_preservation_assertion() {
+    let expected = read_json(&corpus_dir().join("expected.json"));
+    let generations = build_three_generations();
+    assert_corpus_unknown_fields(&generations[0].records, &generations[0].pointer, &expected);
+
+    let mut mutated = generations[1].records.clone();
+    remove_unknown_member(&mut mutated, "bead-unknown-a", "x-fixture-issue");
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        assert_corpus_unknown_fields(&mutated, &generations[1].pointer, &expected);
+    }));
+    let message = panic_message(
+        result.expect_err("a deliberate dropped corpus field must fail preservation assertions"),
     );
-    assert_eq!(
-        second_records.len(),
-        8,
-        "second generation adds issue and event"
+    assert!(
+        message.contains("/issue/bead-unknown-a/x-fixture-issue"),
+        "the failed assertion must identify the dropped field: {message}"
     );
-    assert_eq!(expected_counts["total"], 5);
 }
