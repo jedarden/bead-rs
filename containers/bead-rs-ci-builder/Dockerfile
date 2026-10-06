@@ -21,7 +21,7 @@
 #                            .debs on security updates, so an exact-version
 #                            pin here would break every rebuild within
 #                            months. The versions actually installed at
-#                            build time are recorded in PROVENANCE-1.0.1.md,
+#                            build time are recorded in PROVENANCE-<version>.md,
 #                            and the pushed image digest is what consumers
 #                            pin, so rebuild drift cannot silently reach CI.
 FROM debian:bookworm-slim@sha256:f3034a6ec3c1205360777c4aae76234998866ad18806ae62b63a3f84ccad782b
@@ -41,6 +41,8 @@ RUN apt-get update \
         ca-certificates \
         curl \
         git \
+        jq \
+        python3 \
         build-essential \
         pkg-config \
         libssl-dev \
@@ -129,6 +131,8 @@ RUN set -eux \
     && case "$(rustup run ${RUST_MSRV} rustc --version)" in "rustc 1.85."*) ;; *) echo "MSRV rustc mismatch: $(rustup run ${RUST_MSRV} rustc --version)" >&2; exit 1 ;; esac \
     && cargo clippy --version \
     && cargo fmt --version \
+    && jq --version \
+    && python3 --version \
     && case "$(gh --version)" in "gh version 2.101.0 "*) ;; *) echo "gh mismatch: $(gh --version)" >&2; exit 1 ;; esac \
     && case "$(crane version)" in *0.22.1*) ;; *) echo "crane mismatch: $(crane version)" >&2; exit 1 ;; esac \
     && aarch64-linux-gnu-gcc --version | head -n1 \

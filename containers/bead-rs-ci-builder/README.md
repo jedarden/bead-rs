@@ -29,6 +29,7 @@ The tag is for humans; **the digest is the pin**. The repo is private
 | Release targets | the four release triples' std, pre-installed | deliberate rebuild |
 | gh | official `2.101.0` release .deb + published SHA-256 | deliberate rebuild |
 | crane | `v0.22.1` + published checksum (cache transport) | deliberate rebuild |
+| jq and Python 3 | bookworm packages (release evidence/contract checks) | deliberate rebuild |
 | aarch64 cross gcc | `gcc-aarch64-linux-gnu` from bookworm (distro-pinned, not point-pinned) | deliberate rebuild |
 
 Debian packages are pinned to the *bookworm distribution*, not to
