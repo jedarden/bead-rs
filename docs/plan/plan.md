@@ -1,6 +1,6 @@
 # bead-rs Current Product and Software Factory Plan
 
-Plan revision: 21
+Plan revision: 22
 
 As of: 2026-10-06
 
@@ -103,6 +103,19 @@ identity-fenced disposable store, including selected atomic text/key scrubbing,
 reader-held cleanup, write fencing, receipt resume and local-byte absence.
 Passing this synthetic smoke is neither fleet replay nor release acceptance.
 The new versioned release and two-host installation remain incomplete.
+
+Revision 22 records the corrected contract's independently accepted exact
+inputs and the closed BR-T35 prerequisite, without crediting production or
+release conformance. BR-T39 now counts every qualifying encoded run toward
+the 64-run bound, skips oversized runs whole, permits lenient unused bits in
+field views while retaining the strict decoder, and reports sorted value-free
+decoded-view limits separately for live/current/previous sources. The new
+39/40, 64/65 and 65536/65537 witnesses, non-UTF-8 printable remainder and raw
+fingerprint checks pass; full-source and same-host three-times-baseline
+performance acceptance remain outstanding. Other workers' tracked and
+untracked changes are preserved. The prior shared-target full test stopped
+on a removed temporary archive's fixture path; a focused recompilation of
+that test passed. This does not turn the interrupted full suite into a pass.
 
 Baseline verification ran locally against the dirty checkout: `cargo test
 --test secret_rejection --test redaction_transaction --test
@@ -524,8 +537,11 @@ The corrected `research/specs/secret-ruleset-v4.md` contract at SHA-256
 has a committed full-artifact independent acceptance in
 `docs/reviews/beadrs-32204e01-ruleset-v4-corrected-exact-input-review-2026-10-06.md`
 (`7a5880c5`). The review includes the exact ADR-023–025 inputs; do not edit
-those inputs and reuse this acceptance. Reviewer bead closure and BR-T35 graph
-reconciliation are still in progress. This is not production conformance,
+those inputs and reuse this acceptance. Reviewer bead `beadrs-32204e01` closed
+at revision 4 on 2026-10-06. BR-T35 closed by recording that distinct decision;
+its obsolete bad7c810 review remains informational historical evidence.
+BR-T39 through BR-T43 were reserved in the same atomic graph transaction before
+unlocking implementation. This is not production conformance,
 fleet activation, remediation authorization, or a current release claim.
 BR-T34 authors the documents and BR-T35 independently reviews their exact hash.
 BR-T36 through BR-T38 correct defects against the accepted contract and
@@ -627,7 +643,7 @@ quarantine. The source is verified; whole-checkout acceptance remains held
 by the existing archive-build blocker and unrelated formatting failures.
 Neither implementation owner is closed on incomplete whole-checkout gates.
 
-Remaining independent acceptance includes BR-T35 review, scanner parity and
+Remaining acceptance includes corrected-contract production conformance, scanner parity and
 performance evidence, BR-T44 exact-artifact fleet replay, BR-T32 external
 installation, and the operator-admitted rotation/remediation in BR-T45. Secret detection is
 bounded and cannot prove that all possible credentials are absent. Rotation
@@ -680,7 +696,7 @@ infrastructure workflow and remains outside this repository implementation.
 | BR-T32 | managed artifact, capabilities and policy | Reject workspace downgrade and worker acknowledgment in the managed fleet build | Both build profiles, downgrade/tamper, capability, installed-binary and fleet pin evidence | managed build and committed fleet pin implemented; external installation pending; `beadrs-d527e9dc` |
 | BR-T33 | restore/import/reconcile, publication and commit | Quarantine newly detected blocking findings before Git-trackable publication | Clean and finding-bearing recovery, restart, concurrency, redaction clearance, flush/commit refusal | durable quarantine implemented; independent acceptance pending; `beadrs-297416cc` |
 | BR-T34 | ADR-023 through ADR-025, plan, proposed `secret-ruleset-v4` contract | Specify ruleset 4 detection, normalized matching, advisory selection and diagnostic coverage without claiming approval | Link and scope audit; no format-valid sample and no finding location committed; Git-layer scanner clean on added lines | proposed documents committed; independent review pending; `beadrs-4dc46d5f`, umbrella `beadrs-8088ab92` |
-| BR-T35 | independent exact-hash contract review | Accept or reject `secret-ruleset-v4`, including the qualifier, excluded identifiers, decoded-view bounds and the write-time notice | Reviewer identity, exact spec hash, compatibility and threat-model disposition | independent exact-hash acceptance pending; not self-approved; `beadrs-1c110609` |
+| BR-T35 | independent exact-hash contract review | Accept or reject `secret-ruleset-v4`, including the qualifier, excluded identifiers, decoded-view bounds and the write-time notice | Reviewer identity, exact spec hash, compatibility and threat-model disposition | corrected exact input independently accepted in `7a5880c5`; review `beadrs-32204e01` and owner `beadrs-1c110609` closed; production/replay gates remain open |
 | BR-T36 | npm rule and its checksum test | Validate the 6-character checksum the format defines; open ruleset 4 | 30 plus 6 round trip, tampered negative, CLI rejection of a conforming candidate | checksum defect corrected; complete acceptance evidence pending; `beadrs-92e903cb` |
 | BR-T37 | keyword prefilter | Evaluate every rule whose anchor occurs, including overlapping anchors | Overlapping-anchor test; natural AWS anchors restored; benchmark within budget | overlap defect corrected; benchmark acceptance pending; `beadrs-0ba44859` |
 | BR-T38 | doctor secret diagnostics | Scan live rows and each retained generation independently; report `coverage` | Missing previous root yields live findings plus an `unreadable` or `absent` entry | per-source coverage and tombstoned-root handling implemented; acceptance pending; `beadrs-9e6f9b9e` |

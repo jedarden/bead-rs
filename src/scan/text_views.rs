@@ -1,5 +1,12 @@
 //! Bounded normalized matching views with raw UTF-8 byte provenance.
+use std::collections::BTreeSet;
 use std::ops::Range;
+
+/// Value-free bounds reached while constructing section 3.2's decoded view.
+pub struct DerivedViews {
+    pub views: Vec<View>,
+    pub reason_codes: BTreeSet<&'static str>,
+}
 
 pub struct View {
     pub text: String,
@@ -225,6 +232,10 @@ fn dewrap(source: &View) -> View {
 
 /// RFC 4648 alphabets, with optional trailing padding and URL-safe spelling.
 pub fn decode_base64(text: &str) -> Option<Vec<u8>> {
+    decode_base64_with_unused_bits(text, true)
+}
+
+fn decode_base64_with_unused_bits(text: &str, strict: bool) -> Option<Vec<u8>> {
     let unpadded = text.trim_end_matches('=');
     if text.len() - unpadded.len() > 2 || unpadded.len() % 4 == 1 {
         return None;
@@ -254,20 +265,21 @@ pub fn decode_base64(text: &str) -> Option<Vec<u8>> {
             accumulator &= (1 << bits) - 1;
         }
     }
-    if accumulator != 0 {
+    if strict && accumulator != 0 {
         return None;
     }
     Some(result)
 }
 
-pub fn derived(text: &str) -> Vec<View> {
+pub fn derived(text: &str) -> DerivedViews {
     let normalized = normalize(text);
     let dewrapped = dewrap(&normalized);
     let mut decoded = Vec::new();
     let bytes = normalized.text.as_bytes();
     let mut index = 0;
     let mut candidates = 0;
-    while index < bytes.len() && candidates < 64 {
+    let mut reason_codes = BTreeSet::new();
+    while index < bytes.len() {
         if !token(bytes[index]) {
             index += 1;
             continue;
@@ -276,28 +288,44 @@ pub fn derived(text: &str) -> Vec<View> {
         while index < bytes.len() && token(bytes[index]) {
             index += 1;
         }
-        if index - start < 40 || index - start > 65_536 {
+        if index - start < 40 {
+            continue;
+        }
+        // The maximal run consumes a slot even when it cannot be decoded.
+        // Continue enumerating after slot 64 so a 65th run is observable.
+        if candidates == 64 {
+            reason_codes.insert("run_count_limit");
             continue;
         }
         candidates += 1;
-        if let Some(decoded_bytes) = decode_base64(&normalized.text[start..index]) {
+        if index - start > 65_536 {
+            reason_codes.insert("run_size_limit");
+            continue;
+        }
+        // Unlike the strict JWT header grammar, encoded field views permit
+        // nonzero unused bits and a mixture of the two base64 alphabets.
+        if let Some(mut decoded_bytes) =
+            decode_base64_with_unused_bits(&normalized.text[start..index], false)
+        {
             let printable = decoded_bytes
                 .iter()
-                .filter(|byte| {
-                    byte.is_ascii_graphic() || byte.is_ascii_whitespace() || **byte == b' '
-                })
+                .filter(|byte| matches!(**byte, 0x20..=0x7e | 0x09..=0x0d))
                 .count();
-            if printable * 10 < decoded_bytes.len() * 9 {
+            if decoded_bytes.is_empty() || printable * 10 < decoded_bytes.len() * 9 {
+                decoded_bytes.fill(0);
                 continue;
             }
-            if let Ok(text) = String::from_utf8(decoded_bytes) {
-                let map = vec![normalized.raw_range(start, index); text.len()];
-                decoded.push(View {
-                    text,
-                    map,
-                    decoded: true,
-                });
-            }
+            // The contract's printable threshold permits a small non-UTF-8
+            // remainder. Lossy conversion retains every ASCII candidate;
+            // the entire encoded run remains its raw provenance range.
+            let text = String::from_utf8_lossy(&decoded_bytes).into_owned();
+            decoded_bytes.fill(0);
+            let map = vec![normalized.raw_range(start, index); text.len()];
+            decoded.push(View {
+                text,
+                map,
+                decoded: true,
+            });
         }
     }
     let mut views = Vec::new();
@@ -308,5 +336,96 @@ pub fn derived(text: &str) -> Vec<View> {
         views.push(dewrapped);
     }
     views.extend(decoded);
-    views
+    DerivedViews {
+        views,
+        reason_codes,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn encoded_views(text: &str) -> Vec<View> {
+        derived(text)
+            .views
+            .into_iter()
+            .filter(|view| view.decoded)
+            .collect()
+    }
+
+    #[test]
+    fn decoded_run_length_boundaries_and_whole_run_provenance() {
+        let run = "QUFB".repeat(10);
+        assert!(encoded_views(&run[..39]).is_empty());
+        let input = format!("!{run}!");
+        let views = encoded_views(&input);
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].text.len(), 30);
+        assert_eq!(views[0].raw_range(0, 1), 1..41);
+
+        let at_limit = "QUFB".repeat(16_384);
+        assert_eq!(encoded_views(&at_limit).len(), 1);
+        assert!(derived(&at_limit).reason_codes.is_empty());
+        let over_limit = format!("{at_limit}A");
+        let result = derived(&over_limit);
+        assert!(result.views.iter().all(|view| !view.decoded));
+        assert_eq!(result.reason_codes, BTreeSet::from(["run_size_limit"]));
+    }
+
+    #[test]
+    fn invalid_nonprintable_and_oversized_runs_each_consume_a_slot() {
+        let good = "QUFB".repeat(10);
+        for invalid in ["=".repeat(40), "A".repeat(40), "A".repeat(65_537)] {
+            let first_64 = format!("{}{good}", format!("{invalid}!").repeat(63));
+            assert_eq!(encoded_views(&first_64).len(), 1);
+            assert!(!derived(&first_64).reason_codes.contains("run_count_limit"));
+            let first_65 = format!("{invalid}!{first_64}");
+            let result = derived(&first_65);
+            assert!(result.views.iter().all(|view| !view.decoded));
+            assert!(result.reason_codes.contains("run_count_limit"));
+            assert_eq!(
+                result.reason_codes.contains("run_size_limit"),
+                invalid.len() > 65_536
+            );
+        }
+    }
+
+    #[test]
+    fn decoded_views_are_lenient_but_strict_decoder_keeps_unused_bit_check() {
+        let canonical = format!("{}QQ==", "QUFB".repeat(10));
+        let noncanonical = format!("{}QR==", "QUFB".repeat(10));
+        assert!(decode_base64(&noncanonical).is_none());
+        let canonical_views = encoded_views(&canonical);
+        let lenient_views = encoded_views(&noncanonical);
+        assert_eq!(lenient_views.len(), 1);
+        assert!(lenient_views[0].text == canonical_views[0].text);
+        assert_eq!(encoded_views(noncanonical.trim_end_matches('=')).len(), 1);
+        let mixed_alphabets = format!("Pj4+Pz8_{}", "QUFB".repeat(9));
+        assert_eq!(encoded_views(&mixed_alphabets).len(), 1);
+        for invalid in [format!("{}=", "QUFB".repeat(10)), format!("{canonical}=")] {
+            let result = derived(&invalid);
+            assert!(result.views.iter().all(|view| !view.decoded));
+            assert!(result.reason_codes.is_empty());
+        }
+    }
+
+    #[test]
+    fn decoded_threshold_retains_ascii_candidates_with_non_utf8_remainder() {
+        // Thirty printable bytes plus one invalid UTF-8 byte meet 90%.
+        let input = format!("{}/w==", "QUFB".repeat(10));
+        let views = encoded_views(&input);
+        assert_eq!(views.len(), 1);
+        assert!(views[0].text.starts_with(&"A".repeat(30)));
+        assert_eq!(views[0].raw_range(0, 30), 0..input.len());
+    }
+
+    #[test]
+    fn printable_threshold_includes_vertical_tab_and_is_inclusive_at_ninety_percent() {
+        assert_eq!(encoded_views(&"CwsL".repeat(10)).len(), 1);
+        let exactly_ninety = format!("{}AAAA", "QUFB".repeat(9));
+        assert_eq!(encoded_views(&exactly_ninety).len(), 1);
+        let below_ninety = format!("{}QUEAAAAA", "QUFB".repeat(8));
+        assert!(encoded_views(&below_ninety).is_empty());
+    }
 }

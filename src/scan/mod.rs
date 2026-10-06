@@ -516,6 +516,9 @@ pub struct ScanReport {
     /// Unacknowledged blocking findings. Non-empty under `enforce` mode
     /// means the request must be rejected before any transaction opens.
     pub blocking: Vec<Finding>,
+    /// Sorted, value-free reasons why decoded-view coverage was bounded.
+    /// Raw, normalized and dewrapped views are still scanned in full.
+    pub decoded_view_limits: BTreeSet<&'static str>,
 }
 
 /// Sanitized metadata for one exact-fingerprint admission. This is the only
@@ -727,6 +730,9 @@ impl ScanReport {
             merged.findings.extend(report.findings);
             merged.acknowledged.extend(report.acknowledged);
             merged.blocking.extend(report.blocking);
+            merged
+                .decoded_view_limits
+                .extend(report.decoded_view_limits);
         }
         let order = |a: &Finding, b: &Finding| {
             (&a.selector, &a.field_path, a.start, &a.rule_id).cmp(&(
@@ -955,14 +961,15 @@ fn scan_raw_field(selector: &str, field: &Field<'_>) -> Vec<Finding> {
     findings
 }
 
-pub(crate) fn scan_field(selector: &str, field: &Field<'_>) -> Vec<Finding> {
+fn scan_field(selector: &str, field: &Field<'_>) -> (Vec<Finding>, BTreeSet<&'static str>) {
     let mut findings = scan_raw_field(selector, field);
     findings.extend(structured_credentials::scan(selector, field, false));
     // Organization-scanner parity (beadrs-1c110ec3): whatever the fleet's
     // Git-side scanner reports for this text is a finding here too, so it can
     // be rejected at write time and redacted atomically.
     findings.extend(external::scan(selector, field));
-    for view in text_views::derived(field.text) {
+    let derived_views = text_views::derived(field.text);
+    for view in derived_views.views {
         let derived = Field::new(field.path, &view.text);
         let mut matches = scan_raw_field(selector, &derived);
         matches.retain(|finding| {
@@ -998,7 +1005,7 @@ pub(crate) fn scan_field(selector: &str, field: &Field<'_>) -> Vec<Finding> {
     findings.dedup_by(|left, right| {
         left.rule_id == right.rule_id && left.start == right.start && left.end == right.end
     });
-    findings
+    (findings, derived_views.reason_codes)
 }
 
 /// Placeholder heuristics (spec §3): placeholder-shaped values are not
@@ -1101,7 +1108,9 @@ pub fn scan(config: &ScanConfig, selector: &str, fields: &[Field<'_>]) -> ScanRe
         return report;
     }
     for field in fields {
-        for finding in scan_field(selector, field) {
+        let (findings, limits) = scan_field(selector, field);
+        report.decoded_view_limits.extend(limits);
+        for finding in findings {
             if finding.is_blocking_match() && config.is_acknowledged(&finding.fingerprint) {
                 report.acknowledged.push(finding.clone());
             }

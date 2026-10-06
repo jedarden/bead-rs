@@ -7,7 +7,7 @@ use crate::store::{open_configured_connection, Store};
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::io::BufRead;
 use std::path::{Component, Path, PathBuf};
 
@@ -27,6 +27,7 @@ pub struct SecretDiagnosticsReport {
     pub advisory_findings: usize,
     pub findings: Vec<Finding>,
     pub coverage: Vec<SourceCoverage>,
+    pub view_coverage: Vec<ViewCoverage>,
     pub coverage_complete: bool,
     pub quarantined: bool,
     pub redaction_pending: bool,
@@ -38,6 +39,33 @@ pub struct SourceCoverage {
     pub status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason_code: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ViewCoverage {
+    pub source: &'static str,
+    pub view: &'static str,
+    pub status: &'static str,
+    pub reason_codes: Vec<&'static str>,
+}
+
+fn append_view_coverage(
+    output: &mut Vec<ViewCoverage>,
+    source: &'static str,
+    reports: &[ScanReport],
+) {
+    let reasons: BTreeSet<_> = reports
+        .iter()
+        .flat_map(|report| report.decoded_view_limits.iter().copied())
+        .collect();
+    if !reasons.is_empty() {
+        output.push(ViewCoverage {
+            source,
+            view: "decoded",
+            status: "limited",
+            reason_codes: reasons.into_iter().collect(),
+        });
+    }
 }
 
 struct LiveTable {
@@ -222,6 +250,8 @@ pub fn run_secret_diagnostics(store: &impl Store) -> Result<SecretDiagnosticsRep
         }
     };
     let mut checkpoint_reports = Vec::new();
+    let mut view_coverage = Vec::new();
+    append_view_coverage(&mut view_coverage, "live", &live_reports);
     let mut checkpoint_generations_scanned = Vec::new();
     for name in ["current", "previous"] {
         let pointer = workspace
@@ -247,6 +277,7 @@ pub fn run_secret_diagnostics(store: &impl Store) -> Result<SecretDiagnosticsRep
                 continue;
             }
         }
+        let report_start = checkpoint_reports.len();
         match scan_pointer(&pointer, name, &diagnostic_config, &mut checkpoint_reports) {
             Ok(true) => {
                 coverage.push(SourceCoverage {
@@ -267,6 +298,11 @@ pub fn run_secret_diagnostics(store: &impl Store) -> Result<SecretDiagnosticsRep
                 reason_code: Some("checkpoint_scan_failed"),
             }),
         }
+        append_view_coverage(
+            &mut view_coverage,
+            name,
+            &checkpoint_reports[report_start..],
+        );
     }
     let coverage_complete = coverage.iter().all(|source| source.status != "unreadable");
     let report = ScanReport::merge(live_reports.into_iter().chain(checkpoint_reports));
@@ -288,6 +324,7 @@ pub fn run_secret_diagnostics(store: &impl Store) -> Result<SecretDiagnosticsRep
         advisory_findings: report.findings.len() - blocking_findings,
         findings: report.findings,
         coverage,
+        view_coverage,
         coverage_complete,
         quarantined: super::secret_boundary::ensure_not_quarantined(&conn).is_err(),
         redaction_pending: super::secret_maintenance::pending_redaction(&conn)?.is_some(),
