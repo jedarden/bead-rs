@@ -174,11 +174,27 @@ fn preserve_record_extensions(
     incoming: &RecordExtensions,
     label: &str,
 ) -> Result<Option<String>> {
+    fn widen_value(destination: &mut serde_json::Value, replay: &serde_json::Value) {
+        let (Some(destination), Some(replay)) = (destination.as_object_mut(), replay.as_object())
+        else {
+            return;
+        };
+        for (key, replay_value) in replay {
+            if let Some(destination_value) = destination.get_mut(key) {
+                widen_value(destination_value, replay_value);
+            } else {
+                destination.insert(key.clone(), replay_value.clone());
+            }
+        }
+    }
+
     let mut preserved = decode_record_extensions(existing, label)?;
     for (key, value) in incoming {
-        preserved
-            .entry(key.clone())
-            .or_insert_with(|| value.clone());
+        if let Some(destination_value) = preserved.get_mut(key) {
+            widen_value(destination_value, value);
+        } else {
+            preserved.insert(key.clone(), value.clone());
+        }
     }
     validate_record_extensions(&preserved, &[], label)?;
     Ok(encode_record_extensions(&preserved))
