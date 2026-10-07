@@ -448,6 +448,12 @@ fn cmd_redact(opts: cli::RedactOptions) -> Result<()> {
                     },
                 );
             }
+            if selection.deferred_retained != 0 {
+                return Err(Error::conflict(format!(
+                    "{} blocking retained-checkpoint finding(s) could not be resolved and the workspace is not quarantined for sanitized publication",
+                    selection.deferred_retained
+                )));
+            }
             if opts.json {
                 println!(
                     "{}",
@@ -539,6 +545,7 @@ fn cmd_redact(opts: cli::RedactOptions) -> Result<()> {
                 &outcomes[0].receipt,
             )?;
         }
+        verify_redaction_inventory(&mut store)?;
         let receipts = outcomes
             .iter()
             .map(|outcome| {
@@ -670,6 +677,26 @@ fn finish_sanitized_republish(
         println!("Sanitized checkpoint generation set published");
         println!("  Generation: {}", result.generation_id);
         println!("  Both retained pointers reset; quarantine cleared");
+    }
+    verify_redaction_inventory(store)?;
+    Ok(())
+}
+
+/// Re-scan live state and every retained checkpoint after the publication
+/// boundary. Deferred retained findings are safe only when this inventory is
+/// clean; the error reports a count and never includes matched bytes.
+fn verify_redaction_inventory(store: &mut store::SqliteStore) -> Result<()> {
+    let report = service::secret_diagnostics::run_secret_diagnostics(store)?;
+    if report.blocking_findings != 0 {
+        return Err(Error::conflict(format!(
+            "sanitized redaction publication completed, but {} blocking secret finding(s) remain; inspect 'bead doctor --scope secrets'",
+            report.blocking_findings
+        )));
+    }
+    if !report.coverage_complete {
+        return Err(Error::integrity(
+            "sanitized redaction publication completed, but secret inventory coverage is incomplete; inspect 'bead doctor --scope secrets'",
+        ));
     }
     Ok(())
 }

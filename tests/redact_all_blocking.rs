@@ -66,6 +66,15 @@ fn revision(workspace: &Path, id: &str) -> i64 {
         .unwrap()
 }
 
+fn configure_secret_fixture(workspace: &Path, mode: &str) {
+    let path = workspace.join(".beads/config.json");
+    let mut config: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    config["secret_scan"] = serde_json::json!({"mode": "off"});
+    config["checkpoint"]["mode"] = Value::String(mode.to_string());
+    config["checkpoint"]["auto_flush"] = Value::Bool(false);
+    std::fs::write(path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+}
+
 /// Feed invented candidate bytes through a private file, not process arguments.
 fn create_manifest(workspace: &Path, description: &str, scanner: Option<&str>) -> Output {
     let input = serde_json::json!({"manifest_version":1,"operations":[{
@@ -226,6 +235,152 @@ fn all_blocking_redacts_every_copy_in_one_epoch_and_is_idempotent() {
         None,
     );
     assert!(again.contains("nothing to redact"), "{again}");
+}
+
+#[test]
+fn all_blocking_defers_unresolvable_close_event_findings_until_publication() {
+    for mode in ["monolithic", "sharded"] {
+        let dir = workspace();
+        let root = dir.path();
+        configure_secret_fixture(root, mode);
+
+        let key_id = ["AKIA", "Q7XZ3M", "PL9RTW4K2B"].concat();
+        let aws_secret = ["wJalrXUtnF", "EMI/K7MDENG", "/bPxRfiCYQ9x7Rk2Lp4"].concat();
+        let description = format!(
+            "historic credentials: aws_access_key_id={key_id}; aws_secret_access_key={aws_secret}"
+        );
+        let password = ["aB3dE7gH", "jK5mN9qR", "tU2wX4yZ"].concat();
+        let uri_password = format!(
+            "{}%2F{}%40{}",
+            &password[..8],
+            &password[8..16],
+            &password[16..]
+        );
+        let notes =
+            format!("database connection postgresql://worker:{uri_password}@db.internal/app");
+
+        ok(root, &["create", "--title", "redaction fixture"], None);
+        let id = issue_id(root, "redaction fixture");
+        let conn = open_configured_connection(&root.join(".beads/beads.db")).unwrap();
+        conn.execute(
+            "UPDATE issues SET description=?1, notes=?2, revision=revision+1 WHERE id=?3",
+            rusqlite::params![description, notes, id],
+        )
+        .unwrap();
+
+        // Run the real lifecycle close path while this historical fixture's
+        // write policy permits the planted test credentials.
+        let close_reason = format!("credential rotation completed for {key_id}");
+        bead_rs::service::close_issue(&conn, &id, &close_reason, None, None).unwrap();
+        drop(conn);
+        let before_redaction = revision(root, &id);
+
+        // Publish one generation with the sensitive close event, then advance
+        // once so the same live values exist in both retained generations.
+        let mut store = SqliteStore::from_conn(
+            open_configured_connection(&root.join(".beads/beads.db")).unwrap(),
+        );
+        let beads = root.join(".beads");
+        let checkpoint_config = bead_rs::service::load_checkpoint_config(&beads).unwrap();
+        bead_rs::service::publish_forensic_checkpoint(&mut store, &checkpoint_config, &beads)
+            .unwrap();
+        ok(
+            root,
+            &["create", "--title", "advance fixture checkpoint"],
+            None,
+        );
+        bead_rs::service::publish_forensic_checkpoint(&mut store, &checkpoint_config, &beads)
+            .unwrap();
+        drop(store);
+
+        let retained_findings =
+            bead_rs::service::secret_diagnostics::scan_recovery_artifact(&beads.join("checkpoint"))
+                .unwrap()
+                .findings;
+        assert!(
+            retained_findings.iter().any(|finding| {
+                finding.selector.starts_with("checkpoint:")
+                    && finding.field_path == "record.event.detail.reason"
+                    && finding.is_blocking_match()
+            }),
+            "fixture must expose the close reason as an unresolved retained event finding"
+        );
+        let mut selector_store = SqliteStore::from_conn(
+            open_configured_connection(&root.join(".beads/beads.db")).unwrap(),
+        );
+        let locks = bead_rs::service::acquire_redaction_locks(root).unwrap();
+        let selection =
+            bead_rs::service::select_all_blocking_holding(&mut selector_store, &locks).unwrap();
+        assert!(selection.deferred_retained > 0);
+        assert!(!selection.fingerprints.is_empty());
+        drop(locks);
+        drop(selector_store);
+
+        assert_eq!(
+            serde_json::from_slice::<Value>(
+                &std::fs::read(root.join(".beads/checkpoint/current.json")).unwrap()
+            )
+            .unwrap()["mode"],
+            mode
+        );
+        assert!(!bytes_present(root, &[&key_id, &aws_secret, &password, &uri_password]).is_empty());
+
+        let output = ok(
+            root,
+            &[
+                "redact",
+                "--all-blocking",
+                "--actor",
+                "fixture-operator",
+                "--reason",
+                "remove planted credentials",
+                "--json",
+            ],
+            None,
+        );
+        let receipts: Value = serde_json::from_str(&output).unwrap();
+        let receipts = receipts["receipts"].as_array().expect("batch receipts");
+        assert!(!receipts.is_empty(), "the live copies enter the batch");
+        let epochs: std::collections::BTreeSet<_> = receipts
+            .iter()
+            .map(|receipt| receipt["epoch_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(epochs.len(), 1, "all findings commit in one atomic epoch");
+        assert_eq!(revision(root, &id), before_redaction + 1);
+
+        assert_eq!(
+            bytes_present(root, &[&key_id, &aws_secret, &password, &uri_password]),
+            Vec::<String>::new(),
+            "no planted credential remains in the live database, WAL, objects, or pointers"
+        );
+        let diagnostics = bead(
+            root,
+            &["doctor", "--scope", "secrets", "--format", "json"],
+            None,
+        );
+        assert!(
+            diagnostics.status.success(),
+            "{}",
+            String::from_utf8_lossy(&diagnostics.stderr)
+        );
+        let diagnostics: Value = serde_json::from_slice(&diagnostics.stdout).unwrap();
+        let secret_check = diagnostics["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == "secret_scan")
+            .unwrap();
+        assert_eq!(secret_check["status"], "ok");
+        assert_eq!(secret_check["details"]["blocking_findings"], 0);
+        let checkpoint_scan =
+            bead_rs::service::secret_diagnostics::scan_recovery_artifact(&beads.join("checkpoint"))
+                .unwrap();
+        assert!(
+            checkpoint_scan.findings.is_empty(),
+            "the Git-tracked checkpoint scan must be clean: {:?}",
+            checkpoint_scan.findings
+        );
+    }
 }
 
 /// Runs only where an organization scanner with `--serve` is configured

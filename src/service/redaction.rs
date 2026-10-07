@@ -392,6 +392,10 @@ pub struct AllBlockingSelection {
     /// bytes (a retained copy of a live finding, or a narrower overlapping
     /// match from another rule or scanner).
     pub covered: usize,
+    /// Retained-checkpoint findings without a live-row selector. The live
+    /// batch and its generation reset remove their copies; inventory after
+    /// publication decides whether any such finding remains.
+    pub deferred_retained: usize,
 }
 
 /// Select every current confirmed blocking finding for one atomic batch.
@@ -428,6 +432,10 @@ pub fn select_all_blocking_holding(
         let Some(location) =
             resolve_redaction_finding(store.conn(), locks.checkpoint_dir(), &finding.fingerprint)?
         else {
+            if finding.selector.starts_with("checkpoint:") {
+                selection.deferred_retained += 1;
+                continue;
+            }
             return Err(RedactionError::Conflict(
                 "a blocking finding no longer resolves to live bytes; rerun after the workspace settles"
                     .to_string(),
