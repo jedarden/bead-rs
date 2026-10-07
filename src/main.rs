@@ -295,7 +295,28 @@ fn publish_initial_state(no_auto_flush: bool) -> Result<()> {
     .map_err(|source| Error::PostCommitPublicationFailed { source })
 }
 
-fn execute_command(cli: Cli) -> Result<()> {
+fn execute_command(mut cli: Cli) -> Result<()> {
+    // Read once, before the mutation lock and secret preflight: the scanner
+    // and service must consume the same bytes, including stdin and large files.
+    if let Command::Data(cli::DataCommand::Set(opts)) = &mut cli.command {
+        if let Some(path) = opts.value_file.take() {
+            let input = if path == std::path::Path::new("-") {
+                use std::io::Read;
+                let mut input = String::new();
+                std::io::stdin()
+                    .lock()
+                    .read_to_string(&mut input)
+                    .map_err(|msg| Error::Io {
+                        path: std::path::PathBuf::from("<stdin>"),
+                        msg,
+                    })?;
+                input
+            } else {
+                std::fs::read_to_string(&path).map_err(|msg| Error::Io { path, msg })?
+            };
+            opts.value = Some(input);
+        }
+    }
     // R030: publish the discovery override before anything resolves a
     // workspace, so `publication_probe` and every command's `discover` see
     // the same walk. Read before `cli` moves into dispatch.
@@ -4103,7 +4124,11 @@ fn cmd_data_set(opts: cli::DataSetOptions) -> Result<()> {
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
 
     // Parse JSON value
-    let value: serde_json::Value = serde_json::from_str(&opts.value)
+    let input = opts
+        .value
+        .as_deref()
+        .ok_or_else(|| Error::cli_usage("exactly one of --value and --value-file is required"))?;
+    let value: serde_json::Value = serde_json::from_str(input)
         .map_err(|e| Error::validation(format!("Invalid JSON value: {}", e)))?;
 
     // Set the data

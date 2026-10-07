@@ -341,7 +341,7 @@ fn canonical_request(command: &Command) -> Option<CanonicalRequest<'_>> {
                     .field("id", &opts.id)
                     .field("data.namespace", &opts.namespace)
                     .field("data.schema_ref", &opts.schema_ref)
-                    .field("data.value", &opts.value),
+                    .optional("data.value", opts.value.as_deref()),
             ),
             DataCommand::Remove(opts) => Some(
                 CanonicalRequest::new(record_selector("issue", &opts.id), "cli")

@@ -2869,6 +2869,8 @@ extension of issue data without arbitrary field proliferation.
 EXAMPLES:
   bead data set --id bead-123abc456789def --namespace config --schema-ref schema:v1 --value '{\"setting\": \"value\"}'
   bead data set --id ID --namespace metrics --schema-ref schema:metrics --value '{\"count\": 42}'
+  bead data set --id ID --namespace state --schema-ref schema:state --value-file state.json
+  bead data set --id ID --namespace state --schema-ref schema:state --value-file -
 
 SCHEMA GOVERNANCE:
   - Each namespace has an immutable schema reference identifier
@@ -2903,9 +2905,17 @@ pub struct DataSetOptions {
     #[arg(long)]
     pub schema_ref: String,
 
-    /// JSON value to set
-    #[arg(long)]
-    pub value: String,
+    /// JSON value to set (exactly one of --value and --value-file is required)
+    #[arg(
+        long,
+        required_unless_present = "value_file",
+        conflicts_with = "value_file"
+    )]
+    pub value: Option<String>,
+
+    /// Read the JSON value from a UTF-8 file, or - for standard input
+    #[arg(long, value_name = "PATH")]
+    pub value_file: Option<std::path::PathBuf>,
 }
 
 /// Options for getting structured data
