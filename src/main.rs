@@ -448,6 +448,14 @@ fn cmd_redact(opts: cli::RedactOptions) -> Result<()> {
                     },
                 );
             }
+            if selection.deferred > 0 {
+                return Err(Error::conflict(format!(
+                    "{} blocking finding(s) exist only in retained checkpoint generations and \
+                     resolve to no live field; nothing live to redact. Inspect them with \
+                     'bead doctor --scope secrets'",
+                    selection.deferred
+                )));
+            }
             if opts.json {
                 println!(
                     "{}",
@@ -553,6 +561,23 @@ fn cmd_redact(opts: cli::RedactOptions) -> Result<()> {
         } else {
             for receipt in &receipts {
                 print_redaction_receipt(receipt, false)?;
+            }
+        }
+        if opts.all_blocking {
+            // Prove the sweep: every deferred retained copy must have gone with
+            // the sanitized publication, and nothing blocking may remain
+            // anywhere the inventory reaches (beadrs-10b5d471).
+            let report = service::secret_diagnostics::run_secret_diagnostics(&store)?;
+            let remaining = report
+                .findings
+                .iter()
+                .filter(|finding| finding.is_blocking_match())
+                .count();
+            if remaining > 0 {
+                return Err(Error::conflict(format!(
+                    "{remaining} blocking finding(s) remain after the sanitized publication; \
+                     inspect them with 'bead doctor --scope secrets'"
+                )));
             }
         }
         return Ok(());
