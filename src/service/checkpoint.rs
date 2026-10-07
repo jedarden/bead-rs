@@ -9827,7 +9827,14 @@ pub(crate) fn derive_wire_identity(
     next_local_origin_sequence: &mut i64,
     primary_key: i64,
 ) -> (String, i64) {
-    match (stored_uuid.filter(|uuid| !uuid.is_empty()), stored_sequence) {
+    // An empty stored UUID is a legacy unset value, except in a store whose
+    // own workspace UUID is empty: canonicalization writes that empty UUID,
+    // and re-deriving it as unset would renumber every event on each call,
+    // so identities (and live secret selectors) would move under a batch.
+    match (
+        stored_uuid.filter(|uuid| !uuid.is_empty() || local_store_uuid.is_empty()),
+        stored_sequence,
+    ) {
         (Some(uuid), Some(origin_sequence)) => (uuid.to_string(), origin_sequence),
         (Some(uuid), None) if uuid != local_store_uuid => (uuid.to_string(), primary_key),
         _ => {
@@ -10870,6 +10877,42 @@ fn format_rfc3339(time: SystemTime) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn local_event_identity_is_stable_across_canonicalization_with_empty_workspace_uuid() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::store::migrations::apply_migrations(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO workspace (id, uuid, prefix, layout_version, created_at)
+             VALUES (1, '', 'test', 1, '2026-10-07T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        for _ in 0..3 {
+            conn.execute(
+                "INSERT INTO events (kind, actor, time, detail)
+                 VALUES ('fixture', 'worker', '2026-10-07T00:00:00Z', '{}')",
+                [],
+            )
+            .unwrap();
+        }
+        let identities = |conn: &rusqlite::Connection| -> Vec<(String, i64)> {
+            read_all_events(conn)
+                .unwrap()
+                .into_iter()
+                .map(|event| (event.origin_store_uuid, event.origin_event_sequence))
+                .collect()
+        };
+        let before = identities(&conn);
+        for _ in 0..2 {
+            let tx = conn.transaction().unwrap();
+            canonicalize_local_event_identities(&tx).unwrap();
+            tx.commit().unwrap();
+            assert_eq!(identities(&conn), before);
+        }
+        let tx = conn.transaction().unwrap();
+        assert_eq!(canonicalize_local_event_identities(&tx).unwrap(), 0);
+    }
     use super::*;
     use std::fs;
     use tempfile::TempDir;
