@@ -15,7 +15,8 @@ use crate::model::redaction::{
 use crate::scan::{self, Disposition, Field, Mode, ScanConfig, Tier};
 use crate::service::checkpoint::{acquire_checkpoint_publication_lock, CheckpointPublicationLock};
 use crate::service::secret_diagnostics::{
-    find_live_finding, find_retained_checkpoint_finding, LiveFindingLocation,
+    find_live_finding, find_live_findings, find_retained_checkpoint_finding,
+    find_retained_checkpoint_findings, LiveFindingLocation,
 };
 use crate::store::SqliteStore;
 use fs2::FileExt;
@@ -23,7 +24,7 @@ use rusqlite::types::Value as SqlValue;
 use rusqlite::{params, params_from_iter, OptionalExtension, Transaction, TransactionBehavior};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::ErrorKind;
 use std::path::Path;
@@ -242,6 +243,7 @@ pub fn preview_redaction_holding(
         actor,
         reason,
         Some(&location),
+        false,
         &mut BTreeSet::new(),
     )?;
     let receipt = pending.outcome.receipt;
@@ -316,6 +318,43 @@ fn resolve_redaction_finding(
         .map_err(|_| integrity("could not scan retained checkpoint redaction targets"))
 }
 
+/// [`resolve_redaction_finding`] for a whole set: one live pass, then one
+/// retained pass for only the fingerprints live state did not hold. A
+/// per-fingerprint error is an ambiguous resolution; a scan failure fails
+/// the whole call, exactly as it would for any single fingerprint.
+fn resolve_redaction_findings(
+    conn: &rusqlite::Connection,
+    checkpoint_dir: &Path,
+    fingerprints: &BTreeSet<String>,
+) -> Result<BTreeMap<String, Result<Option<LiveFindingLocation>, RedactionError>>, RedactionError> {
+    let live = find_live_findings(conn, fingerprints)
+        .map_err(|_| integrity("could not scan live redaction targets"))?;
+    let unresolved: BTreeSet<String> = fingerprints
+        .iter()
+        .filter(|fingerprint| !live.contains_key(*fingerprint))
+        .cloned()
+        .collect();
+    let retained = find_retained_checkpoint_findings(checkpoint_dir, &unresolved)
+        .map_err(|_| integrity("could not scan retained checkpoint redaction targets"))?;
+    Ok(fingerprints
+        .iter()
+        .map(|fingerprint| {
+            let outcome = match live.get(fingerprint) {
+                Some(Ok(location)) => Ok(Some(location.clone())),
+                Some(Err(_)) => Err(integrity("could not scan live redaction targets")),
+                None => match retained.get(fingerprint) {
+                    Some(Ok(location)) => Ok(Some(location.clone())),
+                    Some(Err(_)) => Err(integrity(
+                        "could not scan retained checkpoint redaction targets",
+                    )),
+                    None => Ok(None),
+                },
+            };
+            (fingerprint.clone(), outcome)
+        })
+        .collect())
+}
+
 fn validate_request(fingerprint: &str, actor: &str, reason: &str) -> Result<(), RedactionError> {
     if fingerprint.len() != 64
         || !fingerprint
@@ -363,6 +402,7 @@ fn redact_in_transaction(
         actor,
         reason,
         expected,
+        false,
         &mut BTreeSet::new(),
     )?];
     commit_redaction_records(&tx, &mut pending)?;
@@ -422,6 +462,13 @@ pub fn select_all_blocking_holding(
     let mut selection = AllBlockingSelection::default();
     let mut located: Vec<LiveFindingLocation> = Vec::new();
     let mut seen_fingerprints = BTreeSet::new();
+    let blocking: BTreeSet<String> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.is_blocking_match())
+        .map(|finding| finding.fingerprint.clone())
+        .collect();
+    let mut resolved = resolve_redaction_findings(store.conn(), locks.checkpoint_dir(), &blocking)?;
     for finding in report
         .findings
         .iter()
@@ -432,11 +479,10 @@ pub fn select_all_blocking_holding(
         }
         selection.considered += 1;
         let retained = finding.selector.starts_with("checkpoint:");
-        let location = match resolve_redaction_finding(
-            store.conn(),
-            locks.checkpoint_dir(),
-            &finding.fingerprint,
-        ) {
+        let location = match resolved
+            .remove(&finding.fingerprint)
+            .unwrap_or(Ok(None))
+        {
             Ok(Some(location)) => location,
             // A retained-checkpoint finding may not map to one live field: an
             // event's `detail.reason` record path, or a selector shared by
@@ -590,9 +636,16 @@ pub fn redact_findings_holding(
     }
     crate::service::checkpoint::canonicalize_local_event_identities(&tx)
         .map_err(|_| integrity("could not canonicalize batch event identities"))?;
+    let mut resolved = resolve_redaction_findings(
+        &tx,
+        locks.checkpoint_dir(),
+        &fingerprints.iter().cloned().collect(),
+    )?;
     let mut locations = Vec::new();
     for fingerprint in fingerprints {
-        let location = resolve_redaction_finding(&tx, locks.checkpoint_dir(), fingerprint)?
+        let location = resolved
+            .remove(fingerprint)
+            .unwrap_or(Ok(None))?
             .ok_or_else(|| {
                 RedactionError::NotFound("batch finding is stale or absent".to_string())
             })?;
@@ -643,6 +696,7 @@ pub fn redact_findings_holding(
             actor,
             reason,
             Some(&location),
+            true,
             &mut bumped,
         )?);
     }
@@ -721,6 +775,7 @@ fn apply_redaction(
     actor: &str,
     reason: &str,
     expected: Option<&LiveFindingLocation>,
+    resolved_in_transaction: bool,
     bumped: &mut BTreeSet<String>,
 ) -> Result<PendingRedaction, RedactionError> {
     if let Some(existing) = read_receipt_by_fingerprint(tx, fingerprint)? {
@@ -750,8 +805,16 @@ fn apply_redaction(
         });
     }
 
-    let live_location = find_live_finding(tx, fingerprint)
-        .map_err(|_| integrity("could not scan live redaction targets"))?;
+    // A batch resolved `expected` under this same transaction, and earlier
+    // batch members only rewrite disjoint or rightward ranges, so a second
+    // full scan per member would find the same location. The single-field
+    // revalidation below still recomputes the fingerprint over live bytes.
+    let live_location = if resolved_in_transaction {
+        expected.cloned()
+    } else {
+        find_live_finding(tx, fingerprint)
+            .map_err(|_| integrity("could not scan live redaction targets"))?
+    };
     let location = if let Some(expected) = expected {
         let current = live_location.as_ref().unwrap_or(expected);
         if expected.finding.fingerprint != fingerprint {
@@ -988,8 +1051,11 @@ fn canonicalize_event_target(
         return Ok(location);
     }
 
-    crate::service::checkpoint::canonicalize_local_event_identities(tx)
+    let changed = crate::service::checkpoint::canonicalize_local_event_identities(tx)
         .map_err(|_| integrity("could not canonicalize event identities"))?;
+    if changed == 0 {
+        return Ok(location);
+    }
     find_live_finding(tx, fingerprint)
         .map_err(|_| integrity("could not rescan canonical event target"))?
         .ok_or_else(|| {

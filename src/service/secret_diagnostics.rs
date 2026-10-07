@@ -7,7 +7,7 @@ use crate::store::{open_configured_connection, Store};
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::BufRead;
 use std::path::{Component, Path, PathBuf};
 
@@ -475,8 +475,51 @@ pub(crate) fn find_live_finding(
     conn: &rusqlite::Connection,
     fingerprint: &str,
 ) -> Result<Option<LiveFindingLocation>> {
+    single(find_live_findings(
+        conn,
+        &BTreeSet::from([fingerprint.to_string()]),
+    )?)
+}
+
+/// One resolution in a batch: the unique location, or the integrity message
+/// for a fingerprint that matched more than one location.
+pub(crate) type Resolved = std::result::Result<LiveFindingLocation, &'static str>;
+
+fn single(mut resolved: BTreeMap<String, Resolved>) -> Result<Option<LiveFindingLocation>> {
+    match resolved.pop_first() {
+        None => Ok(None),
+        Some((_, Ok(location))) => Ok(Some(location)),
+        Some((_, Err(message))) => Err(Error::integrity(message)),
+    }
+}
+
+fn record_resolution(
+    resolved: &mut BTreeMap<String, Resolved>,
+    location: LiveFindingLocation,
+    ambiguous: &'static str,
+) {
+    match resolved.entry(location.finding.fingerprint.clone()) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(Ok(location));
+        }
+        std::collections::btree_map::Entry::Occupied(mut entry) => {
+            *entry.get_mut() = Err(ambiguous);
+        }
+    }
+}
+
+/// [`find_live_finding`] for a whole fingerprint set in one pass over live
+/// state, so a batch costs one scan rather than one per fingerprint. Absent
+/// fingerprints have no entry.
+pub(crate) fn find_live_findings(
+    conn: &rusqlite::Connection,
+    fingerprints: &BTreeSet<String>,
+) -> Result<BTreeMap<String, Resolved>> {
     let config = ScanConfig::new(Mode::Advisory);
-    let mut located = None;
+    let mut resolved = BTreeMap::new();
+    if fingerprints.is_empty() {
+        return Ok(resolved);
+    }
     for table in LIVE_TABLES {
         let available = table_columns(conn, table.name)?;
         if available.is_empty() {
@@ -510,26 +553,25 @@ pub(crate) fn find_live_finding(
                 for finding in report
                     .findings
                     .into_iter()
-                    .filter(|finding| finding.fingerprint == fingerprint)
+                    .filter(|finding| fingerprints.contains(&finding.fingerprint))
                 {
-                    if located.is_some() {
-                        return Err(Error::integrity(
-                            "one secret fingerprint resolved to multiple live locations",
-                        ));
-                    }
-                    located = Some(LiveFindingLocation {
-                        table: table.name,
-                        identity_fields: table.identity_fields,
-                        identity_values: row.identity_values.clone(),
-                        field,
-                        origin_identity: row.selector.clone(),
-                        finding,
-                    });
+                    record_resolution(
+                        &mut resolved,
+                        LiveFindingLocation {
+                            table: table.name,
+                            identity_fields: table.identity_fields,
+                            identity_values: row.identity_values.clone(),
+                            field,
+                            origin_identity: row.selector.clone(),
+                            finding,
+                        },
+                        "one secret fingerprint resolved to multiple live locations",
+                    );
                 }
             }
         }
     }
-    Ok(located)
+    Ok(resolved)
 }
 
 /// Resolve a retained-checkpoint issue finding to the live row it
@@ -546,27 +588,39 @@ pub(crate) fn find_retained_checkpoint_finding(
     checkpoint_dir: &Path,
     fingerprint: &str,
 ) -> Result<Option<LiveFindingLocation>> {
+    single(find_retained_checkpoint_findings(
+        checkpoint_dir,
+        &BTreeSet::from([fingerprint.to_string()]),
+    )?)
+}
+
+/// [`find_retained_checkpoint_finding`] for a whole fingerprint set in one
+/// pass over both retained generations. Absent fingerprints have no entry.
+pub(crate) fn find_retained_checkpoint_findings(
+    checkpoint_dir: &Path,
+    fingerprints: &BTreeSet<String>,
+) -> Result<BTreeMap<String, Resolved>> {
     let config = ScanConfig::new(Mode::Advisory);
-    let mut located = None;
+    let mut resolved = BTreeMap::new();
+    if fingerprints.is_empty() {
+        return Ok(resolved);
+    }
     for generation in ["current", "previous"] {
         let pointer_path = checkpoint_dir.join(format!("{generation}.json"));
         if !pointer_path.is_file() {
             continue;
         }
         for path in checkpoint_issue_paths(&pointer_path)? {
-            let candidate =
-                find_checkpoint_issue_in_jsonl(&path, generation, fingerprint, &config)?;
-            if let Some(candidate) = candidate {
-                if located.is_some() {
-                    return Err(Error::integrity(
-                        "one secret fingerprint resolved to multiple checkpoint records",
-                    ));
-                }
-                located = Some(candidate);
-            }
+            find_checkpoint_issues_in_jsonl(
+                &path,
+                generation,
+                fingerprints,
+                &config,
+                &mut resolved,
+            )?;
         }
     }
-    Ok(located)
+    Ok(resolved)
 }
 
 fn checkpoint_issue_paths(pointer_path: &Path) -> Result<Vec<PathBuf>> {
@@ -637,17 +691,17 @@ fn previous_root_was_tombstoned(pointer_path: &Path, root_path: &Path) -> Result
         }))
 }
 
-fn find_checkpoint_issue_in_jsonl(
+fn find_checkpoint_issues_in_jsonl(
     path: &Path,
     generation: &str,
-    fingerprint: &str,
+    fingerprints: &BTreeSet<String>,
     config: &ScanConfig,
-) -> Result<Option<LiveFindingLocation>> {
+    resolved: &mut BTreeMap<String, Resolved>,
+) -> Result<()> {
     let file = std::fs::File::open(path).map_err(|error| Error::Io {
         path: path.to_path_buf(),
         msg: error,
     })?;
-    let mut located = None;
     for (line_index, line) in std::io::BufReader::new(file).lines().enumerate() {
         let line = line.map_err(|error| Error::Io {
             path: path.to_path_buf(),
@@ -671,20 +725,19 @@ fn find_checkpoint_issue_in_jsonl(
         for finding in ScanReport::merge(reports)
             .findings
             .into_iter()
-            .filter(|finding| finding.fingerprint == fingerprint)
+            .filter(|finding| fingerprints.contains(&finding.fingerprint))
         {
             let Some(candidate) = checkpoint_issue_target(&record, finding)? else {
                 continue;
             };
-            if located.is_some() {
-                return Err(Error::integrity(
-                    "one secret fingerprint resolved to multiple fields in a checkpoint record",
-                ));
-            }
-            located = Some(candidate);
+            record_resolution(
+                resolved,
+                candidate,
+                "one secret fingerprint resolved to multiple checkpoint records",
+            );
         }
     }
-    Ok(located)
+    Ok(())
 }
 
 fn checkpoint_issue_target(
