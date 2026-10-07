@@ -383,3 +383,58 @@ fn all_blocking_sweeps_secrets_carried_by_close_events() {
         assert!(again.contains("nothing to redact"), "{again}");
     }
 }
+
+/// Identical secret text in beads that land in different issue shards gives
+/// retained-checkpoint findings whose `record:<n>` selectors collide (the
+/// index counts within one shard). The sweep must still redact every copy
+/// through the live findings instead of aborting on the ambiguous ones.
+#[test]
+fn all_blocking_sweeps_identical_secrets_across_shards() {
+    let dir = workspace();
+    let root = dir.path();
+    ok(root, &["sync", "configure", "--mode", "sharded"], None);
+    let key_id = ["AKIA", "Q7XZ3M", "PL9RTW4K2B"].concat();
+    for n in 0..8 {
+        let title = format!("dup {n}");
+        ok(root, &["create", "--title", &title], None);
+        let id = issue_id(root, &title);
+        historical_copy(root, &id, &format!("key {key_id}"), "");
+    }
+    let shards_with_copy = bytes_present(root, &[&key_id])
+        .iter()
+        .filter(|path| path.contains("/objects/"))
+        .count();
+    assert!(
+        shards_with_copy >= 2,
+        "fixture must spread the secret over several shards"
+    );
+
+    let output = ok(
+        root,
+        &[
+            "redact",
+            "--all-blocking",
+            "--actor",
+            "tester",
+            "--reason",
+            "sweep",
+            "--json",
+        ],
+        None,
+    );
+    assert!(!output.contains(&key_id));
+    assert_eq!(bytes_present(root, &[&key_id]), Vec::<String>::new());
+    let again = ok(
+        root,
+        &[
+            "redact",
+            "--all-blocking",
+            "--actor",
+            "tester",
+            "--reason",
+            "sweep",
+        ],
+        None,
+    );
+    assert!(again.contains("nothing to redact"), "{again}");
+}

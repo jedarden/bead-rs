@@ -431,17 +431,31 @@ pub fn select_all_blocking_holding(
             continue;
         }
         selection.considered += 1;
-        let Some(location) =
-            resolve_redaction_finding(store.conn(), locks.checkpoint_dir(), &finding.fingerprint)?
-        else {
-            if finding.selector.starts_with("checkpoint:") {
+        let retained = finding.selector.starts_with("checkpoint:");
+        let location = match resolve_redaction_finding(
+            store.conn(),
+            locks.checkpoint_dir(),
+            &finding.fingerprint,
+        ) {
+            Ok(Some(location)) => location,
+            // A retained-checkpoint finding may not map to one live field: an
+            // event's `detail.reason` record path, or a selector shared by
+            // identical text in two shards (`record:<n>` counts per shard,
+            // beadrs-10b5d471). Each such copy is also a live finding with a
+            // unique selector, so it is redacted through that one; the
+            // sanitized publication rebuilds both generations and the caller
+            // re-inventories to prove nothing remains.
+            Ok(None) | Err(_) if retained => {
                 selection.deferred += 1;
                 continue;
             }
-            return Err(RedactionError::Conflict(
-                "a live blocking finding no longer resolves to live bytes; rerun after the workspace settles"
-                    .to_string(),
-            ));
+            Ok(None) => {
+                return Err(RedactionError::Conflict(
+                    "a live blocking finding no longer resolves to live bytes; rerun after the workspace settles"
+                        .to_string(),
+                ))
+            }
+            Err(error) => return Err(error),
         };
         located.push(location);
     }
