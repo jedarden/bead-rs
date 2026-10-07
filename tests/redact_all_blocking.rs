@@ -311,7 +311,7 @@ fn all_blocking_defers_unresolvable_close_event_findings_until_publication() {
         let locks = bead_rs::service::acquire_redaction_locks(root).unwrap();
         let selection =
             bead_rs::service::select_all_blocking_holding(&mut selector_store, &locks).unwrap();
-        assert!(selection.deferred_retained > 0);
+        assert!(selection.deferred > 0);
         assert!(!selection.fingerprints.is_empty());
         drop(locks);
         drop(selector_store);
@@ -454,4 +454,142 @@ fn org_scanner_findings_block_writes_and_redact_with_native_overlaps() {
         "",
         "the Git-side scanner finds nothing left in the checkpoint"
     );
+}
+
+/// beadrs-10b5d471: a secret in a close reason is also carried by the close
+/// event, whose checkpoint record (`record.event.detail.reason`) does not
+/// resolve to a live field. The sweep must not refuse because of it: the
+/// live copies are redacted, the sanitized publication rebuilds the
+/// checkpoint, and nothing blocking may remain anywhere.
+#[test]
+fn all_blocking_sweeps_secrets_carried_by_close_events() {
+    for sharded in [false, true] {
+        let dir = workspace();
+        let root = dir.path();
+        if sharded {
+            ok(root, &["sync", "configure", "--mode", "sharded"], None);
+        }
+        let key_id = ["AKIA", "Q7XZ3M", "PL9RTW4K2B"].concat();
+        ok(root, &["create", "--title", "probe"], None);
+        let id = issue_id(root, "probe");
+        historical_copy(root, &id, &format!("key {key_id}"), "");
+        ok(root, &["close", &id, "--reason", "closed"], None);
+        // History predating the write boundary: the stored close reason and
+        // the close event's detail both carry the secret.
+        {
+            let mut store = SqliteStore::from_conn(
+                open_configured_connection(&root.join(".beads/beads.db")).unwrap(),
+            );
+            let reason = format!("closed; key was {key_id}");
+            let changed = store
+                .conn()
+                .execute(
+                    "UPDATE issues SET close_reason=?1 WHERE id=?2",
+                    rusqlite::params![reason, id],
+                )
+                .unwrap();
+            assert_eq!(changed, 1);
+            let detail = serde_json::json!({ "reason": reason }).to_string();
+            let changed = store
+                .conn()
+                .execute(
+                    "UPDATE events SET detail=?1 WHERE issue_id=?2 AND kind='closed'",
+                    rusqlite::params![detail, id],
+                )
+                .unwrap();
+            assert_eq!(changed, 1);
+            let base = root.join(".beads");
+            let config = bead_rs::service::load_checkpoint_config(&base).unwrap();
+            bead_rs::service::publish_forensic_checkpoint(&mut store, &config, &base).unwrap();
+        }
+        assert!(!bytes_present(root, &[&key_id]).is_empty());
+
+        let output = ok(
+            root,
+            &[
+                "redact",
+                "--all-blocking",
+                "--actor",
+                "tester",
+                "--reason",
+                "sweep",
+                "--json",
+            ],
+            None,
+        );
+        assert!(!output.contains(&key_id));
+        assert_eq!(
+            bytes_present(root, &[&key_id]),
+            Vec::<String>::new(),
+            "sharded={sharded}: no copy may remain"
+        );
+        let again = ok(
+            root,
+            &[
+                "redact",
+                "--all-blocking",
+                "--actor",
+                "tester",
+                "--reason",
+                "sweep",
+            ],
+            None,
+        );
+        assert!(again.contains("nothing to redact"), "{again}");
+    }
+}
+
+/// Identical secret text in beads that land in different issue shards gives
+/// retained-checkpoint findings whose `record:<n>` selectors collide (the
+/// index counts within one shard). The sweep must still redact every copy
+/// through the live findings instead of aborting on the ambiguous ones.
+#[test]
+fn all_blocking_sweeps_identical_secrets_across_shards() {
+    let dir = workspace();
+    let root = dir.path();
+    ok(root, &["sync", "configure", "--mode", "sharded"], None);
+    let key_id = ["AKIA", "Q7XZ3M", "PL9RTW4K2B"].concat();
+    for n in 0..8 {
+        let title = format!("dup {n}");
+        ok(root, &["create", "--title", &title], None);
+        let id = issue_id(root, &title);
+        historical_copy(root, &id, &format!("key {key_id}"), "");
+    }
+    let shards_with_copy = bytes_present(root, &[&key_id])
+        .iter()
+        .filter(|path| path.contains("/objects/"))
+        .count();
+    assert!(
+        shards_with_copy >= 2,
+        "fixture must spread the secret over several shards"
+    );
+
+    let output = ok(
+        root,
+        &[
+            "redact",
+            "--all-blocking",
+            "--actor",
+            "tester",
+            "--reason",
+            "sweep",
+            "--json",
+        ],
+        None,
+    );
+    assert!(!output.contains(&key_id));
+    assert_eq!(bytes_present(root, &[&key_id]), Vec::<String>::new());
+    let again = ok(
+        root,
+        &[
+            "redact",
+            "--all-blocking",
+            "--actor",
+            "tester",
+            "--reason",
+            "sweep",
+        ],
+        None,
+    );
+    assert!(again.contains("nothing to redact"), "{again}");
 }

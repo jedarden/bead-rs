@@ -392,10 +392,12 @@ pub struct AllBlockingSelection {
     /// bytes (a retained copy of a live finding, or a narrower overlapping
     /// match from another rule or scanner).
     pub covered: usize,
-    /// Retained-checkpoint findings without a live-row selector. The live
-    /// batch and its generation reset remove their copies; inventory after
-    /// publication decides whether any such finding remains.
-    pub deferred_retained: usize,
+    /// Retained-checkpoint findings that do not resolve to a live field
+    /// (for example an event's `detail.reason` as a checkpoint record carries
+    /// it). They are copies of live text: the batch's sanitized publication
+    /// rebuilds both generations from the cleaned live store, and the caller
+    /// re-inventories afterwards to prove none remains (beadrs-10b5d471).
+    pub deferred: usize,
 }
 
 /// Select every current confirmed blocking finding for one atomic batch.
@@ -429,17 +431,31 @@ pub fn select_all_blocking_holding(
             continue;
         }
         selection.considered += 1;
-        let Some(location) =
-            resolve_redaction_finding(store.conn(), locks.checkpoint_dir(), &finding.fingerprint)?
-        else {
-            if finding.selector.starts_with("checkpoint:") {
-                selection.deferred_retained += 1;
+        let retained = finding.selector.starts_with("checkpoint:");
+        let location = match resolve_redaction_finding(
+            store.conn(),
+            locks.checkpoint_dir(),
+            &finding.fingerprint,
+        ) {
+            Ok(Some(location)) => location,
+            // A retained-checkpoint finding may not map to one live field: an
+            // event's `detail.reason` record path, or a selector shared by
+            // identical text in two shards (`record:<n>` counts per shard,
+            // beadrs-10b5d471). Each such copy is also a live finding with a
+            // unique selector, so it is redacted through that one; the
+            // sanitized publication rebuilds both generations and the caller
+            // re-inventories to prove nothing remains.
+            Ok(None) | Err(_) if retained => {
+                selection.deferred += 1;
                 continue;
             }
-            return Err(RedactionError::Conflict(
-                "a blocking finding no longer resolves to live bytes; rerun after the workspace settles"
-                    .to_string(),
-            ));
+            Ok(None) => {
+                return Err(RedactionError::Conflict(
+                    "a live blocking finding no longer resolves to live bytes; rerun after the workspace settles"
+                        .to_string(),
+                ))
+            }
+            Err(error) => return Err(error),
         };
         located.push(location);
     }

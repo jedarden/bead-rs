@@ -448,10 +448,12 @@ fn cmd_redact(opts: cli::RedactOptions) -> Result<()> {
                     },
                 );
             }
-            if selection.deferred_retained != 0 {
+            if selection.deferred > 0 {
                 return Err(Error::conflict(format!(
-                    "{} blocking retained-checkpoint finding(s) could not be resolved and the workspace is not quarantined for sanitized publication",
-                    selection.deferred_retained
+                    "{} blocking finding(s) exist only in retained checkpoint generations and \
+                     resolve to no live field; nothing live to redact. Inspect them with \
+                     'bead doctor --scope secrets'",
+                    selection.deferred
                 )));
             }
             if opts.json {
@@ -545,7 +547,6 @@ fn cmd_redact(opts: cli::RedactOptions) -> Result<()> {
                 &outcomes[0].receipt,
             )?;
         }
-        verify_redaction_inventory(&mut store)?;
         let receipts = outcomes
             .iter()
             .map(|outcome| {
@@ -561,6 +562,9 @@ fn cmd_redact(opts: cli::RedactOptions) -> Result<()> {
             for receipt in &receipts {
                 print_redaction_receipt(receipt, false)?;
             }
+        }
+        if opts.all_blocking {
+            verify_redaction_inventory(&mut store)?;
         }
         return Ok(());
     }
