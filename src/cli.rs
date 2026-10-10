@@ -1759,6 +1759,15 @@ pub struct SyncImportOptions {
     #[arg(long, conflicts_with = "restore_into_empty")]
     pub merge: bool,
 
+    /// Reidentify a verified restored branch at this first divergent sequence;
+    /// only newly created source issues are admitted and local issues are preserved
+    #[arg(long, requires_all = ["merge", "source_generation"])]
+    pub reidentify_restored_branch_at: Option<i64>,
+
+    /// Exact immutable source generation for explicit restored-branch recovery
+    #[arg(long, requires = "reidentify_restored_branch_at")]
+    pub source_generation: Option<String>,
+
     /// Actor performing the import operation (required for restore/merge)
     #[arg(long)]
     pub actor: Option<String>,

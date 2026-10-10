@@ -2356,11 +2356,24 @@ fn check_uuid_divergence(store: &impl Store) -> Result<String> {
 
         let mismatched_events: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM events WHERE origin_store_uuid != ?1",
+                "SELECT COUNT(*) FROM events AS e WHERE origin_store_uuid != ?1
+                 AND NOT EXISTS (
+                     SELECT 1 FROM provenance_receipts AS r
+                     WHERE r.kind = 'merge'
+                       AND r.target_store_uuid = ?1 AND r.source_store_uuid = ?1
+                       AND r.receipt_id = 'restored-branch-' || r.source_root_sha256
+                       AND json_extract(r.extensions_json, '$.restored_branch_reconciliation.source_root_sha256') = r.source_root_sha256
+                       AND json_extract(r.extensions_json, '$.restored_branch_reconciliation.original_store_uuid') = ?1
+                       AND json_extract(r.extensions_json, '$.restored_branch_reconciliation.branch_origin') = e.origin_store_uuid
+                       AND e.origin_event_sequence BETWEEN 1 AND json_extract(r.extensions_json, '$.restored_branch_reconciliation.events_imported')
+                       AND json_extract(e.extensions_json, '$.restored_branch_origin.origin_store_uuid') = ?1
+                       AND json_extract(e.extensions_json, '$.restored_branch_origin.origin_event_sequence') =
+                           e.origin_event_sequence + json_extract(r.extensions_json, '$.restored_branch_reconciliation.first_original_sequence') - 1
+                 )",
                 params![current_uuid],
                 |row| row.get(0),
             )
-            .unwrap_or(0);
+            .map_err(|e| Error::Integrity(format!("Failed to verify event origin provenance: {e}")))?;
 
         if mismatched_events > 0 {
             return Err(Error::Integrity(format!(

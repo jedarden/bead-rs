@@ -87,6 +87,8 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub mod restored_branch;
+
 /// Opaque additive fields a newer writer attached to a checkpoint record.
 ///
 /// AGENTS.md requires unknown JSON fields to survive import/export round

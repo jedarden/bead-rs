@@ -2932,6 +2932,27 @@ fn cmd_sync_import_only(opts: cli::SyncImportOptions) -> Result<()> {
     // Create store wrapper
     let mut store = store::SqliteStore::from_conn(conn);
 
+    if let Some(branch_at) = opts.reidentify_restored_branch_at {
+        if opts.profile != "native-v1" {
+            return Err(Error::cli_usage(
+                "Restored branch recovery requires native-v1",
+            ));
+        }
+        let report = service::checkpoint::restored_branch::import_restored_branch(
+            &mut store,
+            &input_path,
+            opts.source_generation
+                .as_deref()
+                .ok_or_else(|| Error::cli_usage("--source-generation is required"))?,
+            branch_at,
+            &actor,
+            opts.dry_run,
+        )
+        .map_err(|error| Error::integrity(error.to_string()))?;
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+
     // Import checkpoint with forensic mode
     let result = service::import_forensic_checkpoint(
         &mut store,
