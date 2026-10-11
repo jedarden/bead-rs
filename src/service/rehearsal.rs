@@ -147,6 +147,17 @@ pub fn run_recovery_rehearsal() -> Result<RecoveryRehearsalReport> {
     eprintln!("📋 Original checkpoint: {}", checkpoint_dir.display());
 
     let original_checkpoint = get_checkpoint_info(&checkpoint_dir)?;
+    let checkpoint_store_uuid = fs::read_to_string(checkpoint_dir.join("current.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|pointer| {
+            pointer
+                .get("store_uuid")
+                .and_then(serde_json::Value::as_str)
+                .filter(|uuid| !uuid.is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| workspace_config.uuid.clone());
 
     // Step 3: stage a copy of the whole checkpoint directory -- import reads
     // from here, never from the live `.beads/checkpoint/` itself.
@@ -174,7 +185,11 @@ pub fn run_recovery_rehearsal() -> Result<RecoveryRehearsalReport> {
         .apply_migrations()
         .context("Failed to apply migrations to temporary workspace")?;
 
-    let rehearsal_uuid = uuid::Uuid::new_v4().to_string();
+    // The imported checkpoint adopts its authoritative store UUID. Write the
+    // same UUID into the temporary config so the new doctor identity check
+    // observes a coherent recovered workspace. A random temporary UUID here
+    // would manufacture a config/DB divergence during every rehearsal.
+    let rehearsal_uuid = checkpoint_store_uuid;
     let created_at = time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "unknown".to_string());

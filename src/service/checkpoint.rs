@@ -4057,7 +4057,14 @@ fn validate_forensic_events(staging: &ForensicStaging) -> Result<()> {
         if event.schema_ref != "urn:bead-rs:schema:event:native-v1" {
             bail!("Forensic event does not declare the native-v1 event schema");
         }
-        if event.origin_store_uuid.trim().is_empty() || event.origin_event_sequence <= 0 {
+        // Checkpoints published by the pre-identity repair path may carry an
+        // empty origin UUID.  The sequence still makes that pair a stable
+        // legacy identity; only a checkpoint with both an empty origin and an
+        // empty store UUID is unusable because it has no identity basis at
+        // all.
+        if (event.origin_store_uuid.trim().is_empty() && staging.store_uuid.trim().is_empty())
+            || event.origin_event_sequence <= 0
+        {
             bail!("Forensic event has an invalid origin identity");
         }
         if event.kind.trim().is_empty() || event.time.trim().is_empty() {
@@ -9829,14 +9836,12 @@ pub(crate) fn derive_wire_identity(
     next_local_origin_sequence: &mut i64,
     primary_key: i64,
 ) -> (String, i64) {
-    // An empty stored UUID is a legacy unset value, except in a store whose
-    // own workspace UUID is empty: canonicalization writes that empty UUID,
-    // and re-deriving it as unset would renumber every event on each call,
-    // so identities (and live secret selectors) would move under a batch.
-    match (
-        stored_uuid.filter(|uuid| !uuid.is_empty() || local_store_uuid.is_empty()),
-        stored_sequence,
-    ) {
+    // A stored origin plus a sequence is an explicit identity, including the
+    // legacy empty UUID published by affected workspaces.  Treating that
+    // pair as unset after the workspace adopts its config UUID would renumber
+    // every already-published event and move live selectors.  Only a missing
+    // sequence remains an unset legacy row.
+    match (stored_uuid, stored_sequence) {
         (Some(uuid), Some(origin_sequence)) => (uuid.to_string(), origin_sequence),
         (Some(uuid), None) if uuid != local_store_uuid => (uuid.to_string(), primary_key),
         _ => {

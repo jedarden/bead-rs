@@ -5,7 +5,7 @@
 
 use crate::error::{Error, Result};
 use crate::store::{open_configured_connection, Store};
-use rusqlite::params;
+use rusqlite::{params, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -861,6 +861,10 @@ pub fn run_diagnostics_with_scopes(
 pub fn run_repairs(store: &mut impl Store) -> Result<Vec<DiagnosticCheck>> {
     let mut repairs = Vec::new();
 
+    if let Some(repair) = repair_workspace_identity(store)? {
+        repairs.push(repair);
+    }
+
     // Check if there are orphaned temporary files that can be cleaned up
     let config = store.get_workspace_config()?;
     let beads_dir = config.root.join(".beads");
@@ -942,6 +946,19 @@ fn check_workspace_config(store: &impl Store) -> Result<String> {
     let receipts_dir = config.root.join(".beads/receipts");
     if !receipts_dir.exists() {
         return Err(Error::workspace("receipts directory not found".to_string()));
+    }
+
+    let configured_uuid = read_config_uuid(&config.root)?;
+    if config.uuid.is_empty() {
+        return Err(Error::integrity(format!(
+            "database workspace.uuid is empty; config.json records UUID={configured_uuid}. Run 'bead doctor --repair' to adopt the committed identity while preserving published event identities"
+        )));
+    }
+    if config.uuid != configured_uuid {
+        return Err(Error::integrity(format!(
+            "database workspace.uuid ({}) differs from config.json UUID ({configured_uuid}); do not continue until the workspace identity is reconciled",
+            config.uuid
+        )));
     }
 
     Ok(format!(
@@ -2310,6 +2327,19 @@ fn check_uuid_divergence(store: &impl Store) -> Result<String> {
     let conn = open_configured_connection(&db_path)
         .map_err(|e| Error::Integrity(format!("Failed to open database: {}", e)))?;
 
+    let configured_uuid = read_config_uuid(&config.root)?;
+    if config.uuid.is_empty() {
+        return Err(Error::integrity(format!(
+            "database workspace.uuid is empty while config.json records UUID={configured_uuid}"
+        )));
+    }
+    if config.uuid != configured_uuid {
+        return Err(Error::integrity(format!(
+            "database workspace.uuid ({}) differs from config.json UUID ({configured_uuid})",
+            config.uuid
+        )));
+    }
+
     // Check for fork receipts - if any exist, this workspace has already been forked
     let fork_receipt_count: i64 = conn
         .query_row(
@@ -2357,6 +2387,7 @@ fn check_uuid_divergence(store: &impl Store) -> Result<String> {
         let mismatched_events: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM events AS e WHERE origin_store_uuid != ?1
+                     AND origin_store_uuid != ''
                  AND NOT EXISTS (
                      SELECT 1 FROM provenance_receipts AS r
                      WHERE r.kind = 'merge'
@@ -2386,6 +2417,105 @@ fn check_uuid_divergence(store: &impl Store) -> Result<String> {
     }
 
     Ok("No UUID divergence detected".to_string())
+}
+
+/// Read the committed workspace identity. The config is the rebuild source of
+/// truth; the database copy is only valid when it agrees with this value.
+fn read_config_uuid(root: &Path) -> Result<String> {
+    let path = root.join(".beads/config.json");
+    let raw = std::fs::read_to_string(&path).map_err(|e| Error::Io {
+        path: path.clone(),
+        msg: e,
+    })?;
+    let document: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| Error::workspace(format!("Invalid .beads/config.json: {e}")))?;
+    let uuid = document
+        .get("uuid")
+        .and_then(serde_json::Value::as_str)
+        .filter(|uuid| !uuid.is_empty())
+        .ok_or_else(|| Error::integrity("config.json has no non-empty workspace UUID"))?;
+    Ok(uuid.to_string())
+}
+
+/// Adopt the committed identity for the only automatically repairable legacy
+/// state: an empty database UUID. If the current checkpoint already publishes
+/// the configured UUID, NULL-origin rows are left NULL so export derives the
+/// same identities. Otherwise rows are canonicalized while the empty UUID is
+/// still the derivation basis, preserving the legacy `":<sequence>"` form.
+///
+/// A non-empty database/config mismatch is deliberately not guessed at: it may
+/// represent a copied or forked history and needs an explicit reconciliation.
+pub fn repair_workspace_identity(store: &mut impl Store) -> Result<Option<DiagnosticCheck>> {
+    let config = store.get_workspace_config()?;
+    let configured_uuid = read_config_uuid(&config.root)?;
+    if config.uuid == configured_uuid {
+        return Ok(None);
+    }
+    if !config.uuid.is_empty() {
+        return Err(Error::integrity(format!(
+            "cannot automatically repair non-empty database/config UUID divergence (database {}, config {configured_uuid}); reconcile the history explicitly",
+            config.uuid
+        )));
+    }
+
+    let db_path = config.root.join(".beads/beads.db");
+    let conn = open_configured_connection(&db_path).map_err(|e| {
+        Error::Integrity(format!("Failed to open database for identity repair: {e}"))
+    })?;
+    let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)
+        .map_err(|e| Error::Integrity(format!("Failed to start identity repair: {e}")))?;
+
+    // If a checkpoint was already published under the configured UUID, its
+    // NULL-origin rows already derive to the published identities and must
+    // remain NULL. A genuinely legacy empty-origin checkpoint is frozen under
+    // the empty basis before the local UUID changes.
+    let checkpoint_uuid = published_checkpoint_uuid(&config.root)?;
+    if checkpoint_uuid.as_deref() != Some(configured_uuid.as_str()) {
+        crate::service::checkpoint::canonicalize_local_event_identities(&tx)
+            .map_err(|e| Error::Integrity(format!("Failed to preserve event identities: {e}")))?;
+    }
+    tx.execute(
+        "UPDATE workspace SET uuid = ?1 WHERE id = 1 AND uuid = ''",
+        [&configured_uuid],
+    )
+    .map_err(|e| Error::Integrity(format!("Failed to adopt config UUID: {e}")))?;
+    tx.execute(
+        "UPDATE checkpoint_state SET store_uuid = ?1 WHERE id = 1 AND (store_uuid = '' OR store_uuid IS NULL)",
+        [&configured_uuid],
+    )
+    .map_err(|e| Error::Integrity(format!("Failed to update checkpoint identity: {e}")))?;
+    tx.commit()
+        .map_err(|e| Error::Integrity(format!("Failed to commit identity repair: {e}")))?;
+
+    Ok(Some(DiagnosticCheck {
+        name: "workspace_uuid_repair".to_string(),
+        status: DiagnosticStatus::Ok,
+        message: format!(
+            "Adopted config.json UUID {configured_uuid}; preserved existing event identities"
+        ),
+        scope: Some("store".to_string()),
+        details: Some(serde_json::json!({
+            "old_uuid": "",
+            "new_uuid": configured_uuid,
+            "event_identities_preserved": true,
+            "published_checkpoint_uuid": checkpoint_uuid
+        })),
+    }))
+}
+
+fn published_checkpoint_uuid(root: &Path) -> Result<Option<String>> {
+    let path = root.join(".beads/checkpoint/current.json");
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(Error::Io { path, msg: error }),
+    };
+    let pointer: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| Error::integrity(format!("Invalid checkpoint pointer: {e}")))?;
+    Ok(pointer
+        .get("store_uuid")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string))
 }
 
 /// Detect cycles in the dependency graph over `blocks` edges.

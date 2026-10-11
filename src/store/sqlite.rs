@@ -388,6 +388,20 @@ impl Store for SqliteStore {
                         Error::workspace(format!("Failed to load workspace prefix: {}", e))
                     })?;
 
+                if uuid.is_empty() {
+                    return Err(Error::integrity(
+                        "Existing workspace has an empty database UUID; run 'bead doctor --repair' to adopt config.json without rewriting event identities",
+                    ));
+                }
+                if let Some((configured_uuid, _)) = Self::identity_from_config(&config_path) {
+                    if uuid != configured_uuid {
+                        return Err(Error::integrity(format!(
+                            "Existing workspace database UUID {} differs from config.json UUID {}; reconcile the workspace identity before init",
+                            uuid, configured_uuid
+                        )));
+                    }
+                }
+
                 return Ok(WorkspaceConfig {
                     root,
                     uuid,

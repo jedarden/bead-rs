@@ -956,6 +956,18 @@ fn cmd_init(opts: cli::InitOptions) -> Result<bool> {
                 } else {
                     eprintln!("Schema up to date (version {after})");
                 }
+
+                // Older migration-era stores could have an empty database
+                // UUID even though config.json already carried the committed
+                // identity. Do not leave that state in place merely because
+                // init was rerun: use the same audited, identity-preserving
+                // repair as doctor. Non-empty divergence remains a hard error.
+                let repairs = service::run_repairs(&mut store)?;
+                for repair in repairs {
+                    if repair.name == "workspace_uuid_repair" {
+                        eprintln!("FIXED {}: {}", repair.name, repair.message);
+                    }
+                }
             }
             return Ok(false);
         }
@@ -3472,7 +3484,8 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
     }
 
     if opts.repair {
-        // Run repairs - maintain narrow allowlist (temp files, structure dirs)
+        // Run repairs from the doctor's explicit allowlist, including the
+        // identity-preserving empty-UUID adoption.
         eprintln!("Attempting repairs...");
         let mut store_wrapper = store::SqliteStore::new();
 
@@ -3491,9 +3504,10 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
             }
         }
 
-        // Note: Repairs stay narrowly allowlisted and never rewrite user semantic data
+        // Note: Repairs stay narrowly allowlisted. Identity adoption freezes
+        // legacy event selectors before changing only the workspace UUID.
         eprintln!(
-            "Repairs completed. Only operation-owned temporary files are removed and missing workspace structure directories are recreated."
+            "Repairs completed. Only diagnosed identity/structure issues and operation-owned temporary files were changed."
         );
     } else {
         // Run diagnostics with specified scopes

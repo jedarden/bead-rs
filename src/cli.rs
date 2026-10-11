@@ -2156,6 +2156,8 @@ CHECKS PERFORMED:
   - Orphaned temporary files
 
 REPAIRS PERFORMED (with --repair):
+  - Adopt config.json's UUID when the database UUID is empty, preserving
+    already-published event identities
   - Remove proven-stale operation-owned temporary files
   - Recreate missing workspace structure directories (receipts)
   - Rebuild checkpoint views from authoritative database state
