@@ -484,10 +484,11 @@ pub fn select_all_blocking_holding(
             .unwrap_or(Ok(None))
         {
             Ok(Some(location)) => location,
-            // A retained-checkpoint finding may not map to one live field: an
-            // event's `detail.reason` record path, or a selector shared by
-            // identical text in two shards (`record:<n>` counts per shard,
-            // beadrs-10b5d471). Each such copy is also a live finding with a
+            // A retained-checkpoint finding may not map to one live field,
+            // for example an event's `detail.reason` record path. (Identical
+            // text in two shards used to collide into one fingerprint here
+            // too, until the retained selector grew the shard path,
+            // beadrs-4b5ee36b.) Each such copy is also a live finding with a
             // unique selector, so it is redacted through that one; the
             // sanitized publication rebuilds both generations and the caller
             // re-inventories to prove nothing remains.

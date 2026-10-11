@@ -350,7 +350,7 @@ pub fn scan_recovery_artifact(path: &Path) -> Result<ScanReport> {
         if !found_pointer {
             let forensic = path.join("forensic.jsonl");
             if forensic.is_file() {
-                scan_jsonl(&forensic, "recovery", &config, &mut reports)?;
+                scan_jsonl(&forensic, "recovery", None, &config, &mut reports)?;
             }
         }
     } else {
@@ -394,7 +394,7 @@ pub(crate) fn scan_retained_checkpoint_findings(
     if pointers == 0 {
         let forensic = checkpoint_dir.join("forensic.jsonl");
         match std::fs::symlink_metadata(&forensic) {
-            Ok(_) => scan_jsonl(&forensic, "retained", &config, &mut reports)?,
+            Ok(_) => scan_jsonl(&forensic, "retained", None, &config, &mut reports)?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
                 return Err(Error::Io {
@@ -579,11 +579,13 @@ pub(crate) fn find_live_findings(
 ///
 /// Checkpoint diagnostics deliberately fingerprint their physical selector
 /// and JSON field path (for example `checkpoint:current:record:7` and
-/// `record.issue.description`). Those fingerprints therefore differ from the
-/// live-row fingerprint for the same bytes. Historical redaction accepts the
-/// diagnostic handle by deriving the issue identity from that exact
-/// checkpoint record; the caller must still recompute the checkpoint
-/// fingerprint against the live field under its write transaction.
+/// `record.issue.description`; a shard record additionally carries its
+/// manifest path, `checkpoint:current:objects/issues-001.jsonl:record:7`).
+/// Those fingerprints therefore differ from the live-row fingerprint for the
+/// same bytes. Historical redaction accepts the diagnostic handle by deriving
+/// the issue identity from that exact checkpoint record; the caller must
+/// still recompute the checkpoint fingerprint against the live field under
+/// its write transaction.
 pub(crate) fn find_retained_checkpoint_finding(
     checkpoint_dir: &Path,
     fingerprint: &str,
@@ -610,10 +612,11 @@ pub(crate) fn find_retained_checkpoint_findings(
         if !pointer_path.is_file() {
             continue;
         }
-        for path in checkpoint_issue_paths(&pointer_path)? {
+        for file in checkpoint_issue_paths(&pointer_path)? {
             find_checkpoint_issues_in_jsonl(
-                &path,
+                &file.path,
                 generation,
+                file.shard.as_deref(),
                 fingerprints,
                 &config,
                 &mut resolved,
@@ -623,7 +626,30 @@ pub(crate) fn find_retained_checkpoint_findings(
     Ok(resolved)
 }
 
-fn checkpoint_issue_paths(pointer_path: &Path) -> Result<Vec<PathBuf>> {
+/// One checkpoint file a retained lookup must scan, paired with the selector
+/// fragment that distinguishes its records from every other file in the same
+/// generation. Monolithic roots keep the historical
+/// `checkpoint:<generation>:record:<n>` selector; a shard contributes its
+/// manifest path so identical text at the same record index in two shards
+/// yields distinct fingerprints and `redact --finding` stays exact
+/// (beadrs-4b5ee36b).
+struct CheckpointFile {
+    path: PathBuf,
+    shard: Option<String>,
+}
+
+/// The physical selector for one checkpoint record. Both the diagnostic scan
+/// (`scan_jsonl`) and the retained lookup (`find_checkpoint_issues_in_jsonl`)
+/// must build it through this one helper: the lookup resolves fingerprints
+/// that doctor printed from the scan, so the two sides may never drift.
+fn checkpoint_record_selector(generation: &str, shard: Option<&str>, line_index: usize) -> String {
+    match shard {
+        Some(shard) => format!("checkpoint:{generation}:{shard}:record:{}", line_index + 1),
+        None => format!("checkpoint:{generation}:record:{}", line_index + 1),
+    }
+}
+
+fn checkpoint_issue_paths(pointer_path: &Path) -> Result<Vec<CheckpointFile>> {
     let pointer = read_json(pointer_path, "checkpoint pointer")?;
     let mode = pointer
         .get("mode")
@@ -645,7 +671,10 @@ fn checkpoint_issue_paths(pointer_path: &Path) -> Result<Vec<PathBuf>> {
         return Ok(Vec::new());
     }
     match mode {
-        "monolithic" => Ok(vec![root_path]),
+        "monolithic" => Ok(vec![CheckpointFile {
+            path: root_path,
+            shard: None,
+        }]),
         "sharded" => {
             let manifest = read_json(&root_path, "checkpoint shard manifest")?;
             manifest
@@ -658,7 +687,10 @@ fn checkpoint_issue_paths(pointer_path: &Path) -> Result<Vec<PathBuf>> {
                         .get("path")
                         .and_then(Value::as_str)
                         .ok_or_else(|| Error::integrity("checkpoint manifest shard has no path"))?;
-                    confined_path(checkpoint_dir, path)
+                    Ok(CheckpointFile {
+                        path: confined_path(checkpoint_dir, path)?,
+                        shard: Some(path.to_string()),
+                    })
                 })
                 .collect()
         }
@@ -694,6 +726,7 @@ fn previous_root_was_tombstoned(pointer_path: &Path, root_path: &Path) -> Result
 fn find_checkpoint_issues_in_jsonl(
     path: &Path,
     generation: &str,
+    shard: Option<&str>,
     fingerprints: &BTreeSet<String>,
     config: &ScanConfig,
     resolved: &mut BTreeMap<String, Resolved>,
@@ -719,7 +752,7 @@ fn find_checkpoint_issues_in_jsonl(
         if record.get("record_type").and_then(Value::as_str) != Some("issue") {
             continue;
         }
-        let selector = format!("checkpoint:{generation}:record:{}", line_index + 1);
+        let selector = checkpoint_record_selector(generation, shard, line_index);
         let mut reports = Vec::new();
         scan_json_value(config, &selector, "record", &record, &mut reports);
         for finding in ScanReport::merge(reports)
@@ -1031,7 +1064,7 @@ fn scan_pointer(
         }
     }
     match mode {
-        "monolithic" => scan_jsonl(&root_path, generation, config, reports),
+        "monolithic" => scan_jsonl(&root_path, generation, None, config, reports),
         "sharded" => scan_shard_manifest(&root_path, checkpoint_dir, generation, config, reports),
         _ => Err(Error::integrity("checkpoint pointer has unsupported mode")),
     }?;
@@ -1062,6 +1095,7 @@ fn scan_shard_manifest(
                 scan_jsonl(
                     &confined_path(checkpoint_dir, path)?,
                     generation,
+                    Some(path),
                     config,
                     reports,
                 )?;
@@ -1078,7 +1112,7 @@ fn scan_artifact_file(
     reports: &mut Vec<ScanReport>,
 ) -> Result<()> {
     if path.extension().and_then(|extension| extension.to_str()) == Some("jsonl") {
-        return scan_jsonl(path, generation, config, reports);
+        return scan_jsonl(path, generation, None, config, reports);
     }
     let document = read_json(path, "recovery artifact")?;
     if document.get("active_root").is_some() {
@@ -1126,6 +1160,7 @@ fn confined_path(base: &Path, relative: &str) -> Result<PathBuf> {
 fn scan_jsonl(
     path: &Path,
     generation: &str,
+    shard: Option<&str>,
     config: &ScanConfig,
     reports: &mut Vec<ScanReport>,
 ) -> Result<()> {
@@ -1149,7 +1184,7 @@ fn scan_jsonl(
         })?;
         scan_json_value(
             config,
-            &format!("checkpoint:{generation}:record:{}", line_index + 1),
+            &checkpoint_record_selector(generation, shard, line_index),
             "record",
             &record,
             reports,
@@ -1543,5 +1578,158 @@ mod tests {
 
         let result = find_retained_checkpoint_finding(checkpoint, &"0".repeat(64)).unwrap();
         assert!(result.is_none());
+    }
+
+    fn fixture_access_key() -> String {
+        [["AK", "IA"].concat(), "7M4Q9Z2N8C5R3T6V".to_string()].concat()
+    }
+
+    fn issue_record_line(id: &str, description: &str) -> String {
+        serde_json::to_string(&serde_json::json!({
+            "record_type": "issue",
+            "issue": {"id": id, "description": description}
+        }))
+        .unwrap()
+    }
+
+    fn scan_checkpoint_generation(checkpoint: &Path, generation: &str) -> ScanReport {
+        let mut reports = Vec::new();
+        scan_pointer(
+            &checkpoint.join(format!("{generation}.json")),
+            generation,
+            &ScanConfig::new(Mode::Advisory),
+            &mut reports,
+        )
+        .unwrap();
+        ScanReport::merge(reports)
+    }
+
+    #[test]
+    fn identical_text_in_two_shards_yields_distinct_resolvable_findings() {
+        let directory = tempfile::tempdir().unwrap();
+        let checkpoint = directory.path();
+        let secret = fixture_access_key();
+        std::fs::create_dir_all(checkpoint.join("manifests")).unwrap();
+        std::fs::create_dir_all(checkpoint.join("objects")).unwrap();
+        std::fs::write(
+            checkpoint.join("current.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "mode": "sharded",
+                "active_root": {"path": "manifests/current.json"}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            checkpoint.join("manifests/current.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "issue_shards": [
+                    {"path": "objects/issues-000.jsonl"},
+                    {"path": "objects/issues-001.jsonl"}
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        for (shard, id) in [
+            ("objects/issues-000.jsonl", "issue-shard-one"),
+            ("objects/issues-001.jsonl", "issue-shard-two"),
+        ] {
+            std::fs::write(
+                checkpoint.join(shard),
+                format!("{}\n", issue_record_line(id, &secret)),
+            )
+            .unwrap();
+        }
+
+        // The diagnostic scan reports one finding per shard with distinct,
+        // shard-qualified selectors — the same record index in two shards
+        // must never share one fingerprint.
+        let report = scan_checkpoint_generation(checkpoint, "current");
+        let findings: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|finding| {
+                finding.rule_id == "aws-access-key-id"
+                    && finding.field_path == "record.issue.description"
+            })
+            .collect();
+        assert_eq!(findings.len(), 2);
+        assert_ne!(findings[0].fingerprint, findings[1].fingerprint);
+        assert!(findings
+            .iter()
+            .any(|finding| finding.selector
+                == "checkpoint:current:objects/issues-000.jsonl:record:1"));
+        assert!(findings
+            .iter()
+            .any(|finding| finding.selector
+                == "checkpoint:current:objects/issues-001.jsonl:record:1"));
+
+        // Each fingerprint resolves to exactly one checkpoint record — the
+        // one in its own shard — instead of the previous ambiguity error.
+        let mut resolved_issues = Vec::new();
+        for finding in &findings {
+            let location =
+                find_retained_checkpoint_finding(checkpoint, &finding.fingerprint).unwrap();
+            let location = location
+                .unwrap_or_else(|| panic!("fingerprint did not resolve: {}", finding.selector));
+            let rusqlite::types::Value::Text(issue_id) = &location.identity_values[0] else {
+                panic!("issue identity was not text");
+            };
+            resolved_issues.push(issue_id.clone());
+        }
+        resolved_issues.sort();
+        assert_eq!(resolved_issues, ["issue-shard-one", "issue-shard-two"]);
+
+        // The batch resolver behind `redact --all-blocking` resolves both in
+        // one pass without an ambiguity error.
+        let fingerprints: BTreeSet<String> = findings
+            .iter()
+            .map(|finding| finding.fingerprint.clone())
+            .collect();
+        assert_eq!(
+            find_retained_checkpoint_findings(checkpoint, &fingerprints)
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn monolithic_retained_selectors_keep_the_record_only_shape() {
+        let directory = tempfile::tempdir().unwrap();
+        let checkpoint = directory.path();
+        let secret = fixture_access_key();
+        std::fs::create_dir_all(checkpoint.join("objects")).unwrap();
+        std::fs::write(
+            checkpoint.join("current.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "mode": "monolithic",
+                "active_root": {"path": "objects/current.jsonl"}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            checkpoint.join("objects/current.jsonl"),
+            format!("{}\n", issue_record_line("issue-monolithic", &secret)),
+        )
+        .unwrap();
+
+        let report = scan_checkpoint_generation(checkpoint, "current");
+        let finding = report
+            .findings
+            .iter()
+            .find(|finding| finding.field_path == "record.issue.description")
+            .unwrap();
+        assert_eq!(finding.selector, "checkpoint:current:record:1");
+
+        let location = find_retained_checkpoint_finding(checkpoint, &finding.fingerprint)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            location.identity_values,
+            vec![rusqlite::types::Value::Text("issue-monolithic".to_string())]
+        );
     }
 }
