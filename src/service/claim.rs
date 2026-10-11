@@ -136,10 +136,6 @@ pub enum ReasonCode {
     /// despite not being an active claim (a claim sets in_progress)
     OpenIssueHeldByAssignee,
 
-    /// Open issue is intentionally held under its current assignee
-    /// and should not be warned about (operator-declared state)
-    IntentionallyHeldAssignment,
-
     /// A ready issue needs a key currently held by another in-progress issue
     /// in this workspace.
     ResourceConflict,

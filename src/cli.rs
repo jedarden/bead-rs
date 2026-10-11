@@ -2175,9 +2175,8 @@ RECOVERY REHEARSAL (with --rehearse):
 STARVATION RECOVERY (with --starvation-recovery):
   - Run SQLite integrity checks on beads.db
   - Verify checkpoint/current.json matches database state
-  - Identify and fix beads with inconsistent status (e.g., assigned-but-open)
+  - Identify assigned open beads and recommend an explicit clear-assignee command
   - Reset stale_since timestamps on beads that appear stuck
-  - Clear stale assignees from open beads
   - Release stale in-progress claims
   - Log all repairs to .beads/doctor-recovery.log for audit
 

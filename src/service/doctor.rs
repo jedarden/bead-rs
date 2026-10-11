@@ -460,54 +460,37 @@ pub fn run_diagnostics_with_scopes(
         match check_ready_frontier(store) {
             Ok(report) => {
                 if report.has_held_issues {
-                    // Determine if we have any potentially abandoned assignments
-                    let has_abandoned = !report.held_ids.is_empty();
-                    let has_intentional = !report.intentionally_held_ids.is_empty();
-
-                    // Build message based on what we found
-                    let message = if has_abandoned && has_intentional {
-                        format!(
-                            "{} open issue(s) are assigned and excluded from the ready frontier ({} intentionally held). Potentially abandoned: {}. An assigned open issue is not an active claim (a claim sets in_progress).",
-                            report.held_count + report.intentionally_held_ids.len(),
-                            report.intentionally_held_ids.len(),
-                            report.held_ids.iter().take(5).cloned().collect::<Vec<_>>().join(", ")
-                        )
-                    } else if has_abandoned {
-                        format!(
-                            "{} open issue(s) are assigned and excluded from the ready frontier: {}. An assigned open issue is not an active claim (a claim sets in_progress).",
-                            report.held_count,
-                            report.held_ids.iter().take(5).cloned().collect::<Vec<_>>().join(", ")
-                        )
-                    } else {
-                        format!(
-                            "{} open issue(s) are intentionally held and excluded from the ready frontier. Mark issues with 'intentionally-held' or 'parked' labels to suppress this warning.",
-                            report.intentionally_held_ids.len()
-                        )
-                    };
+                    let message = format!(
+                        "{} open issue(s) are assigned and excluded from the ready frontier: {}. An assigned open issue is not an active claim (a claim sets in_progress).",
+                        report.held_count,
+                        report.held_ids.iter().take(5).cloned().collect::<Vec<_>>().join(", ")
+                    );
+                    let held_issues = report
+                        .held_ids
+                        .iter()
+                        .map(|id| {
+                            serde_json::json!({
+                                "id": id,
+                                "remedy": format!("bead update {id} --clear-assignee")
+                            })
+                        })
+                        .collect::<Vec<_>>();
 
                     checks.push(DiagnosticCheck {
                         name: "ready_frontier".to_string(),
-                        status: if has_abandoned {
-                            DiagnosticStatus::Warning
-                        } else {
-                            DiagnosticStatus::Ok
-                        },
+                        status: DiagnosticStatus::Warning,
                         message,
                         scope: Some("dependencies".to_string()),
                         details: Some(serde_json::json!({
                             "held_count": report.held_count,
                             "held_ids": report.held_ids,
-                            "intentionally_held_count": report.intentionally_held_ids.len(),
-                            "intentionally_held_ids": report.intentionally_held_ids,
+                            "held_issues": held_issues,
                             "reason_codes": report.reason_codes,
                             "remedy": report.remedy,
-                            "explanation": "Open issues with assignees are excluded from the ready frontier. Use the 'intentionally-held' or 'parked' labels to mark deliberate reservations."
+                            "explanation": "Open issues with assignees are excluded from the ready frontier. Only the operator can decide whether to clear an assignment."
                         })),
                     });
-
-                    if has_abandoned {
-                        has_warnings = true;
-                    }
+                    has_warnings = true;
                 } else {
                     checks.push(DiagnosticCheck {
                         name: "ready_frontier".to_string(),
@@ -518,8 +501,7 @@ pub fn run_diagnostics_with_scopes(
                         details: Some(serde_json::json!({
                             "held_count": 0,
                             "held_ids": [],
-                            "intentionally_held_count": 0,
-                            "intentionally_held_ids": [],
+                            "held_issues": [],
                             "reason_codes": []
                         })),
                     });
@@ -2136,10 +2118,8 @@ fn check_runtime_dir_ignore_coverage(store: &impl Store) -> Result<String> {
 /// whether a given assignment is still meaningful. The remedy is
 /// `bead update <id> --clear-assignee`.
 ///
-/// R035: This check emits R001 semantic reason codes rather than prose and
-/// provides a machine-readable list of held IDs. Future work may add a way to
-/// declare intentionally-held assignments so the warning remains meaningful in
-/// workspaces that park work on purpose.
+/// R035: This check emits the shared R001 reason code, a complete list of held
+/// IDs, and a concrete remedy for each ID. It does not infer operator intent.
 fn check_ready_frontier(store: &impl Store) -> Result<ReadyFrontierReport> {
     let config = store.get_workspace_config()?;
     let db_path = config.root.join(".beads/beads.db");
@@ -2147,29 +2127,22 @@ fn check_ready_frontier(store: &impl Store) -> Result<ReadyFrontierReport> {
     let conn = open_configured_connection(&db_path)
         .map_err(|e| Error::Integrity(format!("Failed to open database: {}", e)))?;
 
-    // Query for open issues with assignees, including their labels
+    // Query every open issue with an assignee, regardless of labels.
     let mut stmt = conn
         .prepare(
-            "SELECT i.id, GROUP_CONCAT(l.label, ',') as labels
-             FROM issues i
-             LEFT JOIN labels l ON i.id = l.issue_id
-             WHERE i.base_status = 'open'
-               AND i.assignee IS NOT NULL
-               AND TRIM(i.assignee) != ''
-             GROUP BY i.id
-             ORDER BY i.id",
+            "SELECT id FROM issues
+             WHERE base_status = 'open'
+               AND assignee IS NOT NULL
+               AND TRIM(assignee) != ''
+             ORDER BY id",
         )
         .map_err(|e| Error::Integrity(format!("Failed to prepare statement: {}", e)))?;
 
-    let held_result: Vec<(String, Option<String>)> = stmt
-        .query_map([], |row| {
-            let id: String = row.get(0)?;
-            let labels: Option<String> = row.get(1)?;
-            Ok((id, labels))
-        })
+    let held_ids: Vec<String> = stmt
+        .query_map([], |row| row.get(0))
         .map_err(|e| Error::Integrity(format!("Failed to query issues: {}", e)))?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|e| Error::Integrity(format!("Failed to read issues: {}", e)))?;
 
     // Query for manually blocked open issues
     let mut blocked_stmt = conn
@@ -2190,12 +2163,11 @@ fn check_ready_frontier(store: &impl Store) -> Result<ReadyFrontierReport> {
     let manual_blocked_ids = manual_blocked_result.clone();
     let manual_blocked_count = manual_blocked_ids.len();
 
-    if held_result.is_empty() && manual_blocked_ids.is_empty() {
+    if held_ids.is_empty() && manual_blocked_ids.is_empty() {
         return Ok(ReadyFrontierReport {
             has_held_issues: false,
             held_count: 0,
             held_ids: vec![],
-            intentionally_held_ids: vec![],
             reason_codes: vec![],
             remedy: None,
             manual_blocked_count: 0,
@@ -2203,62 +2175,36 @@ fn check_ready_frontier(store: &impl Store) -> Result<ReadyFrontierReport> {
         });
     }
 
-    // Separate intentionally-held assignments from potentially abandoned ones
-    // Convention: labels 'intentionally-held' or 'parked' mark deliberate reservations
-    let intentionally_held_label = "intentionally-held";
-    let parked_label = "parked";
-
-    let mut held_ids = Vec::new();
-    let mut intentionally_held_ids = Vec::new();
-    let mut reason_codes = Vec::new();
-
-    for (id, labels) in held_result {
-        let labels_str = labels.as_deref().unwrap_or("");
-        let is_intentionally_held =
-            labels_str.contains(intentionally_held_label) || labels_str.contains(parked_label);
-
-        if is_intentionally_held {
-            intentionally_held_ids.push(id.clone());
-        } else {
-            held_ids.push(id.clone());
-        }
-    }
-
-    // Build reason codes based on what we found
-    if !held_ids.is_empty() {
-        reason_codes.push(crate::service::claim::ReasonCode::OpenIssueHeldByAssignee);
-    }
-    if !intentionally_held_ids.is_empty() {
-        reason_codes.push(crate::service::claim::ReasonCode::IntentionallyHeldAssignment);
-    }
-
-    Ok(ReadyFrontierReport::from_reason_codes(
+    let held_count = held_ids.len();
+    Ok(ReadyFrontierReport {
+        has_held_issues: held_count > 0,
+        held_count,
         held_ids,
-        intentionally_held_ids,
-        reason_codes,
-        manual_blocked_ids,
+        reason_codes: if held_count > 0 {
+            vec![crate::service::claim::ReasonCode::OpenIssueHeldByAssignee.code_string()]
+        } else {
+            vec![]
+        },
+        remedy: (held_count > 0).then(|| "bead update <id> --clear-assignee".to_string()),
         manual_blocked_count,
-    ))
+        manual_blocked_ids,
+    })
 }
 
 /// Structured report for ready frontier check (R035)
 ///
-/// This provides machine-readable output with R001 reason codes and complete
-/// lists of held IDs, not embedded in prose. It distinguishes between
-/// potentially abandoned assignments and intentionally-held work.
+/// This provides machine-readable output with an R001 reason code and complete
+/// lists of held IDs, without guessing whether an assignment is intentional.
 #[derive(Debug, Clone)]
 pub struct ReadyFrontierReport {
-    /// Whether any open issues are held by assignees (either category)
+    /// Whether any open issues are held by assignees
     pub has_held_issues: bool,
 
-    /// Count of potentially abandoned held issues (excluding intentionally-held)
+    /// Count of held issues
     pub held_count: usize,
 
-    /// Potentially abandoned held issue IDs (machine-readable)
+    /// Held issue IDs (machine-readable)
     pub held_ids: Vec<String>,
-
-    /// Intentionally-held issue IDs (marked with 'intentionally-held' or 'parked' labels)
-    pub intentionally_held_ids: Vec<String>,
 
     /// R001 semantic reason codes explaining the conditions (as strings for JSON)
     pub reason_codes: Vec<String>,
@@ -2271,31 +2217,6 @@ pub struct ReadyFrontierReport {
 
     /// Manually blocked open issue IDs
     pub manual_blocked_ids: Vec<String>,
-}
-
-impl ReadyFrontierReport {
-    /// Create a new report from ReasonCode enums
-    pub fn from_reason_codes(
-        held_ids: Vec<String>,
-        intentionally_held_ids: Vec<String>,
-        reason_codes: Vec<crate::service::claim::ReasonCode>,
-        manual_blocked_ids: Vec<String>,
-        manual_blocked_count: usize,
-    ) -> Self {
-        let reason_code_strings: Vec<String> =
-            reason_codes.iter().map(|rc| rc.code_string()).collect();
-
-        Self {
-            has_held_issues: !held_ids.is_empty() || !intentionally_held_ids.is_empty(),
-            held_count: held_ids.len(),
-            held_ids,
-            intentionally_held_ids,
-            reason_codes: reason_code_strings,
-            remedy: Some("bead update <id> --clear-assignee".to_string()),
-            manual_blocked_count,
-            manual_blocked_ids,
-        }
-    }
 }
 
 /// Calculate SHA-256 hash of a file
@@ -2838,7 +2759,7 @@ pub struct RepairRecord {
 /// This function performs the following repairs when `force` is true:
 /// 1. Runs SQLite integrity checks on beads.db
 /// 2. Verifies checkpoint/current.json matches database state
-/// 3. Identifies and fixes beads with inconsistent status (e.g., assigned-but-open)
+/// 3. Identifies assigned-but-open beads and recommends an explicit remedy
 /// 4. Resets stale_since timestamps on beads that appear stuck
 /// 5. Logs all repairs to .beads/doctor-recovery.log for audit
 ///
@@ -2963,7 +2884,7 @@ pub fn run_starvation_recovery(
         // This will be handled by the sync flush after repairs
     }
 
-    // 3. Identify and fix assigned-but-open beads (known starvation cause)
+    // 3. Diagnose assigned-but-open beads without changing assignments.
     writeln!(log_file, "[3/5] Identifying assigned-but-open beads...").map_err(|e| Error::Io {
         path: log_path.clone(),
         msg: e,
@@ -3008,93 +2929,37 @@ pub fn run_starvation_recovery(
             .map(|(id, _, _)| id.clone())
             .collect();
 
-        if force {
-            // Clear assignees for these beads using proper lifecycle service
-            for (id, title, assignee) in &assigned_open_beads {
-                match crate::service::lifecycle::update_issue_with_override(
-                    &conn,
-                    id,
-                    None,
-                    None,
-                    true,
-                    None,
-                    None,
-                    None,
-                    // doctor --repair is an explicit operator recovery: it
-                    // holds no claim-epoch credential, so the clear rides the
-                    // audited override path instead of bypassing the fence.
-                    Some("doctor --repair: cleared assignee on assigned open bead"),
-                ) {
-                    Ok(_) => {
-                        writeln!(
-                            log_file,
-                            "  ✓ Cleared assignee '{}' from bead {} (title: {})",
-                            assignee, id, title
-                        )
-                        .map_err(|e| Error::Io {
-                            path: log_path.clone(),
-                            msg: e,
-                        })?;
-                    }
-                    Err(e) => {
-                        writeln!(
-                            log_file,
-                            "  ✗ Failed to clear assignee for {} (title: {}): {}",
-                            id, title, e
-                        )
-                        .map_err(|e| Error::Io {
-                            path: log_path.clone(),
-                            msg: e,
-                        })?;
-                    }
-                }
-            }
-
-            repairs_performed.push(RepairRecord {
-                repair_type: "clear_stale_assignees".to_string(),
-                description: format!("Cleared stale assignees from {} assigned-but-open beads using lifecycle service", assigned_open_beads.len()),
-                affected_beads: affected_beads.clone(),
-                timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            });
-        } else {
-            // Recommendation-only mode
+        // Even forced recovery cannot decide whether the assignment is intentional.
+        writeln!(
+            log_file,
+            "  [RECOMMENDATION] Review {} assigned-but-open beads:",
+            assigned_open_beads.len()
+        )
+        .map_err(|e| Error::Io {
+            path: log_path.clone(),
+            msg: e,
+        })?;
+        for (id, title, assignee) in &assigned_open_beads {
             writeln!(
                 log_file,
-                "  [RECOMMENDATION] Would clear assignees from {} assigned-but-open beads:",
-                assigned_open_beads.len()
+                "    - bead {} (title: {}, assignee: {}); remedy: bead update {} --clear-assignee",
+                id, title, assignee, id
             )
             .map_err(|e| Error::Io {
                 path: log_path.clone(),
                 msg: e,
             })?;
-            for (id, title, assignee) in &assigned_open_beads {
-                writeln!(
-                    log_file,
-                    "    - bead {} (title: {}, assignee: {})",
-                    id, title, assignee
-                )
-                .map_err(|e| Error::Io {
-                    path: log_path.clone(),
-                    msg: e,
-                })?;
-            }
-            writeln!(log_file, "    Remedy: bead update <id> --clear-assignee").map_err(|e| {
-                Error::Io {
-                    path: log_path.clone(),
-                    msg: e,
-                }
-            })?;
-
-            repairs_performed.push(RepairRecord {
-                repair_type: "recommend_clear_stale_assignees".to_string(),
-                description: format!(
-                    "Recommendation: clear stale assignees from {} assigned-but-open beads",
-                    assigned_open_beads.len()
-                ),
-                affected_beads: affected_beads.clone(),
-                timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            });
         }
+
+        repairs_performed.push(RepairRecord {
+            repair_type: "recommend_clear_stale_assignees".to_string(),
+            description: format!(
+                "Recommendation: review assignments on {} assigned-but-open beads",
+                assigned_open_beads.len()
+            ),
+            affected_beads,
+            timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        });
     } else {
         writeln!(log_file, "  ✓ No assigned-but-open beads found").map_err(|e| Error::Io {
             path: log_path.clone(),

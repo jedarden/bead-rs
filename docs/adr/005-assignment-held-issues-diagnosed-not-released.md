@@ -108,14 +108,11 @@ into the dependencies scope as a warning, with
 `test_doctor_reports_open_issue_held_by_assignee` covering healthy → warning →
 cleared.
 
-Outstanding follow-up, deliberately not in the initial commit:
-
-1. Emit R001 semantic reason codes rather than prose. R034 requires that stale
-   detection "share reason codes with R001/R019 rather than inventing parallel
-   semantics"; this check must meet the same bar, and today it does not.
-2. Decide whether an intentionally-held assignment can be declared, so the
-   warning stays meaningful in workspaces that park work on purpose.
-3. Machine-readable output: the ids are currently prose inside the message.
+R035 now includes the shared `open_issue_held_by_assignee` reason code, a
+complete `held_ids` list, and a concrete `bead update ID --clear-assignee`
+remedy for every held issue in JSON details. Label names do not suppress the
+warning. Whether an intentionally-held assignment can be declared remains a
+separate decision.
 
 Tracked as post-0.1 roadmap item **R035**.
 

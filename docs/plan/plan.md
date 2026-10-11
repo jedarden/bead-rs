@@ -3591,9 +3591,10 @@ assignee, because a parked reservation and abandoned residue are
 indistinguishable at the schema level and only the operator knows which is
 which. This is R034's sibling for the `open` lifecycle state; the two must
 converge on shared R001 reason codes rather than each carrying prose. The
-initial check shipped ahead of that convergence and currently emits prose, so
-reason codes, a machine-readable id list, and any means of declaring an
-intentionally-held assignment remain outstanding. Accepted in ADR-005; field
+initial check shipped ahead of that convergence. R035 now emits the shared
+reason code, complete machine-readable id list, and per-issue remedy; a means
+of declaring an intentionally-held assignment remains a separate decision.
+Accepted in ADR-005; field
 evidence 2026-08-16 found 583 such beads across 47 workspaces, ten of them with
 an entirely empty ready frontier while workers starved and every diagnostic
 reported clean.

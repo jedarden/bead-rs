@@ -1,9 +1,8 @@
 //! R035 conformance: assignment-held readiness diagnosis.
 //!
 //! This test suite validates that doctor correctly diagnoses open issues
-//! held off the ready frontier by assignment, distinguishes intentionally-held
-//! work from potentially abandoned assignments, and provides R001 semantic
-//! reason codes with machine-readable output.
+//! held off the ready frontier by assignment regardless of labels, and
+//! provides R001 semantic reason codes with machine-readable output.
 
 use assert_cmd::Command;
 use serde_json::Value;
@@ -111,9 +110,10 @@ fn r035_conformance_healthy_to_warning_to_cleared() {
 
     // Verify remedy is provided
     let remedy = frontier_check["details"]["remedy"].as_str().unwrap();
-    assert!(
-        remedy.contains("--clear-assignee"),
-        "Remedy should mention --clear-assignee"
+    assert_eq!(remedy, "bead update <id> --clear-assignee");
+    assert_eq!(
+        frontier_check["details"]["held_issues"][0]["remedy"],
+        format!("bead update {id} --clear-assignee")
     );
 
     // Verify doctor has warnings in overall status
@@ -157,212 +157,34 @@ fn r035_conformance_healthy_to_warning_to_cleared() {
 
 #[test]
 #[serial]
-fn r035_intentionally_held_assignment_mechanism() {
+fn r035_labels_do_not_suppress_assignment_diagnosis() {
     let temp = TempDir::new().unwrap();
     let workspace = temp.path();
+    run(workspace, &["init", "--prefix", "r035-labels"]);
 
-    run(workspace, &["init", "--prefix", "r035-intentional"]);
-
-    // Create an issue and assign it
-    let id = create_issue(workspace, "Intentionally held work");
-    run(workspace, &["update", &id, "--assignee", "lead-developer"]);
-
-    // Mark it as intentionally held using the label convention
-    run(
-        workspace,
-        &["label", "add", &id, "--label", "intentionally-held"],
-    );
-
-    // Verify doctor treats it differently (OK status, not warning)
-    let output = run(workspace, &["doctor", "--json"]);
-    let doctor_json: Value = serde_json::from_slice(&output.stdout).unwrap();
-    let checks = doctor_json["checks"].as_array().unwrap();
-
-    let frontier_check = checks
-        .iter()
-        .find(|c| c["name"] == "ready_frontier")
-        .expect("ready_frontier check should be present");
-
-    assert_eq!(
-        frontier_check["status"], "ok",
-        "Intentionally-held assignment should not trigger warning"
-    );
-
-    // Verify it's reported in the intentionally_held_ids field
-    let intentionally_held_ids = frontier_check["details"]["intentionally_held_ids"]
-        .as_array()
-        .unwrap();
-    assert_eq!(
-        intentionally_held_ids.len(),
-        1,
-        "Should report one intentionally-held issue"
-    );
-    assert_eq!(
-        intentionally_held_ids[0].as_str().unwrap(),
-        id,
-        "intentionally_held_ids should contain the marked issue"
-    );
-
-    // Verify the intentionally_held reason code is present
-    let reason_codes = frontier_check["details"]["reason_codes"]
-        .as_array()
-        .unwrap();
-    assert!(
-        reason_codes
-            .iter()
-            .any(|rc| rc.as_str() == Some("intentionally_held_assignment")),
-        "Should include intentionally_held_assignment reason code"
-    );
-
-    // Verify held_ids is empty (separate from intentionally_held_ids)
-    let held_ids = frontier_check["details"]["held_ids"].as_array().unwrap();
-    assert_eq!(
-        held_ids.len(),
-        0,
-        "held_ids should be empty when all held issues are intentional"
-    );
-
-    // Doctor overall should not have warnings
-    assert_eq!(
-        doctor_json["has_warnings"], false,
-        "Doctor should report has_warnings=false when all holds are intentional"
-    );
-}
-
-#[test]
-#[serial]
-fn r035_parked_label_convention() {
-    let temp = TempDir::new().unwrap();
-    let workspace = temp.path();
-
-    run(workspace, &["init", "--prefix", "r035-parked"]);
-
-    // Create an issue and mark it with the 'parked' label
-    let id = create_issue(workspace, "Parked feature work");
-    run(workspace, &["update", &id, "--assignee", "future-worker"]);
+    let id = create_issue(workspace, "Held work with a label");
+    run(workspace, &["update", &id, "--assignee", "worker-1"]);
     run(workspace, &["label", "add", &id, "--label", "parked"]);
 
-    // Verify it's treated as intentionally held
     let output = run(workspace, &["doctor", "--json"]);
     let doctor_json: Value = serde_json::from_slice(&output.stdout).unwrap();
-    let checks = doctor_json["checks"].as_array().unwrap();
-
-    let frontier_check = checks
+    let check = doctor_json["checks"]
+        .as_array()
+        .unwrap()
         .iter()
-        .find(|c| c["name"] == "ready_frontier")
-        .expect("ready_frontier check should be present");
-
+        .find(|check| check["name"] == "ready_frontier")
+        .expect("assignment-held check must be present");
+    assert_eq!(check["status"], "warning");
+    assert_eq!(check["details"]["held_ids"], serde_json::json!([id]));
     assert_eq!(
-        frontier_check["status"], "ok",
-        "Parked assignment should not trigger warning"
+        check["details"]["reason_codes"],
+        serde_json::json!(["open_issue_held_by_assignee"])
     );
-
-    let intentionally_held_ids = frontier_check["details"]["intentionally_held_ids"]
-        .as_array()
-        .unwrap();
-    assert!(
-        intentionally_held_ids
-            .iter()
-            .any(|iid| iid.as_str() == Some(id.as_str())),
-        "Parked issue should be in intentionally_held_ids"
-    );
-}
-
-#[test]
-#[serial]
-fn r035_mixed_intentional_and_abandoned_assignments() {
-    let temp = TempDir::new().unwrap();
-    let workspace = temp.path();
-
-    run(workspace, &["init", "--prefix", "r035-mixed"]);
-
-    // Create two held issues
-    let intentional_id = create_issue(workspace, "Intentional hold");
-    let abandoned_id = create_issue(workspace, "Abandoned assignment");
-
-    // Assign both
-    run(
-        workspace,
-        &["update", &intentional_id, "--assignee", "worker-1"],
-    );
-    run(
-        workspace,
-        &["update", &abandoned_id, "--assignee", "worker-2"],
-    );
-
-    // Mark only the first as intentional
-    run(
-        workspace,
-        &[
-            "label",
-            "add",
-            &intentional_id,
-            "--label",
-            "intentionally-held",
-        ],
-    );
-
-    // Verify both are tracked separately
-    let output = run(workspace, &["doctor", "--json"]);
-    let doctor_json: Value = serde_json::from_slice(&output.stdout).unwrap();
-    let checks = doctor_json["checks"].as_array().unwrap();
-
-    let frontier_check = checks
-        .iter()
-        .find(|c| c["name"] == "ready_frontier")
-        .expect("ready_frontier check should be present");
-
     assert_eq!(
-        frontier_check["status"], "warning",
-        "Mixed state should still warn about abandoned assignments"
+        check["details"]["held_issues"][0]["remedy"],
+        format!("bead update {id} --clear-assignee")
     );
-
-    // Check held_ids contains only the abandoned one
-    let held_ids = frontier_check["details"]["held_ids"].as_array().unwrap();
-    assert_eq!(
-        held_ids.len(),
-        1,
-        "held_ids should contain only the abandoned assignment"
-    );
-    assert!(
-        held_ids
-            .iter()
-            .any(|id| id.as_str() == Some(abandoned_id.as_str())),
-        "held_ids should contain the abandoned issue"
-    );
-
-    // Check intentionally_held_ids contains the marked one
-    let intentionally_held_ids = frontier_check["details"]["intentionally_held_ids"]
-        .as_array()
-        .unwrap();
-    assert_eq!(
-        intentionally_held_ids.len(),
-        1,
-        "intentionally_held_ids should contain the marked assignment"
-    );
-    assert!(
-        intentionally_held_ids
-            .iter()
-            .any(|id| id.as_str() == Some(intentional_id.as_str())),
-        "intentionally_held_ids should contain the intentional issue"
-    );
-
-    // Both reason codes should be present
-    let reason_codes = frontier_check["details"]["reason_codes"]
-        .as_array()
-        .unwrap();
-    assert!(
-        reason_codes
-            .iter()
-            .any(|rc| rc.as_str() == Some("open_issue_held_by_assignee")),
-        "Should include open_issue_held_by_assignee for abandoned"
-    );
-    assert!(
-        reason_codes
-            .iter()
-            .any(|rc| rc.as_str() == Some("intentionally_held_assignment")),
-        "Should include intentionally_held_assignment for intentional"
-    );
+    assert!(doctor_json["has_warnings"].as_bool().unwrap());
 }
 
 #[test]
@@ -381,8 +203,9 @@ fn r035_doctor_never_clears_assignee_even_under_repair() {
     let issue_json: Value = serde_json::from_slice(&output.stdout).unwrap();
     let initial_assignee = issue_json[0]["assignee"].as_str().unwrap();
 
-    // Run doctor with --repair (should be a no-op for assignments)
+    // Neither ordinary repair nor forced starvation recovery may clear it.
     run(workspace, &["doctor", "--repair"]);
+    run(workspace, &["doctor", "--starvation-recovery", "--force"]);
 
     // Verify assignee is still present
     let output = run(workspace, &["show", &id, "--json"]);
@@ -391,7 +214,7 @@ fn r035_doctor_never_clears_assignee_even_under_repair() {
 
     assert_eq!(
         initial_assignee, current_assignee,
-        "Doctor --repair should not clear assignees"
+        "Doctor repair modes should not clear assignees"
     );
 
     // Verify the held issue is still diagnosed
@@ -459,6 +282,17 @@ fn r035_prose_sample_is_bounded_while_details_remain_complete() {
     );
     for id in &held {
         assert!(held_ids.contains(id), "details.held_ids must contain {id}");
+        assert!(
+            frontier_check["details"]["held_issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| {
+                    entry["id"] == *id
+                        && entry["remedy"] == format!("bead update {id} --clear-assignee")
+                }),
+            "details.held_issues must give the exact remedy for {id}"
+        );
     }
     assert_eq!(
         frontier_check["details"]["held_count"].as_u64().unwrap(),
