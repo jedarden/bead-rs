@@ -97,7 +97,11 @@ fn checkpoint_description_finding(root: &Path, generation: &str) -> Value {
         .iter()
         .find(|finding| {
             finding["selector"].as_str().is_some_and(|selector| {
-                selector.starts_with(&format!("checkpoint:{generation}:record:"))
+                // Monolithic roots keep `checkpoint:<gen>:record:<n>`; sharded
+                // records carry the shard path before the record index
+                // (beadrs-4b5ee36b). Both pin the retained generation.
+                selector.starts_with(&format!("checkpoint:{generation}:"))
+                    && selector.contains(":record:")
             }) && finding["field_path"] == "record.issue.description"
                 && finding["rule_id"] == "aws-access-key-id"
                 && finding["disposition"] == "confirmed"
@@ -628,10 +632,19 @@ fn retained_checkpoint_issue_fingerprint_redacts_live_description() {
 
         let finding = checkpoint_description_finding(workspace.path(), generation);
         let fingerprint = finding["fingerprint"].as_str().unwrap();
-        assert!(finding["selector"]
-            .as_str()
-            .unwrap()
-            .starts_with(&format!("checkpoint:{generation}:record:")));
+        let selector = finding["selector"].as_str().unwrap();
+        assert!(selector.starts_with(&format!("checkpoint:{generation}:")));
+        assert!(selector.contains(":record:"));
+        if mode == "sharded" {
+            // The shard path must disambiguate the record index, not just the
+            // generation (beadrs-4b5ee36b).
+            assert!(
+                selector.contains("objects/"),
+                "sharded selector {selector} carries no shard path"
+            );
+        } else {
+            assert!(selector.starts_with(&format!("checkpoint:{generation}:record:")));
+        }
 
         let preview = bead(workspace.path())
             .args([
