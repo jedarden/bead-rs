@@ -1242,7 +1242,8 @@ fn field_semantics(document: &str, name: &str) -> FieldSemantics {
             example: json!([]),
             invariants: &[
                 "ordered by creation time then ID",
-                "v0.1 has no public command that creates comments",
+                "comment bodies appear only when --comments is unresolved or all",
+                "comment commands create and resolve durable comments; this projection remains read-only",
                 "interactive reads expose only the projection selected by --comments",
             ],
             common_mistake:

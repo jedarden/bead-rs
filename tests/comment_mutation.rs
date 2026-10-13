@@ -351,6 +351,10 @@ fn imported_null_resolution_state_reads_as_unresolved() {
             [&comment],
         )
         .unwrap();
+    assert_eq!(
+        comment_by_id(root.path(), &issue, &comment)["resolution_state"],
+        "unresolved"
+    );
 
     let sequence_before = workspace_sequence(root.path());
     let noop = comment_command(root.path(), &["unresolve", &issue, &comment, "--json"])
@@ -373,6 +377,49 @@ fn imported_null_resolution_state_reads_as_unresolved() {
     assert_eq!(envelope["previous_resolution_state"], Value::Null);
     assert_eq!(envelope["resolution_state"], "resolved");
     assert_eq!(workspace_sequence(root.path()), sequence_before + 1);
+}
+
+#[test]
+fn projection_uses_id_tiebreak_and_normalizes_null_state() {
+    let (root, issue) = workspace();
+    let first = comment_command(root.path(), &["create", &issue, "--body", "first"])
+        .output()
+        .unwrap();
+    assert!(first.status.success());
+    let first = String::from_utf8(first.stdout).unwrap().trim().to_owned();
+    let second = comment_command(root.path(), &["create", &issue, "--body", "second"])
+        .output()
+        .unwrap();
+    assert!(second.status.success());
+    let second = String::from_utf8(second.stdout).unwrap().trim().to_owned();
+
+    db(root.path())
+        .execute(
+            "UPDATE comments SET created_at = 'same-time' WHERE id IN (?1, ?2)",
+            rusqlite::params![&first, &second],
+        )
+        .unwrap();
+    let expected = if first < second {
+        vec![first.clone(), second.clone()]
+    } else {
+        vec![second.clone(), first.clone()]
+    };
+    let actual: Vec<String> = comments(root.path(), &issue)
+        .into_iter()
+        .map(|comment| comment["id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(actual, expected);
+
+    db(root.path())
+        .execute(
+            "UPDATE comments SET resolution_state = NULL WHERE id = ?1",
+            [&first],
+        )
+        .unwrap();
+    assert_eq!(
+        comment_by_id(root.path(), &issue, &first)["resolution_state"],
+        "unresolved"
+    );
 }
 
 #[test]

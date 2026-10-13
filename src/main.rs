@@ -3843,17 +3843,21 @@ fn load_comments(
             return Ok(Vec::new());
         }
         "unresolved" => (
-            "SELECT id, author, body, reply_to_id, resolution_state, created_at
+            "SELECT id, author, body, reply_to_id,
+                    COALESCE(resolution_state, 'unresolved') AS resolution_state,
+                    created_at
              FROM comments
              WHERE issue_id = ? AND (resolution_state IS NULL OR resolution_state != 'resolved')
-             ORDER BY created_at ASC",
+             ORDER BY created_at ASC, id ASC",
             true,
         ),
         "all" => (
-            "SELECT id, author, body, reply_to_id, resolution_state, created_at
+            "SELECT id, author, body, reply_to_id,
+                    COALESCE(resolution_state, 'unresolved') AS resolution_state,
+                    created_at
              FROM comments
              WHERE issue_id = ?
-             ORDER BY created_at ASC",
+             ORDER BY created_at ASC, id ASC",
             true,
         ),
         _ => return Ok(Vec::new()), // Should never happen due to validation
@@ -3867,7 +3871,7 @@ fn load_comments(
             let author: String = row.get(1)?;
             let body: String = row.get(2)?;
             let reply_to_id: Option<String> = row.get(3)?;
-            let resolution_state: Option<String> = row.get(4)?;
+            let resolution_state: String = row.get(4)?;
             let created_at: String = row.get(5)?;
 
             let mut comment_obj = serde_json::json!({
@@ -3884,9 +3888,7 @@ fn load_comments(
                 comment_obj["reply_to_id"] = serde_json::json!(reply_id);
             }
 
-            if let Some(state) = resolution_state {
-                comment_obj["resolution_state"] = serde_json::json!(state);
-            }
+            comment_obj["resolution_state"] = serde_json::json!(resolution_state);
 
             Ok(comment_obj)
         })?
