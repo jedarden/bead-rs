@@ -1,0 +1,47 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead comment" 1  "bead comment " 
+.SH NAME
+bead comment \- Create, reply to, and resolve bead comments
+.SH SYNOPSIS
+\fBbead comment\fR [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+Create, reply to, and resolve comments on an issue (R010).
+.PP
+Comment bodies are immutable: no command edits or deletes a body, author,
+creation time, or issue binding once written. Resolution state is the only
+mutable comment column, and every committed write carries its audit event in
+the same transaction. Comments on any issue in any status are allowed;
+claim and lease state is never consulted.
+.PP
+Bodies reach the store either inline (\-\-body TEXT) or through a file or
+stdin (\-\-body\-file PATH, where \- reads to EOF), mirroring `data set`. The
+actor is resolved from \-\-actor, then BEAD_ACTOR, then `system`.
+.PP
+  bead comment create    <ISSUE_ID> (\-\-body TEXT|\-\-body\-file PATH)
+  bead comment reply     <ISSUE_ID> \-\-reply\-to <COMMENT_ID> (\-\-body TEXT|\-\-body\-file PATH)
+  bead comment resolve   <ISSUE_ID> <COMMENT_ID>
+  bead comment unresolve <ISSUE_ID> <COMMENT_ID>
+.PP
+Retrieval stays read\-only through `list`/`show` with \-\-comments
+unresolved|all; mutation results never echo the body.
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.SH SUBCOMMANDS
+.TP
+bead comment\-create(1)
+Create a root comment on an issue
+.TP
+bead comment\-reply(1)
+Reply to an existing comment
+.TP
+bead comment\-resolve(1)
+Mark a comment resolved
+.TP
+bead comment\-unresolve(1)
+Return a comment to unresolved
+.TP
+bead comment\-help(1)
+Print this message or the help of the given subcommand(s)

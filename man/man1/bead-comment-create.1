@@ -1,0 +1,47 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead comment create" 1  "bead comment create " 
+.SH NAME
+bead comment create \- Create a root comment on an issue
+.SH SYNOPSIS
+\fBbead comment create\fR [\fB\-\-body\fR] [\fB\-\-body\-file\fR] [\fB\-\-actor\fR] [\fB\-\-json\fR] [\fB\-\-dry\-run\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIISSUE_ID\fR> 
+.SH DESCRIPTION
+Create a new root comment on an issue.
+.PP
+The body arrives inline (\-\-body TEXT) or through a file or stdin
+(\-\-body\-file PATH, where \- reads to EOF); exactly one transport is
+required, and the bytes are scanned and stored unmodified. The stored
+actor is resolved from \-\-actor, then BEAD_ACTOR, then `system`, and
+becomes the comment\*(Aqs author. Native comments store resolution state
+`unresolved` explicitly. A fresh create prints only the new comment ID.
+.PP
+The parent issue\*(Aqs revision and updated_at are not bumped, so a
+concurrent `update \-\-if\-revision N` is unaffected.
+.PP
+EXAMPLES:
+  bead comment create bead\-123abc456789def \-\-body "found a second cause"
+  bead comment create bead\-123abc456789def \-\-body\-file note.txt \-\-actor worker\-1
+  bead comment create bead\-123abc456789def \-\-body\-file \- < note.txt
+  bead comment create bead\-123abc456789def \-\-body "checking" \-\-json
+.SH OPTIONS
+.TP
+\fB\-\-body\fR \fI<BODY>\fR
+Comment body (or pass \-\-body\-file)
+.TP
+\fB\-\-body\-file\fR \fI<PATH>\fR
+Read the body from a file, or stdin with \-
+.TP
+\fB\-\-actor\fR \fI<ACTOR>\fR
+Attribution for this comment (defaults to BEAD_ACTOR, then system)
+.TP
+\fB\-\-json\fR
+Print the JSON result envelope instead of the comment ID
+.TP
+\fB\-\-dry\-run\fR
+Validate, scan, and project the result without committing
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIISSUE_ID\fR>
+Issue to comment on

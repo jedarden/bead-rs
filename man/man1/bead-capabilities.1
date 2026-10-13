@@ -4,7 +4,7 @@
 .SH NAME
 bead capabilities \- Show capabilities and supported features
 .SH SYNOPSIS
-\fBbead capabilities\fR [\fB\-\-profile\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBbead capabilities\fR [\fB\-\-profile\fR] [\fB\-\-format\fR] [\fB\-h\fR|\fB\-\-help\fR] 
 .SH DESCRIPTION
 Display versioned capabilities and supported feature sets.
 .PP
@@ -73,6 +73,9 @@ Use this command for capability negotiation and feature detection.
 .TP
 \fB\-\-profile\fR \fI<PROFILE>\fR [default: native\-v1]
 Profile for capabilities output
+.TP
+\fB\-\-format\fR \fI<FORMAT>\fR [default: json]
+Output format; capabilities are JSON only
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

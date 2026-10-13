@@ -1,0 +1,41 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead comment resolve" 1  "bead comment resolve " 
+.SH NAME
+bead comment resolve \- Mark a comment resolved
+.SH SYNOPSIS
+\fBbead comment resolve\fR [\fB\-\-actor\fR] [\fB\-\-json\fR] [\fB\-\-dry\-run\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIISSUE_ID\fR> <\fICOMMENT_ID\fR> 
+.SH DESCRIPTION
+Mark one comment resolved.
+.PP
+Both the issue and the comment are named positionally, and the command
+verifies the comment belongs to that issue. Resolution is per\-comment
+state, not a thread lock; lifecycle and claim state are never consulted,
+so comments on closed or claimed issues resolve the same way. Repeating
+the command is a safe no\-op: it exits 0, writes nothing, and emits no
+event. The comment\*(Aqs stored author is never changed; the resolved actor
+is recorded in the audit event.
+.PP
+EXAMPLES:
+  bead comment resolve bead\-123abc456789def comment\-1a2b3c4d
+  bead comment resolve bead\-123abc456789def comment\-1a2b3c4d \-\-actor reviewer \-\-json
+  bead comment resolve bead\-123abc456789def comment\-1a2b3c4d \-\-dry\-run
+.SH OPTIONS
+.TP
+\fB\-\-actor\fR \fI<ACTOR>\fR
+Attribution recorded in the audit event (defaults to BEAD_ACTOR, then system)
+.TP
+\fB\-\-json\fR
+Print the JSON result envelope instead of the comment ID
+.TP
+\fB\-\-dry\-run\fR
+Validate and project the result without committing
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIISSUE_ID\fR>
+Issue carrying the comment
+.TP
+<\fICOMMENT_ID\fR>
+Comment to transition

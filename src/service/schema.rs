@@ -39,7 +39,11 @@ use std::collections::HashSet;
 /// with the command (byte-exact identity resolution, concise-path
 /// restrictions), and the `field_guide.guide_version` example tracks the
 /// compiled constant instead of a stale literal (beadrs-bead5974).
-pub const FIELD_GUIDE_VERSION: i64 = 9;
+///
+/// v10: the `checkpoint_issue.comments` entry advertises the four public
+/// comment mutation operations instead of the read-only empty list (R010,
+/// comment-mutation-v1; beadrs-2ddcb210).
+pub const FIELD_GUIDE_VERSION: i64 = 10;
 
 /// Artifact identity carried by every `bead schema explain` response, per the
 /// accepted field-guide contract (`research/specs/native-field-guide-v1.md`).
@@ -1546,7 +1550,12 @@ fn field_semantics(document: &str, name: &str) -> FieldSemantics {
         },
         ("checkpoint_issue", "comments") => FieldSemantics {
             ownership: "system",
-            operations: &[],
+            operations: &[
+                "comment.create",
+                "comment.reply",
+                "comment.resolve",
+                "comment.unresolve",
+            ],
             has_default: true,
             default: json!([]),
             example: json!([]),

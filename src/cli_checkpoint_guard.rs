@@ -35,7 +35,8 @@ fn policy(command: &Command) -> Option<bool> {
         | Command::Resolve(_)
         | Command::Claim(_)
         | Command::Label(_)
-        | Command::Dep(_) => Some(true),
+        | Command::Dep(_)
+        | Command::Comment(_) => Some(true),
         Command::Resource(ResourceCommand::Add(_) | ResourceCommand::Remove(_))
         | Command::Ref(RefCommand::Add(_) | RefCommand::Remove(_))
         | Command::Data(DataCommand::Set(_) | DataCommand::Remove(_))

@@ -138,6 +138,32 @@ read-only and never invokes restore automatically."
 
     Reopen(ReopenOptions),
 
+    /// Manage bead comments
+    #[command(
+        subcommand,
+        about = "Create, reply to, and resolve bead comments",
+        long_about = "Create, reply to, and resolve comments on an issue (R010).
+
+Comment bodies are immutable: no command edits or deletes a body, author,
+creation time, or issue binding once written. Resolution state is the only
+mutable comment column, and every committed write carries its audit event in
+the same transaction. Comments on any issue in any status are allowed;
+claim and lease state is never consulted.
+
+Bodies reach the store either inline (--body TEXT) or through a file or
+stdin (--body-file PATH, where - reads to EOF), mirroring `data set`. The
+actor is resolved from --actor, then BEAD_ACTOR, then `system`.
+
+  bead comment create    <ISSUE_ID> (--body TEXT|--body-file PATH)
+  bead comment reply     <ISSUE_ID> --reply-to <COMMENT_ID> (--body TEXT|--body-file PATH)
+  bead comment resolve   <ISSUE_ID> <COMMENT_ID>
+  bead comment unresolve <ISSUE_ID> <COMMENT_ID>
+
+Retrieval stays read-only through `list`/`show` with --comments
+unresolved|all; mutation results never echo the body."
+    )]
+    Comment(CommentCommand),
+
     /// Resolve an execution attempt
     #[command(
         name = "resolve",
@@ -1074,6 +1100,177 @@ pub struct CloseOptions {
     /// reason with 'bead close <id> --reason'.
     #[arg(long, hide = true)]
     pub body: Option<String>,
+}
+
+/// Comment mutation commands (R010, comment-mutation-v1)
+#[derive(Subcommand, Debug)]
+pub enum CommentCommand {
+    /// Create a root comment on an issue
+    #[command(
+        about = "Create a root comment on an issue",
+        long_about = "Create a new root comment on an issue.
+
+The body arrives inline (--body TEXT) or through a file or stdin
+(--body-file PATH, where - reads to EOF); exactly one transport is
+required, and the bytes are scanned and stored unmodified. The stored
+actor is resolved from --actor, then BEAD_ACTOR, then `system`, and
+becomes the comment's author. Native comments store resolution state
+`unresolved` explicitly. A fresh create prints only the new comment ID.
+
+The parent issue's revision and updated_at are not bumped, so a
+concurrent `update --if-revision N` is unaffected.
+
+EXAMPLES:
+  bead comment create bead-123abc456789def --body \"found a second cause\"
+  bead comment create bead-123abc456789def --body-file note.txt --actor worker-1
+  bead comment create bead-123abc456789def --body-file - < note.txt
+  bead comment create bead-123abc456789def --body \"checking\" --json"
+    )]
+    Create(CommentCreateOptions),
+
+    /// Reply to an existing comment
+    #[command(
+        about = "Reply to an existing comment",
+        long_about = "Create a reply to an existing comment on the same issue.
+
+--reply-to must name a comment that already exists on the issue selector;
+a dangling or cross-issue target is refused (exit 4) and nothing is
+touched. Thread depth is unbounded, and a reply may target a resolved
+comment: resolution is per-comment state, not a thread lock. Body
+transport and actor resolution match `comment create`. A committed reply
+prints only the new comment ID.
+
+EXAMPLES:
+  bead comment reply bead-123abc456789def --reply-to comment-1a2b3c4d --body \"agreed\"
+  bead comment reply bead-123abc456789def --reply-to comment-1a2b3c4d --body-file reply.txt
+  bead comment reply bead-123abc456789def --reply-to comment-1a2b3c4d --body \"agreed\" --json"
+    )]
+    Reply(CommentReplyOptions),
+
+    /// Mark a comment resolved
+    #[command(
+        about = "Mark a comment resolved",
+        long_about = "Mark one comment resolved.
+
+Both the issue and the comment are named positionally, and the command
+verifies the comment belongs to that issue. Resolution is per-comment
+state, not a thread lock; lifecycle and claim state are never consulted,
+so comments on closed or claimed issues resolve the same way. Repeating
+the command is a safe no-op: it exits 0, writes nothing, and emits no
+event. The comment's stored author is never changed; the resolved actor
+is recorded in the audit event.
+
+EXAMPLES:
+  bead comment resolve bead-123abc456789def comment-1a2b3c4d
+  bead comment resolve bead-123abc456789def comment-1a2b3c4d --actor reviewer --json
+  bead comment resolve bead-123abc456789def comment-1a2b3c4d --dry-run"
+    )]
+    Resolve(CommentResolveOptions),
+
+    /// Return a comment to unresolved
+    #[command(
+        about = "Return a comment to unresolved",
+        long_about = "Return one comment to unresolved.
+
+The inverse of `comment resolve`, with the same selector rules and no-op
+safety: an already-unresolved comment - including an imported comment
+whose stored resolution state is NULL - is a no-op that exits 0 and
+emits no event. The comment's stored author is never changed.
+
+EXAMPLES:
+  bead comment unresolve bead-123abc456789def comment-1a2b3c4d
+  bead comment unresolve bead-123abc456789def comment-1a2b3c4d --actor reviewer --json"
+    )]
+    Unresolve(CommentResolveOptions),
+}
+
+/// Options for creating a root comment
+#[derive(Parser, Debug)]
+pub struct CommentCreateOptions {
+    /// Issue to comment on
+    pub issue_id: String,
+
+    /// Comment body (or pass --body-file)
+    #[arg(
+        long,
+        required_unless_present = "body_file",
+        conflicts_with = "body_file"
+    )]
+    pub body: Option<String>,
+
+    /// Read the body from a file, or stdin with -
+    #[arg(long = "body-file", value_name = "PATH")]
+    pub body_file: Option<std::path::PathBuf>,
+
+    /// Attribution for this comment (defaults to BEAD_ACTOR, then system)
+    #[arg(long)]
+    pub actor: Option<String>,
+
+    /// Print the JSON result envelope instead of the comment ID
+    #[arg(long)]
+    pub json: bool,
+
+    /// Validate, scan, and project the result without committing
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+/// Options for replying to a comment
+#[derive(Parser, Debug)]
+pub struct CommentReplyOptions {
+    /// Issue carrying the comment being replied to
+    pub issue_id: String,
+
+    /// Comment to reply to; must exist on the issue selector
+    #[arg(long, value_name = "COMMENT_ID")]
+    pub reply_to: String,
+
+    /// Reply body (or pass --body-file)
+    #[arg(
+        long,
+        required_unless_present = "body_file",
+        conflicts_with = "body_file"
+    )]
+    pub body: Option<String>,
+
+    /// Read the body from a file, or stdin with -
+    #[arg(long = "body-file", value_name = "PATH")]
+    pub body_file: Option<std::path::PathBuf>,
+
+    /// Attribution for this reply (defaults to BEAD_ACTOR, then system)
+    #[arg(long)]
+    pub actor: Option<String>,
+
+    /// Print the JSON result envelope instead of the comment ID
+    #[arg(long)]
+    pub json: bool,
+
+    /// Validate, scan, and project the result without committing
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+/// Options for resolving or unresolving a comment
+#[derive(Parser, Debug)]
+pub struct CommentResolveOptions {
+    /// Issue carrying the comment
+    pub issue_id: String,
+
+    /// Comment to transition
+    pub comment_id: String,
+
+    /// Attribution recorded in the audit event (defaults to BEAD_ACTOR,
+    /// then system)
+    #[arg(long)]
+    pub actor: Option<String>,
+
+    /// Print the JSON result envelope instead of the comment ID
+    #[arg(long)]
+    pub json: bool,
+
+    /// Validate and project the result without committing
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 /// Options for reopening an issue
@@ -2311,6 +2508,10 @@ pub struct CapabilitiesOptions {
     /// Profile for capabilities output
     #[arg(long, default_value = "native-v1")]
     pub profile: String,
+
+    /// Output format; capabilities are JSON only
+    #[arg(long, default_value = "json")]
+    pub format: String,
 }
 
 #[derive(Subcommand, Debug)]

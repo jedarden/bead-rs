@@ -252,6 +252,7 @@ pub fn generate_capabilities_with_secret_mode(
             "changes".to_string(),
             "claim".to_string(),
             "close".to_string(),
+            "comment".to_string(),
             "compare".to_string(),
             "create".to_string(),
             "data".to_string(),

@@ -6,8 +6,8 @@
 //! explicitly read-only/recovery operation.
 
 use crate::cli::{
-    Command, DataCommand, DepCommand, LabelCommand, RecurrenceCommand, RefCommand, ResourceCommand,
-    SyncCommand,
+    Command, CommentCommand, DataCommand, DepCommand, LabelCommand, RecurrenceCommand, RefCommand,
+    ResourceCommand, SyncCommand,
 };
 use crate::error::{Error, Result};
 use crate::scan::{self, Field, ScanConfig, ScanReport};
@@ -291,6 +291,28 @@ fn canonical_request(command: &Command) -> Option<CanonicalRequest<'_>> {
                     .field("label", &opts.label),
             ),
         },
+        // Comment bodies are the largest new free-text write surface; the
+        // body reaches this request after the `data set`-style transport
+        // read in execute_command, so `--body-file` scans the same bytes a
+        // literal `--body` would. A BEAD_ACTOR-sourced actor is scanned at
+        // the service write boundary, which sees the resolved actor.
+        Command::Comment(command) => match command {
+            CommentCommand::Create(opts) => Some(
+                CanonicalRequest::new(record_selector("issue", &opts.issue_id), "cli")
+                    .optional("body", opts.body.as_deref())
+                    .optional("author", opts.actor.as_deref()),
+            ),
+            CommentCommand::Reply(opts) => Some(
+                CanonicalRequest::new(record_selector("issue", &opts.issue_id), "cli")
+                    .optional("body", opts.body.as_deref())
+                    .optional("author", opts.actor.as_deref())
+                    .field("reply_to", &opts.reply_to),
+            ),
+            CommentCommand::Resolve(opts) | CommentCommand::Unresolve(opts) => Some(
+                CanonicalRequest::new(record_selector("issue", &opts.issue_id), "cli")
+                    .field("comment", &opts.comment_id),
+            ),
+        },
         Command::Resource(command) => match command {
             ResourceCommand::Add(opts) => Some(
                 CanonicalRequest::new(record_selector("issue", &opts.id), "cli")
@@ -418,6 +440,11 @@ fn command_is_dry_run(command: &Command) -> bool {
         Command::Reopen(opts) => opts.dry_run,
         Command::Dep(DepCommand::Add(opts)) => opts.dry_run,
         Command::Dep(DepCommand::Remove(opts)) => opts.dry_run,
+        Command::Comment(command) => match command {
+            CommentCommand::Create(opts) => opts.dry_run,
+            CommentCommand::Reply(opts) => opts.dry_run,
+            CommentCommand::Resolve(opts) | CommentCommand::Unresolve(opts) => opts.dry_run,
+        },
         Command::Manifest(crate::cli::ManifestCommand::DryRun(_)) => true,
         _ => false,
     }
@@ -692,6 +719,35 @@ mod tests {
             (
                 &["bead", "sync", "fork", "--actor", "x", "--reason", "x"],
                 &["actor", "reason"],
+            ),
+            (
+                &[
+                    "bead", "comment", "create", "x", "--body", "x", "--actor", "a",
+                ],
+                &["body", "author"],
+            ),
+            (
+                &[
+                    "bead",
+                    "comment",
+                    "reply",
+                    "x",
+                    "--reply-to",
+                    "comment-1a2b3c4d",
+                    "--body",
+                    "x",
+                    "--actor",
+                    "a",
+                ],
+                &["body", "author", "reply_to"],
+            ),
+            (
+                &["bead", "comment", "resolve", "x", "comment-1a2b3c4d"],
+                &["comment"],
+            ),
+            (
+                &["bead", "comment", "unresolve", "x", "comment-1a2b3c4d"],
+                &["comment"],
             ),
             (
                 &["bead", "analyze-exclusion", "--attach", "x"],

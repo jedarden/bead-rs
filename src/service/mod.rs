@@ -11,6 +11,7 @@ pub mod changes;
 pub mod checkpoint;
 pub mod checkpoint_configure;
 pub mod claim;
+pub mod comments;
 pub mod comparison;
 pub mod conditions;
 pub mod data;

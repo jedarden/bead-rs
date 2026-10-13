@@ -1,0 +1,46 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead comment reply" 1  "bead comment reply " 
+.SH NAME
+bead comment reply \- Reply to an existing comment
+.SH SYNOPSIS
+\fBbead comment reply\fR [\fB\-\-body\fR] [\fB\-\-body\-file\fR] [\fB\-\-actor\fR] [\fB\-\-json\fR] [\fB\-\-dry\-run\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-reply\-to\fR> <\fIISSUE_ID\fR> 
+.SH DESCRIPTION
+Create a reply to an existing comment on the same issue.
+.PP
+\-\-reply\-to must name a comment that already exists on the issue selector;
+a dangling or cross\-issue target is refused (exit 4) and nothing is
+touched. Thread depth is unbounded, and a reply may target a resolved
+comment: resolution is per\-comment state, not a thread lock. Body
+transport and actor resolution match `comment create`. A committed reply
+prints only the new comment ID.
+.PP
+EXAMPLES:
+  bead comment reply bead\-123abc456789def \-\-reply\-to comment\-1a2b3c4d \-\-body "agreed"
+  bead comment reply bead\-123abc456789def \-\-reply\-to comment\-1a2b3c4d \-\-body\-file reply.txt
+  bead comment reply bead\-123abc456789def \-\-reply\-to comment\-1a2b3c4d \-\-body "agreed" \-\-json
+.SH OPTIONS
+.TP
+\fB\-\-reply\-to\fR \fI<COMMENT_ID>\fR
+Comment to reply to; must exist on the issue selector
+.TP
+\fB\-\-body\fR \fI<BODY>\fR
+Reply body (or pass \-\-body\-file)
+.TP
+\fB\-\-body\-file\fR \fI<PATH>\fR
+Read the body from a file, or stdin with \-
+.TP
+\fB\-\-actor\fR \fI<ACTOR>\fR
+Attribution for this reply (defaults to BEAD_ACTOR, then system)
+.TP
+\fB\-\-json\fR
+Print the JSON result envelope instead of the comment ID
+.TP
+\fB\-\-dry\-run\fR
+Validate, scan, and project the result without committing
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIISSUE_ID\fR>
+Issue carrying the comment being replied to

@@ -1,0 +1,37 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead comment unresolve" 1  "bead comment unresolve " 
+.SH NAME
+bead comment unresolve \- Return a comment to unresolved
+.SH SYNOPSIS
+\fBbead comment unresolve\fR [\fB\-\-actor\fR] [\fB\-\-json\fR] [\fB\-\-dry\-run\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIISSUE_ID\fR> <\fICOMMENT_ID\fR> 
+.SH DESCRIPTION
+Return one comment to unresolved.
+.PP
+The inverse of `comment resolve`, with the same selector rules and no\-op
+safety: an already\-unresolved comment \- including an imported comment
+whose stored resolution state is NULL \- is a no\-op that exits 0 and
+emits no event. The comment\*(Aqs stored author is never changed.
+.PP
+EXAMPLES:
+  bead comment unresolve bead\-123abc456789def comment\-1a2b3c4d
+  bead comment unresolve bead\-123abc456789def comment\-1a2b3c4d \-\-actor reviewer \-\-json
+.SH OPTIONS
+.TP
+\fB\-\-actor\fR \fI<ACTOR>\fR
+Attribution recorded in the audit event (defaults to BEAD_ACTOR, then system)
+.TP
+\fB\-\-json\fR
+Print the JSON result envelope instead of the comment ID
+.TP
+\fB\-\-dry\-run\fR
+Validate and project the result without committing
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIISSUE_ID\fR>
+Issue carrying the comment
+.TP
+<\fICOMMENT_ID\fR>
+Comment to transition

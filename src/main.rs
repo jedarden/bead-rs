@@ -25,8 +25,17 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     // Parse CLI arguments
-    // Use parse() instead of try_parse() so --help and --version are handled automatically
-    let cli = Cli::parse();
+    // Use try_parse() so the `comment add` near-miss can add its R037-style
+    // remedy before clap's own unrecognized-subcommand diagnostic; err.exit()
+    // preserves clap's behavior for --help, --version, and every other
+    // parse failure.
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) => {
+            report_comment_add_near_miss();
+            error.exit();
+        }
+    };
 
     // Execute command
     let result = execute_command(cli);
@@ -295,6 +304,33 @@ fn publish_initial_state(no_auto_flush: bool) -> Result<()> {
     .map_err(|source| Error::PostCommitPublicationFailed { source })
 }
 
+/// Read a comment body through the `data set` transport: `-` reads stdin to
+/// EOF, an unreadable file is a transport failure (exit 1), and a file that
+/// is not valid UTF-8 is a validation failure (exit 4). The bytes are stored
+/// unmodified and never echoed.
+fn read_body_file(path: std::path::PathBuf) -> Result<String> {
+    if path == std::path::Path::new("-") {
+        use std::io::Read;
+        let mut input = String::new();
+        std::io::stdin()
+            .lock()
+            .read_to_string(&mut input)
+            .map_err(|msg| Error::Io {
+                path: std::path::PathBuf::from("<stdin>"),
+                msg,
+            })?;
+        Ok(input)
+    } else {
+        match std::fs::read_to_string(&path) {
+            Ok(body) => Ok(body),
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => Err(Error::conflict(
+                format!("comment body file {} is not valid UTF-8", path.display()),
+            )),
+            Err(msg) => Err(Error::Io { path, msg }),
+        }
+    }
+}
+
 fn execute_command(mut cli: Cli) -> Result<()> {
     // Read once, before the mutation lock and secret preflight: the scanner
     // and service must consume the same bytes, including stdin and large files.
@@ -316,6 +352,23 @@ fn execute_command(mut cli: Cli) -> Result<()> {
             };
             opts.value = Some(input);
         }
+    }
+    // Comment bodies share the `data set` transport: `-` reads stdin to EOF,
+    // unreadable files are transport failures (exit 1), and invalid UTF-8 is
+    // a validation failure (exit 4). The bytes are scanned and stored
+    // unmodified; nothing echoes them.
+    match &mut cli.command {
+        Command::Comment(cli::CommentCommand::Create(opts)) => {
+            if let Some(path) = opts.body_file.take() {
+                opts.body = Some(read_body_file(path)?);
+            }
+        }
+        Command::Comment(cli::CommentCommand::Reply(opts)) => {
+            if let Some(path) = opts.body_file.take() {
+                opts.body = Some(read_body_file(path)?);
+            }
+        }
+        _ => {}
     }
     // R030: publish the discovery override before anything resolves a
     // workspace, so `publication_probe` and every command's `discover` see
@@ -387,6 +440,7 @@ fn dispatch_command(cli: Cli) -> Result<bool> {
         Command::Release(opts) => cmd_release(opts).map(|_| false),
         Command::Close(opts) => cmd_close(opts).map(|_| false),
         Command::Reopen(opts) => cmd_reopen(opts).map(|_| false),
+        Command::Comment(opts) => cmd_comment(opts).map(|_| false),
         Command::Resolve(opts) => cmd_resolve(opts).map(|_| false),
         Command::Redact(opts) => cmd_redact(opts).map(|_| false),
         Command::Label(opts) => cmd_label(opts).map(|_| false),
@@ -1651,6 +1705,111 @@ fn cmd_reopen(opts: cli::ReopenOptions) -> Result<()> {
     println!("{}", id);
 
     Ok(())
+}
+
+fn cmd_comment(cmd: cli::CommentCommand) -> Result<()> {
+    match cmd {
+        cli::CommentCommand::Create(opts) => cmd_comment_create(opts),
+        cli::CommentCommand::Reply(opts) => cmd_comment_reply(opts),
+        cli::CommentCommand::Resolve(opts) => cmd_comment_resolution(opts, true),
+        cli::CommentCommand::Unresolve(opts) => cmd_comment_resolution(opts, false),
+    }
+}
+
+fn open_comment_connection() -> Result<rusqlite::Connection> {
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+    store::open_configured_connection(&config.database_path())
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))
+}
+
+/// Print the mutation result: the JSON result envelope under --json (with
+/// the shared secret_scan decoration), otherwise the ID-only stdout contract
+/// of create, close, and reopen. Diagnostics never corrupt either stream.
+fn emit_comment_mutation(
+    report: service::comments::CommentMutationReport,
+    json: bool,
+) -> Result<()> {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&scan::decorate_mutation(&report)?)?
+        );
+    } else {
+        println!("{}", report.id);
+    }
+    Ok(())
+}
+
+fn cmd_comment_create(opts: cli::CommentCreateOptions) -> Result<()> {
+    let conn = open_comment_connection()?;
+    let actor = service::comments::resolve_actor(opts.actor.as_deref())?;
+    let report = service::comments::create_comment(
+        &conn,
+        &opts.issue_id,
+        opts.body.as_deref().unwrap_or(""),
+        &actor,
+        opts.dry_run,
+    )?;
+    // Dry-runs always print the JSON envelope, regardless of text mode.
+    emit_comment_mutation(report, opts.json || opts.dry_run)
+}
+
+fn cmd_comment_reply(opts: cli::CommentReplyOptions) -> Result<()> {
+    let conn = open_comment_connection()?;
+    let actor = service::comments::resolve_actor(opts.actor.as_deref())?;
+    let report = service::comments::reply_comment(
+        &conn,
+        &opts.issue_id,
+        &opts.reply_to,
+        opts.body.as_deref().unwrap_or(""),
+        &actor,
+        opts.dry_run,
+    )?;
+    emit_comment_mutation(report, opts.json || opts.dry_run)
+}
+
+fn cmd_comment_resolution(opts: cli::CommentResolveOptions, resolve: bool) -> Result<()> {
+    let conn = open_comment_connection()?;
+    let actor = service::comments::resolve_actor(opts.actor.as_deref())?;
+    let report = if resolve {
+        service::comments::resolve_comment(
+            &conn,
+            &opts.issue_id,
+            &opts.comment_id,
+            &actor,
+            opts.dry_run,
+        )?
+    } else {
+        service::comments::unresolve_comment(
+            &conn,
+            &opts.issue_id,
+            &opts.comment_id,
+            &actor,
+            opts.dry_run,
+        )?
+    };
+    emit_comment_mutation(report, opts.json || opts.dry_run)
+}
+
+/// R037-style remedy for the `bead comment add` near-miss. clap's own
+/// unrecognized-subcommand diagnostic follows on stderr; this line names the
+/// sanctioned commands.
+fn report_comment_add_near_miss() {
+    let args: Vec<String> = std::env::args().collect();
+    if !args
+        .windows(2)
+        .any(|window| window[0] == "comment" && window[1] == "add")
+    {
+        return;
+    }
+    eprintln!("bead: 'comment' has no 'add' subcommand");
+    eprintln!();
+    eprintln!("Domain rule: a creation is never a reply and a reply is never a root comment.");
+    eprintln!();
+    eprintln!("Remedy: use 'bead comment create <ISSUE_ID> --body \"<TEXT>\"', or 'bead comment reply <ISSUE_ID> --reply-to <COMMENT_ID> --body \"<TEXT>\"' to answer an existing comment.");
+    eprintln!();
+    eprintln!("Run 'bead comment --help' for complete usage.");
 }
 
 fn cmd_resolve(opts: cli::ResolveOptions) -> Result<()> {
@@ -3738,6 +3897,12 @@ fn load_comments(
 }
 
 fn cmd_capabilities(opts: cli::CapabilitiesOptions) -> Result<()> {
+    if opts.format != "json" {
+        return Err(Error::cli_usage(format!(
+            "unsupported --format '{}'; capabilities are published as JSON only",
+            opts.format
+        )));
+    }
     let workspace_root = match store::WorkspaceConfig::probe()? {
         store::WorkspaceState::Ready(config) => Some(config.root),
         store::WorkspaceState::Uninitialized { root, .. } => Some(root),
