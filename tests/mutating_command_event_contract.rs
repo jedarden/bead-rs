@@ -206,6 +206,63 @@ fn registry() -> Vec<RegisteredCommand> {
                 ]
             },
         },
+        // ---- comment mutations (R010) ----
+        RegisteredCommand {
+            path: "bead comment create",
+            class: Mutating,
+            reason: "a root comment and its `comment_added` event commit atomically",
+            invoke: |f| {
+                vec![
+                    "comment".into(),
+                    "create".into(),
+                    f.comment_issue.clone(),
+                    "--body".into(),
+                    "contract probe comment".into(),
+                ]
+            },
+        },
+        RegisteredCommand {
+            path: "bead comment reply",
+            class: Mutating,
+            reason: "a reply and its `comment_added` event commit atomically",
+            invoke: |f| {
+                vec![
+                    "comment".into(),
+                    "reply".into(),
+                    f.comment_issue.clone(),
+                    "--reply-to".into(),
+                    f.comment_target.clone(),
+                    "--body".into(),
+                    "contract probe reply".into(),
+                ]
+            },
+        },
+        RegisteredCommand {
+            path: "bead comment resolve",
+            class: Mutating,
+            reason: "a semantic resolution transition appends a `comment_resolved` event",
+            invoke: |f| {
+                vec![
+                    "comment".into(),
+                    "resolve".into(),
+                    f.comment_issue.clone(),
+                    f.comment_target.clone(),
+                ]
+            },
+        },
+        RegisteredCommand {
+            path: "bead comment unresolve",
+            class: Mutating,
+            reason: "a semantic resolution transition appends a `comment_unresolved` event",
+            invoke: |f| {
+                vec![
+                    "comment".into(),
+                    "unresolve".into(),
+                    f.comment_issue.clone(),
+                    f.comment_target.clone(),
+                ]
+            },
+        },
         RegisteredCommand {
             path: "bead watchdog",
             class: Mutating,
@@ -944,6 +1001,9 @@ struct Fixture {
     closed: String,
     /// Open issue resolved through the attempt-outcome transaction.
     resolve_target: String,
+    /// Issue and root comment used by the R010 command-contract probes.
+    comment_issue: String,
+    comment_target: String,
     /// Opaque scanner identity for the historical-redaction probe.
     redaction_fingerprint: String,
     redaction_target: String,
@@ -1041,6 +1101,24 @@ fn build_fixture() -> Fixture {
         .args(["close", &closed, "--reason", "fixture setup"])
         .assert()
         .success();
+    let comment_target = String::from_utf8(
+        bead(&workspace)
+            .args([
+                "comment",
+                "create",
+                &resolve_target,
+                "--body",
+                "fixture comment",
+            ])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    )
+    .unwrap()
+    .trim()
+    .to_string();
     bead(&workspace)
         .args([
             "update",
@@ -1196,7 +1274,9 @@ fn build_fixture() -> Fixture {
         in_progress,
         to_close,
         closed,
-        resolve_target,
+        resolve_target: resolve_target.clone(),
+        comment_issue: resolve_target,
+        comment_target,
         redaction_fingerprint,
         redaction_target: redact_target,
         template: "probe-template".to_string(),
