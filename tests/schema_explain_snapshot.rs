@@ -48,11 +48,11 @@ const SNAPSHOT_GUIDE_VERSION: i64 = 10;
 
 /// `bead schema explain <native-guide identity> --format json`, guide v10.
 const NATIVE_GUIDE_JSON_SHA256: &str =
-    "07e316df218ef028e2d2e9a404dbb7fdd9594c35c6e39ee3d315c47ee1c5960e";
+    "3b9930b70eaa05bc3958149a8ee8710043b366c143fe721b203e631193dbbb05";
 
 /// `bead schema explain <native-guide identity> --format markdown`, guide v10.
 const NATIVE_GUIDE_MARKDOWN_SHA256: &str =
-    "26649deb5e99e2696f7bafe2cf7ed6774af4335cc2d03e3939954fd63378fbb2";
+    "4d9088248977e7bd140742b9c30822a30b91194a7117989df49284671402d578";
 
 /// `bead schema explain <concise identity> --format json`, guide v10.
 const CONCISE_JSON_SHA256: &str =
@@ -344,7 +344,7 @@ fn repeated_invocations_reproduce_the_pinned_digests() {
                 digests.insert(digest.clone());
                 assert_eq!(
                     digest, expected,
-                    "{format} rendering of {} drifted from the pinned guide v9 \
+                    "{format} rendering of {} drifted from the pinned guide v10 \
                      digest across repeated invocations",
                     snapshot.schema_ref
                 );
