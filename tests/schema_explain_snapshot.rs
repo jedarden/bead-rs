@@ -44,23 +44,23 @@ const CONCISE_SCHEMA_REF: &str = "urn:bead-rs:schema:checkpoint-pointer:native-v
 /// Guide version the snapshots below were taken at. Bumping
 /// `FIELD_GUIDE_VERSION` in `src/service/schema.rs` without refreshing the
 /// digests is exactly the drift this constant exists to catch.
-const SNAPSHOT_GUIDE_VERSION: i64 = 10;
+const SNAPSHOT_GUIDE_VERSION: i64 = 11;
 
-/// `bead schema explain <native-guide identity> --format json`, guide v10.
+/// `bead schema explain <native-guide identity> --format json`, guide v11.
 const NATIVE_GUIDE_JSON_SHA256: &str =
-    "3b9930b70eaa05bc3958149a8ee8710043b366c143fe721b203e631193dbbb05";
+    "ef743b0c65a2978e78dc29e0a1ca26c4a4207a0755d76abad82474a1554e2bd9";
 
-/// `bead schema explain <native-guide identity> --format markdown`, guide v10.
+/// `bead schema explain <native-guide identity> --format markdown`, guide v11.
 const NATIVE_GUIDE_MARKDOWN_SHA256: &str =
-    "4d9088248977e7bd140742b9c30822a30b91194a7117989df49284671402d578";
+    "b36f337db2a708073cee283c2998481270fe0875856ff6a0bee5aa7a00931ea4";
 
-/// `bead schema explain <concise identity> --format json`, guide v10.
+/// `bead schema explain <concise identity> --format json`, guide v11.
 const CONCISE_JSON_SHA256: &str =
-    "400b0a9a80dc72de92068844034adc600bb06aea5dab45dda44e73804387c3d6";
+    "261113eda1b9829340acbacb0b501538680de5fca1814e2abc588a694f476c35";
 
-/// `bead schema explain <concise identity> --format markdown`, guide v10.
+/// `bead schema explain <concise identity> --format markdown`, guide v11.
 const CONCISE_MARKDOWN_SHA256: &str =
-    "d8f26b11d53a638f946059564cac9173a255c4650edc16e9bd8bb4df626e537a";
+    "0e98d0899b3dea89d514d8f48b253a520a4df0297d246cd3286e80ee057cbbf1";
 
 const GUIDE_FIELD_MEMBERS: [&str; 10] = [
     "json_type",
@@ -120,7 +120,7 @@ const SNAPSHOTS: [Snapshot; 2] = [
 /// `FIELD_GUIDE_VERSION` in `src/service/schema.rs` if so, and refresh the
 /// `*_SHA256` constants in this file — all in the same commit.
 #[test]
-fn snapshots_pin_field_guide_v10_renders() {
+fn snapshots_pin_field_guide_v11_renders() {
     assert_eq!(
         FIELD_GUIDE_VERSION, SNAPSHOT_GUIDE_VERSION,
         "FIELD_GUIDE_VERSION moved without refreshing the snapshot digests in \

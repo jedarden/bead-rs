@@ -507,9 +507,8 @@ pub struct RestoreOptions {
     long_about = "Create a new issue in the workspace.
 
 Creates a new issue with the specified title and optional metadata.
-The issue ID is automatically generated and printed on success.
-Fresh creates print only the issue ID followed by a newline; idempotent
-reference hits use the explicit result prefixes described below.
+The issue ID is automatically generated and printed on success. Plain output
+prints the new ID; --json prints the created issue document.
 
 IDEMPOTENT CREATION:
   --unique-ref NAMESPACE:KEY atomically binds a stable external identity.
@@ -526,6 +525,7 @@ PRIORITIES:
 
 EXAMPLES:
   bead create --title \"Fix authentication bug\" --priority 0
+  bead create --title \"Add agent-readable task\" --json
   bead create --title \"Update documentation\" --priority 2 --label docs
   bead create --title \"Build image\" --resource-key docker:daemon --resource-key gpu:0
   bead create --title \"Materialize tracker work\" --unique-ref github:issue-123
@@ -581,6 +581,10 @@ pub struct CreateOptions {
     #[arg(long)]
     pub assignee: Option<String>,
 
+    /// Output the created issue as one JSON object
+    #[arg(long)]
+    pub json: bool,
+
     /// Labels to add (can be specified multiple times)
     #[arg(long)]
     pub label: Vec<String>,
@@ -627,7 +631,8 @@ and does not reserve work. With '--ready --sort attempts', consecutive failures
 order beads within each priority tier before the FIFO tie-breakers.
 
 EXAMPLES:
-  bead list --json --limit 10                      # First 10 issues as JSON
+  bead list --json --limit 10                      # First 10 issues as one JSON array
+  bead list --jsonl --limit 10                     # First 10 issues as JSON objects per line
   bead list --status open --assignee alice        # Open issues assigned to alice
   bead list --ready --limit 5                      # Next 5 ready candidates
   bead list --ready --sort attempts --limit 5      # Prefer fresh work within priority
@@ -650,14 +655,20 @@ COMMENT PROJECTION:
 
 OUTPUT:
   Without --json: human-readable table format
-  With --json: one compact JSON object per line (compact JSONL format)
+  With --json: one compact JSON array, including when empty
+  With --jsonl: one compact JSON object per line; empty results write no bytes
+  --json and --jsonl cannot be combined
   JSON output includes: id, title, priority, status, manual_blocked, effective_status,
   assignee, dependencies, created_at, updated_at, and labels based on comment projection."
 )]
 pub struct ListOptions {
-    /// Output in JSON format
+    /// Output one JSON array
     #[arg(long)]
     pub json: bool,
+
+    /// Output one JSON object per line (empty results write no bytes)
+    #[arg(long)]
+    pub jsonl: bool,
 
     /// Filter by status
     #[arg(long)]
@@ -705,26 +716,22 @@ pub struct ListOptions {
     long_about = "Display detailed information about a single issue.
 
 Shows complete issue details including dependencies, labels, and optionally
-comments. Output format depends on --json flag.
+comments. JSON output is one issue object.
 
 EXAMPLES:
   bead show bead-123abc456789def                    # Human-readable output
-  bead show ID --json                                # JSON output for NEEDLE
+  bead show ID --json                                # One issue object as JSON
   bead show ID --comments unresolved                 # With unresolved comments
   bead show ID --comments all --json                 # Full issue with all comments
 
 OUTPUT FORMAT:
   Without --json: Human-readable detailed view
-  With --json: One-element JSON array for NEEDLE v1 compatibility
+  With --json: One JSON object for the issue
 
 COMMENT PROJECTION:
   --comments none         Show only counts and resolution metadata (default)
   --comments unresolved   Include bodies for unresolved comments only
   --comments all          Include all comment bodies in canonical order
-
-NEEDLE COMPATIBILITY:
-  JSON output format is a one-element array containing the issue object.
-  This matches NEEDLE v1 expectations for subprocess output.
 
 ISSUE DETAILS INCLUDE:
   - Basic fields: id, title, description, priority, status

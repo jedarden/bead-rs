@@ -4,14 +4,13 @@
 .SH NAME
 bead create \- Create a new issue
 .SH SYNOPSIS
-\fBbead create\fR [\fB\-\-description\fR] [\fB\-\-priority\fR] [\fB\-\-issue\-type\fR] [\fB\-\-assignee\fR] [\fB\-\-label\fR] [\fB\-\-resource\-key\fR] [\fB\-\-depends\-on\fR] [\fB\-\-unique\-ref\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-title\fR> 
+\fBbead create\fR [\fB\-\-description\fR] [\fB\-\-priority\fR] [\fB\-\-issue\-type\fR] [\fB\-\-assignee\fR] [\fB\-\-json\fR] [\fB\-\-label\fR] [\fB\-\-resource\-key\fR] [\fB\-\-depends\-on\fR] [\fB\-\-unique\-ref\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-title\fR>
 .SH DESCRIPTION
 Create a new issue in the workspace.
 .PP
 Creates a new issue with the specified title and optional metadata.
-The issue ID is automatically generated and printed on success.
-Fresh creates print only the issue ID followed by a newline; idempotent
-reference hits use the explicit result prefixes described below.
+The issue ID is automatically generated and printed on success. Plain output
+prints the new ID; \-\-json prints the created issue document.
 .PP
 IDEMPOTENT CREATION:
   \-\-unique\-ref NAMESPACE:KEY atomically binds a stable external identity.
@@ -28,6 +27,7 @@ PRIORITIES:
 .PP
 EXAMPLES:
   bead create \-\-title "Fix authentication bug" \-\-priority 0
+  bead create \-\-title "Add agent\-readable task" \-\-json
   bead create \-\-title "Update documentation" \-\-priority 2 \-\-label docs
   bead create \-\-title "Build image" \-\-resource\-key docker:daemon \-\-resource\-key gpu:0
   bead create \-\-title "Materialize tracker work" \-\-unique\-ref github:issue\-123
@@ -77,6 +77,9 @@ Issue type (default: task)
 .TP
 \fB\-\-assignee\fR \fI<ASSIGNEE>\fR
 Assignee (optional)
+.TP
+\fB\-\-json\fR
+Output the created issue as one JSON object
 .TP
 \fB\-\-label\fR \fI<LABEL>\fR
 Labels to add (can be specified multiple times)

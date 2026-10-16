@@ -64,15 +64,18 @@ fn test_show_json() {
         .trim();
 
     // Show with JSON output
-    Command::cargo_bin("bead")
+    let output = Command::cargo_bin("bead")
         .unwrap()
         .args(["show", issue_id, "--json"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("["))
-        .stdout(predicates::str::contains("\"id\""))
-        .stdout(predicates::str::contains("\"title\""))
-        .stdout(predicates::str::contains("JSON Show Test"));
+        .get_output()
+        .stdout
+        .clone();
+    let document: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert!(document.is_object());
+    assert_eq!(document["id"], issue_id);
+    assert_eq!(document["title"], "JSON Show Test");
 }
 
 #[test]

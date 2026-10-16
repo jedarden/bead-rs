@@ -43,7 +43,10 @@ use std::collections::HashSet;
 /// v10: the `checkpoint_issue.comments` entry advertises the four public
 /// comment mutation operations instead of the read-only empty list (R010,
 /// comment-mutation-v1; beadrs-2ddcb210).
-pub const FIELD_GUIDE_VERSION: i64 = 10;
+///
+/// v11: the capabilities catalog advertises R041 issue JSON document shapes
+/// for list, show, create, history, dependency list, and count.
+pub const FIELD_GUIDE_VERSION: i64 = 11;
 
 /// Artifact identity carried by every `bead schema explain` response, per the
 /// accepted field-guide contract (`research/specs/native-field-guide-v1.md`).
@@ -319,6 +322,7 @@ fn names(kind: &str) -> &'static [&'static str] {
             "schema_ref",
             "schemas",
             "commands",
+            "agent_ergonomics",
             // Additive R026 handshake (plan section 11): optional so a
             // producer whose compiled automatic-flush default is off can
             // omit it and still validate. This binary's default has been on
@@ -659,6 +663,7 @@ fn property_schema(kind: &str, name: &str) -> Value {
         | ("capabilities", "schemas")
         | ("capabilities", "commands") => json!({"type":"array"}),
         ("capabilities", "priorities") => json!({"type":"object"}),
+        ("capabilities", "agent_ergonomics") => json!({"type":"object"}),
         ("capabilities", "attempt_outcome")
         | ("capabilities", "secret_scan")
         | ("capabilities", "historical_redaction") => {
@@ -832,6 +837,7 @@ fn required_for(kind: &str) -> Vec<String> {
         // attempt resolution omits the member entirely rather than
         // publishing supported false
         "capabilities" => &[
+            "agent_ergonomics",
             "auto_flush",
             "auto_stage",
             "attempt_outcome",
@@ -3148,6 +3154,19 @@ fn field_semantics(document: &str, name: &str) -> FieldSemantics {
             example: json!(true),
             invariants: &["always true: show and list JSON derive an attempt summary from durable outcome records"],
             common_mistake: "Writing attempt summaries by hand; they are read-time projections.",
+        },
+        ("capabilities", "agent_ergonomics") => FieldSemantics {
+            ownership: "system",
+            operations: &["capabilities"],
+            has_default: false,
+            default: Value::Null,
+            example: json!({"version":1,"issue_documents":{"list_json":"array","list_jsonl":"object-per-line","show_json":"object","create_json":"object","history_json":"array","dependency_list_json":"array","count_json":"object"}}),
+            invariants: &[
+                "optional versioned object advertising agent-facing JSON document shapes",
+                "list_json is one array, list_jsonl is one object per line, and show_json and create_json are one object",
+                "absent from producers that do not support this extension",
+            ],
+            common_mistake: "Assuming all issue commands use the same transport; list JSON and JSONL have distinct advertised shapes.",
         },
         ("capabilities", "secret_scan") => FieldSemantics {
             ownership: "system",

@@ -46,6 +46,9 @@ pub struct Capabilities {
     pub schemas: Vec<SchemaEntry>,
     /// Available commands
     pub commands: Vec<String>,
+    /// Agent-facing JSON document shapes added by R041.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_ergonomics: Option<AgentErgonomicsCapabilities>,
     /// Whether this binary publishes a checkpoint generation after every
     /// successful semantic mutation (plan 6.2.1, R026). Reports the
     /// compiled default, never workspace state: `checkpoint.auto_flush`
@@ -75,6 +78,25 @@ pub struct Capabilities {
     /// Audited historical-redaction capability handshake (ADR-015).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub historical_redaction: Option<HistoricalRedactionCapabilities>,
+}
+
+/// JSON document shapes advertised to agent consumers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentErgonomicsCapabilities {
+    pub version: u32,
+    pub issue_documents: IssueDocumentShapes,
+}
+
+/// Output shape for issue-oriented JSON commands.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueDocumentShapes {
+    pub list_json: String,
+    pub list_jsonl: String,
+    pub show_json: String,
+    pub create_json: String,
+    pub history_json: String,
+    pub dependency_list_json: String,
+    pub count_json: String,
 }
 
 /// Offline secret-scanning capability handshake.
@@ -280,6 +302,18 @@ pub fn generate_capabilities_with_secret_mode(
             "watchdog".to_string(),
             "why".to_string(),
         ],
+        agent_ergonomics: Some(AgentErgonomicsCapabilities {
+            version: 1,
+            issue_documents: IssueDocumentShapes {
+                list_json: "array".to_string(),
+                list_jsonl: "object-per-line".to_string(),
+                show_json: "object".to_string(),
+                create_json: "object".to_string(),
+                history_json: "array".to_string(),
+                dependency_list_json: "array".to_string(),
+                count_json: "object".to_string(),
+            },
+        }),
         // The additive R026 handshake (plan section 11): `auto_flush`
         // reports the compiled default, `true` since the activation
         // flipped it on. The workspace key and the per-invocation

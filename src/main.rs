@@ -1322,16 +1322,23 @@ fn cmd_create(opts: cli::CreateOptions) -> Result<()> {
     tx.commit()
         .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to commit transaction: {}", e)))?;
 
-    // Preserve the legacy bare-ID output for fresh creates. Ref hits carry an
-    // explicit result class so automation can distinguish a new bead from a
-    // reused open or closed bead.
-    match result.outcome {
-        service::CreateOutcome::Created => println!("{}", result.issue.id),
-        service::CreateOutcome::Existing { closed: true } => {
-            println!("EXISTING_CLOSED {}", result.issue.id)
-        }
-        service::CreateOutcome::Existing { closed: false } => {
-            println!("EXISTING {}", result.issue.id)
+    if opts.json {
+        let issue = service::get_issue_by_id(&conn, &result.issue.id)?
+            .ok_or_else(|| Error::not_found(format!("Issue not found: {}", result.issue.id)))?;
+        let document = issue_json_document(&conn, &issue, "none")?;
+        println!("{}", serde_json::to_string(&document)?);
+    } else {
+        // Preserve the legacy ID output for fresh creates. Ref hits carry an
+        // explicit result class so automation can distinguish a new bead from
+        // a reused open or closed bead.
+        match result.outcome {
+            service::CreateOutcome::Created => println!("{}", result.issue.id),
+            service::CreateOutcome::Existing { closed: true } => {
+                println!("EXISTING_CLOSED {}", result.issue.id)
+            }
+            service::CreateOutcome::Existing { closed: false } => {
+                println!("EXISTING {}", result.issue.id)
+            }
         }
     }
 
@@ -1339,6 +1346,10 @@ fn cmd_create(opts: cli::CreateOptions) -> Result<()> {
 }
 
 fn cmd_list(opts: cli::ListOptions) -> Result<()> {
+    if opts.json && opts.jsonl {
+        return Err(Error::cli_usage("--jsonl cannot be combined with --json"));
+    }
+
     // Discover workspace
     let config = store::WorkspaceConfig::discover()?
         .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
@@ -1386,28 +1397,19 @@ fn cmd_list(opts: cli::ListOptions) -> Result<()> {
     )?;
 
     // Output results
-    if opts.json {
-        // Emit one compact object per line
-        if issues.is_empty() {
-            println!("[]");
+    if opts.json || opts.jsonl {
+        // Build every issue projection before writing machine-readable output
+        // so a failed lookup or serialization cannot leave a partial document.
+        let documents = issues
+            .iter()
+            .map(|issue| issue_json_document(&conn, issue, &opts.comments))
+            .collect::<Result<Vec<_>>>()?;
+
+        if opts.json {
+            println!("{}", serde_json::to_string(&documents)?);
         } else {
-            for issue in issues {
-                // Load dependencies, labels, and comments for each issue
-                let dependencies = load_dependencies(&conn, &issue.id)?;
-                let labels = load_labels(&conn, &issue.id)?;
-                let comments = load_comments(&conn, &issue.id, &opts.comments)?;
-                let attempts = service::get_attempt_summary(&conn, &issue.id)?;
-                let output = serde_json::to_string(&to_needle_json(
-                    &issue,
-                    &dependencies,
-                    &labels,
-                    &comments,
-                    &attempts,
-                ))
-                .map_err(|e| {
-                    Error::Internal(anyhow::anyhow!("Failed to serialize issue: {}", e))
-                })?;
-                println!("{}", output);
+            for document in documents {
+                println!("{}", serde_json::to_string(&document)?);
             }
         }
     } else {
@@ -1453,29 +1455,10 @@ fn cmd_show(opts: cli::ShowOptions) -> Result<()> {
     let issue = service::get_issue_by_id(&conn, &opts.id)?
         .ok_or_else(|| Error::not_found(format!("Issue not found: {}", opts.id)))?;
 
-    // Load dependencies for this issue
-    let dependencies = load_dependencies(&conn, &opts.id)?;
-
-    // Load labels for this issue
-    let labels = load_labels(&conn, &opts.id)?;
-
-    // Load comments for this issue based on projection level
-    let comments = load_comments(&conn, &opts.id, &opts.comments)?;
-
     // Output results
     if opts.json {
-        // Derive compact attempt evidence from the durable outcome sequence.
-        let attempts = service::get_attempt_summary(&conn, &opts.id)?;
-        // Emit as one-element array for NEEDLE v1 compatibility
-        let output = serde_json::to_string(&vec![to_needle_json(
-            &issue,
-            &dependencies,
-            &labels,
-            &comments,
-            &attempts,
-        )])
-        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to serialize issue: {}", e)))?;
-        println!("{}", output);
+        let document = issue_json_document(&conn, &issue, &opts.comments)?;
+        println!("{}", serde_json::to_string(&document)?);
     } else {
         // Human-readable output
         println!("ID: {}", issue.id);
@@ -1504,6 +1487,26 @@ fn cmd_show(opts: cli::ShowOptions) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Render one issue with the common CLI projection used by list, show, and
+/// create JSON output.
+fn issue_json_document(
+    conn: &rusqlite::Connection,
+    issue: &model::Issue,
+    comments_projection: &str,
+) -> Result<serde_json::Value> {
+    let dependencies = load_dependencies(conn, &issue.id)?;
+    let labels = load_labels(conn, &issue.id)?;
+    let comments = load_comments(conn, &issue.id, comments_projection)?;
+    let attempts = service::get_attempt_summary(conn, &issue.id)?;
+    Ok(to_needle_json(
+        issue,
+        &dependencies,
+        &labels,
+        &comments,
+        &attempts,
+    ))
 }
 
 fn cmd_update(opts: cli::UpdateOptions) -> Result<()> {

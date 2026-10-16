@@ -4,7 +4,7 @@
 .SH NAME
 bead list \- List issues
 .SH SYNOPSIS
-\fBbead list\fR [\fB\-\-json\fR] [\fB\-\-status\fR] [\fB\-\-assignee\fR] [\fB\-\-ready\fR] [\fB\-\-sort\fR] [\fB\-\-blocked\fR] [\fB\-\-comments\fR] [\fB\-\-limit\fR] [\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBbead list\fR [\fB\-\-json\fR] [\fB\-\-jsonl\fR] [\fB\-\-status\fR] [\fB\-\-assignee\fR] [\fB\-\-ready\fR] [\fB\-\-sort\fR] [\fB\-\-blocked\fR] [\fB\-\-comments\fR] [\fB\-\-limit\fR] [\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR]
 .SH DESCRIPTION
 List issues with optional filtering and comment projection.
 .PP
@@ -15,7 +15,8 @@ and does not reserve work. With \*(Aq\-\-ready \-\-sort attempts\*(Aq, consecuti
 order beads within each priority tier before the FIFO tie\-breakers.
 .PP
 EXAMPLES:
-  bead list \-\-json \-\-limit 10                      # First 10 issues as JSON
+  bead list \-\-json \-\-limit 10                      # First 10 issues as one JSON array
+  bead list \-\-jsonl \-\-limit 10                     # First 10 issues as JSON objects per line
   bead list \-\-status open \-\-assignee alice        # Open issues assigned to alice
   bead list \-\-ready \-\-limit 5                      # Next 5 ready candidates
   bead list \-\-ready \-\-sort attempts \-\-limit 5      # Prefer fresh work within priority
@@ -38,13 +39,18 @@ COMMENT PROJECTION:
 .PP
 OUTPUT:
   Without \-\-json: human\-readable table format
-  With \-\-json: one compact JSON object per line (compact JSONL format)
+  With \-\-json: one compact JSON array, including when empty
+  With \-\-jsonl: one compact JSON object per line; empty results write no bytes
+  \-\-json and \-\-jsonl cannot be combined
   JSON output includes: id, title, priority, status, manual_blocked, effective_status,
   assignee, dependencies, created_at, updated_at, and labels based on comment projection.
 .SH OPTIONS
 .TP
 \fB\-\-json\fR
-Output in JSON format
+Output one JSON array
+.TP
+\fB\-\-jsonl\fR
+Output one JSON object per line (empty results write no bytes)
 .TP
 \fB\-\-status\fR \fI<STATUS>\fR
 Filter by status

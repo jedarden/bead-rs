@@ -9,26 +9,22 @@ bead show \- Show a single issue
 Display detailed information about a single issue.
 .PP
 Shows complete issue details including dependencies, labels, and optionally
-comments. Output format depends on \-\-json flag.
+comments. JSON output is one issue object.
 .PP
 EXAMPLES:
   bead show bead\-123abc456789def                    # Human\-readable output
-  bead show ID \-\-json                                # JSON output for NEEDLE
+  bead show ID \-\-json                                # One issue object as JSON
   bead show ID \-\-comments unresolved                 # With unresolved comments
   bead show ID \-\-comments all \-\-json                 # Full issue with all comments
 .PP
 OUTPUT FORMAT:
   Without \-\-json: Human\-readable detailed view
-  With \-\-json: One\-element JSON array for NEEDLE v1 compatibility
+  With \-\-json: One JSON object for the issue
 .PP
 COMMENT PROJECTION:
   \-\-comments none         Show only counts and resolution metadata (default)
   \-\-comments unresolved   Include bodies for unresolved comments only
   \-\-comments all          Include all comment bodies in canonical order
-.PP
-NEEDLE COMPATIBILITY:
-  JSON output format is a one\-element array containing the issue object.
-  This matches NEEDLE v1 expectations for subprocess output.
 .PP
 ISSUE DETAILS INCLUDE:
   \- Basic fields: id, title, description, priority, status
