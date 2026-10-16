@@ -149,7 +149,7 @@ fn claim_epoch(workspace: &Path, id: &str) -> i64 {
         String::from_utf8_lossy(&output.stderr)
     );
     let shown: Value = serde_json::from_slice(&output.stdout).unwrap();
-    shown.as_array().unwrap()[0]["claim_epoch"]
+    shown["claim_epoch"]
         .as_i64()
         .unwrap_or_else(|| panic!("{id} has no claim epoch projection"))
 }
