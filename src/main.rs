@@ -25,7 +25,8 @@ use std::ffi::OsString;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    let args = match normalize_output_selector_arguments(std::env::args_os().collect()) {
+    let args = rewrite_bare_issue_id(std::env::args_os().collect());
+    let args = match normalize_output_selector_arguments(args) {
         Ok(args) => args,
         Err(message) => {
             eprintln!("bead: {}", Error::cli_usage(message));
@@ -159,6 +160,81 @@ fn normalize_output_selector_arguments(
     }
 
     Ok(args)
+}
+
+/// Rewrite `bead <ID>` into `bead show <ID>` before Clap ever sees the
+/// arguments. A subcommand name always wins: this only fires when the first
+/// positional token is not a recognized top-level subcommand (or alias) and
+/// has the generic issue-ID shape `<prefix>-<hex>` (e.g. `bead-4a22b394`). A
+/// token that is neither is left untouched, so Clap reports its own ordinary
+/// "unrecognized subcommand" usage error for it.
+fn rewrite_bare_issue_id(args: Vec<OsString>) -> Vec<OsString> {
+    let command = Cli::command();
+    let mut index = 1;
+
+    while index < args.len() {
+        let Some(token) = args[index].to_str() else {
+            return args;
+        };
+        if token == "--" {
+            return args;
+        }
+        if let Some(long) = token.strip_prefix("--") {
+            let name = long.split_once('=').map_or(long, |(name, _)| name);
+            let attached_value = long.contains('=');
+            let consumes_value = command
+                .get_arguments()
+                .find(|argument| argument.get_long() == Some(name))
+                .is_some_and(|argument| argument.get_action().takes_values());
+            if consumes_value && !attached_value {
+                index += 1;
+            }
+            index += 1;
+            continue;
+        }
+        if let Some(shorts) = token.strip_prefix('-') {
+            if token != "-" {
+                if let Some(short) = shorts.chars().next() {
+                    let consumes_value = command
+                        .get_arguments()
+                        .find(|argument| argument.get_short() == Some(short))
+                        .is_some_and(|argument| argument.get_action().takes_values());
+                    if consumes_value && shorts.chars().count() == 1 {
+                        index += 1;
+                    }
+                }
+                index += 1;
+                continue;
+            }
+        }
+
+        // First positional token: a known subcommand name always wins.
+        if command.find_subcommand(token).is_some() {
+            return args;
+        }
+        if looks_like_issue_id(token) {
+            let mut args = args;
+            args.insert(index, OsString::from("show"));
+            return args;
+        }
+        return args;
+    }
+
+    args
+}
+
+/// A generic, syntactic issue-ID shape: a non-empty alphanumeric prefix, a
+/// `-`, and a hex suffix of at least 4 characters. This matches every ID
+/// `generate_issue_id` produces (`<prefix>-<8 lowercase hex chars>`) without
+/// requiring a workspace lookup during argument preprocessing.
+fn looks_like_issue_id(token: &str) -> bool {
+    let Some((prefix, suffix)) = token.rsplit_once('-') else {
+        return false;
+    };
+    !prefix.is_empty()
+        && prefix.chars().all(|c| c.is_ascii_alphanumeric())
+        && suffix.len() >= 4
+        && suffix.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// Find the leaf Clap command selected in the raw argument vector. Argument
@@ -573,6 +649,12 @@ fn resolve_text_inputs(cli: &mut Cli) -> Result<()> {
             }
         }
         Command::Close(opts) => {
+            // Preserve the dedicated R037 near-miss diagnostic before the
+            // ordinary reason-source cardinality check can classify the
+            // invocation as missing both transports.
+            if opts.body.is_some() {
+                return Ok(());
+            }
             if opts.reason.is_some() == opts.reason_file.is_some() {
                 return Err(Error::cli_usage(
                     "exactly one of --reason or --reason-file is required",
@@ -693,6 +775,8 @@ fn dispatch_command(cli: Cli) -> Result<bool> {
         Command::Claim(opts) => cmd_claim(opts).map(|_| false),
         Command::List(opts) => cmd_list(opts).map(|_| false),
         Command::Show(opts) => cmd_show(opts).map(|_| false),
+        Command::Ready(opts) => cmd_list(ready_options_to_list_options(opts)).map(|_| false),
+        Command::Search(opts) => cmd_list(search_options_to_list_options(opts)).map(|_| false),
         Command::Update(opts) => cmd_update(opts).map(|_| false),
         Command::Release(opts) => cmd_release(opts).map(|_| false),
         Command::Close(opts) => cmd_close(opts).map(|_| false),
@@ -1602,6 +1686,46 @@ fn cmd_create(opts: cli::CreateOptions) -> Result<()> {
     Ok(())
 }
 
+/// `bead ready` is defined as exactly `bead list --ready`: build the
+/// equivalent `ListOptions` and run the same code path so the two commands
+/// can never drift.
+fn ready_options_to_list_options(opts: cli::ReadyOptions) -> cli::ListOptions {
+    cli::ListOptions {
+        json: opts.json,
+        jsonl: opts.jsonl,
+        status: None,
+        assignee: opts.assignee,
+        ready: true,
+        sort: opts.sort,
+        blocked: false,
+        comments: opts.comments,
+        limit: opts.limit,
+        all: opts.all,
+        search: None,
+        count: opts.count,
+        verbose: opts.verbose,
+    }
+}
+
+/// `bead search TEXT` is defined as exactly `bead list --all --search TEXT`.
+fn search_options_to_list_options(opts: cli::SearchOptions) -> cli::ListOptions {
+    cli::ListOptions {
+        json: opts.json,
+        jsonl: opts.jsonl,
+        status: opts.status,
+        assignee: opts.assignee,
+        ready: opts.ready,
+        sort: None,
+        blocked: opts.blocked,
+        comments: opts.comments,
+        limit: opts.limit,
+        all: true,
+        search: Some(opts.text),
+        count: opts.count,
+        verbose: opts.verbose,
+    }
+}
+
 fn cmd_list(opts: cli::ListOptions) -> Result<()> {
     if opts.json && opts.jsonl {
         return Err(Error::cli_usage("--jsonl cannot be combined with --json"));
@@ -1636,6 +1760,23 @@ fn cmd_list(opts: cli::ListOptions) -> Result<()> {
         opts.status.as_deref()
     };
 
+    if opts.count {
+        let count = service::count_issues(
+            &conn,
+            status_filter,
+            opts.assignee.as_deref(),
+            opts.ready,
+            blocked_only,
+            opts.search.as_deref(),
+        )?;
+        if opts.json || opts.jsonl {
+            println!("{}", serde_json::json!({ "count": count }));
+        } else {
+            println!("{}", count);
+        }
+        return Ok(());
+    }
+
     // Get issues
     let ready_sort = if opts.sort.as_deref() == Some("attempts") {
         service::ReadySort::Attempts
@@ -1648,7 +1789,9 @@ fn cmd_list(opts: cli::ListOptions) -> Result<()> {
         opts.assignee.as_deref(),
         opts.ready,
         blocked_only,
+        opts.search.as_deref(),
         opts.limit,
+        opts.all,
         opts.verbose,
         ready_sort,
     )?;
@@ -2294,7 +2437,91 @@ fn cmd_dep(cmd: cli::DepCommand) -> Result<()> {
     match cmd {
         cli::DepCommand::Add(opts) => cmd_dep_add(opts),
         cli::DepCommand::Remove(opts) => cmd_dep_remove(opts),
+        cli::DepCommand::List(opts) => cmd_dep_list(opts),
     }
+}
+
+/// List every dependency edge touching one issue, in both directions.
+fn cmd_dep_list(opts: cli::DepListOptions) -> Result<()> {
+    // Discover workspace
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+
+    // Open database connection
+    let db_path = config.database_path();
+    let conn = store::open_configured_connection(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+    // The issue must exist (exit 3 otherwise).
+    service::get_issue_by_id(&conn, &opts.id)?
+        .ok_or_else(|| Error::not_found(format!("Issue not found: {}", opts.id)))?;
+
+    // Blockers this issue depends on.
+    let blocked_by = load_dependencies(&conn, &opts.id)?;
+
+    // Dependents that depend on this issue as their blocker.
+    let mut stmt = conn.prepare_cached(
+        "SELECT dependency.blocked_issue_id, dependency.kind, dependent.base_status
+         FROM dependencies AS dependency
+         LEFT JOIN issues AS dependent ON dependent.id = dependency.blocked_issue_id
+         WHERE dependency.blocker_issue_id = ?",
+    )?;
+    let blocking = stmt
+        .query_map([&opts.id], |row| {
+            let dependent: String = row.get(0)?;
+            let kind: String = row.get(1)?;
+            let dependent_status: Option<String> = row.get(2)?;
+            let finished = dependent_status.as_deref() == Some("closed");
+            Ok(serde_json::json!({
+                "dependent": dependent,
+                "kind": kind,
+                "dependent_status": dependent_status,
+                "finished": finished
+            }))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to load dependents: {}", e)))?;
+
+    if opts.json {
+        let document = serde_json::json!({
+            "id": opts.id,
+            "blocked_by": blocked_by,
+            "blocking": blocking,
+        });
+        println!("{}", serde_json::to_string(&document)?);
+    } else {
+        println!("ID: {}", opts.id);
+        if blocked_by.is_empty() {
+            println!("Blocked by: (none)");
+        } else {
+            println!("Blocked by:");
+            for dep in &blocked_by {
+                println!(
+                    "  {} [{}] status={} finished={}",
+                    dep["blocker"].as_str().unwrap_or(""),
+                    dep["kind"].as_str().unwrap_or(""),
+                    dep["blocker_status"].as_str().unwrap_or("unknown"),
+                    dep["finished"].as_bool().unwrap_or(false)
+                );
+            }
+        }
+        if blocking.is_empty() {
+            println!("Blocking: (none)");
+        } else {
+            println!("Blocking:");
+            for dep in &blocking {
+                println!(
+                    "  {} [{}] status={} finished={}",
+                    dep["dependent"].as_str().unwrap_or(""),
+                    dep["kind"].as_str().unwrap_or(""),
+                    dep["dependent_status"].as_str().unwrap_or("unknown"),
+                    dep["finished"].as_bool().unwrap_or(false)
+                );
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Render the relationship a dependency kind asserts between BLOCKED and
