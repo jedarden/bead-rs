@@ -434,11 +434,8 @@ fn test_ready_frontier_emits_r001_reason_codes() {
         .args(["list", "--json"])
         .output()
         .unwrap();
-    for line in list_output.stdout.split(|byte| *byte == b'\n') {
-        if line.is_empty() {
-            continue;
-        }
-        let issue: serde_json::Value = serde_json::from_slice(line).unwrap();
+    let issues: Vec<serde_json::Value> = serde_json::from_slice(&list_output.stdout).unwrap();
+    for issue in issues {
         let id = issue.get("id").and_then(|value| value.as_str()).unwrap();
         Command::cargo_bin("bead")
             .unwrap()
