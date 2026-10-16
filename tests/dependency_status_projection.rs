@@ -31,8 +31,12 @@ fn create(workspace: &Path, title: &str) -> String {
 fn show_record(workspace: &Path, id: &str) -> serde_json::Value {
     let output = run(workspace, &["show", id, "--json"]);
     assert!(output.status.success(), "show --json failed: {output:?}");
-    let records: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    records[0].clone()
+    let record: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        record.is_object(),
+        "show --json must return one issue object"
+    );
+    record
 }
 
 fn first_dependency(record: &serde_json::Value) -> &serde_json::Value {
@@ -58,7 +62,7 @@ fn show_and_list_json_include_resolved_blocker_status() {
     assert_eq!(show_edge["blocker_status"], "open");
     assert_eq!(show_edge["finished"], false);
 
-    let output = run(workspace.path(), &["list", "--json", "--limit", "999999"]);
+    let output = run(workspace.path(), &["list", "--jsonl", "--limit", "999999"]);
     assert!(output.status.success(), "list --json failed: {output:?}");
     let record = String::from_utf8_lossy(&output.stdout)
         .lines()

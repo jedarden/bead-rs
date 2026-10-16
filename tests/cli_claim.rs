@@ -111,7 +111,7 @@ fn test_claim_priority_ordering() {
 
     let show_output = std::str::from_utf8(&show_result.get_output().stdout).unwrap();
     let show_parsed: serde_json::Value = serde_json::from_str(show_output).unwrap();
-    let issue = &show_parsed[0];
+    let issue = &show_parsed;
 
     assert_eq!(issue["title"], "High Priority");
     assert_eq!(issue["priority"], 0);
@@ -285,9 +285,7 @@ fn create_issue(dir: &std::path::Path, title: &str) -> String {
     String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
 
-/// Read one field of an issue from `bead list --json` output
-///
-/// `list --json` emits one issue object per line (`[]` when empty).
+/// Read one field of an issue from the `bead list --json` array.
 fn issue_field(dir: &std::path::Path, id: &str, field: &str) -> serde_json::Value {
     let out = Command::cargo_bin("bead")
         .unwrap()
@@ -295,16 +293,9 @@ fn issue_field(dir: &std::path::Path, id: &str, field: &str) -> serde_json::Valu
         .args(["list", "--json"])
         .output()
         .unwrap();
-    let stdout = String::from_utf8(out.stdout).unwrap();
-    for line in stdout.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed == "[]" {
-            continue;
-        }
-        let issue: serde_json::Value = serde_json::from_str(trimmed).unwrap();
-        if issue["id"].as_str() == Some(id) {
-            return issue[field].clone();
-        }
+    let issues: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    if let Some(issue) = issues.iter().find(|issue| issue["id"].as_str() == Some(id)) {
+        return issue[field].clone();
     }
     panic!("issue {} not found in list output", id);
 }

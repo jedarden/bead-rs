@@ -42,7 +42,7 @@ fn held_credential(workspace: &std::path::Path, issue_id: &str) -> String {
         .assert()
         .success();
     let shown: serde_json::Value = serde_json::from_slice(&output.get_output().stdout).unwrap();
-    shown[0]["claim_epoch"].as_i64().unwrap().to_string()
+    shown["claim_epoch"].as_i64().unwrap().to_string()
 }
 
 #[test]

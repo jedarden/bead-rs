@@ -35,7 +35,7 @@ fn create_issue(dir: &Path, title: &str) -> String {
 fn held_credential(dir: &Path, id: &str) -> String {
     let output = run(dir, &["show", id, "--json"]);
     let shown: Value = serde_json::from_slice(&output.stdout).unwrap();
-    shown[0]["claim_epoch"].as_i64().unwrap().to_string()
+    shown["claim_epoch"].as_i64().unwrap().to_string()
 }
 
 #[test]
@@ -201,7 +201,7 @@ fn r035_doctor_never_clears_assignee_even_under_repair() {
     // Capture initial assignee state
     let output = run(workspace, &["show", &id, "--json"]);
     let issue_json: Value = serde_json::from_slice(&output.stdout).unwrap();
-    let initial_assignee = issue_json[0]["assignee"].as_str().unwrap();
+    let initial_assignee = issue_json["assignee"].as_str().unwrap();
 
     // Neither ordinary repair nor forced starvation recovery may clear it.
     run(workspace, &["doctor", "--repair"]);
@@ -210,7 +210,7 @@ fn r035_doctor_never_clears_assignee_even_under_repair() {
     // Verify assignee is still present
     let output = run(workspace, &["show", &id, "--json"]);
     let issue_json: Value = serde_json::from_slice(&output.stdout).unwrap();
-    let current_assignee = issue_json[0]["assignee"].as_str().unwrap();
+    let current_assignee = issue_json["assignee"].as_str().unwrap();
 
     assert_eq!(
         initial_assignee, current_assignee,

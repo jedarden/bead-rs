@@ -65,11 +65,11 @@ fn show_json(workspace: &Path, issue_id: &str) -> Value {
         .assert()
         .success();
     let value: Value = serde_json::from_slice(&output.get_output().stdout).unwrap();
+    assert!(
+        value.is_object(),
+        "show --json must return one issue object"
+    );
     value
-        .as_array()
-        .and_then(|issues| issues.first())
-        .cloned()
-        .expect("show --json must return a nonempty issue array")
 }
 
 fn list_json(workspace: &Path, issue_id: &str) -> Value {
@@ -78,11 +78,13 @@ fn list_json(workspace: &Path, issue_id: &str) -> Value {
         .args(["list", "--json", "--limit", "999999"])
         .assert()
         .success();
-    String::from_utf8(output.get_output().stdout.clone())
+    serde_json::from_slice::<Value>(&output.get_output().stdout)
         .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .as_array()
+        .unwrap()
+        .iter()
         .find(|issue| issue["id"] == issue_id)
+        .cloned()
         .expect("list --json must include the created issue")
 }
 

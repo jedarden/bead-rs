@@ -1050,7 +1050,7 @@ fn held_credential(workspace: &Path, issue: &str) -> Option<String> {
         .stdout
         .clone();
     let shown: serde_json::Value = serde_json::from_slice(&output).unwrap();
-    let epoch = shown[0]["claim_epoch"].as_i64()?;
+    let epoch = shown["claim_epoch"].as_i64()?;
     (epoch > 0).then(|| epoch.to_string())
 }
 

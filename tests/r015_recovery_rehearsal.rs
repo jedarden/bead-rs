@@ -56,7 +56,7 @@ fn populated_workspace() -> tempfile::TempDir {
 
     let list_output = Command::cargo_bin("bead")
         .unwrap()
-        .args(["list", "--json"])
+        .args(["list", "--jsonl"])
         .current_dir(path)
         .env("HOME", path.to_str().unwrap())
         .output()

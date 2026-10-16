@@ -114,12 +114,11 @@ fn first_issue_id(workspace: &Path) -> String {
         stderr_of(&output)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let first_line = stdout
-        .lines()
-        .next()
-        .unwrap_or_else(|| panic!("list --json produced no output"));
-    serde_json::from_str::<Value>(first_line)
-        .expect("list --json must emit JSONL")
+    serde_json::from_str::<Value>(&stdout)
+        .expect("list --json must emit one JSON array")
+        .as_array()
+        .and_then(|issues| issues.first())
+        .expect("list --json must return at least one issue")
         .get("id")
         .and_then(|v| v.as_str())
         .expect("issue object must carry an id")
@@ -650,7 +649,7 @@ fn populated_source(tag: &str) -> PathBuf {
         run_ok(&workspace, &["create", "--title", &format!("Source {}", i)]);
     }
     let ids: Vec<String> = {
-        let output = run_bead(&workspace, &["list", "--json"]);
+        let output = run_bead(&workspace, &["list", "--jsonl"]);
         String::from_utf8_lossy(&output.stdout)
             .lines()
             .map(|line| {
@@ -783,8 +782,8 @@ fn monolithic_and_sharded_restores_are_equivalent() {
     let from_sharded = restore_into("equivalence-rs", &sharded_set);
 
     // Canonical public state: identical issue corpus.
-    let monolith_list = captured_json_lines(&from_monolith, &["list", "--json"]);
-    let sharded_list = captured_json_lines(&from_sharded, &["list", "--json"]);
+    let monolith_list = captured_json_lines(&from_monolith, &["list", "--jsonl"]);
+    let sharded_list = captured_json_lines(&from_sharded, &["list", "--jsonl"]);
     assert_eq!(
         monolith_list, sharded_list,
         "restored issue corpora must be identical"

@@ -64,10 +64,9 @@ fn dep_add(workspace: &Path, blocked: &str, blocker: &str, kind: &str) -> Output
     run(workspace, &["dep", "add", blocked, blocker, "--kind", kind])
 }
 
-/// IDs of beads on the ready frontier. `list --json` emits JSONL -- one
-/// record per line -- and any banner belongs on stderr, never stdout.
+/// IDs of beads on the ready frontier, read through the JSONL transport.
 fn list_ready(workspace: &Path) -> Vec<String> {
-    let output = run(workspace, &["list", "--ready", "--json"]);
+    let output = run(workspace, &["list", "--ready", "--jsonl"]);
     assert!(output.status.success(), "list --ready failed: {output:?}");
     String::from_utf8_lossy(&output.stdout)
         .lines()

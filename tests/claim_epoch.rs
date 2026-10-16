@@ -51,7 +51,11 @@ fn claim(workspace: &Path, assignee: &str, leased: bool) -> Value {
 fn shown_issue(workspace: &Path, id: &str) -> Value {
     let shown: Value =
         serde_json::from_slice(&run(workspace, ["show", id, "--json"]).stdout).unwrap();
-    shown.as_array().unwrap()[0].clone()
+    assert!(
+        shown.is_object(),
+        "show --json must return one issue object"
+    );
+    shown
 }
 
 fn checkpoint_issue(workspace: &Path, id: &str) -> Value {

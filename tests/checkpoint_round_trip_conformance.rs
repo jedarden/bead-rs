@@ -1104,10 +1104,10 @@ fn test_checkpoint_round_trip_fidelity_comprehensive() {
     // Compare events
     assert_events_equal(source_workspace.path(), restored_workspace.path());
 
-    // Additional verification: query both workspaces and compare JSON output
+    // Additional verification: query both workspaces and compare JSONL output
     let list1 = Command::cargo_bin("bead")
         .unwrap()
-        .args(["list", "--json", "--limit", "999999"])
+        .args(["list", "--jsonl", "--limit", "999999"])
         .current_dir(source_workspace.path())
         .assert()
         .success()
@@ -1115,7 +1115,7 @@ fn test_checkpoint_round_trip_fidelity_comprehensive() {
 
     let list2 = Command::cargo_bin("bead")
         .unwrap()
-        .args(["list", "--json", "--limit", "999999"])
+        .args(["list", "--jsonl", "--limit", "999999"])
         .current_dir(restored_workspace.path())
         .assert()
         .success()
@@ -1137,7 +1137,7 @@ fn test_checkpoint_round_trip_fidelity_comprehensive() {
 
     // The restored workspace's native read path must parse records carrying
     // unknown fields without complaint and render their known fields
-    // correctly. `list --json` is a purpose-built projection that does not
+    // correctly. `list --jsonl` is a purpose-built projection that does not
     // render unknown fields (the re-projection proofs above — the published
     // generation and the restored side table — are the preservation
     // contract); this pins that the payload does not break the reader or
@@ -1154,7 +1154,7 @@ fn test_checkpoint_round_trip_fidelity_comprehensive() {
         .unwrap_or_else(|| panic!("restored list is missing {bead1_id}"));
     assert_eq!(
         restored_bead1["title"], "Test Issue 1 - All Fields",
-        "restored `list --json` rendered wrong known fields for {bead1_id}"
+        "restored `list --jsonl` rendered wrong known fields for {bead1_id}"
     );
     // `list` derives a few render-time keys (the computed status pair and
     // the attempts summary) that ride the record like extensions; nothing
@@ -1163,7 +1163,7 @@ fn test_checkpoint_round_trip_fidelity_comprehensive() {
     for key in restored_bead1.as_object().unwrap().keys() {
         assert!(
             KNOWN_ISSUE_KEYS.contains(&key.as_str()) || LIST_DERIVED_KEYS.contains(&key.as_str()),
-            "restored `list --json` rendered an unexpected key '{key}' for {bead1_id}"
+            "restored `list --jsonl` rendered an unexpected key '{key}' for {bead1_id}"
         );
     }
 }

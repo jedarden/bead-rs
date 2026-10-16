@@ -510,15 +510,14 @@ fn test_claim_with_why_claims_exactly_one_issue() {
         .stdout
         .clone();
 
-    let list_str = String::from_utf8_lossy(&list_output);
-    let lines: Vec<&str> = list_str.lines().collect();
+    let list_json: serde_json::Value = serde_json::from_slice(&list_output).unwrap();
+    let in_progress_issues = list_json.as_array().unwrap();
     assert_eq!(
-        lines.len(),
+        in_progress_issues.len(),
         1,
-        "expected exactly one in_progress issue after 'claim --why', got: {list_str}"
+        "expected exactly one in_progress issue after 'claim --why', got: {list_json}"
     );
-    let in_progress: serde_json::Value =
-        serde_json::from_str(lines[0]).expect("list --json should emit one JSON object per line");
+    let in_progress = &in_progress_issues[0];
     assert_eq!(in_progress["id"].as_str(), Some(claimed_id.as_str()));
     assert_eq!(in_progress["assignee"].as_str(), Some("w1"));
 }

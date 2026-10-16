@@ -79,10 +79,9 @@ fn count_rows(workspace: &Path, kind: &str) -> i64 {
     .unwrap()
 }
 
-/// IDs of beads on the ready frontier. `list --json` emits JSONL -- one
-/// record per line -- not a single JSON array.
+/// IDs of beads on the ready frontier, read through the JSONL transport.
 fn ready_ids(workspace: &Path) -> Vec<String> {
-    let output = run(workspace, &["list", "--ready", "--json"]);
+    let output = run(workspace, &["list", "--ready", "--jsonl"]);
     assert!(output.status.success(), "list --ready failed: {output:?}");
     String::from_utf8_lossy(&output.stdout)
         .lines()

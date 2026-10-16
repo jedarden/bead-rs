@@ -139,7 +139,7 @@ fn reports_stale_ordinary_claim_with_versioned_threshold_and_exact_remedy() {
     run(workspace, &["doctor", "--repair"]);
     let shown = run(workspace, &["show", &issue_id, "--json"]);
     let issue: Value = serde_json::from_slice(&shown.stdout).unwrap();
-    assert_eq!(issue[0]["status"], "in_progress");
+    assert_eq!(issue["status"], "in_progress");
 }
 
 #[test]

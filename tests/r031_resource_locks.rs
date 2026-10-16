@@ -41,7 +41,7 @@ fn resource_state(workspace: &Path, issue: &str) -> (String, String, i64, Vec<St
     let shown = run(workspace, &["show", issue, "--json"]);
     assert!(shown.status.success());
     let shown: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
-    let issue_json = &shown.as_array().unwrap()[0];
+    let issue_json = &shown;
 
     let listed = run(workspace, &["resource", "list", issue, "--json"]);
     assert!(listed.status.success());

@@ -452,11 +452,11 @@ fn test_concurrent_leased_claims() {
             serde_json::from_slice(&output.stdout).expect("Failed to parse show result");
 
         // Verify the assignee matches
-        let issue = &result[0];
+        let issue = &result;
         assert_eq!(issue["assignee"].as_str(), Some(assignee.as_str()));
 
         // Verify lease information is present
-        assert!(result[0]["lease"].is_object() || result[0]["lease"].is_null());
+        assert!(result["lease"].is_object() || result["lease"].is_null());
     }
 }
 

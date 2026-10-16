@@ -91,13 +91,13 @@ fn populated_workspace() -> tempfile::TempDir {
 fn in_progress_id(root: &Path) -> Option<String> {
     let output = Command::cargo_bin("bead")
         .unwrap()
-        .args(["list", "--json"])
+        .args(["list", "--jsonl"])
         .current_dir(root)
         .env("HOME", root.to_str().unwrap())
         .output()
         .unwrap();
 
-    // `list --json` emits NDJSON: one object per line, not a JSON array.
+    // `list --jsonl` emits NDJSON: one object per line.
     String::from_utf8_lossy(&output.stdout)
         .lines()
         .filter(|line| !line.trim().is_empty())

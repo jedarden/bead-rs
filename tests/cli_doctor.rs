@@ -347,7 +347,7 @@ fn test_doctor_reports_open_issue_held_by_assignee() {
         .output()
         .unwrap();
     let assigned: serde_json::Value = serde_json::from_slice(&assigned.stdout).unwrap();
-    let credential = assigned[0]["claim_epoch"].as_i64().unwrap().to_string();
+    let credential = assigned["claim_epoch"].as_i64().unwrap().to_string();
     Command::cargo_bin("bead")
         .unwrap()
         .args([

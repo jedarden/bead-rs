@@ -58,17 +58,14 @@ fn dep_add(workspace: &Path, blocked: &str, blocker: &str, kind: &str) -> Output
     run(workspace, &["dep", "add", blocked, blocker, "--kind", kind])
 }
 
-/// `show --json` emits a one-element array whose record carries the
-/// dependencies of the bead.
+/// `show --json` emits one object carrying the dependencies of the bead.
 fn dependencies_of(workspace: &Path, id: &str) -> Vec<Value> {
     let output = run(workspace, &["show", id, "--json"]);
     assert!(output.status.success(), "show --json failed: {output:?}");
     let parsed: Value = serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim())
         .expect("show --json must emit valid JSON");
-    parsed
+    parsed["dependencies"]
         .as_array()
-        .and_then(|arr| arr.first())
-        .and_then(|record| record["dependencies"].as_array())
         .cloned()
         .unwrap_or_default()
 }
@@ -297,10 +294,9 @@ fn verifies_edges_never_change_eligibility() {
     );
 }
 
-/// IDs of beads on the ready frontier. `list --json` emits JSONL -- one
-/// record per line -- not a single JSON array.
+/// IDs of beads on the ready frontier, read through the JSONL transport.
 fn list_ready(workspace: &Path) -> Vec<String> {
-    let output = run(workspace, &["list", "--ready", "--json"]);
+    let output = run(workspace, &["list", "--ready", "--jsonl"]);
     assert!(output.status.success(), "list --ready failed: {output:?}");
     String::from_utf8_lossy(&output.stdout)
         .lines()

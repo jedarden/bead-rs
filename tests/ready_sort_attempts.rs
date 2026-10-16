@@ -69,7 +69,7 @@ fn ready_output(workspace: &Path, sort_attempts: bool) -> Vec<u8> {
     let mut command = bead();
     command
         .current_dir(workspace)
-        .args(["list", "--ready", "--json", "--limit", "999999"]);
+        .args(["list", "--ready", "--jsonl", "--limit", "999999"]);
     if sort_attempts {
         command.args(["--sort", "attempts"]);
     }
