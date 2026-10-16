@@ -135,7 +135,7 @@ fn test_claim_priority_ordering() {
 
     let show_output2 = std::str::from_utf8(&show_result2.get_output().stdout).unwrap();
     let show_parsed2: serde_json::Value = serde_json::from_str(show_output2).unwrap();
-    let issue2 = &show_parsed2[0];
+    let issue2 = &show_parsed2;
 
     assert_eq!(issue2["title"], "Medium Priority");
     assert_eq!(issue2["priority"], 2);
@@ -159,7 +159,7 @@ fn test_claim_priority_ordering() {
 
     let show_output3 = std::str::from_utf8(&show_result3.get_output().stdout).unwrap();
     let show_parsed3: serde_json::Value = serde_json::from_str(show_output3).unwrap();
-    let issue3 = &show_parsed3[0];
+    let issue3 = &show_parsed3;
 
     assert_eq!(issue3["title"], "Low Priority");
     assert_eq!(issue3["priority"], 3);
