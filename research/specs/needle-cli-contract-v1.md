@@ -19,14 +19,15 @@ implementation.
 | Operation | Invocation shape | Required result |
 | --- | --- | --- |
 | Version | `--version` | Nonempty name and semantic version |
-| List all | `list --json --limit 999999` | JSON array or one JSON object per line |
-| List open | `list --json --status open --limit 999999 [--assignee VALUE]` | Same record stream |
-| Show | `show ID --json` | Nonempty JSON array or record stream whose first record is the issue |
+| List all | `list --json --limit 999999` | Exactly one JSON array; `[]` when empty |
+| List open | `list --json --status open --limit 999999 [--assignee VALUE]` | Exactly one JSON array of issue rows |
+| List stream extension | `list --jsonl --limit 999999` | One issue object per line; no bytes when empty |
+| Show | `show ID --json` | Exactly one JSON object for the issue |
 | Claim | `claim [--model M] [--harness H] [--harness-version V] --assignee A --json` | JSON object containing `bead_id`; selection and assignment are one atomic transaction |
 | Update | `update ID [--status S] [--assignee A] [--notes N]` | Mutation committed before success |
 | Reopen | `reopen ID` | Issue becomes open according to lifecycle rules |
 | Close | `close ID --reason TEXT` | Issue becomes finished and retains reason |
-| Create | `create --title T --description D [--label L]...` | stdout contains the new ID only |
+| Create | `create --title T --description D [--label L]...` | Plain stdout contains the new ID only; `--json` returns one created-issue object |
 | Add label | `label add ID --label L` | Idempotent label presence |
 | Remove label | `label remove ID --label L` | Idempotent label absence |
 | Add dependency | `dep add BLOCKED BLOCKER --kind blocks` | BLOCKER prevents BLOCKED readiness |
@@ -54,15 +55,29 @@ declared edge — titles are never inspected. Declared kinds survive the
 checkpoint round trip verbatim; unknown kinds stay preservable in the
 checkpoint but fail closed for native mutation.
 
-## Issue JSON minimum
+## Issue rows and JSON documents
 
-NEEDLE requires `id`, `title`, `description`, `priority`, `status`, `assignee`,
-`dependencies`, `created_at`, and `updated_at`. Labels must be an array when
-present. Status output must use one of `open`, `in_progress`, `done`, `closed`,
-`completed`, `blocked`, or `deferred` for this contract version.
+`list --json`, `show --json`, and `create --json` use the same issue object.
+The required members are `id`, `title`, `description`, `priority`, `status`,
+`assignee`, `dependencies`, `created_at`, and `updated_at`; R041 also exposes
+`notes`, `labels`, and `revision` when the native profile supports them.
+Labels, dependencies, and notes are arrays, arrays, and a string respectively
+when present; `assignee` may be explicit JSON null. Status output must use one
+of `open`, `in_progress`, `done`, `closed`, `completed`, `blocked`, or
+`deferred` for this contract version. Additional object members are allowed,
+but a single issue object is never duplicated in one response.
 
 Additional fields are allowed. A single record must not be duplicated in one
-response.
+response. The list document is always an array, including an empty array; a
+show or create document is always an object. Consumers that need the previous
+stream transport may request `--jsonl`.
+
+For every command that renders machine-readable output, `--json` and
+`--format json` are exact synonyms. The exception is query input: `query
+--json DOCUMENT` continues to mean the inline query document, while
+`query --format json` selects its result renderer. Unsupported formats and
+conflicting output selectors are usage failures (exit 2); diagnostics go to
+stderr and never corrupt the JSON document.
 
 ## Claim semantics
 
@@ -72,6 +87,57 @@ response.
 - With no eligible work, return exit 0 and a JSON object without a nonempty
   `bead_id`.
 - Model and harness values are telemetry hints and do not change correctness.
+
+## Claim credential environment
+
+When a claimant-owned mutation targets the issue named by `NEEDLE_BEAD_ID`,
+and no explicit `--fencing-token` is present, the command reads the current
+credential from `NEEDLE_BEAD_FENCING_TOKEN`. An explicit flag always wins,
+including when the environment contains a different value. The environment
+is ignored when the mutation targets another issue; it is not a workspace-wide
+credential. Label and dependency mutations remain unfenced when the flag is
+omitted, even if these variables are set, but a supplied flag is validated
+against the same current claim epoch as a fenced lifecycle mutation.
+
+The audit event records only `credential_source: "flag"`,
+`"environment"`, or `"none"`; it never records the credential value. A
+missing required credential fails with exit 4 and the exact diagnostic:
+
+```text
+Claim-epoch credential required; pass --fencing-token TOKEN or set NEEDLE_BEAD_FENCING_TOKEN
+```
+
+A stale or mismatched supplied/environment credential fails with exit 4 and:
+
+```text
+Fencing token mismatch; use the current claim credential
+```
+
+Neither failure commits the mutation or its audit event. An empty credential
+is treated as absent. A mutation on a different issue behaves exactly as if
+both environment variables were unset. Every mutating command accepts the
+flag; commands without an issue target do not infer ownership from the
+environment.
+
+## Error and exit contract
+
+The NEEDLE adapter relies on this stable taxonomy for the R041 surfaces:
+
+| Exit | Meaning | Examples |
+| ---: | --- | --- |
+| 0 | Success, including an empty result | `list` returns `[]`; `claim` finds no work |
+| 1 | Transport or operational failure | unreadable text file; checkpoint publication failure |
+| 2 | Usage or validation failure | conflicting output flags; invalid file/source combination |
+| 3 | Workspace or issue not found | `Issue ID not found` |
+| 4 | State/ownership conflict | stale revision, missing required claimant credential, fencing mismatch |
+| 5 | Malformed input or integrity failure | invalid checkpoint or corrupt native state |
+
+The R041 conformance scenarios in `agent-ergonomics-v1.md` are provider-side
+requirements for these extensions. NEEDLE's existing show parsers already
+accept the new object form: every show parse site in
+`NEEDLE/src/bead_store/cli_store.rs` falls back from an array to an object.
+The list-row contract already permits an array, so no NEEDLE code change is
+expected for this document revision.
 
 ## Store layout
 

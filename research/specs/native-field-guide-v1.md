@@ -147,17 +147,26 @@ example `2026-08-12T22:51:52.301697398Z`.
 
 ### 3.1 Interactive CLI issue projection
 
-`bead list --json` emits one compact JSON object per line. `bead show --json`
-emits a JSON array containing exactly one such object. The issue object has
-exactly these members in v0.1:
+The agent-ergonomic projection has two deliberate transports. `bead list
+--json` emits exactly one JSON array, including `[]` for an empty result.
+`bead list --jsonl` retains the stream form and emits one compact JSON object
+per line, with no bytes for an empty result. `bead show --json` emits exactly
+one JSON object, not a one-element array. `bead create --json` emits the
+created issue as one JSON object; plain `bead create` retains its NEEDLE
+contract of printing only the new ID. `--format json` is an exact synonym for
+`--json` on commands that render machine-readable output.
+
+The issue object has exactly these members in v0.1 plus the R041 `notes`
+member:
 
 `id`, `title`, `description`, `priority`, `status`, `assignee`,
-`dependencies`, `created_at`, `updated_at`, `labels`, and `revision`.
+`dependencies`, `created_at`, `updated_at`, `labels`, `revision`, and `notes`.
 
-It does not expose `notes`, `manual_blocked`, `issue_type`, `closed_at`,
-`close_reason`, `source_repo`, `profile`, `schema_ref`, structured `data`, or
-unknown checkpoint members. Omission from this projection is not data loss in
-the live store or checkpoint.
+It does not expose `manual_blocked`, `issue_type`, `closed_at`, `close_reason`,
+`source_repo`, `profile`, `schema_ref`, structured `data`, or unknown
+checkpoint members. Omission from this projection is not data loss in the
+live store or checkpoint. `notes` is the current durable issue note projection;
+its presence here does not make comments part of the issue object.
 
 `status` is the agent-facing projection of native state. Its intended mapping
 is `blocked` when `manual_blocked` is true on non-closed work, otherwise the
@@ -200,7 +209,8 @@ decision.
 ### 3.3 Projection mapping
 
 The normative projection copies `id`, `title`, `priority`, `assignee`, `created_at`,
-`updated_at`, and `revision`; it materializes absent `description` as `""`;
+`updated_at`, `revision`, and `notes`; it materializes absent `description` as
+`""` and absent notes as `""`;
 maps `base_status` plus `manual_blocked` to `status`; and joins the public label
 and dependency projections. All other checkpoint issue members are omitted.
 Current v0.1 code does not apply the manual-blocked overlay and instead maps
@@ -256,11 +266,15 @@ description, explicit null, and projected empty text as interchangeable.
 
 ### `notes`
 
-Checkpoint only: optional nullable string with live default `""`,
-caller-owned by `update --notes` only, maximum 4 MiB. Example:
+Checkpoint and CLI: optional nullable checkpoint string with live default
+`""`, materialized as `""` in the CLI projection,
+caller-owned by `update --notes`, `update --append-notes`, or
+`update --notes-file`, maximum 4 MiB. Example:
 `"Reproduction captured in the reconciliation report."`. Notes are checkpoint
-content, not a secret store. Mistake: expecting `create --notes` or assuming
-notes are private.
+content, not a secret store. `--append-notes` performs the append inside the
+mutation transaction; it is not a comment operation. Use R010 native comments
+when the content needs an author, reply relationship, or resolution state.
+Mistake: expecting `create --notes` or assuming notes are private.
 
 ### `priority`
 

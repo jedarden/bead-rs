@@ -3701,6 +3701,48 @@ version releases the BR-T35 gate. Deployment-only edits in
 remain owned by the application release bead and reconcile through
 `argo-workflows-ns-iad-ci`.
 
+### R041 — Agent-ergonomic CLI surface
+
+Make the native CLI's common agent paths deterministic, discoverable, and
+single-parseable. The `agent-ergonomics-v1` specification freezes one JSON
+document for `list --json`, one object for `show --json` and `create --json`,
+and an explicit JSONL escape hatch; it also defines the claim credential
+environment, transactional text input, read shortcuts, per-issue history,
+and positional labels. Capabilities advertise the shapes and aliases so an
+agent can feature-detect instead of probing by failure.
+
+The umbrella evidence (2026-10-15, bead `beadrs-bb341a08`, approximately
+137,364 invocations from 59,115 Claude Code and 78,249 Codex calls) is the
+reason for this outcome: 14,266 of 26,607 `show --json` calls carried an
+unwrap workaround; 1,587 `list --json` calls failed with JSON extra-data and
+2,536 added JSONL collection work; 189 attempted unsupported `create --json`;
+5,216 mutations were rejected for a missing claim credential, with 4,248
+recovering only on one retry and 760 not recovered within the next 15 calls;
+7,646 `show` calls existed only to find a claim epoch; 1,132 note updates
+performed a read-modify-write and 2,384 interpolated file contents; and
+agents made 4,319 shell-filter, 844 search, 261 ready, 256 dependency-list,
+90 bare-ID, and roughly 60 positional-label attempts. In addition, 6,209 of
+26,036 sessions stopped to read help. These counts are regex-based transcript
+measurements and are a baseline, not a release claim.
+
+This revision records the spec-first handoff: implementation children remain
+blocked on the normative contract, and the release child must later measure
+the same metrics after deployment. The NEEDLE impact is intentionally small:
+its show parsers already accept an object (each show parse site in
+`NEEDLE/src/bead_store/cli_store.rs` falls back from an array to an object),
+and its list-row contract already permits an array, so no NEEDLE code change
+is expected.
+
+### Open questions
+
+R041 does not make title, description, or priority editable. The umbrella
+recorded 44 `update --title|--description|--priority` attempts and one direct
+SQLite title write as evidence of friction, but R037 and
+[ADR-007](../adr/007-cli-errors-name-the-remedy.md) currently define those
+fields as immutable after `create` and require the error to name the remedy.
+Whether to add a separately audited edit operation remains an open product
+decision; it is not implementation authority for R041.
+
 ## 13. Release gates
 
 ### Bootstrap and handoff gates
