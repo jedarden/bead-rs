@@ -142,9 +142,12 @@ fn bytes_present(workspace: &Path, needles: &[&str]) -> Vec<String> {
 }
 
 fn issue_id(workspace: &Path, title: &str) -> String {
-    ok(workspace, &["list", "--json"], None)
-        .lines()
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+    let issues: Value = serde_json::from_str(&ok(workspace, &["list", "--json"], None))
+        .expect("list JSON document");
+    issues
+        .as_array()
+        .expect("list JSON array")
+        .iter()
         .find(|issue| issue["title"] == title)
         .and_then(|issue| issue["id"].as_str().map(str::to_string))
         .expect("issue listed")
