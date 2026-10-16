@@ -85,6 +85,10 @@ pub struct Capabilities {
 pub struct AgentErgonomicsCapabilities {
     pub version: u32,
     pub issue_documents: IssueDocumentShapes,
+    pub json_selectors: Vec<String>,
+    pub claim_credential_environment: Vec<String>,
+    pub text_sources: Vec<String>,
+    pub shortcuts: Vec<String>,
 }
 
 /// Output shape for issue-oriented JSON commands.
@@ -313,6 +317,27 @@ pub fn generate_capabilities_with_secret_mode(
                 dependency_list_json: "array".to_string(),
                 count_json: "object".to_string(),
             },
+            json_selectors: vec!["--json".to_string(), "--format json".to_string()],
+            claim_credential_environment: vec![
+                "NEEDLE_BEAD_ID".to_string(),
+                "NEEDLE_BEAD_FENCING_TOKEN".to_string(),
+            ],
+            text_sources: vec![
+                "inline".to_string(),
+                "file".to_string(),
+                "stdin".to_string(),
+            ],
+            shortcuts: vec![
+                "ready".to_string(),
+                "search".to_string(),
+                "list-all".to_string(),
+                "list-search".to_string(),
+                "list-count".to_string(),
+                "dependency-list".to_string(),
+                "bare-id".to_string(),
+                "history".to_string(),
+                "positional-labels".to_string(),
+            ],
         }),
         // The additive R026 handshake (plan section 11): `auto_flush`
         // reports the compiled default, `true` since the activation

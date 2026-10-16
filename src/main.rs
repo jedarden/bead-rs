@@ -19,17 +19,26 @@ use crate::service::claim::ClaimResult;
 use crate::service::policy::{validate_workspace_policy, WorkspaceConfig};
 use crate::service::scheduling::SchedulingPolicy;
 use crate::store::Store;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use rusqlite::{Transaction, TransactionBehavior};
+use std::ffi::OsString;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    let args = match normalize_output_selector_arguments(std::env::args_os().collect()) {
+        Ok(args) => args,
+        Err(message) => {
+            eprintln!("bead: {}", Error::cli_usage(message));
+            return ExitCode::from(2);
+        }
+    };
+
     // Parse CLI arguments
     // Use try_parse() so the `comment add` near-miss can add its R037-style
     // remedy before clap's own unrecognized-subcommand diagnostic; err.exit()
     // preserves clap's behavior for --help, --version, and every other
     // parse failure.
-    let cli = match Cli::try_parse() {
+    let cli = match Cli::try_parse_from(args) {
         Ok(cli) => cli,
         Err(error) => {
             report_comment_add_near_miss();
@@ -47,6 +56,191 @@ fn main() -> ExitCode {
             ExitCode::from(err.exit_code() as u8)
         }
     }
+}
+
+/// Normalize the shared JSON output selectors before Clap parses a
+/// command-specific option set. Existing command handlers remain the single
+/// implementation of each JSON renderer.
+fn normalize_output_selector_arguments(
+    mut args: Vec<OsString>,
+) -> std::result::Result<Vec<OsString>, String> {
+    let Some((command, path)) = selected_clap_command(&args) else {
+        return Ok(args);
+    };
+    let has_json = command
+        .get_arguments()
+        .any(|argument| argument.get_long() == Some("json"));
+    let has_format = command
+        .get_arguments()
+        .any(|argument| argument.get_long() == Some("format"));
+
+    if command.get_name() == "query" {
+        if let Some((start, end, format)) = explicit_format(&args) {
+            if format != "json" {
+                return Err(format!(
+                    "unsupported output format '{format}'; use --format json"
+                ));
+            }
+            if args.iter().any(|arg| arg == "--output-json") {
+                args.drain(start..end);
+            } else {
+                args.splice(start..end, [OsString::from("--output-json")]);
+            }
+        }
+        return Ok(args);
+    }
+
+    let has_json_flag = args.iter().any(|arg| arg == "--json");
+    let format = explicit_format(&args);
+
+    if is_always_json_command(&path) {
+        if let Some((start, end, value)) = format {
+            if value != "json" {
+                return Err(if has_json_flag {
+                    "conflicting output format selectors".to_string()
+                } else {
+                    format!("unsupported output format '{value}'; use --format json")
+                });
+            }
+            args.drain(start..end);
+        }
+        if has_json_flag {
+            let json_index = args.iter().position(|arg| arg == "--json").unwrap();
+            args.remove(json_index);
+        }
+        return Ok(args);
+    }
+
+    match (has_json, has_format) {
+        (true, false) => {
+            if let Some((start, end, value)) = format {
+                if value != "json" {
+                    return Err(if has_json_flag {
+                        "conflicting output format selectors".to_string()
+                    } else {
+                        format!("unsupported output format '{value}'; use --format json")
+                    });
+                }
+                if has_json_flag {
+                    args.drain(start..end);
+                } else {
+                    args.splice(start..end, [OsString::from("--json")]);
+                }
+            }
+        }
+        (false, true) => {
+            if has_json_flag {
+                if let Some((_, _, value)) = format.as_ref() {
+                    if value != "json" {
+                        return Err("conflicting output format selectors".to_string());
+                    }
+                    let json_index = args.iter().position(|arg| arg == "--json").unwrap();
+                    args.remove(json_index);
+                } else {
+                    let json_index = args.iter().position(|arg| arg == "--json").unwrap();
+                    args.splice(
+                        json_index..json_index + 1,
+                        [OsString::from("--format"), OsString::from("json")],
+                    );
+                }
+            }
+        }
+        (true, true) => {
+            if has_json_flag {
+                if let Some((start, end, value)) = format {
+                    if value != "json" {
+                        return Err("conflicting output format selectors".to_string());
+                    }
+                    args.drain(start..end);
+                }
+            }
+        }
+        (false, false) => {}
+    }
+
+    Ok(args)
+}
+
+/// Find the leaf Clap command selected in the raw argument vector. Argument
+/// metadata lets global and command options consume their values without
+/// mistaking those values for nested subcommands.
+fn selected_clap_command(args: &[OsString]) -> Option<(clap::Command, Vec<String>)> {
+    let mut command = Cli::command();
+    let mut selected = false;
+    let mut path = Vec::new();
+    let mut index = 1;
+
+    while index < args.len() {
+        let token = args[index].to_str()?;
+        if token == "--" {
+            break;
+        }
+        if let Some(long) = token.strip_prefix("--") {
+            let name = long.split_once('=').map_or(long, |(name, _)| name);
+            let attached_value = long.contains('=');
+            let consumes_value = command
+                .get_arguments()
+                .find(|argument| argument.get_long() == Some(name))
+                .is_some_and(|argument| argument.get_action().takes_values());
+            if consumes_value && !attached_value {
+                index += 1;
+            }
+            index += 1;
+            continue;
+        }
+        if let Some(shorts) = token.strip_prefix('-') {
+            if let Some(short) = shorts.chars().next() {
+                let consumes_value = command
+                    .get_arguments()
+                    .find(|argument| argument.get_short() == Some(short))
+                    .is_some_and(|argument| argument.get_action().takes_values());
+                if consumes_value && shorts.chars().count() == 1 {
+                    index += 1;
+                }
+            }
+            index += 1;
+            continue;
+        }
+        if let Some(subcommand) = command.find_subcommand(token) {
+            path.push(subcommand.get_name().to_string());
+            command = subcommand.clone();
+            selected = true;
+            index += 1;
+        } else if selected {
+            break;
+        } else {
+            index += 1;
+        }
+    }
+
+    selected.then_some((command, path))
+}
+
+/// Commands whose result is always JSON have no existing selector to route to
+/// a renderer. Accept the shared spellings as no-op selectors for those
+/// already machine-readable results.
+fn is_always_json_command(path: &[String]) -> bool {
+    matches!(
+        path,
+        [parent, child]
+            if (parent == "sync" && matches!(child.as_str(), "diff" | "bisect"))
+                || (parent == "resource" && matches!(child.as_str(), "add" | "remove"))
+    )
+}
+
+/// Return the explicit `--format VALUE` or `--format=VALUE` selector, if any.
+fn explicit_format(args: &[OsString]) -> Option<(usize, usize, String)> {
+    for (index, argument) in args.iter().enumerate().skip(1) {
+        let token = argument.to_str()?;
+        if let Some(value) = token.strip_prefix("--format=") {
+            return Some((index, index + 1, value.to_string()));
+        }
+        if token == "--format" {
+            let value = args.get(index + 1)?.to_str()?.to_string();
+            return Some((index, index + 2, value));
+        }
+    }
+    None
 }
 
 /// Everything the post-commit publication chokepoint needs to decide

@@ -54,6 +54,11 @@ EXIT CODES:
   4  conflict (invalid transition, revision guard, cycle)
   5  malformed input or integrity failure
 
+MACHINE-READABLE OUTPUT:
+  On commands that render machine-readable output, --json and --format json
+  are equivalent. `query --json DOCUMENT` still supplies the query document;
+  use `query --format json` to render its results.
+
 Run `bead <COMMAND> --help` for the full description of any command."
 )]
 #[command(propagate_version = true)]

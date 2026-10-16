@@ -46,7 +46,10 @@ use std::collections::HashSet;
 ///
 /// v11: the capabilities catalog advertises R041 issue JSON document shapes
 /// for list, show, create, history, dependency list, and count.
-pub const FIELD_GUIDE_VERSION: i64 = 11;
+///
+/// v12: the R041 agent ergonomics capability advertises the JSON selectors,
+/// claim credential environment, text sources, and supported shortcuts.
+pub const FIELD_GUIDE_VERSION: i64 = 12;
 
 /// Artifact identity carried by every `bead schema explain` response, per the
 /// accepted field-guide contract (`research/specs/native-field-guide-v1.md`).
@@ -3160,9 +3163,9 @@ fn field_semantics(document: &str, name: &str) -> FieldSemantics {
             operations: &["capabilities"],
             has_default: false,
             default: Value::Null,
-            example: json!({"version":1,"issue_documents":{"list_json":"array","list_jsonl":"object-per-line","show_json":"object","create_json":"object","history_json":"array","dependency_list_json":"array","count_json":"object"}}),
+            example: json!({"version":1,"issue_documents":{"list_json":"array","list_jsonl":"object-per-line","show_json":"object","create_json":"object","history_json":"array","dependency_list_json":"array","count_json":"object"},"json_selectors":["--json","--format json"],"claim_credential_environment":["NEEDLE_BEAD_ID","NEEDLE_BEAD_FENCING_TOKEN"],"text_sources":["inline","file","stdin"],"shortcuts":["ready","search","list-all","list-search","list-count","dependency-list","bare-id","history","positional-labels"]}),
             invariants: &[
-                "optional versioned object advertising agent-facing JSON document shapes",
+                "optional versioned object advertising agent-facing JSON document shapes, output selectors, credential environment, text sources, and command shortcuts",
                 "list_json is one array, list_jsonl is one object per line, and show_json and create_json are one object",
                 "absent from producers that do not support this extension",
             ],

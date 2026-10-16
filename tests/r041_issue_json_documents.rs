@@ -127,11 +127,142 @@ fn capabilities_advertise_issue_document_shapes() {
             "count_json": "object"
         })
     );
+    assert_eq!(
+        capabilities["agent_ergonomics"]["json_selectors"],
+        json!(["--json", "--format json"])
+    );
+    assert_eq!(
+        capabilities["agent_ergonomics"]["claim_credential_environment"],
+        json!(["NEEDLE_BEAD_ID", "NEEDLE_BEAD_FENCING_TOKEN"])
+    );
+    assert_eq!(
+        capabilities["agent_ergonomics"]["text_sources"],
+        json!(["inline", "file", "stdin"])
+    );
+    assert_eq!(
+        capabilities["agent_ergonomics"]["shortcuts"],
+        json!([
+            "ready",
+            "search",
+            "list-all",
+            "list-search",
+            "list-count",
+            "dependency-list",
+            "bare-id",
+            "history",
+            "positional-labels"
+        ])
+    );
+}
+
+#[test]
+fn output_selector_aliases_are_byte_identical_and_query_keeps_its_json_input() {
+    let workspace = workspace();
+    let created = run(
+        workspace.path(),
+        &["create", "--title", "Selector target", "--json"],
+    );
+    let created = json_output(created);
+    let id = created["id"].as_str().unwrap();
+
+    let list_json = run(workspace.path(), &["list", "--json"]);
+    let list_format = run(workspace.path(), &["list", "--format", "json"]);
+    assert!(list_json.status.success());
+    assert!(list_format.status.success());
+    assert_eq!(list_json.stdout, list_format.stdout);
+
+    let show_json = run(workspace.path(), &["show", id, "--json"]);
+    let show_format = run(workspace.path(), &["show", id, "--format=json"]);
+    assert!(show_json.status.success());
+    assert!(show_format.status.success());
+    assert_eq!(show_json.stdout, show_format.stdout);
+
+    let status_json = run(workspace.path(), &["sync", "status", "--format", "json"]);
+    let status_alias = run(workspace.path(), &["sync", "status", "--json"]);
+    assert!(status_json.status.success());
+    assert!(status_alias.status.success());
+    assert_eq!(status_json.stdout, status_alias.stdout);
+
+    let capabilities_json = run(workspace.path(), &["capabilities", "--format", "json"]);
+    let capabilities_alias = run(workspace.path(), &["capabilities", "--json"]);
+    assert!(capabilities_json.status.success());
+    assert!(capabilities_alias.status.success());
+    assert_eq!(capabilities_json.stdout, capabilities_alias.stdout);
+
+    let create_alias = json_output(run(
+        workspace.path(),
+        &["create", "--title", "Create alias", "--format", "json"],
+    ));
+    assert!(create_alias.is_object());
+
+    let resource_add_json = run(
+        workspace.path(),
+        &["resource", "add", id, "--key", "selector:test", "--json"],
+    );
+    let resource_add_format = run(
+        workspace.path(),
+        &[
+            "resource",
+            "add",
+            id,
+            "--key",
+            "selector:test",
+            "--format",
+            "json",
+        ],
+    );
+    assert!(resource_add_json.status.success());
+    assert!(resource_add_format.status.success());
+    assert_eq!(resource_add_json.stdout, resource_add_format.stdout);
+
+    let query = r#"{"version":"v1","predicates":[],"sort":[]}"#;
+    let query_result = run(
+        workspace.path(),
+        &["query", "--json", query, "--format", "json"],
+    );
+    assert!(query_result.status.success());
+    assert!(serde_json::from_slice::<Value>(&query_result.stdout).is_ok());
+}
+
+#[test]
+fn unsupported_and_conflicting_output_selectors_have_stable_usage_errors() {
+    let workspace = workspace();
+
+    let unsupported = run(workspace.path(), &["list", "--format", "yaml"]);
+    assert_eq!(unsupported.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8(unsupported.stderr).unwrap().trim(),
+        "bead: CLI usage error: unsupported output format 'yaml'; use --format json"
+    );
+
+    let unsupported_jsonl = run(workspace.path(), &["list", "--format", "jsonl"]);
+    assert_eq!(unsupported_jsonl.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8(unsupported_jsonl.stderr).unwrap().trim(),
+        "bead: CLI usage error: unsupported output format 'jsonl'; use --format json"
+    );
+
+    let conflict = run(workspace.path(), &["list", "--json", "--format", "text"]);
+    assert_eq!(conflict.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8(conflict.stderr).unwrap().trim(),
+        "bead: CLI usage error: conflicting output format selectors"
+    );
+
+    let jsonl_conflict = run(workspace.path(), &["list", "--jsonl", "--format", "json"]);
+    assert_eq!(jsonl_conflict.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&jsonl_conflict.stderr)
+        .contains("--jsonl cannot be combined with --json"));
 }
 
 #[test]
 fn help_describes_the_issue_json_shapes() {
     let temp = tempfile::tempdir().unwrap();
+    let root = run(temp.path(), &["--help"]);
+    let root = String::from_utf8(root.stdout).unwrap();
+    assert!(root.contains("--json and --format json"));
+    assert!(root.contains("query --json DOCUMENT"));
+
     let list = run(temp.path(), &["list", "--help"]);
     let list = String::from_utf8(list.stdout).unwrap();
     assert!(list.contains("one compact JSON array"));
