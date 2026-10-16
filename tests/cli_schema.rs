@@ -124,7 +124,7 @@ fn schema_explain_json_and_markdown_are_deterministic() {
         .stdout
         .clone();
     let explanation: Value = serde_json::from_slice(&json_output).unwrap();
-    assert_eq!(explanation["guide_version"], 10);
+    assert_eq!(explanation["guide_version"], 12);
     assert!(explanation["describes_schema_refs"]
         .as_array()
         .unwrap()
