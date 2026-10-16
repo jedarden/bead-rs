@@ -99,9 +99,10 @@ pub use conditions::ConditionExpr;
 pub use data::{get_data, list_data, remove_data, set_data};
 pub use dependencies::{add_dependency, add_label, remove_dependency, remove_label};
 pub use doctor::{run_diagnostics, run_diagnostics_with_scopes, run_repairs, DiagnosticStatus};
+#[allow(unused_imports)]
 pub use dryrun::{
     add_dependency_dryrun, close_issue_dryrun, release_issue_dryrun, remove_dependency_dryrun,
-    reopen_issue_dryrun, update_issue_dryrun,
+    reopen_issue_dryrun, update_issue_dryrun, update_issue_dryrun_with_append,
 };
 pub use external_refs::{
     add_external_reference, find_issues_by_reference, list_external_references,
@@ -123,7 +124,8 @@ pub use lifecycle::enforce_claimant_credential;
 #[allow(unused_imports)]
 pub use lifecycle::{
     close_issue, close_issue_with_override, release_issue, release_issue_with_override,
-    reopen_issue, reopen_issue_with_override, update_issue, update_issue_with_override,
+    reopen_issue, reopen_issue_with_override, update_issue, update_issue_with_append,
+    update_issue_with_override,
 };
 pub use manifest::{load_manifest, manifest_commit, manifest_dry_run, ManifestReport};
 pub use query::{

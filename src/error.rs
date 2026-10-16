@@ -120,6 +120,14 @@ pub enum Error {
         #[source]
         msg: std::io::Error,
     },
+
+    /// A text transport could not be read (exit 1).
+    #[error("cannot read text input '{path}'")]
+    TextInputRead { path: String },
+
+    /// A text transport was not valid UTF-8 (exit 2).
+    #[error("text input is not valid UTF-8")]
+    TextInputUtf8,
 }
 
 impl Error {
@@ -139,7 +147,9 @@ impl Error {
             // pins this split outcome to exit 1 regardless of what the
             // underlying publication error would have mapped to on its own.
             Error::PostCommitPublicationFailed { .. }
-            | Error::RedactionPublicationFailed { .. } => 1,
+            | Error::RedactionPublicationFailed { .. }
+            | Error::TextInputRead { .. } => 1,
+            Error::TextInputUtf8 => 2,
             Error::Redaction(error) => error.exit_code(),
             _ => 1,
         }

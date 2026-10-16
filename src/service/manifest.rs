@@ -784,6 +784,8 @@ fn with_operation_context(index: usize, kind: &str, error: Error) -> Error {
         Error::Sqlite(_) => Error::Internal(anyhow::anyhow!(message)),
         Error::Json(_) => Error::Internal(anyhow::anyhow!(message)),
         Error::Io { path, msg } => Error::Io { path, msg },
+        Error::TextInputRead { .. } => Error::TextInputRead { path: message },
+        Error::TextInputUtf8 => Error::TextInputUtf8,
     }
 }
 

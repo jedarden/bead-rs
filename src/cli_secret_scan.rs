@@ -249,6 +249,7 @@ fn canonical_request(command: &Command) -> Option<CanonicalRequest<'_>> {
                 .optional("status", opts.status.as_deref())
                 .optional("assignee", opts.assignee.as_deref())
                 .optional("notes", opts.notes.as_deref())
+                .optional("notes", opts.append_notes.as_deref())
                 .optional("unsupported.title", opts.title.as_deref())
                 .optional("unsupported.description", opts.description.as_deref())
                 .optional("unsupported.issue_type", opts.issue_type_hidden.as_deref())

@@ -536,6 +536,8 @@ EXAMPLES:
   bead create --title \"Materialize tracker work\" --unique-ref github:issue-123
   bead create --title \"Add search feature\" --assignee alice --label feature --label backend
   bead create --title \"Code review PR-123\" --description \"Review changes for user auth\"
+  bead create --title \"Long report\" --description-file report.txt
+  bead create --title \"From stdin\" --description-file -
 
 ISSUE TYPES:
   Common types include: task, bug, feature, improvement, documentation
@@ -567,12 +569,16 @@ PLANNING DEPENDENT WORK:
 )]
 pub struct CreateOptions {
     /// Issue title (required)
-    #[arg(long)]
+    #[arg(long, allow_hyphen_values = true)]
     pub title: String,
 
     /// Issue description (optional, defaults to empty)
-    #[arg(long)]
+    #[arg(long, allow_hyphen_values = true)]
     pub description: Option<String>,
+
+    /// Read the issue description from a UTF-8 file, or stdin with -
+    #[arg(long = "description-file", value_name = "PATH")]
+    pub description_file: Option<std::path::PathBuf>,
 
     /// Issue priority (0-4, default: 2)
     #[arg(long, default_value = "2")]
@@ -891,6 +897,9 @@ EXAMPLES:
   bead update ID --status in_progress                # Start working on an issue
   bead update ID --assignee alice                    # Assign to alice
   bead update ID --notes \"Investigated root cause\"   # Add investigation notes
+  bead update ID --append-notes \"Second investigation pass\"
+  bead update ID --notes-file investigation.txt
+  cat investigation.txt | bead update ID --notes-file -
   bead update ID --clear-assignee                    # Clear assignment (open only)
   bead update ID --status in_progress --if-revision 3 # With revision guard
 
@@ -942,8 +951,16 @@ pub struct UpdateOptions {
     pub clear_assignee: bool,
 
     /// New notes
-    #[arg(long)]
+    #[arg(long, allow_hyphen_values = true)]
     pub notes: Option<String>,
+
+    /// Append notes atomically to the existing notes field
+    #[arg(long = "append-notes", allow_hyphen_values = true)]
+    pub append_notes: Option<String>,
+
+    /// Read notes from a UTF-8 file, or stdin with -
+    #[arg(long = "notes-file", value_name = "PATH")]
+    pub notes_file: Option<std::path::PathBuf>,
 
     /// Expected revision for optimistic concurrency control
     #[arg(long)]
@@ -1055,6 +1072,8 @@ EXAMPLES:
   bead close bead-123abc456789def --reason \"Completed successfully\"
   bead close ID --reason \"Fixed authentication bug\"
   bead close ID --reason \"Duplicate of ID-456\"
+  bead close ID --reason-file close-reason.txt
+  cat close-reason.txt | bead close ID --reason-file -
   bead close ID --reason \"Done\" --if-revision 3    # With revision guard
 
 SEMANTICS:
@@ -1092,8 +1111,12 @@ pub struct CloseOptions {
     pub id: String,
 
     /// Close reason (required)
-    #[arg(long, required = false)]
+    #[arg(long, required = false, allow_hyphen_values = true)]
     pub reason: Option<String>,
+
+    /// Read the close reason from a UTF-8 file, or stdin with -
+    #[arg(long = "reason-file", value_name = "PATH")]
+    pub reason_file: Option<std::path::PathBuf>,
 
     /// Expected revision for optimistic concurrency control
     #[arg(long)]

@@ -66,6 +66,7 @@ fn get_workspace_sequence(conn: &Connection) -> Result<i64> {
 }
 
 /// Dry-run for update operation
+#[allow(dead_code)]
 pub fn update_issue_dryrun(
     conn: &Connection,
     id: &str,
@@ -73,6 +74,20 @@ pub fn update_issue_dryrun(
     assignee: Option<&str>,
     clear_assignee: bool,
     notes: Option<&str>,
+) -> Result<DryRunResult> {
+    update_issue_dryrun_with_append(conn, id, status, assignee, clear_assignee, notes, None)
+}
+
+/// Dry-run for update operation with the same atomic append projection as the
+/// committing lifecycle path.
+pub fn update_issue_dryrun_with_append(
+    conn: &Connection,
+    id: &str,
+    status: Option<&str>,
+    assignee: Option<&str>,
+    clear_assignee: bool,
+    notes: Option<&str>,
+    append_notes: Option<&str>,
 ) -> Result<DryRunResult> {
     // Get current issue state
     let issue =
@@ -126,6 +141,12 @@ pub fn update_issue_dryrun(
         ));
     }
 
+    if notes.is_some() && append_notes.is_some() {
+        return Err(Error::cli_usage(
+            "exactly one of --notes, --append-notes, or --notes-file may be supplied",
+        ));
+    }
+
     // Apply notes change
     if let Some(new_notes) = notes {
         if new_notes.len() > 4 * 1024 * 1024 {
@@ -141,6 +162,18 @@ pub fn update_issue_dryrun(
             after_issue.notes = Some(new_notes.to_string());
             changes.push("notes updated".to_string());
         }
+    }
+
+    if let Some(append_value) = append_notes {
+        let resulting_notes = match issue.notes.as_deref().filter(|value| !value.is_empty()) {
+            Some(old) => format!("{old}\n\n{append_value}"),
+            None => append_value.to_string(),
+        };
+        if resulting_notes.len() > 4 * 1024 * 1024 {
+            return Err(Error::cli_usage("notes exceed the 4194304-byte limit"));
+        }
+        after_issue.notes = Some(resulting_notes);
+        changes.push("notes appended".to_string());
     }
 
     let after = issue_to_dryrun_state(&after_issue);

@@ -525,7 +525,70 @@ fn read_body_file(path: std::path::PathBuf) -> Result<String> {
     }
 }
 
+/// Read a command text transport exactly once before the secret-scanner
+/// preflight. The scanner and the mutation must see identical bytes, while
+/// invalid UTF-8 remains a usage error rather than being lossy-decoded.
+fn read_text_input(path: &std::path::Path) -> Result<String> {
+    let display = path.display().to_string();
+    let bytes = if path == std::path::Path::new("-") {
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        std::io::stdin()
+            .lock()
+            .read_to_end(&mut bytes)
+            .map_err(|_| Error::TextInputRead { path: display })?;
+        bytes
+    } else {
+        std::fs::read(path).map_err(|_| Error::TextInputRead { path: display })?
+    };
+    String::from_utf8(bytes).map_err(|_| Error::TextInputUtf8)
+}
+
+/// Resolve the inline/file/stdin forms before scanner preparation. This also
+/// enforces source cardinality before a file can be read or a workspace can be
+/// opened, so malformed combinations are consistently exit-2 usage errors.
+fn resolve_text_inputs(cli: &mut Cli) -> Result<()> {
+    match &mut cli.command {
+        Command::Create(opts) => {
+            if opts.description.is_some() && opts.description_file.is_some() {
+                return Err(Error::cli_usage(
+                    "--description and --description-file are mutually exclusive",
+                ));
+            }
+            if let Some(path) = opts.description_file.take() {
+                opts.description = Some(read_text_input(&path)?);
+            }
+        }
+        Command::Update(opts) => {
+            let sources = opts.notes.is_some() as u8
+                + opts.append_notes.is_some() as u8
+                + opts.notes_file.is_some() as u8;
+            if sources > 1 {
+                return Err(Error::cli_usage(
+                    "exactly one of --notes, --append-notes, or --notes-file may be supplied",
+                ));
+            }
+            if let Some(path) = opts.notes_file.take() {
+                opts.notes = Some(read_text_input(&path)?);
+            }
+        }
+        Command::Close(opts) => {
+            if opts.reason.is_some() == opts.reason_file.is_some() {
+                return Err(Error::cli_usage(
+                    "exactly one of --reason or --reason-file is required",
+                ));
+            }
+            if let Some(path) = opts.reason_file.take() {
+                opts.reason = Some(read_text_input(&path)?);
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn execute_command(mut cli: Cli) -> Result<()> {
+    resolve_text_inputs(&mut cli)?;
     // Read once, before the mutation lock and secret preflight: the scanner
     // and service must consume the same bytes, including stdin and large files.
     if let Command::Data(cli::DataCommand::Set(opts)) = &mut cli.command {
@@ -1752,13 +1815,14 @@ fn cmd_update(opts: cli::UpdateOptions) -> Result<()> {
 
     // Handle dry-run mode
     if opts.dry_run {
-        let result = service::update_issue_dryrun(
+        let result = service::update_issue_dryrun_with_append(
             &conn,
             &opts.id,
             opts.status.as_deref(),
             opts.assignee.as_deref(),
             opts.clear_assignee,
             opts.notes.as_deref(),
+            opts.append_notes.as_deref(),
         )?;
 
         // Output JSON result
@@ -1768,13 +1832,14 @@ fn cmd_update(opts: cli::UpdateOptions) -> Result<()> {
     }
 
     // Update the issue
-    let id = service::update_issue(
+    let id = service::update_issue_with_append(
         &conn,
         &opts.id,
         opts.status.as_deref(),
         opts.assignee.as_deref(),
         opts.clear_assignee,
         opts.notes.as_deref(),
+        opts.append_notes.as_deref(),
         opts.if_revision,
         opts.fencing_token,
     )?;

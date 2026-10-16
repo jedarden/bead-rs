@@ -155,13 +155,42 @@ pub fn update_issue(
     if_revision: Option<i64>,
     fencing_token: Option<i64>,
 ) -> Result<String> {
-    update_issue_with_override(
+    update_issue_with_append(
         conn,
         id,
         status,
         assignee,
         clear_assignee,
         notes,
+        None,
+        if_revision,
+        fencing_token,
+    )
+}
+
+/// Update an issue, optionally appending notes inside the mutation
+/// transaction. The existing `update_issue` API remains replacement-only for
+/// callers that do not need the CLI's append form.
+#[allow(clippy::too_many_arguments)]
+pub fn update_issue_with_append(
+    conn: &Connection,
+    id: &str,
+    status: Option<&str>,
+    assignee: Option<&str>,
+    clear_assignee: bool,
+    notes: Option<&str>,
+    append_notes: Option<&str>,
+    if_revision: Option<i64>,
+    fencing_token: Option<i64>,
+) -> Result<String> {
+    update_issue_with_append_override(
+        conn,
+        id,
+        status,
+        assignee,
+        clear_assignee,
+        notes,
+        append_notes,
         if_revision,
         fencing_token,
         None,
@@ -170,6 +199,7 @@ pub fn update_issue(
 
 /// Update an issue, optionally using an audited claim-recovery override.
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 pub fn update_issue_with_override(
     conn: &Connection,
     id: &str,
@@ -181,18 +211,48 @@ pub fn update_issue_with_override(
     fencing_token: Option<i64>,
     override_claim: Option<&str>,
 ) -> Result<String> {
+    update_issue_with_append_override(
+        conn,
+        id,
+        status,
+        assignee,
+        clear_assignee,
+        notes,
+        None,
+        if_revision,
+        fencing_token,
+        override_claim,
+    )
+}
+
+/// Update an issue, optionally using an audited claim-recovery override and
+/// an atomic notes append.
+#[allow(clippy::too_many_arguments)]
+fn update_issue_with_append_override(
+    conn: &Connection,
+    id: &str,
+    status: Option<&str>,
+    assignee: Option<&str>,
+    clear_assignee: bool,
+    notes: Option<&str>,
+    append_notes: Option<&str>,
+    if_revision: Option<i64>,
+    fencing_token: Option<i64>,
+    override_claim: Option<&str>,
+) -> Result<String> {
     // Process in a write transaction taken before the read, so the revision
     // precondition and lease are validated against the snapshot the UPDATE
     // lands on (see begin_lifecycle_transaction)
     let mut tx = begin_lifecycle_transaction(conn)?;
 
-    let result = update_issue_in_tx(
+    let result = update_issue_in_tx_with_append(
         &mut tx,
         id,
         status,
         assignee,
         clear_assignee,
         notes,
+        append_notes,
         if_revision,
         fencing_token,
         override_claim,
@@ -219,6 +279,35 @@ pub fn update_issue_in_tx(
     fencing_token: Option<i64>,
     override_claim: Option<&str>,
 ) -> Result<String> {
+    update_issue_in_tx_with_append(
+        tx,
+        id,
+        status,
+        assignee,
+        clear_assignee,
+        notes,
+        None,
+        if_revision,
+        fencing_token,
+        override_claim,
+    )
+}
+
+/// Run an update with an optional atomic notes append against a caller-owned
+/// transaction.
+#[allow(clippy::too_many_arguments)]
+pub fn update_issue_in_tx_with_append(
+    tx: &mut Transaction,
+    id: &str,
+    status: Option<&str>,
+    assignee: Option<&str>,
+    clear_assignee: bool,
+    notes: Option<&str>,
+    append_notes: Option<&str>,
+    if_revision: Option<i64>,
+    fencing_token: Option<i64>,
+    override_claim: Option<&str>,
+) -> Result<String> {
     let _secret_write = super::secret_boundary::guard_pairs(
         tx,
         &super::secret_boundary::selector("issue", id),
@@ -228,9 +317,15 @@ pub fn update_issue_in_tx(
             ("status", status.unwrap_or("")),
             ("assignee", assignee.unwrap_or("")),
             ("notes", notes.unwrap_or("")),
+            ("append_notes", append_notes.unwrap_or("")),
             ("override_claim", override_claim.unwrap_or("")),
         ],
     )?;
+    if notes.is_some() && append_notes.is_some() {
+        return Err(Error::cli_usage(
+            "exactly one of --notes, --append-notes, or --notes-file may be supplied",
+        ));
+    }
     // Validate that assignee and clear_assignee are not both specified
     if assignee.is_some() && clear_assignee {
         return Err(Error::validation(
@@ -270,7 +365,24 @@ pub fn update_issue_in_tx(
         }
     }
 
-    update_issue_impl(tx, &issue, status, assignee, clear_assignee, notes)
+    if let Some(append_value) = append_notes {
+        let old = issue.notes.as_deref().filter(|value| !value.is_empty());
+        let resulting_len =
+            old.map_or(0, str::len) + if old.is_some() { 2 } else { 0 } + append_value.len();
+        if resulting_len > 4 * 1024 * 1024 {
+            return Err(Error::cli_usage("notes exceed the 4194304-byte limit"));
+        }
+    }
+
+    update_issue_impl(
+        tx,
+        &issue,
+        status,
+        assignee,
+        clear_assignee,
+        notes,
+        append_notes,
+    )
 }
 
 /// Release an issue
@@ -503,6 +615,7 @@ fn update_issue_impl(
     assignee: Option<&str>,
     clear_assignee: bool,
     notes: Option<&str>,
+    append_notes: Option<&str>,
 ) -> Result<String> {
     let now = time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
@@ -630,6 +743,16 @@ fn update_issue_impl(
         needs_update = true;
     }
 
+    if let Some(append_value) = append_notes {
+        let resulting_notes = match issue.notes.as_deref().filter(|value| !value.is_empty()) {
+            Some(old) => format!("{old}\n\n{append_value}"),
+            None => append_value.to_string(),
+        };
+        sql_parts.push("notes = ?");
+        params.push(resulting_notes);
+        needs_update = true;
+    }
+
     if !needs_update {
         // No actual changes - succeed idempotently
         return Ok(issue.id.clone());
@@ -672,7 +795,7 @@ fn update_issue_impl(
     // (assignment_cleared already handled above)
     if clear_assignee && issue.assignee.is_some() {
         // Event already added
-    } else if status.is_some() || assignee.is_some() || notes.is_some() {
+    } else if status.is_some() || assignee.is_some() || notes.is_some() || append_notes.is_some() {
         append_event(tx, Some(&issue.id), "updated", &json!({}), &now)?;
     }
 
