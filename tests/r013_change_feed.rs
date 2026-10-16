@@ -224,8 +224,8 @@ fn test_change_feed_incremental_updates() {
         .success();
 
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
-    let first_line = stdout.lines().next().unwrap();
-    let first_issue_json: Value = serde_json::from_str(first_line).unwrap();
+    let first_issue_json: Value = serde_json::from_str(&stdout).unwrap();
+    let first_issue_json = &first_issue_json.as_array().unwrap()[0];
     let first_issue_id = first_issue_json["id"].as_str().unwrap();
 
     Command::cargo_bin("bead")
