@@ -152,7 +152,7 @@ fn schema_explain_json_and_markdown_are_deterministic() {
         .args(["schema", "explain", schema_ref, "--format", "markdown"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("# Native field guide v10"))
+        .stdout(predicate::str::contains("# Native field guide v12"))
         .stdout(predicate::str::contains("checkpoint_issue.priority"));
 }
 

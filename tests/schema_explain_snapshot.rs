@@ -344,7 +344,7 @@ fn repeated_invocations_reproduce_the_pinned_digests() {
                 digests.insert(digest.clone());
                 assert_eq!(
                     digest, expected,
-                    "{format} rendering of {} drifted from the pinned guide v10 \
+                    "{format} rendering of {} drifted from the pinned snapshot \
                      digest across repeated invocations",
                     snapshot.schema_ref
                 );
