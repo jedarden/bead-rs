@@ -423,6 +423,7 @@ fn canonical_request(command: &Command) -> Option<CanonicalRequest<'_>> {
         | Command::Schema(_)
         | Command::Query(_)
         | Command::Changes(_)
+        | Command::History(_)
         | Command::Why(_)
         | Command::Compare(_)
         | Command::Policy(_)

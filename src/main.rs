@@ -2,6 +2,7 @@
 
 mod cli;
 mod cli_checkpoint_guard;
+mod cli_history;
 mod cli_secret_scan;
 mod error;
 mod model;
@@ -727,6 +728,7 @@ fn dispatch_command(cli: Cli) -> Result<bool> {
         Command::Schema(opts) => cmd_schema(opts).map(|_| false),
         Command::Query(opts) => cmd_query(opts).map(|_| false),
         Command::Changes(opts) => cmd_changes(opts).map(|_| false),
+        Command::History(opts) => cli_history::run(opts).map(|_| false),
         Command::Data(opts) => cmd_data(opts).map(|_| false),
         Command::Why(opts) => cmd_why(opts).map(|_| false),
         Command::AnalyzeExclusion(opts) => cmd_analyze_exclusion(opts).map(|_| true),

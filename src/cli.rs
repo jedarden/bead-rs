@@ -346,6 +346,8 @@ interchange and reconciliation primitive."
 
     Changes(ChangesOptions),
 
+    History(HistoryOptions),
+
     Why(WhyOptions),
 
     /// Analyze bead exclusion from ready frontier
@@ -2793,6 +2795,21 @@ pub struct ChangesOptions {
     pub validate: Option<String>,
 
     /// Output in JSON format
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Read the audit history for one issue.
+#[derive(Parser, Debug)]
+#[command(
+    about = "List events for one issue in commit order",
+    long_about = "List one issue's audit events in commit order, including closed issues.\n\nEach line shows time, actor, kind, revision, and changed fields. --json emits one array. Historical redactions show only the fixed marker, never prior values.\n\nUse `bead changes` for the workspace-wide cursor feed, or `bead why --id ID` for the issue's current state and readiness."
+)]
+pub struct HistoryOptions {
+    /// Issue ID
+    pub id: String,
+
+    /// Output one JSON array
     #[arg(long)]
     pub json: bool,
 }

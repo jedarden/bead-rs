@@ -705,13 +705,26 @@ fn update_issue_impl(
                     needs_update = true;
 
                     // Append assignment_cleared event
+                    let mut changed_fields = vec!["assignee"];
+                    if let Some(value) = status {
+                        changed_fields.push(if value.eq_ignore_ascii_case("blocked") {
+                            "manual_blocked"
+                        } else {
+                            "base_status"
+                        });
+                    }
+                    if notes.is_some() || append_notes.is_some() {
+                        changed_fields.push("notes");
+                    }
                     append_event(
                         tx,
                         Some(&issue.id),
                         "assignment_cleared",
                         &json!({
                             "prior_assignee": issue.assignee,
-                            "resulting_base_status": "open"
+                            "resulting_base_status": "open",
+                            "revision": issue.revision.unwrap_or(1) + 1,
+                            "changed_fields": changed_fields,
                         }),
                         &now,
                     )?;
@@ -796,7 +809,29 @@ fn update_issue_impl(
     if clear_assignee && issue.assignee.is_some() {
         // Event already added
     } else if status.is_some() || assignee.is_some() || notes.is_some() || append_notes.is_some() {
-        append_event(tx, Some(&issue.id), "updated", &json!({}), &now)?;
+        let mut changed_fields = Vec::new();
+        if status.is_some() {
+            changed_fields.push(
+                if status.is_some_and(|value| value.eq_ignore_ascii_case("blocked")) {
+                    "manual_blocked"
+                } else {
+                    "base_status"
+                },
+            );
+        }
+        if assignee.is_some() {
+            changed_fields.push("assignee");
+        }
+        if notes.is_some() || append_notes.is_some() {
+            changed_fields.push("notes");
+        }
+        append_event(
+            tx,
+            Some(&issue.id),
+            "updated",
+            &json!({"revision": expected_revision + 1, "changed_fields": changed_fields}),
+            &now,
+        )?;
     }
 
     Ok(issue.id.clone())
