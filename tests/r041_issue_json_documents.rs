@@ -285,12 +285,85 @@ fn output_selector_aliases_are_byte_identical_and_query_keeps_its_json_input() {
     assert_eq!(resource_add_json.stdout, resource_add_format.stdout);
 
     let query = r#"{"version":"v1","predicates":[],"sort":[]}"#;
+    let query_text = run(workspace.path(), &["query", "--json", query]);
+    assert!(query_text.status.success());
+    assert!(query_text.stdout.starts_with(b"Found "));
+
     let query_result = run(
         workspace.path(),
         &["query", "--json", query, "--format", "json"],
     );
+    let query_existing_selector = run(
+        workspace.path(),
+        &["query", "--json", query, "--output-json"],
+    );
     assert!(query_result.status.success());
+    assert!(query_existing_selector.status.success());
+    assert_eq!(query_result.stdout, query_existing_selector.stdout);
     assert!(serde_json::from_slice::<Value>(&query_result.stdout).is_ok());
+
+    let missing_document = run(workspace.path(), &["query", "--format", "json"]);
+    assert_eq!(missing_document.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&missing_document.stderr).contains("Query specification required")
+    );
+}
+
+#[test]
+fn create_and_claim_format_aliases_match_existing_json_bytes() {
+    let workspace = workspace();
+
+    // An empty frontier gives both claim selectors exactly the same state.
+    let empty_json = run(
+        workspace.path(),
+        &["claim", "--assignee", "agent", "--json"],
+    );
+    let empty_format = run(
+        workspace.path(),
+        &["claim", "--assignee", "agent", "--format", "json"],
+    );
+    assert!(empty_json.status.success());
+    assert!(empty_format.status.success());
+    assert_eq!(empty_json.stdout, empty_format.stdout);
+    assert!(json_output(empty_format)["bead_id"].is_null());
+
+    // A unique-reference replay returns the same issue without changing it,
+    // allowing an exact comparison of both create selectors.
+    let created_json = run(
+        workspace.path(),
+        &[
+            "create",
+            "--title",
+            "Selector replay",
+            "--unique-ref",
+            "test:selector-replay",
+            "--json",
+        ],
+    );
+    let created_format = run(
+        workspace.path(),
+        &[
+            "create",
+            "--title",
+            "Selector replay",
+            "--unique-ref",
+            "test:selector-replay",
+            "--format",
+            "json",
+        ],
+    );
+    assert!(created_json.status.success());
+    assert!(created_format.status.success());
+    assert_eq!(created_json.stdout, created_format.stdout);
+    let id = json_output(created_json)["id"].as_str().unwrap().to_owned();
+
+    // The alias also selects JSON for a successful, mutating claim.
+    let claimed = json_output(run(
+        workspace.path(),
+        &["claim", "--assignee", "agent", "--format", "json"],
+    ));
+    assert_eq!(claimed["bead_id"], id);
+    assert_eq!(claimed["assignee"], "agent");
 }
 
 #[test]
