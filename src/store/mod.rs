@@ -3,9 +3,11 @@
 //! This module provides the SQLite database backend, including schema migrations,
 //! connection management, and the core workspace initialization logic.
 
+pub mod identity;
 pub mod migrations;
 mod sqlite;
 
+pub use identity::foreign_schema_message;
 pub(crate) use sqlite::RUNTIME_IGNORE_DIRS;
 pub use sqlite::{open_configured_connection, SqliteStore};
 
@@ -120,6 +122,17 @@ pub enum WorkspaceState {
         /// Path to the database that is missing or empty
         db_path: PathBuf,
     },
+    /// `config.json` carries the bead-rs fingerprint, but `beads.db` has
+    /// data and lacks the native schema-identity marker (see
+    /// [`identity::classify_schema_shape`]): it was written by something
+    /// other than bead-rs. Unlike `Uninitialized`, this is not repairable by
+    /// `init` -- the file must never be opened, migrated, or probed.
+    ForeignSchema {
+        /// Workspace root containing the `.beads` directory
+        root: PathBuf,
+        /// Path to the foreign-shaped database
+        db_path: PathBuf,
+    },
     /// Fully initialized workspace.
     Ready(WorkspaceConfig),
 }
@@ -190,6 +203,9 @@ impl WorkspaceConfig {
             WorkspaceState::Uninitialized { root, db_path } => Err(crate::Error::workspace(
                 uninitialized_message(&root, &db_path),
             )),
+            WorkspaceState::ForeignSchema { db_path, .. } => {
+                Err(crate::Error::workspace(foreign_schema_message(&db_path)))
+            }
         }
     }
 
@@ -218,6 +234,23 @@ impl WorkspaceConfig {
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )
         .map_err(|e| crate::Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+
+        // Classify the table shape before deciding what a missing `workspace`
+        // row means. A non-empty database that lacks the native
+        // `schema_migrations`/`workspace` fingerprint was written by
+        // something other than bead-rs -- report that distinctly so `init`
+        // never rebuilds into it and `doctor` names it instead of treating
+        // it as an ordinary fresh-clone "no schema yet" state. The connection
+        // is read-only, so this probe itself can never write to the file.
+        if identity::classify_schema_shape(&conn).map_err(|e| {
+            crate::Error::Internal(anyhow::anyhow!("Failed to open database: {}", e))
+        })? == identity::SchemaShape::Foreign
+        {
+            return Ok(WorkspaceState::ForeignSchema {
+                root: root.to_path_buf(),
+                db_path,
+            });
+        }
 
         // A tracked `.beads/config.json` can exist without a matching
         // `.beads/beads.db` (the db is gitignored on purpose) -- most

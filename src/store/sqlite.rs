@@ -1,8 +1,8 @@
 //! SQLite store implementation
 
-use super::{migrations, Store, WorkspaceConfig};
+use super::{identity, migrations, Store, WorkspaceConfig};
 use crate::error::{Error, Result};
-use rusqlite::{Connection, Result as SqliteResult};
+use rusqlite::{params, Connection, Result as SqliteResult};
 use std::path::Path;
 
 /// Open a database connection at `path` with the standard bead-rs
@@ -21,6 +21,24 @@ use std::path::Path;
 /// `rusqlite::Connection::open` directly.
 pub fn open_configured_connection(path: &Path) -> SqliteResult<Connection> {
     let conn = Connection::open(path)?;
+
+    // Classify the table shape BEFORE any PRAGMA that can write to the file
+    // (`journal_mode = WAL` below sets header flags and creates -wal/-shm
+    // siblings) and before any migration. A non-empty database lacking the
+    // native `schema_migrations`/`workspace` fingerprint was written by
+    // something other than bead-rs; `apply_migrations`'s `CREATE TABLE IF
+    // NOT EXISTS` would silently no-op against a same-named foreign table
+    // while still recording the migration as applied, which is the exact
+    // "appears to work and reinitializes the schema" corruption this guard
+    // exists to prevent. An unreadable table list (e.g. the file is not a
+    // database at all) is refused the same way: there is no safe path that
+    // migrates into it.
+    match identity::classify_schema_shape(&conn) {
+        Ok(identity::SchemaShape::Foreign) | Err(_) => {
+            return Err(identity::foreign_schema_sqlite_error(path));
+        }
+        Ok(_) => {}
+    }
 
     // Configure connection
     conn.execute("PRAGMA foreign_keys = ON", [])?;
@@ -45,6 +63,7 @@ pub fn open_configured_connection(path: &Path) -> SqliteResult<Connection> {
     // would stay there while newer code assumed the tables its migrations add.
     // `migrate_if_pending` is a read when there is nothing to do.
     migrations::migrate_if_pending(&conn)?;
+    identity::verify_format_identity(&conn)?;
     crate::scan::install_acknowledgment_audit_bridge(&conn)?;
 
     Ok(conn)
@@ -458,8 +477,15 @@ impl Store for SqliteStore {
                 .unwrap_or_else(|_| "unknown".to_string());
 
             conn.execute(
-                "INSERT INTO workspace (id, uuid, prefix, layout_version, created_at) VALUES (1, ?1, ?2, 1, ?3)",
-                [&effective_uuid, &effective_prefix, &created_at],
+                "INSERT INTO workspace (id, uuid, prefix, layout_version, created_at, format_uuid, format_version) \
+                 VALUES (1, ?1, ?2, 1, ?3, ?4, ?5)",
+                params![
+                    &effective_uuid,
+                    &effective_prefix,
+                    &created_at,
+                    identity::FORMAT_UUID,
+                    identity::FORMAT_VERSION,
+                ],
             )?;
         }
 

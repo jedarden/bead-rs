@@ -1151,6 +1151,13 @@ fn cmd_restore(opts: cli::RestoreOptions) -> Result<()> {
                 &beads_path,
             )));
         }
+        // The restore target's database has data but not the bead-rs
+        // schema-identity marker. Restore is also a command that would
+        // write into it (via `init_workspace`'s rebuild path), so fail
+        // closed here exactly as init does at the write boundary.
+        store::WorkspaceState::ForeignSchema { db_path, .. } => {
+            return Err(Error::workspace(store::foreign_schema_message(&db_path)));
+        }
     };
 
     // Re-run full verification after initialization so source bytes cannot be
@@ -1304,6 +1311,14 @@ fn cmd_init(opts: cli::InitOptions) -> Result<bool> {
             return Err(Error::workspace(store::foreign_workspace_message(
                 &beads_path,
             )));
+        }
+        // `beads.db` has data but lacks the bead-rs schema-identity marker
+        // (`schema_migrations`/`workspace`): it was written by something
+        // other than bead-rs. init is exactly the command that would
+        // rebuild a schema into it, so refuse here rather than reach
+        // `init_workspace`'s own schema probing. Never a repair target.
+        store::WorkspaceState::ForeignSchema { db_path, .. } => {
+            return Err(Error::workspace(store::foreign_schema_message(&db_path)));
         }
         store::WorkspaceState::NotFound => {}
     }
@@ -3632,6 +3647,32 @@ fn cmd_doctor(opts: cli::DoctorOptions) -> Result<()> {
                 beads_path.display()
             )));
         }
+        // `beads.db` has data but lacks the bead-rs schema-identity marker.
+        // Doctor's job here is to diagnose, not open: report the mismatch
+        // and stop before any probe, migration, or repair touches the file.
+        store::WorkspaceState::ForeignSchema { db_path, .. } => {
+            println!("Running diagnostics with scopes: All");
+            println!();
+            println!(
+                "FAIL workspace_config: {} does not have the bead-rs schema",
+                db_path.display()
+            );
+            println!("     The database has data but lacks the schema-identity marker bead-rs");
+            println!("     stamps at init (the `schema_migrations`/`workspace` tables). It was");
+            println!("     likely created by a different bead-tracking tool sharing this file");
+            println!("     name.");
+            println!();
+            println!(
+                "Repair: point this workspace at whichever tool created {},",
+                db_path.display()
+            );
+            println!("        or move/remove it and run `bead init` here for a fresh bead-rs");
+            println!("        database. Doctor will not open, migrate, or repair this file.");
+            return Err(Error::integrity(format!(
+                "Workspace database at {} has a foreign schema; refusing to open it",
+                db_path.display()
+            )));
+        }
     }
 
     if opts.rehearse {
@@ -4175,7 +4216,8 @@ fn cmd_capabilities(opts: cli::CapabilitiesOptions) -> Result<()> {
     }
     let workspace_root = match store::WorkspaceConfig::probe()? {
         store::WorkspaceState::Ready(config) => Some(config.root),
-        store::WorkspaceState::Uninitialized { root, .. } => Some(root),
+        store::WorkspaceState::Uninitialized { root, .. }
+        | store::WorkspaceState::ForeignSchema { root, .. } => Some(root),
         store::WorkspaceState::NotFound | store::WorkspaceState::NotBeadRs { .. } => None,
     };
     let secret_mode = match workspace_root {
@@ -5540,6 +5582,9 @@ fn cmd_watchdog(opts: cli::WatchdogOptions) -> Result<()> {
             return Err(Error::workspace(store::foreign_workspace_message(
                 &beads_path,
             )));
+        }
+        store::WorkspaceState::ForeignSchema { db_path, .. } => {
+            return Err(Error::workspace(store::foreign_schema_message(&db_path)));
         }
     };
 

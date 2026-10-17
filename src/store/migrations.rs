@@ -3,11 +3,12 @@
 //! This module defines the independent SQLite schema and migration system.
 //! Migration 1 implements the core workspace schema as defined in the plan.
 
+use super::identity;
 use rusqlite::{Connection, Result as SqliteResult, Transaction, TransactionBehavior};
 use sha2::{Digest, Sha256};
 
 /// Current migration version
-pub const CURRENT_VERSION: i64 = 20;
+pub const CURRENT_VERSION: i64 = 21;
 
 /// Whether the store has already reached [`CURRENT_VERSION`].
 ///
@@ -140,6 +141,10 @@ fn is_safe_add_column_replay(
             ("attempt_outcomes", "extensions_json"),
             ("checkpoint_state", "pointer_extensions_json"),
         ],
+        21 => &[
+            ("workspace", "format_uuid"),
+            ("workspace", "format_version"),
+        ],
         _ => return Ok(false),
     };
 
@@ -185,6 +190,7 @@ fn get_migration(version: i64) -> Migration {
         18 => migration_18(),
         19 => migration_19(),
         20 => migration_20(),
+        21 => migration_21(),
         v => panic!("Unknown migration version: {}", v),
     }
 }
@@ -192,6 +198,26 @@ fn get_migration(version: i64) -> Migration {
 /// Migration structure
 struct Migration {
     sql: String,
+}
+
+/// Stamps the bead-rs schema-identity marker (a fixed format UUID/version,
+/// not the per-workspace `workspace.uuid`) onto every native store. Every
+/// connection verifies it on open (`identity::verify_format_identity`), so a
+/// row that was written or altered by anything other than this build of
+/// bead-rs is refused rather than silently trusted. Running this through the
+/// ordinary migration ladder (rather than only at init) is what lets an old
+/// native store pick up the marker by advancing, instead of being refused
+/// for merely predating it.
+fn migration_21() -> Migration {
+    Migration {
+        sql: format!(
+            "ALTER TABLE workspace ADD COLUMN format_uuid TEXT;
+ALTER TABLE workspace ADD COLUMN format_version INTEGER;
+UPDATE workspace SET format_uuid = '{uuid}', format_version = {version} WHERE id = 1;",
+            uuid = identity::FORMAT_UUID,
+            version = identity::FORMAT_VERSION,
+        ),
+    }
 }
 
 /// Recovery may activate historical bytes locally, but must not publish them.
