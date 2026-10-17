@@ -100,6 +100,75 @@ fn list_json_is_one_array_for_empty_one_and_many_results() {
 }
 
 #[test]
+fn show_json_is_the_complete_issue_object() {
+    let workspace = workspace();
+    let blocker = json_output(run(
+        workspace.path(),
+        &["create", "--title", "Blocker", "--json"],
+    ));
+    let blocker_id = blocker["id"].as_str().unwrap();
+    let created = json_output(run(
+        workspace.path(),
+        &[
+            "create",
+            "--title",
+            "Complete show document",
+            "--description",
+            "Keep every issue field",
+            "--priority",
+            "1",
+            "--assignee",
+            "reviewer",
+            "--label",
+            "conformance",
+            "--resource-key",
+            "build:shared",
+            "--depends-on",
+            blocker_id,
+            "--json",
+        ],
+    ));
+    let id = created["id"].as_str().unwrap();
+
+    let updated = run(
+        workspace.path(),
+        &["update", id, "--notes", "Checked fields"],
+    );
+    assert!(
+        updated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&updated.stderr)
+    );
+
+    let shown = json_output(run(workspace.path(), &["show", id, "--json"]));
+    let listed = json_output(run(
+        workspace.path(),
+        &["list", "--json", "--limit", "999999"],
+    ));
+    let list_issue = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|issue| issue["id"] == id)
+        .unwrap();
+
+    assert!(shown.is_object(), "show must emit one issue object");
+    assert_eq!(
+        &shown, list_issue,
+        "show must preserve every member and value"
+    );
+    assert_eq!(shown["title"], "Complete show document");
+    assert_eq!(shown["description"], "Keep every issue field");
+    assert_eq!(shown["notes"], "Checked fields");
+    assert_eq!(shown["priority"], 1);
+    assert_eq!(shown["assignee"], "reviewer");
+    assert_eq!(shown["labels"], json!(["conformance"]));
+    assert_eq!(shown["resource_keys"], json!(["build:shared"]));
+    assert_eq!(shown["dependencies"].as_array().unwrap().len(), 1);
+    assert_eq!(shown["dependencies"][0]["blocker"], blocker_id);
+}
+
+#[test]
 fn list_json_and_jsonl_conflict_with_usage_exit_code() {
     let workspace = workspace();
     let output = run(workspace.path(), &["list", "--json", "--jsonl"]);
