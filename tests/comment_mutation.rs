@@ -810,12 +810,25 @@ fn secret_scan_modes_apply_to_comment_bodies() {
         .env("BEAD_ORG_SECRET_SCANNER", "off")
         .output()
         .unwrap();
-    assert!(
-        allowed.status.success(),
-        "off mode does not scan: {}",
-        String::from_utf8_lossy(&allowed.stderr)
-    );
-    assert_eq!(comment_count(root.path()), 1);
+    // A managed artifact always enforces: an `off` workspace mode is a refused
+    // configuration there, never a scan bypass (beadrs-178305cb).
+    #[cfg(feature = "managed-secret-policy")]
+    {
+        let stderr = String::from_utf8_lossy(&allowed.stderr);
+        assert!(!allowed.status.success(), "managed build refuses off mode");
+        assert!(stderr.contains("managed_secret_policy"), "{stderr}");
+        assert!(!stderr.contains(&body));
+        assert_eq!(comment_count(root.path()), 0);
+    }
+    #[cfg(not(feature = "managed-secret-policy"))]
+    {
+        assert!(
+            allowed.status.success(),
+            "off mode does not scan: {}",
+            String::from_utf8_lossy(&allowed.stderr)
+        );
+        assert_eq!(comment_count(root.path()), 1);
+    }
 }
 
 #[test]

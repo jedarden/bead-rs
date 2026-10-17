@@ -66,6 +66,9 @@ fn revision(workspace: &Path, id: &str) -> i64 {
         .unwrap()
 }
 
+// The off-mode fixture is a non-managed configuration: a managed artifact
+// refuses `secret_scan.mode = "off"` by design (beadrs-178305cb).
+#[cfg(not(feature = "managed-secret-policy"))]
 fn configure_secret_fixture(workspace: &Path, mode: &str) {
     let path = workspace.join(".beads/config.json");
     let mut config: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -241,6 +244,7 @@ fn all_blocking_redacts_every_copy_in_one_epoch_and_is_idempotent() {
 }
 
 #[test]
+#[cfg(not(feature = "managed-secret-policy"))]
 fn all_blocking_defers_unresolvable_close_event_findings_until_publication() {
     for mode in ["monolithic", "sharded"] {
         let dir = workspace();
