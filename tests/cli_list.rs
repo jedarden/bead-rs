@@ -375,8 +375,8 @@ fn test_list_json_is_one_array_for_every_result_count() {
         1,
         "one result must print one line, got: {one_str:?}"
     );
-    let parsed: serde_json::Value = serde_json::from_str(one_str.trim())
-        .expect("one result must be one valid JSON document");
+    let parsed: serde_json::Value =
+        serde_json::from_str(one_str.trim()).expect("one result must be one valid JSON document");
     let items = parsed
         .as_array()
         .unwrap_or_else(|| panic!("--json must emit an array for one result, got: {one_str:?}"));
@@ -482,8 +482,8 @@ fn test_list_jsonl_streams_one_object_per_line_and_nothing_when_empty() {
     );
     let mut titles = Vec::new();
     for line in &lines {
-        let parsed: serde_json::Value = serde_json::from_str(line)
-            .expect("each --jsonl line must be a standalone JSON object");
+        let parsed: serde_json::Value =
+            serde_json::from_str(line).expect("each --jsonl line must be a standalone JSON object");
         assert!(
             parsed.is_object(),
             "each --jsonl line must be an object, not a wrapped array, got: {line}"
