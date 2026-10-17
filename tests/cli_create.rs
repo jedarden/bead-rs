@@ -1,6 +1,7 @@
 //! Integration tests for `bead create` command
 
 use assert_cmd::Command;
+use serde_json::Value;
 use serial_test::serial;
 
 #[test]
@@ -168,6 +169,61 @@ fn test_create_empty_title() {
         .assert()
         .failure()
         .stderr(predicates::str::contains("Title cannot be empty"));
+}
+
+#[test]
+#[serial]
+fn test_create_json_returns_created_issue_and_plain_create_returns_id() {
+    let temp = tempfile::tempdir().unwrap();
+    std::env::set_current_dir(temp.path()).unwrap();
+
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["init", "--skip-foreign-workspace", "--prefix", "json"])
+        .assert()
+        .success();
+
+    let json_output = Command::cargo_bin("bead")
+        .unwrap()
+        .args([
+            "create",
+            "--title",
+            "JSON issue",
+            "--description",
+            "Returned as a document",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let document: Value = serde_json::from_slice(&json_output).unwrap();
+    let json_id = document["id"].as_str().unwrap();
+    assert!(json_id.starts_with("json-"));
+    assert_eq!(document["title"], "JSON issue");
+
+    let shown = Command::cargo_bin("bead")
+        .unwrap()
+        .args(["show", json_id, "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(serde_json::from_slice::<Value>(&shown).unwrap(), document);
+
+    let plain_output = Command::cargo_bin("bead")
+        .unwrap()
+        .args(["create", "--title", "Plain issue"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let plain_id = std::str::from_utf8(&plain_output).unwrap().trim_end();
+    assert!(plain_id.starts_with("json-"));
+    assert!(!plain_id.contains(char::is_whitespace));
 }
 
 #[test]
