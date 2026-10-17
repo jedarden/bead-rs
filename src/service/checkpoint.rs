@@ -8634,14 +8634,30 @@ fn publish_monolithic_checkpoint(
     let hash = calculate_file_hash(&temp_path)?;
 
     // Content-addressed object name: identical content reuses one object
-    // (plan 6.1.1, 6.2.1 P1). If the object already exists, its bytes are
-    // identical by construction -- drop the temp and keep the published
-    // object instead of writing a second copy. A concurrent publisher
-    // renaming over the same path just replaces identical bytes atomically.
+    // (plan 6.1.1, 6.2.1 P1). An existing object is reusable only while its
+    // bytes still hash to their name: a hand edit leaves a file the status
+    // verifier rejects, and because unchanged live state recomputes the
+    // identical address, trusting the name would republish a pointer to
+    // corrupt bytes that no later flush could repair (beadrs-fb3100ce). On
+    // a mismatch the freshly serialized temp replaces the file atomically,
+    // so a flush on an aligned store always leaves both pointers selecting
+    // verified bytes. A concurrent publisher renaming over the same path
+    // still just replaces identical bytes atomically.
     let final_path = objects_dir.join(format!("{}.jsonl", hash));
-    if final_path.exists() {
+    let reuse_existing = final_path.exists()
+        && calculate_file_hash(&final_path)
+            .map(|existing| existing == hash)
+            .unwrap_or(false);
+    if reuse_existing {
         std::fs::remove_file(&temp_path)?;
     } else {
+        if final_path.exists() {
+            eprintln!(
+                "checkpoint: object {} no longer hashes to its name; \
+                 rewritten from the live serialization",
+                final_path.display()
+            );
+        }
         std::fs::rename(&temp_path, &final_path)?;
     }
 
@@ -8879,12 +8895,15 @@ fn create_publication_temp(path: &Path, private: bool) -> Result<File> {
 /// Write a content-addressed generation object, reusing an identical object
 /// already on disk without rewriting it (plan 6.1.1, 6.2 step 4)
 ///
-/// Returns the checkpoint-relative path and the content SHA-256. Because the
-/// filename is the content hash, an existing object holds identical bytes by
-/// construction, so publication writes nothing for it -- that reuse is what
-/// makes a flush's byte cost proportional to the delta rather than the
-/// workspace. `changed_paths` receives the path only when this call wrote
-/// new bytes.
+/// Returns the checkpoint-relative path and the content SHA-256. An existing
+/// object is reused -- publication writes nothing for it, keeping a flush's
+/// byte cost proportional to the delta rather than the workspace -- only
+/// while its bytes still hash to their name: a hand-edited or torn file
+/// recomputes the identical address on every later flush, so trusting the
+/// name would seal the corruption into each new generation (beadrs-fb3100ce).
+/// On a mismatch the live body replaces the file atomically and
+/// `changed_paths` receives the path, so the repaired bytes reach git
+/// staging like any other written object.
 fn write_content_object(
     objects_dir: &Path,
     scratch_tag: &str,
@@ -8895,7 +8914,18 @@ fn write_content_object(
     let hash = format!("{:x}", Sha256::digest(body));
     let rel = format!("objects/{}.jsonl", hash);
     let final_path = objects_dir.join(format!("{}.jsonl", hash));
-    if !final_path.exists() {
+    let reuse_existing = final_path.exists()
+        && calculate_file_hash(&final_path)
+            .map(|existing| existing == hash)
+            .unwrap_or(false);
+    if !reuse_existing {
+        if final_path.exists() {
+            eprintln!(
+                "checkpoint: object {} no longer hashes to its name; \
+                 rewritten from the live serialization",
+                final_path.display()
+            );
+        }
         let temp_path = publication_temp_path(
             scratch_dir,
             &objects_dir.join(format!("{}.tmp", scratch_tag)),
@@ -11488,6 +11518,113 @@ mod tests {
         assert_eq!(
             restore.source_store_uuid, "1c4f5d56-dcff-cbc5-ddf9-c536653c45f4",
             "a receipt that already names a source must read back untouched"
+        );
+    }
+
+    #[test]
+    fn content_object_reuse_requires_bytes_that_hash_to_their_name() {
+        let temp_dir = TempDir::new().unwrap();
+        let objects_dir = temp_dir.path().join("objects");
+        fs::create_dir_all(&objects_dir).unwrap();
+        let body = b"record-one\nrecord-two\n".to_vec();
+
+        // A missing object is written and reported as changed.
+        let mut changed_paths = Vec::new();
+        let (rel, hash) =
+            write_content_object(&objects_dir, "scratch", &body, &mut changed_paths, None).unwrap();
+        assert_eq!(changed_paths, vec![rel.clone()]);
+        let final_path = objects_dir.join(format!("{}.jsonl", hash));
+        assert_eq!(calculate_file_hash(&final_path).unwrap(), hash);
+
+        // An object whose bytes verify is reused: nothing is rewritten and
+        // the path is not reported as changed again.
+        let mut reused = Vec::new();
+        let (rel2, hash2) =
+            write_content_object(&objects_dir, "scratch-2", &body, &mut reused, None).unwrap();
+        assert_eq!(
+            (rel2.as_str(), hash2.as_str()),
+            (rel.as_str(), hash.as_str())
+        );
+        assert!(
+            reused.is_empty(),
+            "verified reuse must report no changed path"
+        );
+
+        // A hand-edited object recomputes the identical address on every
+        // later flush, so reuse by name would seal the corruption into each
+        // new generation: the helper must rewrite it from the live body
+        // instead and report the repaired path as changed.
+        fs::write(&final_path, b"tampered\n").unwrap();
+        assert_ne!(calculate_file_hash(&final_path).unwrap(), hash);
+        let mut repaired = Vec::new();
+        let (rel3, hash3) =
+            write_content_object(&objects_dir, "scratch-3", &body, &mut repaired, None).unwrap();
+        assert_eq!(
+            (rel3.as_str(), hash3.as_str()),
+            (rel.as_str(), hash.as_str())
+        );
+        assert_eq!(repaired, vec![rel], "a rewritten object is a changed path");
+        assert_eq!(
+            fs::read(&final_path).unwrap(),
+            body,
+            "bytes must be restored from the live serialization"
+        );
+        assert_eq!(calculate_file_hash(&final_path).unwrap(), hash);
+    }
+
+    #[test]
+    fn monolithic_publication_repairs_a_root_planted_at_the_next_address() {
+        let temp_dir = TempDir::new().unwrap();
+        let checkpoint_dir = temp_dir.path().join("checkpoint");
+        fs::create_dir_all(checkpoint_dir.join("objects")).unwrap();
+        let corpus = SerializedCorpus {
+            issue_lines: vec![b"{\"issue\":1}".to_vec()],
+            event_lines: Vec::new(),
+            receipt_lines: Vec::new(),
+            attempt_outcome_lines: Vec::new(),
+            redaction_lines: Vec::new(),
+        };
+
+        let mut changed = Vec::new();
+        let first =
+            publish_monolithic_checkpoint(&corpus, &checkpoint_dir, "gen-1", &mut changed, None)
+                .unwrap();
+        let root_file = checkpoint_dir.join(&first.root_path);
+        assert_eq!(calculate_file_hash(&root_file).unwrap(), first.root_hash);
+
+        // A healthy republish over unchanged state reuses the verified
+        // object byte for byte.
+        let verified_bytes = fs::read(&root_file).unwrap();
+        let mut reused = Vec::new();
+        let healthy =
+            publish_monolithic_checkpoint(&corpus, &checkpoint_dir, "gen-2", &mut reused, None)
+                .unwrap();
+        assert_eq!(healthy.root_path, first.root_path);
+        assert_eq!(fs::read(&root_file).unwrap(), verified_bytes);
+
+        // Plant a byte-modified object at the exact content address the next
+        // publication recomputes for unchanged live state (the incident:
+        // the corrupted file was trusted by name and never rewritten).
+        fs::write(&root_file, b"{}\n").unwrap();
+        assert_ne!(calculate_file_hash(&root_file).unwrap(), first.root_hash);
+
+        let mut repaired = Vec::new();
+        let second =
+            publish_monolithic_checkpoint(&corpus, &checkpoint_dir, "gen-3", &mut repaired, None)
+                .unwrap();
+        assert_eq!(
+            second.root_hash, first.root_hash,
+            "unchanged live state keeps the content address"
+        );
+        assert_eq!(
+            calculate_file_hash(&root_file).unwrap(),
+            second.root_hash,
+            "the flush must leave the pointer selecting verified bytes"
+        );
+        assert_eq!(
+            fs::read(checkpoint_dir.join("forensic.jsonl")).unwrap(),
+            fs::read(&root_file).unwrap(),
+            "the compatibility view must carry the repaired bytes"
         );
     }
 }
