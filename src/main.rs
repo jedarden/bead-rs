@@ -147,11 +147,21 @@ fn normalize_output_selector_arguments(
         }
         (true, true) => {
             if has_json_flag {
-                if let Some((start, end, value)) = format {
+                if let Some((_, _, value)) = format {
                     if value != "json" {
                         return Err("conflicting output format selectors".to_string());
                     }
-                    args.drain(start..end);
+                    // Keep the command's native format option as the one
+                    // renderer selector. The declared --json flag exists so
+                    // it is discoverable in help, but it is normalized away.
+                    let json_index = args.iter().position(|arg| arg == "--json").unwrap();
+                    args.remove(json_index);
+                } else {
+                    let json_index = args.iter().position(|arg| arg == "--json").unwrap();
+                    args.splice(
+                        json_index..json_index + 1,
+                        [OsString::from("--format"), OsString::from("json")],
+                    );
                 }
             }
         }

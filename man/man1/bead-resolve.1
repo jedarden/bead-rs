@@ -4,7 +4,7 @@
 .SH NAME
 bead resolve \- Record an execution attempt outcome atomically
 .SH SYNOPSIS
-\fBbead resolve\fR [\fB\-\-action\fR] [\fB\-\-reason\fR] [\fB\-\-if\-revision\fR] [\fB\-\-fencing\-token\fR] [\fB\-\-evidence\-ref\fR] [\fB\-\-actor\fR] [\fB\-\-model\fR] [\fB\-\-harness\fR] [\fB\-\-harness\-version\fR] [\fB\-\-format\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-attempt\-id\fR> <\fB\-\-outcome\fR> <\fIID\fR> 
+\fBbead resolve\fR [\fB\-\-action\fR] [\fB\-\-reason\fR] [\fB\-\-if\-revision\fR] [\fB\-\-fencing\-token\fR] [\fB\-\-evidence\-ref\fR] [\fB\-\-actor\fR] [\fB\-\-model\fR] [\fB\-\-harness\fR] [\fB\-\-harness\-version\fR] [\fB\-\-format\fR] [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-attempt\-id\fR> <\fB\-\-outcome\fR> <\fIID\fR> 
 .SH DESCRIPTION
 Resolve an execution attempt by recording its outcome and applying
 a lifecycle transition in one atomic operation. This implements the
@@ -46,6 +46,9 @@ Harness version for telemetry
 .TP
 \fB\-\-format\fR \fI<FORMAT>\fR [default: text]
 Output format
+.TP
+\fB\-\-json\fR
+Alias for \-\-format json
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

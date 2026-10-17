@@ -4,7 +4,7 @@
 .SH NAME
 bead sync status \- Report checkpoint status and readiness to commit
 .SH SYNOPSIS
-\fBbead sync status\fR [\fB\-\-format\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBbead sync status\fR [\fB\-\-format\fR] [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] 
 .SH DESCRIPTION
 Report checkpoint freshness, verification, and readiness to commit.
 .PP
@@ -36,10 +36,11 @@ READINESS:
 .PP
 EXAMPLES:
   bead sync status                     # Human\-readable summary
-  bead sync status \-\-format json       # Machine\-readable status
+  bead sync status \-\-json              # Machine\-readable status
+  bead sync status \-\-format json       # The same JSON bytes
 .PP
 OUTPUT:
-  \-\-format json prints one JSON object with checkpoint_present, mode,
+  \-\-json (or \-\-format json) prints one JSON object with checkpoint_present, mode,
   generation_id, live_sequence, covered_sequence, relationship, dirty,
   root_path, root_hash, root_verified, view_agrees, unresolved_tombstones,
   changed_paths, checkpoint_consistent, ready_to_commit,
@@ -71,6 +72,9 @@ GIT REACHABILITY (ADR\-013, ADR\-017):
 .TP
 \fB\-\-format\fR \fI<FORMAT>\fR [default: text]
 Output format: text or json
+.TP
+\fB\-\-json\fR
+Alias for \-\-format json
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

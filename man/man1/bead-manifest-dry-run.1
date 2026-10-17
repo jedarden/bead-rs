@@ -4,7 +4,7 @@
 .SH NAME
 bead manifest dry\-run \- Report a manifest\*(Aqs full semantic delta without mutating anything
 .SH SYNOPSIS
-\fBbead manifest dry\-run\fR [\fB\-\-format\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-input\fR> 
+\fBbead manifest dry\-run\fR [\fB\-\-format\fR] [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-input\fR> 
 .SH DESCRIPTION
 Validate and execute a manifest inside one transaction that is
 always rolled back.
@@ -18,7 +18,7 @@ report are provisional \-\- only a commit\*(Aqs result map carries real IDs;
 correlate through the create\*(Aqs local_id.
 .PP
   bead manifest dry\-run \-\-input plan.json
-  bead manifest dry\-run \-\-input plan.json \-\-format json
+  bead manifest dry\-run \-\-input plan.json \-\-json    # Machine\-readable delta
 .SH OPTIONS
 .TP
 \fB\-\-input\fR \fI<INPUT>\fR
@@ -26,6 +26,9 @@ Path to the manifest JSON file
 .TP
 \fB\-\-format\fR \fI<FORMAT>\fR [default: text]
 Output format: text or json
+.TP
+\fB\-\-json\fR
+Alias for \-\-format json
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

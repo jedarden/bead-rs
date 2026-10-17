@@ -420,3 +420,83 @@ fn help_describes_the_issue_json_shapes() {
     assert!(create.contains("--json"));
     assert!(create.contains("created issue document"));
 }
+
+#[test]
+fn format_commands_advertise_json_and_preserve_other_renderings() {
+    let workspace = workspace();
+    let schema_ref = "urn:bead-rs:schema:issue:native-v1";
+    let manifest = workspace.path().join("empty-manifest.json");
+    std::fs::write(&manifest, r#"{"manifest_version":1,"operations":[]}"#).unwrap();
+    let manifest_path = manifest.to_str().unwrap();
+
+    for command in [
+        vec!["capabilities"],
+        vec!["schema", "list"],
+        vec!["schema", "show", schema_ref],
+        vec!["schema", "explain", schema_ref],
+        vec!["sync", "status"],
+        vec!["policy", "check"],
+        vec!["manifest", "dry-run", "--input", manifest_path],
+        vec!["manifest", "commit", "--input", manifest_path],
+    ] {
+        let alias = run(
+            workspace.path(),
+            &[command.as_slice(), &["--json"]].concat(),
+        );
+        let format = run(
+            workspace.path(),
+            &[command.as_slice(), &["--format", "json"]].concat(),
+        );
+        assert!(alias.status.success(), "{command:?}: {alias:?}");
+        assert!(format.status.success(), "{command:?}: {format:?}");
+        assert_eq!(alias.stdout, format.stdout, "{command:?}");
+        serde_json::from_slice::<Value>(&alias.stdout).unwrap();
+    }
+
+    // The shared alias must not remove existing command-specific formats.
+    for command in [
+        vec!["sync", "status", "--format", "text"],
+        vec!["policy", "check", "--format", "text"],
+        vec!["schema", "explain", schema_ref, "--format", "markdown"],
+    ] {
+        let output = run(workspace.path(), &command);
+        assert!(output.status.success(), "{command:?}: {output:?}");
+        assert!(!output.stdout.is_empty(), "{command:?}");
+    }
+
+    let conflict = run(
+        workspace.path(),
+        &[
+            "schema", "explain", schema_ref, "--json", "--format", "markdown",
+        ],
+    );
+    assert_eq!(conflict.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&conflict.stderr).contains("conflicting output format selectors")
+    );
+}
+
+#[test]
+fn format_based_commands_show_json_in_leaf_help() {
+    let temp = tempfile::tempdir().unwrap();
+    for command in [
+        vec!["restore"],
+        vec!["resolve"],
+        vec!["sync", "import-only"],
+        vec!["sync", "status"],
+        vec!["sync", "fork"],
+        vec!["capabilities"],
+        vec!["schema", "list"],
+        vec!["schema", "show"],
+        vec!["schema", "explain"],
+        vec!["manifest", "dry-run"],
+        vec!["manifest", "commit"],
+        vec!["policy", "check"],
+    ] {
+        let output = run(temp.path(), &[command.as_slice(), &["--help"]].concat());
+        assert!(output.status.success(), "{command:?}: {output:?}");
+        let help = String::from_utf8(output.stdout).unwrap();
+        assert!(help.contains("--json"), "{command:?}");
+        assert!(help.contains("--format"), "{command:?}");
+    }
+}

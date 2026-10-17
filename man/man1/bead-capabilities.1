@@ -4,7 +4,7 @@
 .SH NAME
 bead capabilities \- Show capabilities and supported features
 .SH SYNOPSIS
-\fBbead capabilities\fR [\fB\-\-profile\fR] [\fB\-\-format\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBbead capabilities\fR [\fB\-\-profile\fR] [\fB\-\-format\fR] [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] 
 .SH DESCRIPTION
 Display versioned capabilities and supported feature sets.
 .PP
@@ -14,6 +14,7 @@ checkpoint modes and formats, and schema catalog.
 .PP
 EXAMPLES:
   bead capabilities                            # Native capabilities as JSON
+  bead capabilities \-\-json                     # Explicit JSON selector
   bead capabilities \-\-profile needle\-v1        # NEEDLE v1 contract
   bead capabilities \-\-profile native\-v1        # Explicit native profile
 .PP
@@ -76,6 +77,9 @@ Profile for capabilities output
 .TP
 \fB\-\-format\fR \fI<FORMAT>\fR [default: json]
 Output format; capabilities are JSON only
+.TP
+\fB\-\-json\fR
+Alias for \-\-format json
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

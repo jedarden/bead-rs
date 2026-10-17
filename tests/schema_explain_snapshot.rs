@@ -90,6 +90,21 @@ fn explain_json(schema_ref: &str) -> Value {
     serde_json::from_slice(&explain(schema_ref, "json")).unwrap()
 }
 
+#[test]
+fn json_alias_matches_the_pinned_field_guide_snapshot_bytes() {
+    for schema_ref in [NATIVE_GUIDE_SCHEMA_REF, CONCISE_SCHEMA_REF] {
+        let alias = Command::cargo_bin("bead")
+            .unwrap()
+            .args(["schema", "explain", schema_ref, "--json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        assert_eq!(alias, explain(schema_ref, "json"));
+    }
+}
+
 fn sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }

@@ -503,6 +503,10 @@ pub struct RestoreOptions {
     /// Output format: text or json
     #[arg(long, default_value = "text")]
     pub format: String,
+
+    /// Alias for --format json
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Options for creating a new issue
@@ -1516,6 +1520,10 @@ pub struct ResolveOptions {
     /// Output format
     #[arg(long, default_value = "text")]
     pub format: String,
+
+    /// Alias for --format json
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Sync commands
@@ -1831,10 +1839,11 @@ READINESS:
 
 EXAMPLES:
   bead sync status                     # Human-readable summary
-  bead sync status --format json       # Machine-readable status
+  bead sync status --json              # Machine-readable status
+  bead sync status --format json       # The same JSON bytes
 
 OUTPUT:
-  --format json prints one JSON object with checkpoint_present, mode,
+  --json (or --format json) prints one JSON object with checkpoint_present, mode,
   generation_id, live_sequence, covered_sequence, relationship, dirty,
   root_path, root_hash, root_verified, view_agrees, unresolved_tombstones,
   changed_paths, checkpoint_consistent, ready_to_commit,
@@ -1979,6 +1988,10 @@ pub struct SyncImportOptions {
     #[arg(long, default_value = "text", value_parser = ["text", "json"])]
     pub format: String,
 
+    /// Alias for --format json
+    #[arg(long)]
+    pub json: bool,
+
     /// Profile for import (default: native-v1)
     #[arg(long, default_value = "native-v1")]
     pub profile: String,
@@ -2039,6 +2052,10 @@ pub struct SyncStatusOptions {
     /// Output format: text or json
     #[arg(long, default_value = "text")]
     pub format: String,
+
+    /// Alias for --format json
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Options for reconciling a remote-advanced checkpoint (R027)
@@ -2106,6 +2123,10 @@ pub struct SyncForkOptions {
     /// Output format: text or json
     #[arg(long, default_value = "text")]
     pub format: String,
+
+    /// Alias for --format json
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Label management commands
@@ -2483,6 +2504,7 @@ checkpoint modes and formats, and schema catalog.
 
 EXAMPLES:
   bead capabilities                            # Native capabilities as JSON
+  bead capabilities --json                     # Explicit JSON selector
   bead capabilities --profile needle-v1        # NEEDLE v1 contract
   bead capabilities --profile native-v1        # Explicit native profile
 
@@ -2547,6 +2569,10 @@ pub struct CapabilitiesOptions {
     /// Output format; capabilities are JSON only
     #[arg(long, default_value = "json")]
     pub format: String,
+
+    /// Alias for --format json
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -2590,7 +2616,7 @@ EXIT CODES:
   - 2 for an unknown identity or an unsupported --format value
 
 EXAMPLES:
-  bead schema explain urn:bead-rs:schema:issue:native-v1                    # Native field guide as typed JSON
+  bead schema explain urn:bead-rs:schema:issue:native-v1 --json             # Native field guide as typed JSON
   bead schema explain urn:bead-rs:schema:issue:native-v1 --format markdown  # The same guide rendered as Markdown
   bead schema explain urn:bead-rs:schema:checkpoint-pointer:native-v1       # Concise explanation of one schema
   bead schema list                                                          # Discover every explainable identity"
@@ -2603,6 +2629,10 @@ pub struct SchemaListOptions {
     /// Output format
     #[arg(long, value_parser = ["json"], default_value = "json")]
     pub format: String,
+
+    /// Alias for --format json
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -2613,6 +2643,10 @@ pub struct SchemaShowOptions {
     /// Output format
     #[arg(long, value_parser = ["json"], default_value = "json")]
     pub format: String,
+
+    /// Alias for --format json
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -2623,6 +2657,10 @@ pub struct SchemaExplainOptions {
     /// Output format
     #[arg(long, value_parser = ["json", "markdown"], default_value = "json")]
     pub format: String,
+
+    /// Alias for --format json
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Options for query language execution
@@ -3051,7 +3089,7 @@ report are provisional -- only a commit's result map carries real IDs;
 correlate through the create's local_id.
 
   bead manifest dry-run --input plan.json
-  bead manifest dry-run --input plan.json --format json"
+  bead manifest dry-run --input plan.json --json    # Machine-readable delta"
     )]
     DryRun(ManifestOpOptions),
 
@@ -3071,7 +3109,7 @@ Publication failures after the commit are the standard split outcome: the
 manifest stays committed, exit 1, and 'bead sync flush-only' is the remedy.
 
   bead manifest commit --input plan.json
-  bead manifest commit --input plan.json --format json   # result map with real IDs"
+  bead manifest commit --input plan.json --json   # result map with real IDs"
     )]
     Commit(ManifestOpOptions),
 }
@@ -3088,6 +3126,10 @@ pub struct ManifestOpOptions {
     /// Output format: text or json
     #[arg(long, default_value = "text")]
     pub format: String,
+
+    /// Alias for --format json
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Structured data commands
@@ -3303,6 +3345,10 @@ pub struct PolicyCheckOptions {
     /// Output format (text or json)
     #[arg(long, default_value = "text")]
     pub format: String,
+
+    /// Alias for --format json
+    #[arg(long)]
+    pub json: bool,
 
     /// Scheduling policy to validate (defaults to current workspace policy)
     #[arg(long)]

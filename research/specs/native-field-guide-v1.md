@@ -154,27 +154,28 @@ per line, with no bytes for an empty result. `bead show --json` emits exactly
 one JSON object, not a one-element array. `bead create --json` emits the
 created issue as one JSON object; plain `bead create` retains its NEEDLE
 contract of printing only the new ID. `--format json` is an exact synonym for
-`--json` on commands that render machine-readable output.
+`--json` on commands that render machine-readable output. `query --json
+DOCUMENT` supplies query input; `query --format json` selects result output.
+Existing `--format text` and `schema explain --format markdown` renderings
+remain available.
 
-The issue object has exactly these members in v0.1 plus the R041 `notes`
-member:
+The issue object includes these base members:
 
 `id`, `title`, `description`, `priority`, `status`, `assignee`,
 `dependencies`, `created_at`, `updated_at`, `labels`, `revision`, and `notes`.
 
-It does not expose `manual_blocked`, `issue_type`, `closed_at`, `close_reason`,
-`source_repo`, `profile`, `schema_ref`, structured `data`, or unknown
-checkpoint members. Omission from this projection is not data loss in the
-live store or checkpoint. `notes` is the current durable issue note projection;
-its presence here does not make comments part of the issue object.
+The current projection also includes `manual_blocked`, `effective_status`,
+`attempts`, and `comments`; `claim_epoch` and `resource_keys` appear when
+available. Further members may be added. It does not expose `issue_type`,
+`closed_at`, `close_reason`, `source_repo`, `profile`, `schema_ref`, structured
+`data`, or unknown checkpoint members. Omission from this projection is not
+data loss in the live store or checkpoint.
 
-`status` is the agent-facing projection of native state. Its intended mapping
-is `blocked` when `manual_blocked` is true on non-closed work, otherwise the
-string form of `base_status`: `open`, `in_progress`, `deferred`, or `closed`.
+`status` is the string form of `base_status`: `open`, `in_progress`,
+`deferred`, or `closed`. `effective_status` is `blocked` when
+`manual_blocked` is true on non-closed work, and otherwise equals `status`.
 Readiness is stricter than `status == open`, because assignment and graph
-blockers also apply. The current v0.1 implementation projects `base_status`
-without applying the manual-blocked overlay; this is a known producer defect,
-not permission for consumers to treat `blocked` as a stored base value.
+blockers also apply. `blocked` is never a stored base status.
 
 The projected dependency objects contain `blocker` and `kind`; `labels` and
 `dependencies` are arrays. `description` is materialized as `""` when the

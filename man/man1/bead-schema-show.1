@@ -4,7 +4,7 @@
 .SH NAME
 bead schema show \- Show a public JSON Schema
 .SH SYNOPSIS
-\fBbead schema show\fR [\fB\-\-format\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fISCHEMA_REF\fR> 
+\fBbead schema show\fR [\fB\-\-format\fR] [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fISCHEMA_REF\fR> 
 .SH DESCRIPTION
 Emit the immutable JSON Schema Draft 2020\-12 document for an exact catalog identity.
 .PP
@@ -21,6 +21,9 @@ Output format
 .IP \(bu 2
 json
 .RE
+.TP
+\fB\-\-json\fR
+Alias for \-\-format json
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

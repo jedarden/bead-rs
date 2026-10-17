@@ -321,12 +321,14 @@ workspace and comparing the result for semantic equivalence.
 
 ## Output contracts
 
-- `--json` on `list`, `changes`, and `query --output-json` emits **NDJSON** —
-  one compact object per line, not a JSON array.
-- `bead show --json` emits a **one-element array**, which is what NEEDLE's
-  subprocess contract expects.
-- `bead create` prints only the new bead ID and a newline, so it can be captured
-  directly into a shell variable.
+- `bead list --json` emits one JSON array, including `[]` for an empty result.
+  `bead list --jsonl` emits one object per line and no bytes for an empty result.
+- `bead show ID --json` and `bead create --json` each emit one issue object.
+  Plain `bead create` prints only the new bead ID and a newline.
+- `--json` and `--format json` select byte-identical output wherever a command
+  offers JSON results, including `capabilities`, `schema`, `manifest`, and
+  `sync status`. `query --json DOCUMENT` is the inline query input; use
+  `query --format json` or `query --output-json` for JSON results.
 - `bead claim` on an empty frontier is success, not failure: exit 0 with `{}`.
 - `bead capabilities` emits a machine-readable contract document for feature
   negotiation.
@@ -401,9 +403,9 @@ other task tracker. These conventions catch people out:
 | --- | --- |
 | The binary is `bead` | not the crate name `bead-rs` |
 | `create` takes a flag | `bead create --title "Title"`, not a positional title |
-| Ready work is a filter | `bead list --ready`, not a `ready` command |
+| Ready work is a filter | `bead list --ready`; `bead ready` is its shortcut |
 | `flush-only` is a subcommand | `bead sync flush-only`, not `bead sync --flush-only` |
-| `--json` emits NDJSON | one object per line, not an array (except `show`, which emits a one-element array) |
+| Issue JSON transports | `list --json` is an array, `list --jsonl` is a stream, and `show --json` and `create --json` are objects |
 | Manual blocking | `bead list --blocked` shows manually blocked open issues; `--status blocked` is an alias |
 | Effective status | JSON output includes `manual_blocked` (bool) and `effective_status` (shows "blocked" when manually blocked) |
 

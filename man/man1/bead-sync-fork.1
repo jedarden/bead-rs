@@ -4,7 +4,7 @@
 .SH NAME
 bead sync fork \- Fork workspace identity under a new UUID
 .SH SYNOPSIS
-\fBbead sync fork\fR [\fB\-\-reason\fR] [\fB\-\-format\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-actor\fR> 
+\fBbead sync fork\fR [\fB\-\-reason\fR] [\fB\-\-format\fR] [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-actor\fR> 
 .SH DESCRIPTION
 Create a new workspace UUID derived from the current workspace.
 .PP
@@ -51,6 +51,9 @@ Human\-readable explanation for the fork (optional, max 4096 bytes)
 .TP
 \fB\-\-format\fR \fI<FORMAT>\fR [default: text]
 Output format: text or json
+.TP
+\fB\-\-json\fR
+Alias for \-\-format json
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

@@ -4,7 +4,7 @@
 .SH NAME
 bead policy check \- Validate workspace policy and scheduling configuration
 .SH SYNOPSIS
-\fBbead policy check\fR [\fB\-\-format\fR] [\fB\-\-policy\fR] [\fB\-\-policy\-version\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBbead policy check\fR [\fB\-\-format\fR] [\fB\-\-json\fR] [\fB\-\-policy\fR] [\fB\-\-policy\-version\fR] [\fB\-h\fR|\fB\-\-help\fR] 
 .SH DESCRIPTION
 Diagnose contradictory, unreachable, redundant, and ineffective scheduling
 or retention configuration without making any changes to the workspace.
@@ -25,6 +25,9 @@ EXAMPLES:
 .TP
 \fB\-\-format\fR \fI<FORMAT>\fR [default: text]
 Output format (text or json)
+.TP
+\fB\-\-json\fR
+Alias for \-\-format json
 .TP
 \fB\-\-policy\fR \fI<POLICY>\fR
 Scheduling policy to validate (defaults to current workspace policy)

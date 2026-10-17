@@ -51,8 +51,10 @@ same workspace state. This includes `list`, `show`, `create`, `claim`,
 other mutating or diagnostic commands. Existing command-specific spellings
 remain valid.
 
-`--format` accepts only `json` on this surface. An unsupported value fails
-before workspace mutation with:
+The shared JSON alias accepts only `json`; commands that already support
+`--format text` or `schema explain --format markdown` keep those renderings.
+An unsupported value on a JSON-only surface fails before workspace mutation
+with:
 
 ```text
 unsupported output format '<value>'; use --format json

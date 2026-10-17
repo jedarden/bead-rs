@@ -4,7 +4,7 @@
 .SH NAME
 bead sync import\-only \- Import forensic checkpoint with restore or merge
 .SH SYNOPSIS
-\fBbead sync import\-only\fR [\fB\-\-profile\fR] [\fB\-\-restore\-into\-empty\fR] [\fB\-\-merge\fR] [\fB\-\-actor\fR] [\fB\-\-dry\-run\fR] [\fB\-\-diagnostics\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-input\fR> 
+\fBbead sync import\-only\fR [\fB\-\-format\fR] [\fB\-\-json\fR] [\fB\-\-profile\fR] [\fB\-\-restore\-into\-empty\fR] [\fB\-\-merge\fR] [\fB\-\-actor\fR] [\fB\-\-dry\-run\fR] [\fB\-\-diagnostics\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-input\fR> 
 .SH DESCRIPTION
 Import and validate forensic checkpoint with atomic activation.
 .PP
@@ -78,6 +78,22 @@ Use \-\-dry\-run to validate checkpoints before risking database mutation.
 .TP
 \fB\-\-input\fR \fI<INPUT>\fR
 Input file or directory path
+.TP
+\fB\-\-format\fR \fI<FORMAT>\fR [default: text]
+Output format: text or json
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+text
+.IP \(bu 2
+json
+.RE
+.TP
+\fB\-\-json\fR
+Alias for \-\-format json
 .TP
 \fB\-\-profile\fR \fI<PROFILE>\fR [default: native\-v1]
 Profile for import (default: native\-v1)

@@ -49,6 +49,11 @@ EXIT CODES:
   4  conflict (invalid transition, revision guard, cycle)
   5  malformed input or integrity failure
 .PP
+MACHINE\-READABLE OUTPUT:
+  On commands that render machine\-readable output, \-\-json and \-\-format json
+  are equivalent. `query \-\-json DOCUMENT` still supplies the query document;
+  use `query \-\-format json` to render its results.
+.PP
 Run `bead <COMMAND> \-\-help` for the full description of any command.
 .SH OPTIONS
 .TP

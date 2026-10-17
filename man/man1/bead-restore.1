@@ -4,7 +4,7 @@
 .SH NAME
 bead restore \- Restore one named, verified checkpoint generation
 .SH SYNOPSIS
-\fBbead restore\fR [\fB\-\-allow\-non\-empty\fR] [\fB\-\-prefix\fR] [\fB\-\-format\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-source\fR> <\fB\-\-generation\fR> <\fB\-\-actor\fR> 
+\fBbead restore\fR [\fB\-\-allow\-non\-empty\fR] [\fB\-\-prefix\fR] [\fB\-\-format\fR] [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-source\fR> <\fB\-\-generation\fR> <\fB\-\-actor\fR> 
 .SH DESCRIPTION
 Restore one named immutable checkpoint generation as an explicit recovery operation.
 .PP
@@ -51,6 +51,9 @@ Prefix used only when this command initializes a workspace with no config
 .TP
 \fB\-\-format\fR \fI<FORMAT>\fR [default: text]
 Output format: text or json
+.TP
+\fB\-\-json\fR
+Alias for \-\-format json
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)
