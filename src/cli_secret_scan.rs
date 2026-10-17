@@ -341,6 +341,7 @@ fn canonical_request(command: &Command) -> Option<CanonicalRequest<'_>> {
                     .field("blocker_issue_id", &opts.blocker)
                     .optional("kind", opts.kind.as_deref()),
             ),
+            DepCommand::List(_) => None,
         },
         Command::Ref(command) => match command {
             RefCommand::Add(opts) => Some(
@@ -417,6 +418,8 @@ fn canonical_request(command: &Command) -> Option<CanonicalRequest<'_>> {
         | Command::Sync(_)
         | Command::List(_)
         | Command::Show(_)
+        | Command::Ready(_)
+        | Command::Search(_)
         | Command::Doctor(_)
         | Command::Redact(_)
         | Command::Capabilities(_)

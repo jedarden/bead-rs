@@ -605,6 +605,31 @@ fn registry() -> Vec<RegisteredCommand> {
             },
         },
         RegisteredCommand {
+            path: "bead ready",
+            class: NonMutating,
+            reason: "read-only shortcut for 'bead list --ready'",
+            invoke: |_| vec!["ready".into(), "--json".into()],
+        },
+        RegisteredCommand {
+            path: "bead search",
+            class: NonMutating,
+            reason: "read-only shortcut for 'bead list --all --search TEXT'",
+            invoke: |_| vec!["search".into(), "fixture".into(), "--json".into()],
+        },
+        RegisteredCommand {
+            path: "bead dep list",
+            class: NonMutating,
+            reason: "read-only listing of one issue's dependency edges",
+            invoke: |f| {
+                vec![
+                    "dep".into(),
+                    "list".into(),
+                    f.update_target.clone(),
+                    "--json".into(),
+                ]
+            },
+        },
+        RegisteredCommand {
             path: "bead analyze-exclusion",
             class: NonMutating,
             reason: "read-only explanation of why open issues are absent from the ready frontier",

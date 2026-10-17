@@ -5,8 +5,8 @@
 //! recovery keeps its own validation rules.
 
 use crate::cli::{
-    Command, DataCommand, ManifestCommand, RecurrenceCommand, RefCommand, ResourceCommand,
-    SyncCommand,
+    Command, DataCommand, DepCommand, ManifestCommand, RecurrenceCommand, RefCommand,
+    ResourceCommand, SyncCommand,
 };
 use crate::error::{Error, Result};
 use crate::store::{WorkspaceConfig, WorkspaceState};
@@ -35,8 +35,9 @@ fn policy(command: &Command) -> Option<bool> {
         | Command::Resolve(_)
         | Command::Claim(_)
         | Command::Label(_)
-        | Command::Dep(_)
         | Command::Comment(_) => Some(true),
+        Command::Dep(DepCommand::Add(_) | DepCommand::Remove(_)) => Some(true),
+        Command::Dep(DepCommand::List(_)) => None,
         Command::Resource(ResourceCommand::Add(_) | ResourceCommand::Remove(_))
         | Command::Ref(RefCommand::Add(_) | RefCommand::Remove(_))
         | Command::Data(DataCommand::Set(_) | DataCommand::Remove(_))
@@ -70,6 +71,8 @@ fn policy(command: &Command) -> Option<bool> {
         Command::AnalyzeExclusion(opts) => opts.attach.is_some().then_some(true),
         Command::List(_)
         | Command::Show(_)
+        | Command::Ready(_)
+        | Command::Search(_)
         | Command::Capabilities(_)
         | Command::Schema(_)
         | Command::Query(_)

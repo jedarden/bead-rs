@@ -998,10 +998,127 @@ pub fn list_issues(
         assignee_filter,
         ready_only,
         blocked_only,
+        None,
         limit,
+        false,
         verbose,
         ReadySort::Fifo,
     )
+}
+
+/// Build the shared `WHERE` clause and positional parameters used by both
+/// `list_issues_with_sort` and `count_issues`, so the two queries can never
+/// drift in which rows they consider a match.
+#[allow(clippy::too_many_arguments)]
+fn build_list_filter_sql(
+    status_filter: Option<&str>,
+    assignee_filter: Option<&str>,
+    ready_only: bool,
+    blocked_only: bool,
+    search: Option<&str>,
+) -> Result<(String, Vec<String>)> {
+    let mut clause = String::from(" WHERE 1=1");
+    let mut params: Vec<String> = vec![];
+
+    // Add status filter if specified
+    if let Some(status) = status_filter {
+        // Special case: "blocked" is an alias for manually blocked open issues
+        if status == "blocked" {
+            // This will be handled by the blocked_only filter below
+            // Don't add it to the base_status filter
+        } else {
+            // Validate status value
+            BaseStatus::parse(status)?;
+            clause.push_str(" AND base_status = ?");
+            params.push(status.to_string());
+        }
+    }
+
+    // Add blocked filter
+    if blocked_only {
+        clause.push_str(" AND base_status = 'open' AND (manual_blocked = 1)");
+    }
+
+    // Add assignee filter if specified
+    if let Some(assignee) = assignee_filter {
+        if assignee.is_empty() {
+            clause.push_str(" AND assignee IS NULL");
+        } else {
+            clause.push_str(" AND assignee = ?");
+            params.push(assignee.to_string());
+        }
+    }
+
+    // Add ready frontier filter
+    if ready_only {
+        // A ready issue must be: open, unassigned, not manually blocked, and has no unfinished blockers
+        // A blocker is unfinished unless its base state is 'closed'
+        clause.push_str(" AND base_status = 'open' AND (manual_blocked IS NULL OR manual_blocked = 0) AND assignee IS NULL AND NOT EXISTS (
+            SELECT 1 FROM dependencies WHERE blocked_issue_id = issues.id AND kind = 'blocks'
+            AND blocker_issue_id IN (SELECT id FROM issues WHERE base_status != 'closed')
+        ) AND NOT EXISTS (
+            SELECT 1 FROM issue_resource_keys candidate_key
+            JOIN resource_locks held_lock ON held_lock.resource_key = candidate_key.resource_key
+            WHERE candidate_key.issue_id = issues.id
+              AND held_lock.issue_id != issues.id
+              AND (held_lock.lease_fencing_token IS NULL OR EXISTS (
+                  SELECT 1 FROM leases active_lease
+                  WHERE active_lease.issue_id = held_lock.issue_id
+                    AND active_lease.fencing_token = held_lock.lease_fencing_token
+                    AND active_lease.expires_at > ?
+              ))
+        )");
+        params.push(crate::service::resource_locks::now_string());
+    }
+
+    // Add free-text search, matched case-insensitively against title,
+    // description, and notes. User-supplied `%`/`_` are escaped so they are
+    // matched literally rather than as SQL LIKE wildcards.
+    if let Some(text) = search {
+        let escaped = text
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let pattern = format!("%{}%", escaped);
+        clause.push_str(
+            " AND (LOWER(title) LIKE LOWER(?) ESCAPE '\\' \
+               OR LOWER(COALESCE(description, '')) LIKE LOWER(?) ESCAPE '\\' \
+               OR LOWER(COALESCE(notes, '')) LIKE LOWER(?) ESCAPE '\\')",
+        );
+        params.push(pattern.clone());
+        params.push(pattern.clone());
+        params.push(pattern);
+    }
+
+    Ok((clause, params))
+}
+
+/// Count issues matching the same filters `list_issues_with_sort` accepts,
+/// ignoring any display limit: a count is the size of the whole match set,
+/// not of one page of it.
+pub fn count_issues(
+    conn: &Connection,
+    status_filter: Option<&str>,
+    assignee_filter: Option<&str>,
+    ready_only: bool,
+    blocked_only: bool,
+    search: Option<&str>,
+) -> Result<i64> {
+    let (where_clause, params) = build_list_filter_sql(
+        status_filter,
+        assignee_filter,
+        ready_only,
+        blocked_only,
+        search,
+    )?;
+    let query = format!("SELECT COUNT(*) FROM issues{}", where_clause);
+    let mut stmt = conn.prepare_cached(&query)?;
+    let params_refs: Vec<&dyn rusqlite::ToSql> =
+        params.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+    let count: i64 = stmt
+        .query_row(params_refs.as_slice(), |row| row.get(0))
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Count query failed: {}", e)))?;
+    Ok(count)
 }
 
 /// List issues with an explicit ready-frontier ordering.
@@ -1015,7 +1132,9 @@ pub fn list_issues_with_sort(
     assignee_filter: Option<&str>,
     ready_only: bool,
     blocked_only: bool,
+    search: Option<&str>,
     limit: i64,
+    unlimited: bool,
     verbose: bool,
     ready_sort: ReadySort,
 ) -> Result<Vec<Issue>> {
@@ -1062,65 +1181,21 @@ pub fn list_issues_with_sort(
     }
 
     // Build query based on filters
+    let (where_clause, mut params) = build_list_filter_sql(
+        status_filter,
+        assignee_filter,
+        ready_only,
+        blocked_only,
+        search,
+    )?;
+
     let mut query = String::from(
         "SELECT id, title, description, priority, base_status, assignee, issue_type,
          created_at, updated_at, closed_at, close_reason, manual_blocked, source_repo,
          profile, schema_ref, notes, revision, NULLIF(claim_epoch, 0)
-         FROM issues WHERE 1=1",
+         FROM issues",
     );
-
-    let mut params: Vec<String> = vec![];
-
-    // Add status filter if specified
-    if let Some(status) = status_filter {
-        // Special case: "blocked" is an alias for manually blocked open issues
-        if status == "blocked" {
-            // This will be handled by the blocked_only filter below
-            // Don't add it to the base_status filter
-        } else {
-            // Validate status value
-            BaseStatus::parse(status)?;
-            query.push_str(" AND base_status = ?");
-            params.push(status.to_string());
-        }
-    }
-
-    // Add blocked filter
-    if blocked_only {
-        query.push_str(" AND base_status = 'open' AND (manual_blocked = 1)");
-    }
-
-    // Add assignee filter if specified
-    if let Some(assignee) = assignee_filter {
-        if assignee.is_empty() {
-            query.push_str(" AND assignee IS NULL");
-        } else {
-            query.push_str(" AND assignee = ?");
-            params.push(assignee.to_string());
-        }
-    }
-
-    // Add ready frontier filter
-    if ready_only {
-        // A ready issue must be: open, unassigned, not manually blocked, and has no unfinished blockers
-        // A blocker is unfinished unless its base state is 'closed'
-        query.push_str(" AND base_status = 'open' AND (manual_blocked IS NULL OR manual_blocked = 0) AND assignee IS NULL AND NOT EXISTS (
-            SELECT 1 FROM dependencies WHERE blocked_issue_id = issues.id AND kind = 'blocks'
-            AND blocker_issue_id IN (SELECT id FROM issues WHERE base_status != 'closed')
-        ) AND NOT EXISTS (
-            SELECT 1 FROM issue_resource_keys candidate_key
-            JOIN resource_locks held_lock ON held_lock.resource_key = candidate_key.resource_key
-            WHERE candidate_key.issue_id = issues.id
-              AND held_lock.issue_id != issues.id
-              AND (held_lock.lease_fencing_token IS NULL OR EXISTS (
-                  SELECT 1 FROM leases active_lease
-                  WHERE active_lease.issue_id = held_lock.issue_id
-                    AND active_lease.fencing_token = held_lock.lease_fencing_token
-                    AND active_lease.expires_at > ?
-              ))
-        )");
-        params.push(crate::service::resource_locks::now_string());
-    }
+    query.push_str(&where_clause);
 
     // Preserve the existing query text exactly unless the ready-only attempts
     // mode was explicitly requested.
@@ -1130,9 +1205,11 @@ pub fn list_issues_with_sort(
         query.push_str(" ORDER BY priority ASC, created_at ASC, id ASC");
     }
 
-    // Add limit
-    query.push_str(" LIMIT ?");
-    params.push(limit.to_string());
+    // Add limit, unless --all asked for every matching issue
+    if !unlimited {
+        query.push_str(" LIMIT ?");
+        params.push(limit.to_string());
+    }
 
     // Log filter criteria and SQL query if verbose
     if verbose {

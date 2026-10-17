@@ -135,6 +135,35 @@ read-only and never invokes restore automatically."
 
     Show(ShowOptions),
 
+    /// Show only ready frontier issues (shortcut for `list --ready`)
+    #[command(
+        about = "Show only ready frontier issues",
+        long_about = "Shortcut for `bead list --ready`: every flag behaves exactly as it
+does on `list`, with --ready forced on.
+
+EXAMPLES:
+  bead ready                        # Same as: bead list --ready
+  bead ready --json                 # Same as: bead list --ready --json
+  bead ready --sort attempts --json # Same as: bead list --ready --sort attempts --json
+  bead ready --count                # How many issues are ready right now"
+    )]
+    Ready(ReadyOptions),
+
+    /// Search issues by text (shortcut for `list --all --search TEXT`)
+    #[command(
+        about = "Search issues by text",
+        long_about = "Shortcut for `bead list --all --search TEXT`: case-insensitive match
+against title, description, and notes, ignoring --limit so every match is
+returned. Combines with --status, --assignee, and --ready exactly as
+`list --search` does.
+
+EXAMPLES:
+  bead search \"flaky test\"                     # Same as: bead list --all --search 'flaky test'
+  bead search outage --status open --json       # Narrow to open issues, JSON output
+  bead search outage --ready                    # Only matches on the ready frontier"
+    )]
+    Search(SearchOptions),
+
     Update(UpdateOptions),
 
     Release(ReleaseOptions),
@@ -268,7 +297,8 @@ ready frontier and may not form cycles; `relates_to` and `verifies` edges are
 informational only and may.
 
   bead dep add <BLOCKED> <BLOCKER> [--kind blocks|relates_to|verifies]
-  bead dep remove <BLOCKED> <BLOCKER> [--kind KIND]"
+  bead dep remove <BLOCKED> <BLOCKER> [--kind KIND]
+  bead dep list <ID> [--json]"
     )]
     Dep(DepCommand),
 
@@ -655,6 +685,10 @@ EXAMPLES:
   bead list --ready --sort attempts --limit 5      # Prefer fresh work within priority
   bead list --blocked                               # Manually blocked open issues
   bead list --comments unresolved --json --limit 20  # Issues with unresolved comments
+  bead list --all --search TEXT                    # Full-text search (= 'bead search TEXT')
+  bead list --ready --count                        # How many issues are ready
+  bead ready                                        # Shortcut for 'bead list --ready'
+  bead search TEXT                                  # Shortcut for 'bead list --all --search TEXT'
 
 FILTERS:
   --status VALUE    Filter by base status: open, in_progress, deferred, closed
@@ -664,6 +698,9 @@ FILTERS:
   --sort attempts   Within each priority, show fewer consecutive failures first
   --blocked         Show only manually blocked open issues
   --limit N         Maximum results (0-999999, default: 100)
+  --all             Ignore --limit and return every matching issue
+  --search TEXT     Case-insensitive match against title, description, notes
+  --count           Print only the number of matching issues
 
 COMMENT PROJECTION:
   --comments none         Show only counts and resolution metadata (default)
@@ -676,7 +713,9 @@ OUTPUT:
   With --jsonl: one compact JSON object per line; empty results write no bytes
   --json and --jsonl cannot be combined
   JSON output includes: id, title, priority, status, manual_blocked, effective_status,
-  assignee, dependencies, created_at, updated_at, and labels based on comment projection."
+  assignee, dependencies, created_at, updated_at, and labels based on comment projection.
+  --count overrides every other output mode: plain text prints an integer,
+  --json/--jsonl print one object: {\"count\": N}."
 )]
 pub struct ListOptions {
     /// Output one JSON array
@@ -720,6 +759,18 @@ pub struct ListOptions {
     /// Maximum number of issues to return (0-999999)
     #[arg(long, default_value = "100")]
     pub limit: i64,
+
+    /// Ignore --limit and return every matching issue
+    #[arg(long)]
+    pub all: bool,
+
+    /// Case-insensitive text search across title, description, and notes
+    #[arg(long, value_name = "TEXT")]
+    pub search: Option<String>,
+
+    /// Print only the number of matching issues (ignores --limit/--all)
+    #[arg(long)]
+    pub count: bool,
 
     /// Show diagnostic information about filtering (SQL query, counts, exclusion reasons)
     #[arg(long)]
@@ -772,6 +823,94 @@ pub struct ShowOptions {
     /// Comment projection: none, unresolved, or all (default: none)
     #[arg(long, default_value = "none")]
     pub comments: String,
+}
+
+/// Options for `bead ready` (shortcut for `bead list --ready`)
+#[derive(Parser, Debug)]
+pub struct ReadyOptions {
+    /// Output one JSON array
+    #[arg(long)]
+    pub json: bool,
+
+    /// Output one JSON object per line (empty results write no bytes)
+    #[arg(long)]
+    pub jsonl: bool,
+
+    /// Filter by assignee
+    #[arg(long)]
+    pub assignee: Option<String>,
+
+    /// Ready-frontier ordering: attempts prefers fewer consecutive failures
+    /// within each priority tier, then retains the FIFO tie-breakers
+    #[arg(long, value_name = "ORDER", value_parser = ["attempts"])]
+    pub sort: Option<String>,
+
+    /// Comment projection: none, unresolved, or all (default: none)
+    #[arg(long, default_value = "none")]
+    pub comments: String,
+
+    /// Maximum number of issues to return (0-999999)
+    #[arg(long, default_value = "100")]
+    pub limit: i64,
+
+    /// Ignore --limit and return every ready issue
+    #[arg(long)]
+    pub all: bool,
+
+    /// Print only the number of ready issues (ignores --limit/--all)
+    #[arg(long)]
+    pub count: bool,
+
+    /// Show diagnostic information about filtering (SQL query, counts, exclusion reasons)
+    #[arg(long)]
+    pub verbose: bool,
+}
+
+/// Options for `bead search` (shortcut for `bead list --all --search TEXT`)
+#[derive(Parser, Debug)]
+pub struct SearchOptions {
+    /// Text to match case-insensitively against title, description, and notes
+    pub text: String,
+
+    /// Output one JSON array
+    #[arg(long)]
+    pub json: bool,
+
+    /// Output one JSON object per line (empty results write no bytes)
+    #[arg(long)]
+    pub jsonl: bool,
+
+    /// Filter by status
+    #[arg(long)]
+    pub status: Option<String>,
+
+    /// Filter by assignee
+    #[arg(long)]
+    pub assignee: Option<String>,
+
+    /// Narrow the search to the ready frontier
+    #[arg(long)]
+    pub ready: bool,
+
+    /// Show only manually blocked open issues
+    #[arg(long)]
+    pub blocked: bool,
+
+    /// Comment projection: none, unresolved, or all (default: none)
+    #[arg(long, default_value = "none")]
+    pub comments: String,
+
+    /// Maximum number of issues to return (0-999999)
+    #[arg(long, default_value = "100")]
+    pub limit: i64,
+
+    /// Print only the number of matching issues (ignores --limit)
+    #[arg(long)]
+    pub count: bool,
+
+    /// Show diagnostic information about filtering (SQL query, counts, exclusion reasons)
+    #[arg(long)]
+    pub verbose: bool,
 }
 
 /// Options for claiming an issue
@@ -2346,6 +2485,25 @@ USE CASES:
   - Cleaning up after issue completion"
     )]
     Remove(DepRemoveOptions),
+
+    /// List dependency edges for an issue
+    #[command(
+        about = "List dependency edges for an issue",
+        long_about = "Show every dependency edge touching one issue, in both directions.
+
+'Blocked by' lists blockers this issue depends on; 'blocking' lists dependents
+that depend on this issue as their blocker. Each edge reports its kind and
+whether the other issue in the edge is finished (base status 'closed').
+
+EXAMPLES:
+  bead dep list ID                  # Human-readable, both directions
+  bead dep list ID --json           # One JSON object: {id, blocked_by, blocking}
+
+EXIT CODES:
+  0  success, even when the issue has no dependencies
+  3  the issue does not exist"
+    )]
+    List(DepListOptions),
 }
 
 /// Options for adding a dependency
@@ -2379,6 +2537,16 @@ pub struct DepRemoveOptions {
     /// Dry run: show what would happen without making changes
     #[arg(long)]
     pub dry_run: bool,
+}
+
+/// Options for listing an issue's dependency edges
+#[derive(Parser, Debug)]
+pub struct DepListOptions {
+    /// Issue ID
+    pub id: String,
+    /// Output in JSON format
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Options for doctor command
