@@ -7762,14 +7762,26 @@ fn publish_forensic_checkpoint_inner(
     )?);
     let tx = snapshot_tx.as_ref().expect("snapshot transaction exists");
     if let Some((actor, reason)) = quarantine_reset {
-        crate::service::secret_boundary::verify_quarantine_republish(tx)?;
+        let absent = crate::service::secret_boundary::verify_quarantine_republish(tx)?;
+        let mut detail = serde_json::json!({"reason": reason});
+        if !absent.is_empty() {
+            // The audit fact for each retained generation this reset discards
+            // because its selected object is absent (beadrs-f41a01c8). It is
+            // committed with the pointer replacement it describes.
+            detail["discarded_absent_generations"] = absent
+                .iter()
+                .map(|generation| {
+                    serde_json::json!({
+                        "pointer": generation.pointer,
+                        "generation_id": generation.generation_id,
+                        "reason": "selected_object_absent",
+                    })
+                })
+                .collect();
+        }
         tx.execute(
             "INSERT INTO events (kind, actor, time, detail) VALUES ('secret_quarantine_reset', ?1, ?2, ?3)",
-            params![
-                actor,
-                format_rfc3339(SystemTime::now()),
-                serde_json::json!({"reason": reason}).to_string(),
-            ],
+            params![actor, format_rfc3339(SystemTime::now()), detail.to_string(),],
         )?;
     }
 

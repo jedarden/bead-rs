@@ -405,12 +405,17 @@ pub(crate) fn verify_quarantine_cleanup(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// A quarantine reset may discard unreadable or finding-bearing retained
-/// generations only after the complete live store has been scanned and has
-/// no unacknowledged blocking finding. The exceptional publisher holds an
-/// IMMEDIATE transaction across pointer replacement so recovery cannot race
-/// this verdict.
-pub(crate) fn verify_quarantine_republish(conn: &Connection) -> Result<()> {
+/// A quarantine reset may discard finding-bearing retained generations, and
+/// retained generations whose selected objects are absent, only after the
+/// complete live store has been scanned and has no unacknowledged blocking
+/// finding. The exceptional publisher holds an IMMEDIATE transaction across
+/// pointer replacement so recovery cannot race this verdict.
+///
+/// Returns the absent retained generations the reset will discard, so the
+/// publisher can record them in its `secret_quarantine_reset` audit event.
+pub(crate) fn verify_quarantine_republish(
+    conn: &Connection,
+) -> Result<Vec<super::secret_diagnostics::AbsentRetainedGeneration>> {
     let quarantined: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM secret_quarantine)",
         [],
@@ -436,44 +441,60 @@ pub(crate) fn verify_quarantine_republish(conn: &Connection) -> Result<()> {
             "secret_quarantined: live state still contains blocking findings; redact them before republishing",
         ));
     }
-    recheck_retained_generations(conn)?;
-    Ok(())
+    recheck_retained_generations_for_reset(conn)
 }
+
+const RETAINED_SCAN_INCOMPLETE: &str =
+    "secret_quarantined: retained-generation scan incomplete; sanitized publication refused";
 
 /// A sanitized resolution may discard findings from an old generation, so
 /// retained findings are not themselves a veto. The complete retained set
 /// must still be visited, and malformed or unreadable input fails closed.
+/// This strict form gates redaction publication, whose spec transition
+/// requires the complete retained set to revalidate clean.
 fn recheck_retained_generations(conn: &Connection) -> Result<()> {
-    let Some(path) = conn.path().filter(|path| !path.is_empty()) else {
+    let Some(checkpoint_dir) = retained_checkpoint_dir(conn)? else {
         return Ok(());
+    };
+    super::secret_diagnostics::scan_retained_checkpoint_findings(&checkpoint_dir)
+        .map(|_| ())
+        .map_err(|_| Error::conflict(RETAINED_SCAN_INCOMPLETE))
+}
+
+/// The sanitized-reset form of [`recheck_retained_generations`]. A retained
+/// generation whose well-formed pointer selects an absent object is not a
+/// veto: absent bytes cannot reach the reset publication, which is built
+/// only from the clean live store (recovery-finding-quarantine-v1 section 2:
+/// incomplete coverage holds "until a complete scan or a sanitized reset
+/// proves otherwise"). Without this, a workspace whose retained root object
+/// was lost could never publish again (beadrs-f41a01c8). Every other scan
+/// failure still fails closed.
+fn recheck_retained_generations_for_reset(
+    conn: &Connection,
+) -> Result<Vec<super::secret_diagnostics::AbsentRetainedGeneration>> {
+    let Some(checkpoint_dir) = retained_checkpoint_dir(conn)? else {
+        return Ok(Vec::new());
+    };
+    super::secret_diagnostics::scan_retained_checkpoint_for_reset(&checkpoint_dir)
+        .map_err(|_| Error::conflict(RETAINED_SCAN_INCOMPLETE))
+}
+
+/// The workspace checkpoint directory, or `None` when this connection has no
+/// workspace checkpoint to recheck (embedded store or no directory yet).
+fn retained_checkpoint_dir(conn: &Connection) -> Result<Option<std::path::PathBuf>> {
+    let Some(path) = conn.path().filter(|path| !path.is_empty()) else {
+        return Ok(None);
     };
     let Some(beads_dir) = Path::new(path)
         .parent()
         .filter(|parent| parent.file_name().is_some_and(|name| name == ".beads"))
     else {
-        return Ok(());
+        return Ok(None);
     };
     let checkpoint_dir = beads_dir.join("checkpoint");
     match std::fs::symlink_metadata(&checkpoint_dir) {
-        Ok(metadata) if metadata.is_dir() => {}
-        Ok(_) => {
-            return Err(Error::conflict(
-                "secret_quarantined: retained-generation scan incomplete; sanitized publication refused",
-            ));
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(_) => {
-            return Err(Error::conflict(
-                "secret_quarantined: retained-generation scan incomplete; sanitized publication refused",
-            ));
-        }
+        Ok(metadata) if metadata.is_dir() => Ok(Some(checkpoint_dir)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Ok(_) | Err(_) => Err(Error::conflict(RETAINED_SCAN_INCOMPLETE)),
     }
-
-    super::secret_diagnostics::scan_retained_checkpoint_findings(&checkpoint_dir)
-        .map(|_| ())
-        .map_err(|_| {
-            Error::conflict(
-                "secret_quarantined: retained-generation scan incomplete; sanitized publication refused",
-            )
-        })
 }

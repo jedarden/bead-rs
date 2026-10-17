@@ -368,16 +368,75 @@ pub fn scan_recovery_artifact(path: &Path) -> Result<ScanReport> {
 pub(crate) fn scan_retained_checkpoint_findings(
     checkpoint_dir: &Path,
 ) -> Result<(Vec<Finding>, usize)> {
+    let outcome = scan_retained_checkpoint(checkpoint_dir, false)?;
+    Ok((outcome.findings, outcome.pointers))
+}
+
+/// A retained generation whose pointer is present and well formed but selects
+/// a generation object (monolithic root, shard manifest, or shard) that is
+/// absent from the checkpoint directory.
+///
+/// Absent bytes can be neither certified nor carried forward: a sanitized
+/// reset replaces both pointers from the scanned live store, so nothing from
+/// such a generation reaches the next publication. The record is value-free:
+/// a fixed pointer name and, when it has the native shape, the generation
+/// identity read from the pointer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AbsentRetainedGeneration {
+    pub(crate) pointer: &'static str,
+    pub(crate) generation_id: Option<String>,
+}
+
+/// Scan the retained set for a sanitized reset (beadrs-f41a01c8).
+///
+/// Identical to [`scan_retained_checkpoint_findings`] except that a retained
+/// generation whose well-formed pointer selects an absent object is returned
+/// instead of failing the scan. Retained findings are not returned: a reset
+/// never carries a retained generation forward, so they are no veto there.
+/// Every other failure stays fail-closed: a malformed or unparseable pointer,
+/// object, manifest, or record, a dangling pointer, and any I/O error other
+/// than the selected object being absent. Bytes that exist but cannot be
+/// read are never treated as discardable.
+pub(crate) fn scan_retained_checkpoint_for_reset(
+    checkpoint_dir: &Path,
+) -> Result<Vec<AbsentRetainedGeneration>> {
+    Ok(scan_retained_checkpoint(checkpoint_dir, true)?.absent_generations)
+}
+
+struct RetainedScanOutcome {
+    findings: Vec<Finding>,
+    pointers: usize,
+    absent_generations: Vec<AbsentRetainedGeneration>,
+}
+
+fn scan_retained_checkpoint(
+    checkpoint_dir: &Path,
+    tolerate_absent_objects: bool,
+) -> Result<RetainedScanOutcome> {
     let config = ScanConfig::new(Mode::Advisory);
     let mut reports = Vec::new();
     let mut pointers = 0;
+    let mut absent_generations = Vec::new();
 
     for generation in ["current", "previous"] {
         let pointer = checkpoint_dir.join(format!("{generation}.json"));
         match std::fs::symlink_metadata(&pointer) {
             Ok(_) => {
                 pointers += 1;
-                scan_pointer(&pointer, generation, &config, &mut reports)?;
+                let mut generation_reports = Vec::new();
+                match scan_pointer(&pointer, generation, &config, &mut generation_reports) {
+                    Ok(_) => reports.extend(generation_reports),
+                    Err(error)
+                        if tolerate_absent_objects
+                            && is_absent_generation_object(&error, checkpoint_dir) =>
+                    {
+                        absent_generations.push(AbsentRetainedGeneration {
+                            pointer: generation,
+                            generation_id: native_generation_id(&pointer),
+                        });
+                    }
+                    Err(error) => return Err(error),
+                }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
@@ -405,7 +464,41 @@ pub(crate) fn scan_retained_checkpoint_findings(
         }
     }
 
-    Ok((ScanReport::merge(reports).findings, pointers))
+    Ok(RetainedScanOutcome {
+        findings: ScanReport::merge(reports).findings,
+        pointers,
+        absent_generations,
+    })
+}
+
+/// True only when a retained scan failed because a generation object the
+/// pointer selects does not exist. A missing pointer file (including one
+/// reached through a dangling symlink) is not an absent object.
+fn is_absent_generation_object(error: &Error, checkpoint_dir: &Path) -> bool {
+    match error {
+        Error::Io { path, msg } => {
+            msg.kind() == std::io::ErrorKind::NotFound
+                && *path != checkpoint_dir.join("current.json")
+                && *path != checkpoint_dir.join("previous.json")
+        }
+        _ => false,
+    }
+}
+
+/// The pointer's generation identity, only when it has the native
+/// `gen-<lowercase hex>` shape. Anything else is withheld so audit detail
+/// never copies unscanned pointer content.
+fn native_generation_id(pointer: &Path) -> Option<String> {
+    let bytes = std::fs::read(pointer).ok()?;
+    let value: Value = serde_json::from_slice(&bytes).ok()?;
+    let id = value.get("generation_id")?.as_str()?;
+    let digits = id.strip_prefix("gen-")?;
+    let native = !digits.is_empty()
+        && digits.len() <= 64
+        && digits
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    native.then(|| id.to_string())
 }
 
 fn scan_live_rows(
@@ -1731,5 +1824,166 @@ mod tests {
             location.identity_values,
             vec![rusqlite::types::Value::Text("issue-monolithic".to_string())]
         );
+    }
+
+    fn write_pointer(checkpoint: &Path, name: &str, pointer: serde_json::Value) {
+        std::fs::write(checkpoint.join(name), serde_json::to_vec(&pointer).unwrap()).unwrap();
+    }
+
+    const NATIVE_GENERATION: &str = "gen-0123456789abcdef0123456789abcdef";
+
+    // beadrs-f41a01c8: a well-formed pointer whose selected root is absent is
+    // reported to the sanitized reset instead of vetoing it; the strict scan
+    // used by redaction publication still fails closed on the same input.
+    #[test]
+    fn reset_scan_reports_absent_current_root_and_strict_scan_refuses() {
+        let directory = tempfile::tempdir().unwrap();
+        let checkpoint = directory.path();
+        std::fs::create_dir_all(checkpoint.join("objects")).unwrap();
+        write_pointer(
+            checkpoint,
+            "current.json",
+            serde_json::json!({
+                "generation_id": NATIVE_GENERATION,
+                "mode": "monolithic",
+                "active_root": {"path": "objects/lost.jsonl"}
+            }),
+        );
+
+        assert!(scan_retained_checkpoint_findings(checkpoint).is_err());
+        let absent = scan_retained_checkpoint_for_reset(checkpoint).unwrap();
+        assert_eq!(
+            absent,
+            vec![AbsentRetainedGeneration {
+                pointer: "current",
+                generation_id: Some(NATIVE_GENERATION.to_string()),
+            }]
+        );
+    }
+
+    #[test]
+    fn reset_scan_reports_untombstoned_absent_previous_root_and_keeps_current_findings() {
+        let directory = tempfile::tempdir().unwrap();
+        let checkpoint = directory.path();
+        std::fs::create_dir_all(checkpoint.join("objects")).unwrap();
+        let secret = fixture_access_key();
+        write_pointer(
+            checkpoint,
+            "current.json",
+            serde_json::json!({
+                "generation_id": NATIVE_GENERATION,
+                "mode": "monolithic",
+                "active_root": {"path": "objects/current.jsonl"}
+            }),
+        );
+        std::fs::write(
+            checkpoint.join("objects/current.jsonl"),
+            format!("{}\n", issue_record_line("issue-current", &secret)),
+        )
+        .unwrap();
+        write_pointer(
+            checkpoint,
+            "previous.json",
+            serde_json::json!({
+                "generation_id": "not a native identity",
+                "mode": "monolithic",
+                "active_root": {"path": "objects/lost.jsonl"}
+            }),
+        );
+
+        assert!(scan_retained_checkpoint_findings(checkpoint).is_err());
+        let absent = scan_retained_checkpoint_for_reset(checkpoint).unwrap();
+        assert_eq!(
+            absent,
+            vec![AbsentRetainedGeneration {
+                pointer: "previous",
+                generation_id: None,
+            }]
+        );
+        // The readable generation is still fully scanned.
+        assert!(scan_retained_checkpoint(checkpoint, true)
+            .unwrap()
+            .findings
+            .iter()
+            .any(|finding| finding.selector.starts_with("checkpoint:current:")));
+        let rendered = format!("{absent:?}");
+        assert!(!rendered.contains(&secret));
+    }
+
+    #[test]
+    fn reset_scan_reports_absent_shard_of_a_sharded_generation() {
+        let directory = tempfile::tempdir().unwrap();
+        let checkpoint = directory.path();
+        std::fs::create_dir_all(checkpoint.join("manifests")).unwrap();
+        write_pointer(
+            checkpoint,
+            "current.json",
+            serde_json::json!({
+                "generation_id": NATIVE_GENERATION,
+                "mode": "sharded",
+                "active_root": {"path": "manifests/root.json"}
+            }),
+        );
+        write_pointer(
+            checkpoint,
+            "manifests/root.json",
+            serde_json::json!({"issue_shards": [{"path": "objects/lost-shard.jsonl"}]}),
+        );
+
+        let absent = scan_retained_checkpoint_for_reset(checkpoint).unwrap();
+        assert_eq!(absent.len(), 1);
+        assert_eq!(absent[0].pointer, "current");
+    }
+
+    // Bytes that exist but cannot be parsed are never discardable: the
+    // beadrs-73e67cfb fail-closed hardening is unchanged for them.
+    #[test]
+    fn reset_scan_still_fails_closed_on_malformed_pointer_or_record() {
+        let directory = tempfile::tempdir().unwrap();
+        let checkpoint = directory.path();
+        std::fs::create_dir_all(checkpoint.join("objects")).unwrap();
+        std::fs::write(checkpoint.join("current.json"), b"not-json").unwrap();
+        assert!(scan_retained_checkpoint_for_reset(checkpoint).is_err());
+
+        write_pointer(
+            checkpoint,
+            "current.json",
+            serde_json::json!({
+                "generation_id": NATIVE_GENERATION,
+                "mode": "monolithic",
+                "active_root": {"path": "objects/corrupt.jsonl"}
+            }),
+        );
+        std::fs::write(checkpoint.join("objects/corrupt.jsonl"), b"{ broken\n").unwrap();
+        assert!(scan_retained_checkpoint_for_reset(checkpoint).is_err());
+    }
+
+    #[test]
+    fn reset_scan_treats_tombstoned_previous_root_as_clean_absence() {
+        let directory = tempfile::tempdir().unwrap();
+        let checkpoint = directory.path();
+        std::fs::create_dir_all(checkpoint.join("objects")).unwrap();
+        write_pointer(
+            checkpoint,
+            "previous.json",
+            serde_json::json!({
+                "mode": "monolithic",
+                "active_root": {"path": "objects/old.jsonl"}
+            }),
+        );
+        write_pointer(
+            checkpoint,
+            "current.json",
+            serde_json::json!({
+                "mode": "monolithic",
+                "active_root": {"path": "objects/current.jsonl"},
+                "deleted_paths": ["objects/old.jsonl"]
+            }),
+        );
+        std::fs::write(checkpoint.join("objects/current.jsonl"), b"").unwrap();
+
+        let absent = scan_retained_checkpoint_for_reset(checkpoint).unwrap();
+        assert!(absent.is_empty());
+        assert!(scan_retained_checkpoint_findings(checkpoint).is_ok());
     }
 }
