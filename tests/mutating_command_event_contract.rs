@@ -645,6 +645,12 @@ fn registry() -> Vec<RegisteredCommand> {
             invoke: |_| vec!["changes".into(), "--latest".into()],
         },
         RegisteredCommand {
+            path: "bead history",
+            class: NonMutating,
+            reason: "read-only event history for one issue",
+            invoke: |f| vec!["history".into(), f.update_target.clone(), "--json".into()],
+        },
+        RegisteredCommand {
             path: "bead query",
             class: NonMutating,
             reason: "read-only query execution; saved views (--save-as/--delete-view) \
