@@ -403,7 +403,7 @@ other task tracker. These conventions catch people out:
 | --- | --- |
 | The binary is `bead` | not the crate name `bead-rs` |
 | `create` takes a flag | `bead create --title "Title"`, not a positional title |
-| Ready work is a filter | `bead list --ready`; `bead ready` is its shortcut |
+| Ready work is a filter | `bead list --ready` |
 | `flush-only` is a subcommand | `bead sync flush-only`, not `bead sync --flush-only` |
 | Issue JSON transports | `list --json` is an array, `list --jsonl` is a stream, and `show --json` and `create --json` are objects |
 | Manual blocking | `bead list --blocked` shows manually blocked open issues; `--status blocked` is an alias |
