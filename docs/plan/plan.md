@@ -3743,6 +3743,18 @@ fields as immutable after `create` and require the error to name the remedy.
 Whether to add a separately audited edit operation remains an open product
 decision; it is not implementation authority for R041.
 
+Native parent/child hierarchy now has demonstrated need. A 2026-10-23 sweep of
+the 92 bead-rs workspaces on codinghome found 13,774 of 51,560 beads (27%),
+across 59 workspaces, encoding a parent link by convention: a `parent-*` or
+`split-child` label, or a `Parent:` line in the description. Agent transcripts
+show children reconstructed with `list` piped through ad hoc filters 377
+times. Ideas ledger run 1 (item 57) killed a parent-child hierarchy "before
+demonstrated need". Whether to model it natively — for example as a
+non-blocking edge kind alongside `relates_to`, with `list --parent` and
+`dep list --children` — and how it would interact with `blocks`, splitting,
+and the checkpoint is an open product decision for the plan owner
+(`beadrs-5cdcd24d`); it is not implementation authority.
+
 ## 13. Release gates
 
 ### Bootstrap and handoff gates
