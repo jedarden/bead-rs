@@ -3891,6 +3891,52 @@ Before `.marathon/COMPLETE`:
   Forgejo `origin/main`; and
 - publication remains separately human-authorized.
 
+### Incremental checkpoint publication requirement (field evidence 2026-10-23)
+
+Field measurement on 2026-10-23 (92 workspaces under `/home/coding`, git
+object accounting, 32,149 bead invocations in `~/.claude/projects` and
+80,311 in `~/.codex/sessions`; regex-based, approximate) shows that
+checkpoint publication bytes scale with store size, not with what changed,
+in both checkpoint modes. Uncompressed blob bytes added to git history under
+`.beads/` over the last 30 days:
+
+| Workspace | Mode | Beads | Checkpoint commits | Bytes added | Bytes/commit |
+|---|---|---|---|---|---|
+| tradegraph-platform | sharded | 1,206 | 2,400 | 13.8 GB | 5.7 MB |
+| bead-rs | monolithic | 891 | 1,391 | 4.05 GB | 2.9 MB |
+| ARMOR | monolithic | 2,981 | 105 | 2.5 GB | 24 MB |
+| NEEDLE | monolithic | 3,298 | 64 | 2.4 GB | 37 MB |
+| commitgraph | sharded | 3,080 | 4 | 110 MB | 27.6 MB |
+
+Delta compression hides part of this in packfiles, but every clone, fetch,
+and push pays the uncompressed object set, and a forge has refused oversized
+pushes in this environment. With automatic flush active (section 13's R026
+gate), per-publication cost is the dominant git-history cost of the fleet.
+
+Requirement: the normative incremental checkpoint layout —
+`research/specs/checkpoint-set-v2.md`, successor to
+`research/specs/checkpoint-set-v1.md` for the adaptive set layout — must
+exist and be independently accepted before any implementation evidence for
+it is accepted; plan prose alone is not implementation authority. The
+specification defines issue-ID-prefix shards sized so a typical shard stays
+under 64 KiB, sealed immutable event segments plus one open tail, pointer
+and manifest files that grow with shard count and never with record
+content, a `forensic.jsonl` that is not rewritten per publication, adaptive
+mode as the default with monolithic retained only as an explicit forced
+mode under its existing safety limits, a migration whose first publication
+is a documented full rewrite with dual-layout readers for restore,
+reconcile, fork, and verified-restore, and a byte budget: a single-issue
+update in a 3,000-issue workspace adds at most 256 KiB of new blob bytes
+per publication, pointer files included. Its named conformance scenarios
+are the acceptance boundary.
+
+The ten pending, unapproved proposals asking to make sharded mode reachable
+(beadrs-292dfbbe, beadrs-36340b5e, beadrs-37da66c7, beadrs-62acb271,
+beadrs-84f9a125, beadrs-9269c2fd, beadrs-c2b0b216, beadrs-d23fdce6,
+beadrs-e5c770dc, beadrs-f4b70090) rest on a stale premise: sharded mode is
+live in 3 workspaces and does not bound bytes. Their disposition remains
+with the human reviewer.
+
 ## 14. Deferred feature notes
 
 The following candidates remain intentionally deferred in
