@@ -89,6 +89,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod restored_branch;
 pub(crate) mod set_v2;
+pub mod sync_resolve;
 
 /// Opaque additive fields a newer writer attached to a checkpoint record.
 ///
@@ -2187,9 +2188,7 @@ pub fn verify_restore_source(source: &Path, generation_id: &str) -> Result<Verif
     match mode {
         CheckpointMode::Monolithic => verify_monolithic_restore_records(&root)?,
         CheckpointMode::Sharded => verify_sharded_restore_closure(base, &root, &pointer)?,
-        CheckpointMode::SetV2 => {
-            set_v2::verify_set_v2_restore_closure(base, &root, &pointer)?
-        }
+        CheckpointMode::SetV2 => set_v2::verify_set_v2_restore_closure(base, &root, &pointer)?,
     }
 
     let mut staging = stage_pointer_checkpoint(&pointer_path)?;
@@ -2231,9 +2230,7 @@ pub fn verify_restore_source(source: &Path, generation_id: &str) -> Result<Verif
     )?;
     match mode {
         CheckpointMode::Sharded => verify_sharded_restore_closure(base, &root, &pointer)?,
-        CheckpointMode::SetV2 => {
-            set_v2::verify_set_v2_restore_closure(base, &root, &pointer)?
-        }
+        CheckpointMode::SetV2 => set_v2::verify_set_v2_restore_closure(base, &root, &pointer)?,
         CheckpointMode::Monolithic => {}
     }
 
@@ -3726,16 +3723,13 @@ fn process_checkpoint_file(
                     line_num
                 )
             })?;
-            let ref_path = record
-                .get("path")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    anyhow!(
-                        "{} line {}: oversize reference missing path",
-                        artifact_path.display(),
-                        line_num
-                    )
-                })?;
+            let ref_path = record.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
+                anyhow!(
+                    "{} line {}: oversize reference missing path",
+                    artifact_path.display(),
+                    line_num
+                )
+            })?;
             let ref_sha = record
                 .get("sha256")
                 .and_then(|v| v.as_str())
@@ -3746,14 +3740,9 @@ fn process_checkpoint_file(
                         line_num
                     )
                 })?;
-            let ref_len = record
-                .get("byte_length")
-                .and_then(|v| v.as_u64());
+            let ref_len = record.get("byte_length").and_then(|v| v.as_u64());
             let bytes = super::checkpoint::set_v2::read_verified_set_artifact(
-                base,
-                ref_path,
-                ref_sha,
-                ref_len,
+                base, ref_path, ref_sha, ref_len,
             )
             .map_err(|e| {
                 anyhow!(
@@ -9802,10 +9791,12 @@ pub(crate) fn read_pointer_referenced_files(pointer_path: &Path) -> Result<HashS
         if pointer.get("mode").and_then(|v| v.as_str()) == Some("set-v2") {
             if let Some(root) = pointer.get("active_root").and_then(|r| r.get("path")) {
                 if let Some(path_str) = root.as_str() {
-                    for file in set_v2::set_v2_structural_referenced_files(&pointer_path
-                        .parent()
-                        .unwrap_or_else(|| std::path::Path::new(".")), path_str)
-                    {
+                    for file in set_v2::set_v2_structural_referenced_files(
+                        &pointer_path
+                            .parent()
+                            .unwrap_or_else(|| std::path::Path::new(".")),
+                        path_str,
+                    ) {
                         files.insert(file);
                     }
                 }

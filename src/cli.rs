@@ -2092,6 +2092,40 @@ new workspace UUID. Running commands in a cloned workspace without forking will
 fail on same-UUID divergence during merge."
     )]
     Fork(SyncForkOptions),
+
+    /// Resolve git-conflicted checkpoint files into one merged history
+    #[command(
+        name = "resolve",
+        about = "Resolve git-conflicted checkpoint files into one merged history",
+        long_about = "Recover a pull that stopped on .beads/checkpoint in one command.
+
+A pull or rebase that conflicts on the published checkpoint set leaves
+unmerged index entries and marker text in the files Git should track, and
+every other bead command fails closed on that state. This command is the
+sanctioned recovery. It detects the conflict, restores the incoming side's
+verified pointer and objects -- the conflicted side that is not this
+workspace's own recorded generation -- merges the live store with it
+through the existing reconcile machinery, or through the existing
+divergent-branch machinery when the two sides diverged, so neither side's
+history is lost, and republishes and stages exactly the checkpoint fileset
+so `git rebase --continue` or `git commit` can proceed.
+
+RULES:
+  - Conflicted paths outside .beads/checkpoint are reported, never touched.
+  - A different-issue divergence imports the incoming suffix under a
+    derived branch origin; a same-issue divergence follows the existing
+    divergent-branch rules and is refused, dropping nothing.
+  - Any other bead command refuses while this state exists and names this
+    command; `sync status` names it too.
+  - Operates on the published-fileset abstraction, not fixed filenames, so
+    it keeps working under later checkpoint layouts.
+  - With nothing conflicted the command exits 0 and changes nothing.
+
+EXAMPLES:
+  bead sync resolve --actor jed           # after a conflicted pull
+  bead sync resolve --actor jed --dry-run # report the plan, touch nothing"
+    )]
+    Resolve(SyncResolveOptions),
 }
 
 /// Options for flushing checkpoint
@@ -2268,6 +2302,18 @@ pub struct SyncForkOptions {
     /// Alias for --format json
     #[arg(long)]
     pub json: bool,
+}
+
+/// Options for resolving a git-conflicted checkpoint
+#[derive(Parser, Debug)]
+pub struct SyncResolveOptions {
+    /// Actor performing the resolve operation (required)
+    #[arg(long)]
+    pub actor: String,
+
+    /// Report the plan without mutating anything
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 /// Label management commands

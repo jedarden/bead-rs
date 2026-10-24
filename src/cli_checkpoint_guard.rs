@@ -61,6 +61,11 @@ fn policy(command: &Command) -> Option<bool> {
             // re-read from the artifacts, and a superseding generation is
             // consistent by construction.
             SyncCommand::Commit(_) => None,
+            // `sync resolve` is explicit recovery: serialized under the
+            // operation lock with its own verification, like import-only
+            // and reconcile. It is also the remedy the conflict guard
+            // names, so it must pass while the conflict is present.
+            SyncCommand::Resolve(_) => Some(false),
             SyncCommand::Status(_) | SyncCommand::Diff(_) | SyncCommand::Bisect(_) => None,
         },
         Command::Init(_) | Command::Restore(_) | Command::Redact(_) => Some(false),
@@ -132,6 +137,27 @@ pub(crate) fn acquire(command: &Command) -> Result<Option<OperationGuard>> {
         }
     }
     let guard = OperationGuard(file);
+    // Fail closed on a git-conflicted checkpoint before any command
+    // touches state: unmerged index entries or marker text under
+    // `.beads/checkpoint` mean a pull stopped mid-merge, and mutating or
+    // recovering past it would guess at which side is real. `sync resolve`
+    // is the named remedy and is exempt below.
+    if !matches!(command, Command::Sync(SyncCommand::Resolve(_))) {
+        let scan = crate::service::checkpoint::sync_resolve::scan_conflicts(
+            &config.root,
+            &config.root.join(".beads/checkpoint"),
+        );
+        if !scan.is_empty() {
+            let mut paths = scan.unmerged;
+            paths.extend(scan.markers);
+            return Err(Error::validation(format!(
+                "checkpoint_git_conflict: unmerged or marker-conflicted checkpoint paths \
+                 ({}); {}",
+                paths.join(", "),
+                crate::service::checkpoint::sync_resolve::SYNC_RESOLVE_REMEDY
+            )));
+        }
+    }
     if validate {
         let _publication = crate::service::acquire_checkpoint_publication_lock(
             &config.root.join(".beads/checkpoint"),
@@ -150,6 +176,8 @@ pub(crate) fn is_recovery(command: &Command) -> bool {
         command,
         Command::Restore(_)
             | Command::Redact(_)
-            | Command::Sync(SyncCommand::ImportOnly(_) | SyncCommand::Reconcile(_))
+            | Command::Sync(
+                SyncCommand::ImportOnly(_) | SyncCommand::Reconcile(_) | SyncCommand::Resolve(_)
+            )
     )
 }

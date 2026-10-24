@@ -2950,6 +2950,7 @@ fn cmd_sync(cmd: cli::SyncCommand) -> Result<()> {
         cli::SyncCommand::Diff(opts) => cmd_sync_diff(opts),
         cli::SyncCommand::Bisect(opts) => cmd_sync_bisect(opts),
         cli::SyncCommand::Fork(opts) => cmd_sync_fork(opts),
+        cli::SyncCommand::Resolve(opts) => cmd_sync_resolve(opts),
     }
 }
 
@@ -3296,6 +3297,79 @@ fn cmd_sync_fork(opts: cli::SyncForkOptions) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn cmd_sync_resolve(opts: cli::SyncResolveOptions) -> Result<()> {
+    // The actor lands in a durable provenance receipt, so it is validated
+    // exactly like every other recovery input before anything opens.
+    let actor = opts.actor;
+    if actor.trim().is_empty() {
+        return Err(Error::cli_usage("Actor cannot be empty"));
+    }
+    if actor.len() > 255 {
+        return Err(Error::cli_usage("Actor cannot exceed 255 bytes"));
+    }
+    if actor.contains(char::is_control) {
+        return Err(Error::cli_usage("Actor cannot contain control characters"));
+    }
+
+    let config = store::WorkspaceConfig::discover()?
+        .ok_or_else(|| Error::workspace("No workspace found. Run `bead init` first."))?;
+    let db_path = config.database_path();
+    let conn = store::open_configured_connection(&db_path)
+        .map_err(|e| Error::Internal(anyhow::anyhow!("Failed to open database: {}", e)))?;
+    let mut store = store::SqliteStore::from_conn(conn);
+    let checkpoint_base = config.root.join(".beads");
+
+    let report = service::checkpoint::sync_resolve::resolve_conflicts(
+        &mut store,
+        &config.root,
+        &checkpoint_base,
+        &actor,
+        opts.dry_run,
+    )?;
+
+    if report.nothing_to_resolve() {
+        println!("Nothing to resolve: no unmerged checkpoint paths or conflict markers.");
+        return Ok(());
+    }
+    if report.dry_run {
+        println!("Dry-run resolve analysis:");
+    } else {
+        println!("Resolve completed:");
+    }
+    if !report.unmerged_paths.is_empty() {
+        println!(
+            "  Unmerged checkpoint paths: {}",
+            report.unmerged_paths.join(", ")
+        );
+    }
+    if !report.marker_paths.is_empty() {
+        println!(
+            "  Marker-conflicted checkpoint files: {}",
+            report.marker_paths.join(", ")
+        );
+    }
+    if let Some(side) = &report.restored_side {
+        println!("  Restored side: {}", side.as_str());
+    }
+    if let Some(generation) = &report.incoming_generation {
+        println!("  Incoming generation: {}", generation);
+    }
+    if let Some(counts) = &report.reconciled {
+        println!("  Reconciled: {}", counts);
+    }
+    if let Some(counts) = &report.branch_imported {
+        println!("  Branch-imported: {}", counts);
+    }
+    if !report.staged.is_empty() {
+        println!("  Staged: {}", report.staged.join(", "));
+    }
+    if !report.dry_run {
+        println!("  The checkpoint fileset is staged; `git rebase --continue` (rebase) or \
+                  `git commit` (merge) can proceed. Other conflicted paths, if any, are still yours.");
+    }
     Ok(())
 }
 
