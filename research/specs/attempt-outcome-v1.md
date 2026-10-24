@@ -407,7 +407,7 @@ pub fn resolve_attempt(
 - `NotFoundError` - Issue doesn't exist (exit 3)
 - `ConflictError` - Revision/fencing/semantic mismatch (exit 4)
 - `IntegrityError` - Database corruption (exit 5)
-- `TransientError` - Lock contention (exit 6)
+- `TransientError` - Lock contention (exit 1)
 
 ### 12.2 Transaction boundary
 
@@ -486,8 +486,8 @@ On replay, `is_replay` is `true` and the receipt is the original.
 | 3 | Issue not found |
 | 4 | Conflict (revision, fencing, outcome divergence) |
 | 5 | Integrity failure |
-| 6 | Database busy or transient I/O error |
-| 1 | Uncategorized internal error |
+| 6 | Mutation committed; checkpoint publication failed |
+| 1 | Uncategorized internal error, database busy, or transient I/O error |
 
 ## 14. Capability negotiation
 

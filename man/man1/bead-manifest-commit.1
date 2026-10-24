@@ -16,7 +16,7 @@ publishes at most one checkpoint generation covering the entire manifest \-\-
 N commands would publish N generations, one manifest publishes one. A
 manifest that changes nothing semantic publishes no generation at all.
 Publication failures after the commit are the standard split outcome: the
-manifest stays committed, exit 1, and \*(Aqbead sync flush\-only\*(Aq is the remedy.
+manifest stays committed, exit 6, and \*(Aqbead sync flush\-only\*(Aq is the remedy.
 .PP
   bead manifest commit \-\-input plan.json
   bead manifest commit \-\-input plan.json \-\-json   # result map with real IDs

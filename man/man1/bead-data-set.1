@@ -4,7 +4,7 @@
 .SH NAME
 bead data set \- Set a structured data value for an issue
 .SH SYNOPSIS
-\fBbead data set\fR [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-id\fR> <\fB\-\-namespace\fR> <\fB\-\-schema\-ref\fR> <\fB\-\-value\fR> 
+\fBbead data set\fR [\fB\-\-value\fR] [\fB\-\-value\-file\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-id\fR> <\fB\-\-namespace\fR> <\fB\-\-schema\-ref\fR> 
 .SH DESCRIPTION
 Set or replace a JSON value for a specific namespace with schema governance.
 .PP
@@ -15,6 +15,8 @@ extension of issue data without arbitrary field proliferation.
 EXAMPLES:
   bead data set \-\-id bead\-123abc456789def \-\-namespace config \-\-schema\-ref schema:v1 \-\-value \*(Aq{"setting": "value"}\*(Aq
   bead data set \-\-id ID \-\-namespace metrics \-\-schema\-ref schema:metrics \-\-value \*(Aq{"count": 42}\*(Aq
+  bead data set \-\-id ID \-\-namespace state \-\-schema\-ref schema:state \-\-value\-file state.json
+  bead data set \-\-id ID \-\-namespace state \-\-schema\-ref schema:state \-\-value\-file \-
 .PP
 SCHEMA GOVERNANCE:
   \- Each namespace has an immutable schema reference identifier
@@ -47,7 +49,10 @@ Data namespace (e.g., config, metrics, state)
 Schema reference (immutable identifier for the data schema)
 .TP
 \fB\-\-value\fR \fI<VALUE>\fR
-JSON value to set
+JSON value to set (exactly one of \-\-value and \-\-value\-file is required)
+.TP
+\fB\-\-value\-file\fR \fI<PATH>\fR
+Read the JSON value from a UTF\-8 file, or \- for standard input
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

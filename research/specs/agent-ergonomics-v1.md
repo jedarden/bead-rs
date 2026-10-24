@@ -31,11 +31,12 @@ Unless this document says otherwise, exit codes have the following meaning:
 | Exit | Meaning | R041 examples |
 | ---: | --- | --- |
 | 0 | Success, including an empty result | `list` returns `[]`; no history exists |
-| 1 | Transport or operational failure | unreadable input file; publication failure |
+| 1 | Transport or operational failure | unreadable input file; transient database busy |
 | 2 | Usage or request validation failure | conflicting flags; invalid text-source combination |
 | 3 | Workspace or issue not found | `Issue X not found` |
 | 4 | State, ownership, or concurrency conflict | stale fencing token; cycle; stale revision |
 | 5 | Malformed input or integrity failure | invalid checkpoint; corrupt native state |
+| 6 | Mutation committed; checkpoint publication failed | `create` prints the new ID, publication then fails; `bead sync flush-only` publishes it |
 
 An error named below is exact apart from angle-bracket substitutions. Errors
 not named here use the existing command's structured error and exit mapping.

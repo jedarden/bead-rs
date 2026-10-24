@@ -125,7 +125,7 @@ pub fn get_attempt_summary(conn: &Connection, issue_id: &str) -> Result<AttemptS
 /// - `AttemptError::NotFound` - Issue doesn't exist (exit 3)
 /// - `AttemptError::Conflict` - Revision/fencing/semantic mismatch (exit 4)
 /// - `AttemptError::Integrity` - Database corruption (exit 5)
-/// - `AttemptError::Transient` - Lock contention (exit 6)
+/// - `AttemptError::Transient` - Lock contention (exit 1)
 pub fn resolve_attempt(
     tx: &mut Transaction,
     workspace_uuid: &str,

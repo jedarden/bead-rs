@@ -15,6 +15,10 @@ All notable changes to bead-rs are documented in this file.
   shapes; complete authorization values and contextual assignment detection.
 - Digest-pinned Argo verification, checksummed default/managed candidates,
   fail-closed evidence approval and promotion of the exact tested payload.
+- Exit code 6 reserved exclusively for "mutation committed; checkpoint
+  publication failed" on every mutating command including `manifest commit`,
+  `redact`, and `resolve` (previously exit 1); transient database-busy moved
+  from 6 to the operational-failure 1 so 6 never lies about a commit.
 
 Publication and lab/codinghome installation remain gated on exact-source,
 candidate and fleet evidence. This entry is not a release receipt. Historical

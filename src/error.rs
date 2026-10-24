@@ -55,24 +55,32 @@ pub enum Error {
     #[allow(dead_code)]
     Integrity(String),
 
-    /// Transient database busy or I/O failure (exit 6)
+    /// Transient database busy or I/O failure (exit 1)
+    ///
+    /// Operational, not committed-anything: nothing the command attempted
+    /// has happened yet when this surfaces. Exit 6 is reserved exclusively
+    /// for the committed-but-unpublished split outcome below
+    /// (beadrs-942fef44), so a caller seeing 6 can trust that its mutation
+    /// landed; a transient busy therefore reports the ordinary operational
+    /// failure code instead.
     #[error("Database busy or I/O error: {0}")]
     #[allow(dead_code)]
     DatabaseBusy(String),
 
     /// Automatic checkpoint publication failed after the mutation committed
-    /// (exit 1) -- the split outcome of plan 6.2.1 item 5.
+    /// (exit 6) -- the split outcome of plan 6.2.1 item 5, given its own
+    /// exit code by beadrs-942fef44.
     ///
     /// Constructed only by the post-commit publication chokepoint, strictly
     /// after the command's own transaction committed and its success output
     /// printed. Carrying the failure in a dedicated variant is what makes
-    /// the outcome defined rather than incidental: exit 1 with this message
+    /// the outcome defined rather than incidental: exit 6 with this message
     /// always means the mutation is still committed and visible and only the
     /// durable checkpoint is behind, never that the mutation was rolled
     /// back. The underlying publication error rides along as `source`.
     #[error(
         "checkpoint publication failed after the mutation committed: {source}. \
-         The mutation is still committed and visible - exit 1 here never means \
+         The mutation is still committed and visible - exit 6 here never means \
          it was rolled back. The durable checkpoint did not advance; run \
          'bead sync flush-only' to publish it"
     )]
@@ -82,7 +90,7 @@ pub enum Error {
     },
 
     /// Historical redaction committed but its mandatory sanitized checkpoint
-    /// publication did not complete (exit 1). The receipt identity is safe to
+    /// publication did not complete (exit 6). The receipt identity is safe to
     /// print and is the only input accepted by the resume path.
     #[error(
         "historical redaction receipt {receipt_id} committed, but sanitized checkpoint publication failed: {source}. The redaction remains committed; resume with 'bead redact --resume {receipt_id}'"
@@ -142,13 +150,15 @@ impl Error {
             | Error::LeaseConflict(_)
             | Error::ClaimRefused { .. } => 4,
             Error::Integrity(_) => 5,
-            Error::DatabaseBusy(_) => 6,
+            // Transient busy/I/O changed nothing, so it reports the
+            // ordinary operational-failure code (beadrs-942fef44 reserved
+            // exit 6 exclusively for the split outcome below).
+            Error::DatabaseBusy(_) | Error::TextInputRead { .. } => 1,
             // Defined, not inherited from the catch-all: plan 6.2.1 item 5
-            // pins this split outcome to exit 1 regardless of what the
+            // pins this split outcome to exit 6 regardless of what the
             // underlying publication error would have mapped to on its own.
             Error::PostCommitPublicationFailed { .. }
-            | Error::RedactionPublicationFailed { .. }
-            | Error::TextInputRead { .. } => 1,
+            | Error::RedactionPublicationFailed { .. } => 6,
             Error::TextInputUtf8 => 2,
             Error::Redaction(error) => error.exit_code(),
             _ => 1,
@@ -196,3 +206,59 @@ impl Error {
 
 /// Result type alias for bead-rs operations
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The exit-code taxonomy is a published contract (root help, README,
+    /// needle-cli-contract-v1). Exit 6 belongs exclusively to the
+    /// committed-but-unpublished split outcome (beadrs-942fef44): a caller
+    /// that sees 6 must be able to trust the mutation landed without
+    /// parsing the message, so nothing else may share it.
+    #[test]
+    fn exit_code_taxonomy_keeps_six_exclusive_to_the_split_outcome() {
+        assert_eq!(Error::CliUsage("x".into()).exit_code(), 2);
+        assert_eq!(Error::Workspace("x".into()).exit_code(), 3);
+        assert_eq!(Error::Conflict("x".into()).exit_code(), 4);
+        assert_eq!(
+            Error::Validation(ValidationError::InvalidKind {
+                kind: "relates".into()
+            })
+            .exit_code(),
+            4
+        );
+        assert_eq!(Error::LeaseExpired("x".into()).exit_code(), 4);
+        assert_eq!(Error::LeaseConflict("x".into()).exit_code(), 4);
+        assert_eq!(
+            Error::ClaimRefused {
+                code: "assignee_held".into(),
+                message: "held".into()
+            }
+            .exit_code(),
+            4
+        );
+        assert_eq!(Error::Integrity("x".into()).exit_code(), 5);
+        // Transient busy changed nothing; it is an ordinary operational
+        // failure, never a promise that a mutation committed.
+        assert_eq!(Error::DatabaseBusy("x".into()).exit_code(), 1);
+        assert_eq!(
+            Error::PostCommitPublicationFailed {
+                source: anyhow::anyhow!("io")
+            }
+            .exit_code(),
+            6
+        );
+        assert_eq!(
+            Error::RedactionPublicationFailed {
+                receipt_id: "redact-1".into(),
+                source: anyhow::anyhow!("io")
+            }
+            .exit_code(),
+            6
+        );
+        assert_eq!(Error::Internal(anyhow::anyhow!("x")).exit_code(), 1);
+        assert_eq!(Error::TextInputRead { path: "p".into() }.exit_code(), 1);
+        assert_eq!(Error::TextInputUtf8.exit_code(), 2);
+    }
+}

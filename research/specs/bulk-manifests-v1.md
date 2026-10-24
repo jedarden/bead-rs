@@ -236,7 +236,7 @@ covering the manifest's entire event span, or none when the manifest
 changed nothing semantic (the covered-sequence rule suppresses the
 no-op). `--no-auto-flush` and `checkpoint.auto_flush` suppress
 publication exactly as for any command. A post-commit publication failure
-is the standard split outcome: the manifest stays committed, exit 1, and
+is the standard split outcome: the manifest stays committed, exit 6, and
 `sync flush-only` is the remedy.
 
 ## Result map

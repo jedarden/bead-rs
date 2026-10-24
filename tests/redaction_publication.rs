@@ -1005,3 +1005,100 @@ fn redact_is_discoverable_and_cannot_disable_publication() {
         .assert()
         .code(2);
 }
+
+/// A redaction whose sanitized publication fails after the SQLite commit
+/// reports the split on its own reserved exit code (beadrs-942fef44):
+/// exit 6, the receipt committed and resumable, and the named remedy
+/// (`bead redact --resume RECEIPT_ID`) actually completes the publication.
+/// Exit 1 stays what it is everywhere else -- a failure that changed
+/// nothing.
+#[test]
+fn publication_failure_after_redaction_commits_exits_six_and_resumes() {
+    let workspace = temp_workspace("redact-split-exit");
+    // Sharded mode, so publication must write new object files under
+    // `.beads/checkpoint/objects/` -- the directory the fault injection
+    // replaces. (CI containers run as root, so a permission-based injection
+    // would be bypassed by CAP_DAC_OVERRIDE; ENOTDIR cannot be.)
+    force_mode(workspace.path(), "sharded");
+    let secret = shaped_value();
+    insert_issue(
+        workspace.path(),
+        "redact-split-exit",
+        &format!("before {secret} after"),
+    );
+    publish_fixture_checkpoint(workspace.path());
+    let fingerprint = finding(workspace.path());
+
+    let objects = workspace.path().join(".beads/checkpoint/objects");
+    let parked = workspace.path().join(".beads/checkpoint/objects.parked");
+    fs::rename(&objects, &parked).unwrap();
+    fs::write(&objects, b"not a directory").unwrap();
+
+    let redaction = bead(workspace.path())
+        .args([
+            "redact",
+            "--finding",
+            &fingerprint,
+            "--actor",
+            "publication-test",
+            "--reason",
+            "exit-code split contract",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+
+    // Restore the real objects directory before any assertion can fail, so
+    // the resume below sees the state written before the failure.
+    fs::remove_file(&objects).unwrap();
+    fs::rename(&parked, &objects).unwrap();
+
+    assert_eq!(
+        redaction.status.code(),
+        Some(6),
+        "a committed redaction whose publication failed must exit 6, got {:?}: {}",
+        redaction.status.code(),
+        String::from_utf8_lossy(&redaction.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&redaction.stderr);
+    assert!(
+        stderr.contains("committed, but sanitized checkpoint publication failed"),
+        "stderr must name the split outcome, got {stderr:?}"
+    );
+    assert!(
+        stderr.contains("redact --resume"),
+        "stderr must name the resume remedy, got {stderr:?}"
+    );
+
+    // The redaction itself committed: the live description carries the
+    // marker, not the secret, and the receipt is recorded as committed.
+    let conn = rusqlite::Connection::open(database(workspace.path())).unwrap();
+    let (description, receipt_id): (String, String) = conn
+        .query_row(
+            "SELECT description, (SELECT receipt_id FROM redaction_receipts LIMIT 1) \
+             FROM issues WHERE id = 'redact-split-exit'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert!(!description.contains(&secret));
+    assert!(
+        description.contains(bead_rs::model::redaction::REDACTION_MARKER),
+        "marker expected in {description:?}"
+    );
+    drop(conn);
+
+    // The remedy the message names completes the publication.
+    let resumed = bead(workspace.path())
+        .args(["redact", "--resume", &receipt_id, "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        resumed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    let receipt: Value = serde_json::from_slice(&resumed.stdout).unwrap();
+    assert_eq!(receipt["receipt_id"], receipt_id);
+    assert_eq!(receipt["publication_state"], "published");
+}

@@ -53,6 +53,7 @@ EXIT CODES:
   3  workspace, issue, or file not found
   4  conflict (invalid transition, revision guard, cycle)
   5  malformed input or integrity failure
+  6  mutation committed; checkpoint publication failed (remedy on stderr)
 
 MACHINE-READABLE OUTPUT:
   On commands that render machine-readable output, --json and --format json
@@ -250,10 +251,12 @@ EXAMPLES:
 
 EXIT CODES:
   0  redaction and sanitized publication completed, or dry-run succeeded
-  1  internal failure or redaction committed but publication did not complete
+  1  internal failure
   2  invalid request, actor, reason, fingerprint, or option combination
   3  finding or receipt not found
-  4  stale target or semantic conflict"
+  4  stale target or semantic conflict
+  6  redaction committed but sanitized publication did not complete;
+     resume with the receipt ID named on stderr"
     )]
     Redact(RedactOptions),
 
@@ -1670,11 +1673,13 @@ SEMANTICS:
 
 EXIT CODES:
   0 - Success (including idempotent replay)
+  1 - Internal failure, database busy, or transient I/O error
   2 - Usage or validation error
   3 - Issue not found
   4 - Conflict (revision, fencing, outcome divergence)
   5 - Integrity failure
-  6 - Database busy or transient I/O error
+  6 - Mutation committed; checkpoint publication failed ('bead sync
+      flush-only' publishes it)
 
 This operation requires the attempt-outcome capability. Check with:
   bead capabilities --format json | jq -e '.attempt_outcome.supported'"
@@ -1897,6 +1902,8 @@ EXIT CODES:
   3 - Workspace or file not found
   4 - Reconciliation conflict
   5 - Malformed input or integrity failure
+  6 - Mutation committed; checkpoint publication failed ('bead sync
+      flush-only' publishes it)
 
 RECOVERY BOUNDARY:
   This command remains public for interchange, compatibility automation,
@@ -3409,7 +3416,7 @@ publishes at most one checkpoint generation covering the entire manifest --
 N commands would publish N generations, one manifest publishes one. A
 manifest that changes nothing semantic publishes no generation at all.
 Publication failures after the commit are the standard split outcome: the
-manifest stays committed, exit 1, and 'bead sync flush-only' is the remedy.
+manifest stays committed, exit 6, and 'bead sync flush-only' is the remedy.
 
   bead manifest commit --input plan.json
   bead manifest commit --input plan.json --json   # result map with real IDs"

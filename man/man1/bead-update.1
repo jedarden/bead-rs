@@ -4,7 +4,7 @@
 .SH NAME
 bead update \- Update an issue
 .SH SYNOPSIS
-\fBbead update\fR [\fB\-\-status\fR] [\fB\-\-assignee\fR] [\fB\-\-clear\-assignee\fR] [\fB\-\-notes\fR] [\fB\-\-if\-revision\fR] [\fB\-\-fencing\-token\fR] [\fB\-\-dry\-run\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIID\fR> 
+\fBbead update\fR [\fB\-\-status\fR] [\fB\-\-assignee\fR] [\fB\-\-clear\-assignee\fR] [\fB\-\-notes\fR] [\fB\-\-append\-notes\fR] [\fB\-\-notes\-file\fR] [\fB\-\-if\-revision\fR] [\fB\-\-fencing\-token\fR] [\fB\-\-dry\-run\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIID\fR> 
 .SH DESCRIPTION
 Update issue fields atomically.
 .PP
@@ -17,6 +17,9 @@ EXAMPLES:
   bead update ID \-\-status in_progress                # Start working on an issue
   bead update ID \-\-assignee alice                    # Assign to alice
   bead update ID \-\-notes "Investigated root cause"   # Add investigation notes
+  bead update ID \-\-append\-notes "Second investigation pass"
+  bead update ID \-\-notes\-file investigation.txt
+  cat investigation.txt | bead update ID \-\-notes\-file \-
   bead update ID \-\-clear\-assignee                    # Clear assignment (open only)
   bead update ID \-\-status in_progress \-\-if\-revision 3 # With revision guard
 .PP
@@ -63,6 +66,12 @@ Clear assignee (only for open assigned issues)
 .TP
 \fB\-\-notes\fR \fI<NOTES>\fR
 New notes
+.TP
+\fB\-\-append\-notes\fR \fI<APPEND_NOTES>\fR
+Append notes atomically to the existing notes field
+.TP
+\fB\-\-notes\-file\fR \fI<PATH>\fR
+Read notes from a UTF\-8 file, or stdin with \-
 .TP
 \fB\-\-if\-revision\fR \fI<IF_REVISION>\fR
 Expected revision for optimistic concurrency control

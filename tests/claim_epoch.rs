@@ -1909,7 +1909,12 @@ fn twenty_simultaneous_claims_still_yield_one_claimant() {
                     .args(["claim", "--assignee", &assignee, "--json"])
                     .output()
                     .unwrap();
-                if output.status.code() == Some(6) {
+                // Exit 6 is the committed-but-unpublished split
+                // (beadrs-942fef44), never a busy signal: a transient
+                // operation-lock timeout exits 1 naming the lock.
+                if output.status.code() == Some(1)
+                    && String::from_utf8_lossy(&output.stderr).contains("operation lock busy")
+                {
                     continue;
                 }
                 assert!(

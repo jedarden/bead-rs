@@ -343,6 +343,7 @@ Exit codes are stable across every command:
 | 3 | Workspace, issue, or file not found |
 | 4 | Conflict — invalid transition, revision guard, dependency cycle, single-claim refusal |
 | 5 | Malformed input or integrity failure |
+| 6 | Mutation committed; checkpoint publication failed — the command's own output was already printed, and `bead sync flush-only` publishes what is missing |
 
 ## Coordinating a fleet
 

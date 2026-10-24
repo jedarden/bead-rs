@@ -224,6 +224,9 @@ fn postcommit_publication_failure_keeps_semantic_notice_and_result() {
     );
     let output = commit(root.path(), "commit", false);
     assert!(!output.status.success());
+    // The manifest committed: its own exit code is the split outcome's
+    // reserved 6 (beadrs-942fef44), not the internal-failure 1.
+    assert_eq!(output.status.code(), Some(6));
     assert_summary(&output);
     assert_eq!(row_count(root.path()), 1);
     assert!(String::from_utf8_lossy(&output.stderr)

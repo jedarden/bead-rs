@@ -4,7 +4,7 @@
 .SH NAME
 bead create \- Create a new issue
 .SH SYNOPSIS
-\fBbead create\fR [\fB\-\-description\fR] [\fB\-\-priority\fR] [\fB\-\-issue\-type\fR] [\fB\-\-assignee\fR] [\fB\-\-json\fR] [\fB\-\-label\fR] [\fB\-\-resource\-key\fR] [\fB\-\-depends\-on\fR] [\fB\-\-unique\-ref\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-title\fR>
+\fBbead create\fR [\fB\-\-description\fR] [\fB\-\-description\-file\fR] [\fB\-\-priority\fR] [\fB\-\-issue\-type\fR] [\fB\-\-assignee\fR] [\fB\-\-json\fR] [\fB\-\-label\fR] [\fB\-\-resource\-key\fR] [\fB\-\-depends\-on\fR] [\fB\-\-unique\-ref\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-title\fR> 
 .SH DESCRIPTION
 Create a new issue in the workspace.
 .PP
@@ -33,6 +33,8 @@ EXAMPLES:
   bead create \-\-title "Materialize tracker work" \-\-unique\-ref github:issue\-123
   bead create \-\-title "Add search feature" \-\-assignee alice \-\-label feature \-\-label backend
   bead create \-\-title "Code review PR\-123" \-\-description "Review changes for user auth"
+  bead create \-\-title "Long report" \-\-description\-file report.txt
+  bead create \-\-title "From stdin" \-\-description\-file \-
 .PP
 ISSUE TYPES:
   Common types include: task, bug, feature, improvement, documentation
@@ -68,6 +70,9 @@ Issue title (required)
 .TP
 \fB\-\-description\fR \fI<DESCRIPTION>\fR
 Issue description (optional, defaults to empty)
+.TP
+\fB\-\-description\-file\fR \fI<PATH>\fR
+Read the issue description from a UTF\-8 file, or stdin with \-
 .TP
 \fB\-\-priority\fR \fI<PRIORITY>\fR [default: 2]
 Issue priority (0\-4, default: 2)

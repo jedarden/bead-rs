@@ -8,7 +8,7 @@
 //!   publication failure cannot roll back committed work; a mutation that
 //!   commits and then fails to publish reports the split explicitly (item
 //!   5): success output preserved on stdout, failure and remedy on stderr,
-//!   exit 1;
+//!   exit 6 (beadrs-942fef44);
 //! - which commands publish is decided by observing the live event sequence
 //!   advance across the invocation -- the signal plan 6.2.1 P3 made sound
 //!   and `tests/mutating_command_event_contract.rs` enforces -- so read-only
@@ -666,8 +666,9 @@ fn compiled_default_publishes_automatically() {
 /// visible, preserve its own success output on stdout, report the
 /// publication failure on stderr in words that distinguish "the mutation
 /// happened and the checkpoint did not advance" from "the mutation did not
-/// happen", and exit exactly 1 -- which never implies rollback. The remedy
-/// the message names must also actually close the gap.
+/// happen", and exit exactly 6 -- the code reserved exclusively for this
+/// split outcome (beadrs-942fef44), which never implies rollback. The
+/// remedy the message names must also actually close the gap.
 #[test]
 fn publication_failure_reports_the_split_without_rolling_back() {
     let dir = tempfile::tempdir().unwrap();
@@ -716,13 +717,13 @@ fn publication_failure_reports_the_split_without_rolling_back() {
         "the mutation's own success output must be preserved on stdout, got {stdout:?}"
     );
 
-    // Exit exactly 1: the split outcome is pinned to that code (plan 6.2.1
-    // item 5), and a machine consumer seeing 1 plus the preserved success
-    // output knows the mutation was not rolled back.
+    // Exit exactly 6: the split outcome owns that code exclusively
+    // (beadrs-942fef44), and a machine consumer seeing 6 knows the
+    // mutation was not rolled back without parsing the message.
     assert_eq!(
         output.status.code(),
-        Some(1),
-        "a committed mutation whose publication failed must exit 1, got {:?}",
+        Some(6),
+        "a committed mutation whose publication failed must exit 6, got {:?}",
         output.status.code()
     );
 
@@ -743,7 +744,7 @@ fn publication_failure_reports_the_split_without_rolling_back() {
         "stderr must name the remedy, got {stderr:?}"
     );
 
-    // The mutation is still present and visible: exit 1 never rolled it back.
+    // The mutation is still present and visible: exit 6 never rolled it back.
     run(workspace, &["show", issue_id]);
     let listing = run(workspace, &["list", "--json"]);
     assert!(
@@ -804,7 +805,12 @@ fn invalid_auto_flush_config_fails_closed_after_a_committed_mutation() {
         .get_output()
         .clone();
 
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        output.status.code(),
+        Some(6),
+        "a committed mutation whose publication failed must exit 6, got {:?}",
+        output.status.code()
+    );
     let stdout = String::from_utf8(output.stdout).unwrap();
     let issue_id = stdout.trim();
     assert!(

@@ -4,7 +4,7 @@
 .SH NAME
 bead close \- Close an issue
 .SH SYNOPSIS
-\fBbead close\fR [\fB\-\-reason\fR] [\fB\-\-if\-revision\fR] [\fB\-\-fencing\-token\fR] [\fB\-\-dry\-run\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIID\fR> 
+\fBbead close\fR [\fB\-\-reason\fR] [\fB\-\-reason\-file\fR] [\fB\-\-if\-revision\fR] [\fB\-\-fencing\-token\fR] [\fB\-\-dry\-run\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIID\fR> 
 .SH DESCRIPTION
 Close an issue with a required reason.
 .PP
@@ -16,6 +16,8 @@ EXAMPLES:
   bead close bead\-123abc456789def \-\-reason "Completed successfully"
   bead close ID \-\-reason "Fixed authentication bug"
   bead close ID \-\-reason "Duplicate of ID\-456"
+  bead close ID \-\-reason\-file close\-reason.txt
+  cat close\-reason.txt | bead close ID \-\-reason\-file \-
   bead close ID \-\-reason "Done" \-\-if\-revision 3    # With revision guard
 .PP
 SEMANTICS:
@@ -51,6 +53,9 @@ Dependent issues may become ready when their last blocker is closed.
 .TP
 \fB\-\-reason\fR \fI<REASON>\fR
 Close reason (required)
+.TP
+\fB\-\-reason\-file\fR \fI<PATH>\fR
+Read the close reason from a UTF\-8 file, or stdin with \-
 .TP
 \fB\-\-if\-revision\fR \fI<IF_REVISION>\fR
 Expected revision for optimistic concurrency control

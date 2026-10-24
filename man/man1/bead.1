@@ -1,6 +1,6 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH bead 1  "bead 0.3.0 (54e79157-dirty 2026-10-13T10:00:37Z)" 
+.TH bead 1  "bead 0.3.0 (76a22c29-dirty 2026-10-24T08:00:57Z)" 
 .SH NAME
 bead \- Clean\-room task coordination for agent fleets
 .SH SYNOPSIS
@@ -48,6 +48,7 @@ EXIT CODES:
   3  workspace, issue, or file not found
   4  conflict (invalid transition, revision guard, cycle)
   5  malformed input or integrity failure
+  6  mutation committed; checkpoint publication failed (remedy on stderr)
 .PP
 MACHINE\-READABLE OUTPUT:
   On commands that render machine\-readable output, \-\-json and \-\-format json
@@ -87,6 +88,12 @@ List issues
 .TP
 bead\-show(1)
 Show a single issue
+.TP
+bead\-ready(1)
+Show only ready frontier issues
+.TP
+bead\-search(1)
+Search issues by text
 .TP
 bead\-update(1)
 Update an issue
@@ -145,6 +152,9 @@ Execute safe query language queries
 bead\-changes(1)
 Access cursor\-based change feed for incremental local synchronization
 .TP
+bead\-history(1)
+List events for one issue in commit order
+.TP
 bead\-why(1)
 Explain issue state, readiness, blockers, and legal operations
 .TP
@@ -169,6 +179,6 @@ Validate workspace policy and scheduling configuration
 bead\-help(1)
 Print this message or the help of the given subcommand(s)
 .SH VERSION
-v0.3.0 (54e79157\-dirty 2026\-10\-13T10:00:37Z)
+v0.3.0 (76a22c29\-dirty 2026\-10\-24T08:00:57Z)
 .SH AUTHORS
 Jed Arden <github@jedarden.com>

@@ -4,7 +4,7 @@
 .SH NAME
 bead sync import\-only \- Import forensic checkpoint with restore or merge
 .SH SYNOPSIS
-\fBbead sync import\-only\fR [\fB\-\-format\fR] [\fB\-\-json\fR] [\fB\-\-profile\fR] [\fB\-\-restore\-into\-empty\fR] [\fB\-\-merge\fR] [\fB\-\-actor\fR] [\fB\-\-dry\-run\fR] [\fB\-\-diagnostics\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-input\fR> 
+\fBbead sync import\-only\fR [\fB\-\-format\fR] [\fB\-\-json\fR] [\fB\-\-profile\fR] [\fB\-\-restore\-into\-empty\fR] [\fB\-\-merge\fR] [\fB\-\-reidentify\-restored\-branch\-at\fR] [\fB\-\-source\-generation\fR] [\fB\-\-actor\fR] [\fB\-\-dry\-run\fR] [\fB\-\-diagnostics\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-input\fR> 
 .SH DESCRIPTION
 Import and validate forensic checkpoint with atomic activation.
 .PP
@@ -66,6 +66,8 @@ EXIT CODES:
   3 \- Workspace or file not found
   4 \- Reconciliation conflict
   5 \- Malformed input or integrity failure
+  6 \- Mutation committed; checkpoint publication failed (\*(Aqbead sync
+      flush\-only\*(Aq publishes it)
 .PP
 RECOVERY BOUNDARY:
   This command remains public for interchange, compatibility automation,
@@ -103,6 +105,12 @@ Restore checkpoint into empty workspace
 .TP
 \fB\-\-merge\fR
 Merge checkpoint into existing workspace
+.TP
+\fB\-\-reidentify\-restored\-branch\-at\fR \fI<REIDENTIFY_RESTORED_BRANCH_AT>\fR
+Reidentify a verified restored branch at this first divergent sequence; only newly created source issues are admitted and local issues are preserved
+.TP
+\fB\-\-source\-generation\fR \fI<SOURCE_GENERATION>\fR
+Exact immutable source generation for explicit restored\-branch recovery
 .TP
 \fB\-\-actor\fR \fI<ACTOR>\fR
 Actor performing the import operation (required for restore/merge)

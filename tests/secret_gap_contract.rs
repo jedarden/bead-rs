@@ -1824,7 +1824,7 @@ fn restore_publication_failure_keeps_one_committed_recovery_for_later_flush() {
     assert_eq!(report["secret_quarantined"], false);
     assert_eq!(
         output.status.code(),
-        Some(1),
+        Some(6),
         "expected a post-commit publication error (reported={:?}, split_message={})",
         report["checkpoint_publication_withheld"],
         stderr.contains("checkpoint publication failed after the mutation committed")

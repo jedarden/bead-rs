@@ -1,0 +1,45 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead sync resolve" 1  "bead sync resolve " 
+.SH NAME
+bead sync resolve \- Resolve git\-conflicted checkpoint files into one merged history
+.SH SYNOPSIS
+\fBbead sync resolve\fR [\fB\-\-dry\-run\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-actor\fR> 
+.SH DESCRIPTION
+Recover a pull that stopped on .beads/checkpoint in one command.
+.PP
+A pull or rebase that conflicts on the published checkpoint set leaves
+unmerged index entries and marker text in the files Git should track, and
+every other bead command fails closed on that state. This command is the
+sanctioned recovery. It detects the conflict, restores the incoming side\*(Aqs
+verified pointer and objects \-\- the conflicted side that is not this
+workspace\*(Aqs own recorded generation \-\- merges the live store with it
+through the existing reconcile machinery, or through the existing
+divergent\-branch machinery when the two sides diverged, so neither side\*(Aqs
+history is lost, and republishes and stages exactly the checkpoint fileset
+so `git rebase \-\-continue` or `git commit` can proceed.
+.PP
+RULES:
+  \- Conflicted paths outside .beads/checkpoint are reported, never touched.
+  \- A different\-issue divergence imports the incoming suffix under a
+    derived branch origin; a same\-issue divergence follows the existing
+    divergent\-branch rules and is refused, dropping nothing.
+  \- Any other bead command refuses while this state exists and names this
+    command; `sync status` names it too.
+  \- Operates on the published\-fileset abstraction, not fixed filenames, so
+    it keeps working under later checkpoint layouts.
+  \- With nothing conflicted the command exits 0 and changes nothing.
+.PP
+EXAMPLES:
+  bead sync resolve \-\-actor jed           # after a conflicted pull
+  bead sync resolve \-\-actor jed \-\-dry\-run # report the plan, touch nothing
+.SH OPTIONS
+.TP
+\fB\-\-actor\fR \fI<ACTOR>\fR
+Actor performing the resolve operation (required)
+.TP
+\fB\-\-dry\-run\fR
+Report the plan without mutating anything
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

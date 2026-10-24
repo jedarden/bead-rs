@@ -126,11 +126,12 @@ The NEEDLE adapter relies on this stable taxonomy for the R041 surfaces:
 | Exit | Meaning | Examples |
 | ---: | --- | --- |
 | 0 | Success, including an empty result | `list` returns `[]`; `claim` finds no work |
-| 1 | Transport or operational failure | unreadable text file; checkpoint publication failure |
+| 1 | Transport or operational failure | unreadable text file; transient database busy |
 | 2 | Usage or validation failure | conflicting output flags; invalid file/source combination |
 | 3 | Workspace or issue not found | `Issue ID not found` |
 | 4 | State/ownership conflict | stale revision, missing required claimant credential, fencing mismatch |
 | 5 | Malformed input or integrity failure | invalid checkpoint or corrupt native state |
+| 6 | Mutation committed; checkpoint publication failed | `create` commits and prints the new ID, publication then fails; `bead sync flush-only` publishes it |
 
 The R041 conformance scenarios in `agent-ergonomics-v1.md` are provider-side
 requirements for these extensions. NEEDLE's existing show parsers already
@@ -161,6 +162,17 @@ failures: `sync status` still exits 0. The JSON form mirrors this contract in
 `git_reachability`, with `status`, optional `unavailable_reason`, and arrays
 named for the five groups. `git_reachability` is `null` when no checkpoint has
 been published.
+
+The groups cover only files in the published checkpoint fileset. Runtime
+metadata and publication temporaries never appear in any group: the
+publication lock (`publish.lock`) and every `*.tmp` file under
+`.beads/checkpoint` are carved out before classification. An interrupted
+publication's leftover `gen-*.tmp` scratch is therefore never an `ignored`
+entry and never holds `ready_to_commit` at false; `bead doctor` owns the
+leftover file instead — plain `doctor` reports it as a `WARN` line, and
+`doctor --repair` removes it with a `FIXED` line once it is stale (no
+publication lock held, and the file predates the current generation).
+A publication still in flight under its lock is never swept.
 
 Readiness is gated on reachability (ADR-017): `ready_to_commit` is true only
 when the checkpoint is internally consistent AND Git can reach every

@@ -1,0 +1,31 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead dep list" 1  "bead dep list " 
+.SH NAME
+bead dep list \- List dependency edges for an issue
+.SH SYNOPSIS
+\fBbead dep list\fR [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIID\fR> 
+.SH DESCRIPTION
+Show every dependency edge touching one issue, in both directions.
+.PP
+\*(AqBlocked by\*(Aq lists blockers this issue depends on; \*(Aqblocking\*(Aq lists dependents
+that depend on this issue as their blocker. Each edge reports its kind and
+whether the other issue in the edge is finished (base status \*(Aqclosed\*(Aq).
+.PP
+EXAMPLES:
+  bead dep list ID                  # Human\-readable, both directions
+  bead dep list ID \-\-json           # One JSON object: {id, blocked_by, blocking}
+.PP
+EXIT CODES:
+  0  success, even when the issue has no dependencies
+  3  the issue does not exist
+.SH OPTIONS
+.TP
+\fB\-\-json\fR
+Output in JSON format
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIID\fR>
+Issue ID

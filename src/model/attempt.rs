@@ -425,7 +425,9 @@ pub enum AttemptError {
     #[error("Integrity error: {0}")]
     Integrity(String),
 
-    /// Transient error (exit 6)
+    /// Transient error (exit 1): lock contention changed nothing, and exit
+    /// 6 is reserved for the committed-but-unpublished publication split
+    /// (beadrs-942fef44)
     #[error("Transient error: {0}")]
     Transient(String),
 }
@@ -438,7 +440,7 @@ impl AttemptError {
             AttemptError::NotFound(_) => 3,
             AttemptError::Conflict(_) => 4,
             AttemptError::Integrity(_) => 5,
-            AttemptError::Transient(_) => 6,
+            AttemptError::Transient(_) => 1,
         }
     }
 }
@@ -446,6 +448,18 @@ impl AttemptError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Exit 6 is reserved exclusively for the committed-but-unpublished
+    /// publication split (beadrs-942fef44); a transient resolve error
+    /// changed nothing and must not promise otherwise.
+    #[test]
+    fn test_exit_codes() {
+        assert_eq!(AttemptError::Usage("x".into()).exit_code(), 2);
+        assert_eq!(AttemptError::NotFound("x".into()).exit_code(), 3);
+        assert_eq!(AttemptError::Conflict("x".into()).exit_code(), 4);
+        assert_eq!(AttemptError::Integrity("x".into()).exit_code(), 5);
+        assert_eq!(AttemptError::Transient("x".into()).exit_code(), 1);
+    }
 
     #[test]
     fn test_outcome_parse() {

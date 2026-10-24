@@ -1,0 +1,23 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead history" 1  "bead history " 
+.SH NAME
+bead history \- List events for one issue in commit order
+.SH SYNOPSIS
+\fBbead history\fR [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIID\fR> 
+.SH DESCRIPTION
+List one issue\*(Aqs audit events in commit order, including closed issues.
+.PP
+Each line shows time, actor, kind, revision, and changed fields. \-\-json emits one array. Historical redactions show only the fixed marker, never prior values.
+.PP
+Use `bead changes` for the workspace\-wide cursor feed, or `bead why \-\-id ID` for the issue\*(Aqs current state and readiness.
+.SH OPTIONS
+.TP
+\fB\-\-json\fR
+Output one JSON array
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIID\fR>
+Issue ID

@@ -32,6 +32,8 @@ CHECKS PERFORMED:
   \- Orphaned temporary files
 .PP
 REPAIRS PERFORMED (with \-\-repair):
+  \- Adopt config.json\*(Aqs UUID when the database UUID is empty, preserving
+    already\-published event identities
   \- Remove proven\-stale operation\-owned temporary files
   \- Recreate missing workspace structure directories (receipts)
   \- Rebuild checkpoint views from authoritative database state
@@ -49,9 +51,8 @@ RECOVERY REHEARSAL (with \-\-rehearse):
 STARVATION RECOVERY (with \-\-starvation\-recovery):
   \- Run SQLite integrity checks on beads.db
   \- Verify checkpoint/current.json matches database state
-  \- Identify and fix beads with inconsistent status (e.g., assigned\-but\-open)
+  \- Identify assigned open beads and recommend an explicit clear\-assignee command
   \- Reset stale_since timestamps on beads that appear stuck
-  \- Clear stale assignees from open beads
   \- Release stale in\-progress claims
   \- Log all repairs to .beads/doctor\-recovery.log for audit
 .PP
