@@ -12,7 +12,7 @@
 //! `manifests/` trees of the older layouts, so the two generations of a
 //! migration coexist until structural retention reaps the old one.
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{anyhow, bail, Result};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::io::Write as _;
@@ -20,8 +20,8 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{
-    EventRecord, PublicationOutput, SerializedCorpus, ShardedConfig, create_publication_temp,
-    format_rfc3339, publication_temp_path, sync_dir,
+    create_publication_temp, format_rfc3339, publication_temp_path, sync_dir, EventRecord,
+    PublicationOutput, SerializedCorpus, ShardedConfig,
 };
 
 /// Typical shard size; the operating point (spec 5.2)
@@ -882,7 +882,7 @@ pub(super) fn verify_set_v2_restore_closure(
 /// Stage a set-v2 checkpoint into the shared forensic staging shape: shard
 /// rows first, then sealed segments in manifest order, then the tail.
 pub(super) fn stage_set_v2_checkpoint(pointer_path: &Path) -> Result<super::ForensicStaging> {
-    use super::{AttemptOutcomeRecord, CheckpointMode, RedactionRecords, process_checkpoint_file};
+    use super::{process_checkpoint_file, AttemptOutcomeRecord, CheckpointMode, RedactionRecords};
 
     let base = pointer_path
         .parent()
