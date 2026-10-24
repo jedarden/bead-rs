@@ -373,7 +373,7 @@ pub(super) fn publish_set_v2_checkpoint(
     let issue_partitions = partition_keyed_class(&issue_ids, &issue_line_bytes)?;
 
     let mut shard_rows: Vec<serde_json::Value> = Vec::new();
-    let mut write_class_shards = |class: &'static str,
+    let write_class_shards = |class: &'static str,
                                   partitions: Vec<ShardPartition>,
                                   lines: &[Vec<u8>],
                                   shard_rows: &mut Vec<serde_json::Value>,
@@ -406,7 +406,7 @@ pub(super) fn publish_set_v2_checkpoint(
             let (rel, hash) = write_set_object(
                 checkpoint_dir,
                 "shard",
-                &format!("shard-{}-{}", class, &partition.prefix.replace('/', "_")),
+                &format!("shard-{}-{}", class, partition.prefix.replace('/', "_")),
                 &body,
                 changed_paths,
                 scratch_dir,
@@ -714,6 +714,9 @@ pub(super) fn read_verified_set_artifact(
 }
 
 /// The epoch-nanosecond input shared with the legacy generation-ID scheme
+/// (landed ahead of its caller; the allow keeps committed main clippy-clean
+/// until that caller lands — beadrs-0f854018)
+#[allow(dead_code)]
 pub(super) fn generation_timestamp_nanos() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -932,7 +935,7 @@ pub(super) fn stage_set_v2_checkpoint(pointer_path: &Path) -> Result<super::Fore
     let mut seen_receipt_ids = std::collections::HashSet::new();
     let mut seen_attempt_ids = std::collections::HashSet::new();
 
-    let mut process_artifact = |rel: &str,
+    let process_artifact = |rel: &str,
                                 sha: &str,
                                 len: Option<u64>,
                                 hasher: &mut Sha256,
@@ -946,7 +949,7 @@ pub(super) fn stage_set_v2_checkpoint(pointer_path: &Path) -> Result<super::Fore
                                 seen_issue_ids: &mut std::collections::HashSet<String>,
                                 seen_event_identities: &mut std::collections::HashSet<String>,
                                 seen_receipt_ids: &mut std::collections::HashSet<String>,
-                                seen_attempt_ids: &mut std::collections::HashSet<String>|
+                                _seen_attempt_ids: &mut std::collections::HashSet<String>|
      -> Result<()> {
         // Digest before use (spec 13); the parse then reads the same bytes.
         read_verified_set_artifact(base, rel, sha, len)?;

@@ -604,7 +604,7 @@ fn fileset_present(checkpoint_dir: &Path) -> Result<Vec<String>> {
         if !path.is_file() {
             continue;
         }
-        present.extend(super::read_pointer_referenced_files(&path)?.into_iter());
+        present.extend(super::read_pointer_referenced_files(&path)?);
     }
     if checkpoint_dir.join("forensic.jsonl").is_file() {
         present.insert("forensic.jsonl".to_string());

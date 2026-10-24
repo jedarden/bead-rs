@@ -9792,7 +9792,7 @@ pub(crate) fn read_pointer_referenced_files(pointer_path: &Path) -> Result<HashS
             if let Some(root) = pointer.get("active_root").and_then(|r| r.get("path")) {
                 if let Some(path_str) = root.as_str() {
                     for file in set_v2::set_v2_structural_referenced_files(
-                        &pointer_path
+                        pointer_path
                             .parent()
                             .unwrap_or_else(|| std::path::Path::new(".")),
                         path_str,
