@@ -88,6 +88,7 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod restored_branch;
+pub(crate) mod set_v2;
 
 /// Opaque additive fields a newer writer attached to a checkpoint record.
 ///
@@ -234,6 +235,9 @@ fn parse_dependency_entry(
 pub enum CheckpointMode {
     Monolithic,
     Sharded,
+    /// The adaptive incremental set layout (`checkpoint-set-v2`); the
+    /// default for every workspace since its acceptance
+    SetV2,
 }
 
 impl CheckpointMode {
@@ -241,6 +245,7 @@ impl CheckpointMode {
         match self {
             CheckpointMode::Monolithic => "monolithic",
             CheckpointMode::Sharded => "sharded",
+            CheckpointMode::SetV2 => "set-v2",
         }
     }
 }
@@ -252,6 +257,7 @@ impl std::str::FromStr for CheckpointMode {
         match s {
             "monolithic" => Ok(CheckpointMode::Monolithic),
             "sharded" => Ok(CheckpointMode::Sharded),
+            "set-v2" => Ok(CheckpointMode::SetV2),
             _ => bail!("Invalid checkpoint mode: {}", s),
         }
     }
@@ -838,7 +844,8 @@ pub fn select_checkpoint_mode(
         || stats.max_line_bytes > thresholds.max_record_line_bytes;
 
     match policy {
-        ModePolicy::Forced(CheckpointMode::Sharded) => Ok(CheckpointMode::Sharded),
+        ModePolicy::Forced(CheckpointMode::Sharded) => Ok(CheckpointMode::SetV2),
+        ModePolicy::Forced(CheckpointMode::SetV2) => Ok(CheckpointMode::SetV2),
         ModePolicy::Forced(CheckpointMode::Monolithic) => {
             if exceeds {
                 bail!(
@@ -855,11 +862,13 @@ pub fn select_checkpoint_mode(
             }
             Ok(CheckpointMode::Monolithic)
         }
-        ModePolicy::Adaptive => Ok(if exceeds {
-            CheckpointMode::Sharded
-        } else {
-            CheckpointMode::Monolithic
-        }),
+        // Adaptive (spec 9): every workspace publishes set-v2. The
+        // monolith threshold table keeps only its forced-monolith safety
+        // role; the sharded-v1 writer is no longer selected.
+        ModePolicy::Adaptive => {
+            let _ = exceeds;
+            Ok(CheckpointMode::SetV2)
+        }
     }
 }
 
@@ -2159,6 +2168,7 @@ pub fn verify_restore_source(source: &Path, generation_id: &str) -> Result<Verif
     let (expected_dir, expected_extension) = match mode {
         CheckpointMode::Monolithic => ("objects", "jsonl"),
         CheckpointMode::Sharded => ("manifests", "json"),
+        CheckpointMode::SetV2 => ("set", "json"),
     };
     let root = verified_checkpoint_path(
         base,
@@ -2177,6 +2187,9 @@ pub fn verify_restore_source(source: &Path, generation_id: &str) -> Result<Verif
     match mode {
         CheckpointMode::Monolithic => verify_monolithic_restore_records(&root)?,
         CheckpointMode::Sharded => verify_sharded_restore_closure(base, &root, &pointer)?,
+        CheckpointMode::SetV2 => {
+            set_v2::verify_set_v2_restore_closure(base, &root, &pointer)?
+        }
     }
 
     let mut staging = stage_pointer_checkpoint(&pointer_path)?;
@@ -2216,8 +2229,12 @@ pub fn verify_restore_source(source: &Path, generation_id: &str) -> Result<Verif
         mode,
         "pointer-selected root after staging",
     )?;
-    if mode == CheckpointMode::Sharded {
-        verify_sharded_restore_closure(base, &root, &pointer)?;
+    match mode {
+        CheckpointMode::Sharded => verify_sharded_restore_closure(base, &root, &pointer)?,
+        CheckpointMode::SetV2 => {
+            set_v2::verify_set_v2_restore_closure(base, &root, &pointer)?
+        }
+        CheckpointMode::Monolithic => {}
     }
 
     Ok(VerifiedRestoreSource {
@@ -2520,7 +2537,8 @@ fn verify_restore_root_file(
         .file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or("");
-    let legacy_generation_root = mode == CheckpointMode::Monolithic && stem == generation_id;
+    let legacy_generation_root = mode == CheckpointMode::Monolithic && stem == generation_id
+        || mode == CheckpointMode::SetV2 && stem == format!("manifest-{}", generation_id);
     if stem != expected_hash && !legacy_generation_root {
         bail!(
             "Unverified restore source: {} {} is named by neither its declared SHA-256 {} nor its selected generation {}",
@@ -2940,6 +2958,11 @@ fn stage_pointer_checkpoint(pointer_path: &Path) -> Result<ForensicStaging> {
         }
         "sharded" => {
             let mut staging = stage_sharded_checkpoint(pointer_path)?;
+            staging.pointer_extensions = pointer_extensions_of(&pointer);
+            Ok(staging)
+        }
+        "set-v2" => {
+            let mut staging = set_v2::stage_set_v2_checkpoint(pointer_path)?;
             staging.pointer_extensions = pointer_extensions_of(&pointer);
             Ok(staging)
         }
@@ -3639,8 +3662,30 @@ fn process_shard_file(
     seen_event_identities: &mut HashSet<String>,
     seen_receipt_ids: &mut HashSet<String>,
 ) -> Result<ShardData> {
-    let file = File::open(shard_path)
-        .map_err(|e| anyhow!("Failed to open shard {}: {}", shard_path.display(), e))?;
+    process_checkpoint_file(
+        shard_path,
+        None,
+        hasher,
+        seen_issue_ids,
+        seen_event_identities,
+        seen_receipt_ids,
+    )
+}
+
+/// Process one JSONL checkpoint artifact, resolving `set-v2` oversize
+/// references (spec 6.3) when `oversize_base` names the checkpoint set.
+/// Hashes cover the resolved record bytes, so the staging input hash stays
+/// a function of record content, not of where a large record was stored.
+fn process_checkpoint_file(
+    artifact_path: &Path,
+    oversize_base: Option<&Path>,
+    hasher: &mut Sha256,
+    seen_issue_ids: &mut HashSet<String>,
+    seen_event_identities: &mut HashSet<String>,
+    seen_receipt_ids: &mut HashSet<String>,
+) -> Result<ShardData> {
+    let file = File::open(artifact_path)
+        .map_err(|e| anyhow!("Failed to open shard {}: {}", artifact_path.display(), e))?;
 
     let reader = BufReader::new(file);
 
@@ -3662,19 +3707,78 @@ fn process_shard_file(
             continue;
         }
 
-        hasher.update(line.as_bytes());
-        hasher.update(b"\n");
-
-        let record: serde_json::Value = serde_json::from_str(&line).map_err(|e| {
+        let mut record: serde_json::Value = serde_json::from_str(&line).map_err(|e| {
             anyhow!(
                 "{} line {}: malformed JSON: {}",
-                shard_path.display(),
+                artifact_path.display(),
                 line_num,
                 e
             )
         })?;
-        reject_archaeology_view(&record, shard_path)?;
-        reject_reconciliation_report_view(&record, shard_path)?;
+
+        // An oversize reference stands in for the record stored under
+        // `set/rec/`; resolve and verify it before anything else sees it.
+        if record.get("ref").and_then(|v| v.as_bool()) == Some(true) {
+            let base = oversize_base.ok_or_else(|| {
+                anyhow!(
+                    "{} line {}: oversize reference outside a set-v2 checkpoint",
+                    artifact_path.display(),
+                    line_num
+                )
+            })?;
+            let ref_path = record
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    anyhow!(
+                        "{} line {}: oversize reference missing path",
+                        artifact_path.display(),
+                        line_num
+                    )
+                })?;
+            let ref_sha = record
+                .get("sha256")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    anyhow!(
+                        "{} line {}: oversize reference missing sha256",
+                        artifact_path.display(),
+                        line_num
+                    )
+                })?;
+            let ref_len = record
+                .get("byte_length")
+                .and_then(|v| v.as_u64());
+            let bytes = super::checkpoint::set_v2::read_verified_set_artifact(
+                base,
+                ref_path,
+                ref_sha,
+                ref_len,
+            )
+            .map_err(|e| {
+                anyhow!(
+                    "{} line {}: oversize reference unusable: {}",
+                    artifact_path.display(),
+                    line_num,
+                    e
+                )
+            })?;
+            hasher.update(&bytes);
+            hasher.update(b"\n");
+            record = serde_json::from_slice(&bytes).map_err(|e| {
+                anyhow!(
+                    "{} line {}: referenced record is malformed JSON: {}",
+                    artifact_path.display(),
+                    line_num,
+                    e
+                )
+            })?;
+        } else {
+            hasher.update(line.as_bytes());
+            hasher.update(b"\n");
+        }
+        reject_archaeology_view(&record, artifact_path)?;
+        reject_reconciliation_report_view(&record, artifact_path)?;
 
         let record_type = record
             .get("record_type")
@@ -3682,7 +3786,7 @@ fn process_shard_file(
             .ok_or_else(|| {
                 anyhow!(
                     "{} line {}: missing record_type",
-                    shard_path.display(),
+                    artifact_path.display(),
                     line_num
                 )
             })?;
@@ -3692,7 +3796,7 @@ fn process_shard_file(
                 let issue_value = record.get("issue").ok_or_else(|| {
                     anyhow!(
                         "{} line {}: missing 'issue' field",
-                        shard_path.display(),
+                        artifact_path.display(),
                         line_num
                     )
                 })?;
@@ -3700,7 +3804,7 @@ fn process_shard_file(
                 let issue_obj = issue_value.as_object().ok_or_else(|| {
                     anyhow!(
                         "{} line {}: issue must be an object",
-                        shard_path.display(),
+                        artifact_path.display(),
                         line_num
                     )
                 })?;
@@ -3708,7 +3812,7 @@ fn process_shard_file(
                 let issue: Issue = serde_json::from_value(issue_value.clone()).map_err(|e| {
                     anyhow!(
                         "{} line {}: invalid issue: {}",
-                        shard_path.display(),
+                        artifact_path.display(),
                         line_num,
                         e
                     )
@@ -3717,7 +3821,7 @@ fn process_shard_file(
                 if !seen_issue_ids.insert(issue.id.clone()) {
                     bail!(
                         "{} line {}: duplicate issue ID: {}",
-                        shard_path.display(),
+                        artifact_path.display(),
                         line_num,
                         issue.id
                     );
@@ -3729,14 +3833,14 @@ fn process_shard_file(
                         let dep_obj = dep_value.as_object().ok_or_else(|| {
                             anyhow!(
                                 "{} line {}: dependency must be an object",
-                                shard_path.display(),
+                                artifact_path.display(),
                                 line_num
                             )
                         })?;
 
                         let (blocker, kind, extensions) = parse_dependency_entry(
                             dep_obj,
-                            &format!("{} line {}", shard_path.display(), line_num),
+                            &format!("{} line {}", artifact_path.display(), line_num),
                         )?;
 
                         shard_data.dependencies.push(SerializedDependency {
@@ -3765,7 +3869,7 @@ fn process_shard_file(
                 let event_value = record.get("event").ok_or_else(|| {
                     anyhow!(
                         "{} line {}: missing 'event' field",
-                        shard_path.display(),
+                        artifact_path.display(),
                         line_num
                     )
                 })?;
@@ -3774,7 +3878,7 @@ fn process_shard_file(
                     serde_json::from_value(event_value.clone()).map_err(|e| {
                         anyhow!(
                             "{} line {}: invalid event: {}",
-                            shard_path.display(),
+                            artifact_path.display(),
                             line_num,
                             e
                         )
@@ -3787,7 +3891,7 @@ fn process_shard_file(
                 if !seen_event_identities.insert(identity.clone()) {
                     bail!(
                         "{} line {}: duplicate event identity: {}",
-                        shard_path.display(),
+                        artifact_path.display(),
                         line_num,
                         identity
                     );
@@ -3799,7 +3903,7 @@ fn process_shard_file(
                 let receipt_value = record.get("provenance_receipt").ok_or_else(|| {
                     anyhow!(
                         "{} line {}: missing 'provenance_receipt' field",
-                        shard_path.display(),
+                        artifact_path.display(),
                         line_num
                     )
                 })?;
@@ -3808,7 +3912,7 @@ fn process_shard_file(
                     .map_err(|e| {
                         anyhow!(
                             "{} line {}: invalid receipt: {}",
-                            shard_path.display(),
+                            artifact_path.display(),
                             line_num,
                             e
                         )
@@ -3817,7 +3921,7 @@ fn process_shard_file(
                 if !seen_receipt_ids.insert(receipt.receipt_id.clone()) {
                     bail!(
                         "{} line {}: duplicate receipt ID: {}",
-                        shard_path.display(),
+                        artifact_path.display(),
                         line_num,
                         receipt.receipt_id
                     );
@@ -3829,7 +3933,7 @@ fn process_shard_file(
                 let outcome_value = record.get("attempt_outcome").ok_or_else(|| {
                     anyhow!(
                         "{} line {}: missing 'attempt_outcome' field",
-                        shard_path.display(),
+                        artifact_path.display(),
                         line_num
                     )
                 })?;
@@ -3838,7 +3942,7 @@ fn process_shard_file(
                     .map_err(|e| {
                     anyhow!(
                         "{} line {}: invalid attempt outcome: {}",
-                        shard_path.display(),
+                        artifact_path.display(),
                         line_num,
                         e
                     )
@@ -3855,7 +3959,7 @@ fn process_shard_file(
                 // hard error rather than a silently dropped line.
                 let mut parsed = RedactionRecords::default();
                 let mut seen = RedactionIdentities::default();
-                let location = format!("{} line {}", shard_path.display(), line_num);
+                let location = format!("{} line {}", artifact_path.display(), line_num);
                 if !stage_redaction_record(record_type, &record, &location, &mut parsed, &mut seen)?
                 {
                     bail!("{}: unknown record type: {}", location, record_type);
@@ -4556,10 +4660,11 @@ pub fn restore_verified_generation(
         match verified.mode {
             CheckpointMode::Monolithic => "objects",
             CheckpointMode::Sharded => "manifests",
+            CheckpointMode::SetV2 => "set",
         },
         match verified.mode {
             CheckpointMode::Monolithic => "jsonl",
-            CheckpointMode::Sharded => "json",
+            CheckpointMode::Sharded | CheckpointMode::SetV2 => "json",
         },
     )?;
     verify_restore_root_file(
@@ -7966,6 +8071,23 @@ fn publish_forensic_checkpoint_inner(
                 &mut changed_paths,
             )?
         }
+        CheckpointMode::SetV2 => {
+            let set_config = ShardedConfig {
+                generation_id: generation_id.clone(),
+                store_uuid: store_uuid.clone(),
+                snapshot_sequence: current_sequence,
+            };
+            set_v2::publish_set_v2_checkpoint(
+                set_v2::SetV2PublishInputs {
+                    corpus: &corpus,
+                    config: set_config,
+                    scratch_dir,
+                },
+                &sorted_events,
+                &checkpoint_dir,
+                &mut changed_paths,
+            )?
+        }
     };
 
     // The compatibility view exists only while the active generation is a
@@ -8077,7 +8199,11 @@ fn publish_forensic_checkpoint_inner(
     // generation's changed-path set carries a tombstone for it (plan 6.1.1).
     // Everything else the outgoing generation referenced stays retained by
     // previous.json for one more generation, per the rule above.
-    if !resets_generations {
+    if !resets_generations && mode != CheckpointMode::SetV2 {
+        // Spec 7.3/10: a publication into set-v2 is the documented full
+        // rewrite, and the outgoing generation stays selectable through
+        // previous.json until the next publication's structural retention
+        // reaps it -- the transition does not tombstone the old root.
         if let Some(previous) = &previous {
             if let (Some(previous_mode), Some(root_path)) = (&previous.mode, &previous.root_path) {
                 if *previous_mode != mode
@@ -9464,6 +9590,11 @@ fn write_current_pointer(
 ) -> Result<()> {
     let mut pointer = serde_json::json!({
         "schema_version": 1,
+        "format": if config.mode == CheckpointMode::SetV2 {
+            serde_json::Value::String("checkpoint-set-v2".to_string())
+        } else {
+            serde_json::Value::Null
+        },
         "generation_id": config.generation_id,
         "mode": config.mode.as_str(),
         "store_uuid": config.store_uuid,
@@ -9472,9 +9603,24 @@ fn write_current_pointer(
             "path": config.root_path,
             "sha256": config.root_hash
         },
-        "added_paths": config.added_paths,
-        "replaced_paths": config.replaced_paths,
-        "deleted_paths": config.deleted_paths,
+        "added_paths": if config.mode == CheckpointMode::SetV2 {
+            // Spec 7.1: a set-v2 pointer never carries the path arrays;
+            // retention is structural (spec 7.3) and the transition is
+            // derivable from previous.json and the two manifests.
+            serde_json::Value::Array(Vec::new())
+        } else {
+            serde_json::to_value(&config.added_paths)?
+        },
+        "replaced_paths": if config.mode == CheckpointMode::SetV2 {
+            serde_json::Value::Array(Vec::new())
+        } else {
+            serde_json::to_value(&config.replaced_paths)?
+        },
+        "deleted_paths": if config.mode == CheckpointMode::SetV2 {
+            serde_json::Value::Array(Vec::new())
+        } else {
+            serde_json::to_value(&config.deleted_paths)?
+        },
         "issue_count": config.issue_count,
         "event_count": config.event_count,
         "receipt_count": config.receipt_count,
@@ -9483,6 +9629,15 @@ fn write_current_pointer(
         "total_record_count": config.total_record_count,
         "created_at": format_rfc3339(SystemTime::now())
     });
+    {
+        // Legacy pointers carry no `format` key at all; only set-v2 does.
+        let object = pointer
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("checkpoint pointer is not an object"))?;
+        if object.get("format") == Some(&serde_json::Value::Null) {
+            object.remove("format");
+        }
+    }
     if let Some(reset) = &config.redaction_reset {
         let object = pointer
             .as_object_mut()
@@ -9642,6 +9797,21 @@ pub(crate) fn read_pointer_referenced_files(pointer_path: &Path) -> Result<HashS
             }
         }
 
+        // A set-v2 pointer carries no path arrays (spec 7.1): its retained
+        // set is structural, defined by the manifest it selects.
+        if pointer.get("mode").and_then(|v| v.as_str()) == Some("set-v2") {
+            if let Some(root) = pointer.get("active_root").and_then(|r| r.get("path")) {
+                if let Some(path_str) = root.as_str() {
+                    for file in set_v2::set_v2_structural_referenced_files(&pointer_path
+                        .parent()
+                        .unwrap_or_else(|| std::path::Path::new(".")), path_str)
+                    {
+                        files.insert(file);
+                    }
+                }
+            }
+        }
+
         Ok(files)
     } else {
         // If we can't parse the previous pointer, assume no previous files
@@ -9656,6 +9826,9 @@ pub(crate) fn read_pointer_referenced_files(pointer_path: &Path) -> Result<HashS
 /// checkpoint root (`current.json`, `previous.json`, `forensic.jsonl`) are
 /// managed by publication itself and are never tombstone-removable.
 fn is_generation_object_path(path: &str) -> bool {
+    if set_v2::is_set_v2_artifact_path(path) {
+        return true;
+    }
     (path.starts_with("objects/") || path.starts_with("manifests/"))
         && !path.contains("..")
         && !path.contains('\\')
@@ -9697,6 +9870,7 @@ fn enumerate_generation_objects(checkpoint_dir: &Path) -> Result<Vec<String>> {
             paths.push(format!("{}/{}", dir_name, name));
         }
     }
+    paths.extend(set_v2::enumerate_set_v2_artifacts(checkpoint_dir)?);
 
     Ok(paths)
 }
