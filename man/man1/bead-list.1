@@ -4,7 +4,7 @@
 .SH NAME
 bead list \- List issues
 .SH SYNOPSIS
-\fBbead list\fR [\fB\-\-json\fR] [\fB\-\-jsonl\fR] [\fB\-\-status\fR] [\fB\-\-assignee\fR] [\fB\-\-ready\fR] [\fB\-\-sort\fR] [\fB\-\-blocked\fR] [\fB\-\-comments\fR] [\fB\-\-limit\fR] [\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR]
+\fBbead list\fR [\fB\-\-json\fR] [\fB\-\-jsonl\fR] [\fB\-\-status\fR] [\fB\-\-assignee\fR] [\fB\-\-ready\fR] [\fB\-\-sort\fR] [\fB\-\-blocked\fR] [\fB\-\-comments\fR] [\fB\-\-fields\fR] [\fB\-\-notes\fR] [\fB\-\-limit\fR] [\fB\-\-all\fR] [\fB\-\-search\fR] [\fB\-\-count\fR] [\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] 
 .SH DESCRIPTION
 List issues with optional filtering and comment projection.
 .PP
@@ -22,6 +22,10 @@ EXAMPLES:
   bead list \-\-ready \-\-sort attempts \-\-limit 5      # Prefer fresh work within priority
   bead list \-\-blocked                               # Manually blocked open issues
   bead list \-\-comments unresolved \-\-json \-\-limit 20  # Issues with unresolved comments
+  bead list \-\-all \-\-search TEXT                    # Full\-text search (= \*(Aqbead search TEXT\*(Aq)
+  bead list \-\-ready \-\-count                        # How many issues are ready
+  bead ready                                        # Shortcut for \*(Aqbead list \-\-ready\*(Aq
+  bead search TEXT                                  # Shortcut for \*(Aqbead list \-\-all \-\-search TEXT\*(Aq
 .PP
 FILTERS:
   \-\-status VALUE    Filter by base status: open, in_progress, deferred, closed
@@ -31,11 +35,32 @@ FILTERS:
   \-\-sort attempts   Within each priority, show fewer consecutive failures first
   \-\-blocked         Show only manually blocked open issues
   \-\-limit N         Maximum results (0\-999999, default: 100)
+  \-\-all             Ignore \-\-limit and return every matching issue
+  \-\-search TEXT     Case\-insensitive match against title, description, notes
+  \-\-count           Print only the number of matching issues
 .PP
 COMMENT PROJECTION:
   \-\-comments none         Show only counts and resolution metadata (default)
   \-\-comments unresolved   Include bodies for unresolved comments only
   \-\-comments all          Include all comment bodies in canonical order
+.PP
+FIELD PROJECTION:
+  \-\-fields a,b,c          Emit only the named cli_issue document members (per
+                          record for list) in text, \-\-json, and \-\-jsonl
+                          output. Unknown names exit 2 naming the valid set;
+                          the set is published by the field guide:
+                            bead schema explain urn:bead\-rs:schema:issue:native\-v1
+                          Without \-\-fields every member is emitted.
+.PP
+NOTES PROJECTION:
+  Appended history belongs in comments (R010), not notes: JSON consumers
+  re\-read notes in full, so keep notes bounded context.
+  \-\-notes auto            Default. \-\-json/\-\-jsonl keep the full notes member
+                          (unchanged NEEDLE contract); text views print the
+                          last 2000 characters preceded by an omission line
+  \-\-notes none            Omit the notes member entirely
+  \-\-notes tail:N          Last N characters of notes
+  \-\-notes all             The full notes member
 .PP
 OUTPUT:
   Without \-\-json: human\-readable table format
@@ -44,6 +69,8 @@ OUTPUT:
   \-\-json and \-\-jsonl cannot be combined
   JSON output includes: id, title, priority, status, manual_blocked, effective_status,
   assignee, dependencies, created_at, updated_at, and labels based on comment projection.
+  \-\-count overrides every other output mode: plain text prints an integer,
+  \-\-json/\-\-jsonl print one object: {"count": N}.
 .SH OPTIONS
 .TP
 \fB\-\-json\fR
@@ -78,8 +105,23 @@ Show only manually blocked open issues
 \fB\-\-comments\fR \fI<COMMENTS>\fR [default: none]
 Comment projection: none, unresolved, or all (default: none)
 .TP
+\fB\-\-fields\fR \fI<FIELDS>\fR
+Comma\-separated projection of cli_issue document members (FIELD PROJECTION); without it every member is emitted
+.TP
+\fB\-\-notes\fR \fI<MODE>\fR [default: auto]
+Notes projection: auto, none, tail:N, or all (default: auto)
+.TP
 \fB\-\-limit\fR \fI<LIMIT>\fR [default: 100]
 Maximum number of issues to return (0\-999999)
+.TP
+\fB\-\-all\fR
+Ignore \-\-limit and return every matching issue
+.TP
+\fB\-\-search\fR \fI<TEXT>\fR
+Case\-insensitive text search across title, description, and notes
+.TP
+\fB\-\-count\fR
+Print only the number of matching issues (ignores \-\-limit/\-\-all)
 .TP
 \fB\-\-verbose\fR
 Show diagnostic information about filtering (SQL query, counts, exclusion reasons)

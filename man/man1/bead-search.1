@@ -1,0 +1,60 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead search" 1  "bead search " 
+.SH NAME
+bead search \- Search issues by text
+.SH SYNOPSIS
+\fBbead search\fR [\fB\-\-json\fR] [\fB\-\-jsonl\fR] [\fB\-\-status\fR] [\fB\-\-assignee\fR] [\fB\-\-ready\fR] [\fB\-\-blocked\fR] [\fB\-\-comments\fR] [\fB\-\-fields\fR] [\fB\-\-notes\fR] [\fB\-\-limit\fR] [\fB\-\-count\fR] [\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fITEXT\fR> 
+.SH DESCRIPTION
+Shortcut for `bead list \-\-all \-\-search TEXT`: case\-insensitive match
+against title, description, and notes, ignoring \-\-limit so every match is
+returned. Combines with \-\-status, \-\-assignee, and \-\-ready exactly as
+`list \-\-search` does.
+.PP
+EXAMPLES:
+  bead search "flaky test"                     # Same as: bead list \-\-all \-\-search \*(Aqflaky test\*(Aq
+  bead search outage \-\-status open \-\-json       # Narrow to open issues, JSON output
+  bead search outage \-\-ready                    # Only matches on the ready frontier
+.SH OPTIONS
+.TP
+\fB\-\-json\fR
+Output one JSON array
+.TP
+\fB\-\-jsonl\fR
+Output one JSON object per line (empty results write no bytes)
+.TP
+\fB\-\-status\fR \fI<STATUS>\fR
+Filter by status
+.TP
+\fB\-\-assignee\fR \fI<ASSIGNEE>\fR
+Filter by assignee
+.TP
+\fB\-\-ready\fR
+Narrow the search to the ready frontier
+.TP
+\fB\-\-blocked\fR
+Show only manually blocked open issues
+.TP
+\fB\-\-comments\fR \fI<COMMENTS>\fR [default: none]
+Comment projection: none, unresolved, or all (default: none)
+.TP
+\fB\-\-fields\fR \fI<FIELDS>\fR
+Comma\-separated projection of cli_issue document members (FIELD PROJECTION); without it every member is emitted
+.TP
+\fB\-\-notes\fR \fI<MODE>\fR [default: auto]
+Notes projection: auto, none, tail:N, or all (default: auto)
+.TP
+\fB\-\-limit\fR \fI<LIMIT>\fR [default: 100]
+Maximum number of issues to return (0\-999999)
+.TP
+\fB\-\-count\fR
+Print only the number of matching issues (ignores \-\-limit)
+.TP
+\fB\-\-verbose\fR
+Show diagnostic information about filtering (SQL query, counts, exclusion reasons)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fITEXT\fR>
+Text to match case\-insensitively against title, description, and notes

@@ -707,6 +707,24 @@ COMMENT PROJECTION:
   --comments unresolved   Include bodies for unresolved comments only
   --comments all          Include all comment bodies in canonical order
 
+FIELD PROJECTION:
+  --fields a,b,c          Emit only the named cli_issue document members (per
+                          record for list) in text, --json, and --jsonl
+                          output. Unknown names exit 2 naming the valid set;
+                          the set is published by the field guide:
+                            bead schema explain urn:bead-rs:schema:issue:native-v1
+                          Without --fields every member is emitted.
+
+NOTES PROJECTION:
+  Appended history belongs in comments (R010), not notes: JSON consumers
+  re-read notes in full, so keep notes bounded context.
+  --notes auto            Default. --json/--jsonl keep the full notes member
+                          (unchanged NEEDLE contract); text views print the
+                          last 2000 characters preceded by an omission line
+  --notes none            Omit the notes member entirely
+  --notes tail:N          Last N characters of notes
+  --notes all             The full notes member
+
 OUTPUT:
   Without --json: human-readable table format
   With --json: one compact JSON array, including when empty
@@ -756,6 +774,15 @@ pub struct ListOptions {
     #[arg(long, default_value = "none")]
     pub comments: String,
 
+    /// Comma-separated projection of cli_issue document members
+    /// (FIELD PROJECTION); without it every member is emitted
+    #[arg(long, value_name = "FIELDS")]
+    pub fields: Option<String>,
+
+    /// Notes projection: auto, none, tail:N, or all (default: auto)
+    #[arg(long, value_name = "MODE", default_value = "auto")]
+    pub notes: String,
+
     /// Maximum number of issues to return (0-999999)
     #[arg(long, default_value = "100")]
     pub limit: i64,
@@ -801,6 +828,24 @@ COMMENT PROJECTION:
   --comments unresolved   Include bodies for unresolved comments only
   --comments all          Include all comment bodies in canonical order
 
+FIELD PROJECTION:
+  --fields a,b,c          Emit only the named cli_issue document members (per
+                          record for list) in text, --json, and --jsonl
+                          output. Unknown names exit 2 naming the valid set;
+                          the set is published by the field guide:
+                            bead schema explain urn:bead-rs:schema:issue:native-v1
+                          Without --fields every member is emitted.
+
+NOTES PROJECTION:
+  Appended history belongs in comments (R010), not notes: JSON consumers
+  re-read notes in full, so keep notes bounded context.
+  --notes auto            Default. --json/--jsonl keep the full notes member
+                          (unchanged NEEDLE contract); text views print the
+                          last 2000 characters preceded by an omission line
+  --notes none            Omit the notes member entirely
+  --notes tail:N          Last N characters of notes
+  --notes all             The full notes member
+
 ISSUE DETAILS INCLUDE:
   - Basic fields: id, title, description, priority, status
   - Assignment: assignee (if any)
@@ -823,6 +868,15 @@ pub struct ShowOptions {
     /// Comment projection: none, unresolved, or all (default: none)
     #[arg(long, default_value = "none")]
     pub comments: String,
+
+    /// Comma-separated projection of cli_issue document members
+    /// (FIELD PROJECTION); without it every member is emitted
+    #[arg(long, value_name = "FIELDS")]
+    pub fields: Option<String>,
+
+    /// Notes projection: auto, none, tail:N, or all (default: auto)
+    #[arg(long, value_name = "MODE", default_value = "auto")]
+    pub notes: String,
 }
 
 /// Options for `bead ready` (shortcut for `bead list --ready`)
@@ -848,6 +902,15 @@ pub struct ReadyOptions {
     /// Comment projection: none, unresolved, or all (default: none)
     #[arg(long, default_value = "none")]
     pub comments: String,
+
+    /// Comma-separated projection of cli_issue document members
+    /// (FIELD PROJECTION); without it every member is emitted
+    #[arg(long, value_name = "FIELDS")]
+    pub fields: Option<String>,
+
+    /// Notes projection: auto, none, tail:N, or all (default: auto)
+    #[arg(long, value_name = "MODE", default_value = "auto")]
+    pub notes: String,
 
     /// Maximum number of issues to return (0-999999)
     #[arg(long, default_value = "100")]
@@ -899,6 +962,15 @@ pub struct SearchOptions {
     /// Comment projection: none, unresolved, or all (default: none)
     #[arg(long, default_value = "none")]
     pub comments: String,
+
+    /// Comma-separated projection of cli_issue document members
+    /// (FIELD PROJECTION); without it every member is emitted
+    #[arg(long, value_name = "FIELDS")]
+    pub fields: Option<String>,
+
+    /// Notes projection: auto, none, tail:N, or all (default: auto)
+    #[arg(long, value_name = "MODE", default_value = "auto")]
+    pub notes: String,
 
     /// Maximum number of issues to return (0-999999)
     #[arg(long, default_value = "100")]

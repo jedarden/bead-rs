@@ -159,3 +159,4 @@ pub use why::{explain_why, WhyExplanation};
 pub mod policy;
 #[allow(unused_imports)]
 pub use policy::{FindingCategory, FindingSeverity, PolicyDiagnosticStatus, PolicyDiagnostics};
+pub mod projection;

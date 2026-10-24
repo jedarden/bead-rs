@@ -4,7 +4,7 @@
 .SH NAME
 bead show \- Show a single issue
 .SH SYNOPSIS
-\fBbead show\fR [\fB\-\-json\fR] [\fB\-\-comments\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIID\fR> 
+\fBbead show\fR [\fB\-\-json\fR] [\fB\-\-comments\fR] [\fB\-\-fields\fR] [\fB\-\-notes\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIID\fR> 
 .SH DESCRIPTION
 Display detailed information about a single issue.
 .PP
@@ -26,6 +26,24 @@ COMMENT PROJECTION:
   \-\-comments unresolved   Include bodies for unresolved comments only
   \-\-comments all          Include all comment bodies in canonical order
 .PP
+FIELD PROJECTION:
+  \-\-fields a,b,c          Emit only the named cli_issue document members (per
+                          record for list) in text, \-\-json, and \-\-jsonl
+                          output. Unknown names exit 2 naming the valid set;
+                          the set is published by the field guide:
+                            bead schema explain urn:bead\-rs:schema:issue:native\-v1
+                          Without \-\-fields every member is emitted.
+.PP
+NOTES PROJECTION:
+  Appended history belongs in comments (R010), not notes: JSON consumers
+  re\-read notes in full, so keep notes bounded context.
+  \-\-notes auto            Default. \-\-json/\-\-jsonl keep the full notes member
+                          (unchanged NEEDLE contract); text views print the
+                          last 2000 characters preceded by an omission line
+  \-\-notes none            Omit the notes member entirely
+  \-\-notes tail:N          Last N characters of notes
+  \-\-notes all             The full notes member
+.PP
 ISSUE DETAILS INCLUDE:
   \- Basic fields: id, title, description, priority, status
   \- Assignment: assignee (if any)
@@ -43,6 +61,12 @@ Output in JSON format
 .TP
 \fB\-\-comments\fR \fI<COMMENTS>\fR [default: none]
 Comment projection: none, unresolved, or all (default: none)
+.TP
+\fB\-\-fields\fR \fI<FIELDS>\fR
+Comma\-separated projection of cli_issue document members (FIELD PROJECTION); without it every member is emitted
+.TP
+\fB\-\-notes\fR \fI<MODE>\fR [default: auto]
+Notes projection: auto, none, tail:N, or all (default: auto)
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

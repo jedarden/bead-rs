@@ -1,0 +1,61 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH "bead ready" 1  "bead ready " 
+.SH NAME
+bead ready \- Show only ready frontier issues
+.SH SYNOPSIS
+\fBbead ready\fR [\fB\-\-json\fR] [\fB\-\-jsonl\fR] [\fB\-\-assignee\fR] [\fB\-\-sort\fR] [\fB\-\-comments\fR] [\fB\-\-fields\fR] [\fB\-\-notes\fR] [\fB\-\-limit\fR] [\fB\-\-all\fR] [\fB\-\-count\fR] [\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Shortcut for `bead list \-\-ready`: every flag behaves exactly as it
+does on `list`, with \-\-ready forced on.
+.PP
+EXAMPLES:
+  bead ready                        # Same as: bead list \-\-ready
+  bead ready \-\-json                 # Same as: bead list \-\-ready \-\-json
+  bead ready \-\-sort attempts \-\-json # Same as: bead list \-\-ready \-\-sort attempts \-\-json
+  bead ready \-\-count                # How many issues are ready right now
+.SH OPTIONS
+.TP
+\fB\-\-json\fR
+Output one JSON array
+.TP
+\fB\-\-jsonl\fR
+Output one JSON object per line (empty results write no bytes)
+.TP
+\fB\-\-assignee\fR \fI<ASSIGNEE>\fR
+Filter by assignee
+.TP
+\fB\-\-sort\fR \fI<ORDER>\fR
+Ready\-frontier ordering: attempts prefers fewer consecutive failures within each priority tier, then retains the FIFO tie\-breakers
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+attempts
+.RE
+.TP
+\fB\-\-comments\fR \fI<COMMENTS>\fR [default: none]
+Comment projection: none, unresolved, or all (default: none)
+.TP
+\fB\-\-fields\fR \fI<FIELDS>\fR
+Comma\-separated projection of cli_issue document members (FIELD PROJECTION); without it every member is emitted
+.TP
+\fB\-\-notes\fR \fI<MODE>\fR [default: auto]
+Notes projection: auto, none, tail:N, or all (default: auto)
+.TP
+\fB\-\-limit\fR \fI<LIMIT>\fR [default: 100]
+Maximum number of issues to return (0\-999999)
+.TP
+\fB\-\-all\fR
+Ignore \-\-limit and return every ready issue
+.TP
+\fB\-\-count\fR
+Print only the number of ready issues (ignores \-\-limit/\-\-all)
+.TP
+\fB\-\-verbose\fR
+Show diagnostic information about filtering (SQL query, counts, exclusion reasons)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

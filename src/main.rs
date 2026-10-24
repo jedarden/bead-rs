@@ -1726,6 +1726,8 @@ fn ready_options_to_list_options(opts: cli::ReadyOptions) -> cli::ListOptions {
         sort: opts.sort,
         blocked: false,
         comments: opts.comments,
+        fields: opts.fields,
+        notes: opts.notes,
         limit: opts.limit,
         all: opts.all,
         search: None,
@@ -1745,6 +1747,8 @@ fn search_options_to_list_options(opts: cli::SearchOptions) -> cli::ListOptions 
         sort: None,
         blocked: opts.blocked,
         comments: opts.comments,
+        fields: opts.fields,
+        notes: opts.notes,
         limit: opts.limit,
         all: true,
         search: Some(opts.text),
@@ -1778,6 +1782,14 @@ fn cmd_list(opts: cli::ListOptions) -> Result<()> {
             "Comments must be one of: none, unresolved, all",
         ));
     }
+
+    // Validate the output projections before touching the store so a typo
+    // fails the same way regardless of other flags
+    let field_selection = match opts.fields.as_deref() {
+        Some(spec) => Some(service::schema::parse_field_selection(spec)?),
+        None => None,
+    };
+    let notes_mode = service::projection::parse_notes_mode(&opts.notes)?;
 
     // Handle --status blocked as an alias for --blocked
     let blocked_only = opts.blocked || opts.status.as_deref() == Some("blocked");
@@ -1827,10 +1839,20 @@ fn cmd_list(opts: cli::ListOptions) -> Result<()> {
     if opts.json || opts.jsonl {
         // Build every issue projection before writing machine-readable output
         // so a failed lookup or serialization cannot leave a partial document.
-        let documents = issues
+        let mut documents = issues
             .iter()
             .map(|issue| issue_json_document(&conn, issue, &opts.comments))
             .collect::<Result<Vec<_>>>()?;
+        for document in &mut documents {
+            service::projection::apply_notes_mode_to_document(document, &notes_mode);
+        }
+        let documents = match &field_selection {
+            Some(fields) => documents
+                .iter()
+                .map(|document| service::projection::project_document(document, fields))
+                .collect::<Vec<_>>(),
+            None => documents,
+        };
 
         if opts.json {
             println!("{}", serde_json::to_string(&documents)?);
@@ -1843,6 +1865,22 @@ fn cmd_list(opts: cli::ListOptions) -> Result<()> {
         // Human-readable output
         if issues.is_empty() {
             println!("No issues found.");
+        } else if let Some(fields) = &field_selection {
+            for issue in &issues {
+                let document = issue_json_document(&conn, issue, &opts.comments)?;
+                for field in fields {
+                    if let Some(line) = render_document_field_text(field, &document, &notes_mode) {
+                        if **field == *"id" {
+                            println!("{line}");
+                        } else {
+                            for rendered_line in line.lines() {
+                                println!("  {rendered_line}");
+                            }
+                        }
+                    }
+                }
+                println!();
+            }
         } else {
             for issue in issues {
                 println!("ID: {}", issue.id);
@@ -1878,14 +1916,35 @@ fn cmd_show(opts: cli::ShowOptions) -> Result<()> {
         ));
     }
 
+    // Validate the output projections before touching the store so a typo
+    // fails the same way regardless of other flags
+    let field_selection = match opts.fields.as_deref() {
+        Some(spec) => Some(service::schema::parse_field_selection(spec)?),
+        None => None,
+    };
+    let notes_mode = service::projection::parse_notes_mode(&opts.notes)?;
+
     // Get the issue
     let issue = service::get_issue_by_id(&conn, &opts.id)?
         .ok_or_else(|| Error::not_found(format!("Issue not found: {}", opts.id)))?;
 
     // Output results
     if opts.json {
-        let document = issue_json_document(&conn, &issue, &opts.comments)?;
+        let mut document = issue_json_document(&conn, &issue, &opts.comments)?;
+        service::projection::apply_notes_mode_to_document(&mut document, &notes_mode);
+        if let Some(fields) = &field_selection {
+            document = service::projection::project_document(&document, fields);
+        }
         println!("{}", serde_json::to_string(&document)?);
+    } else if let Some(fields) = &field_selection {
+        // Projected human-readable view: only the requested members, rendered
+        // from the same document JSON the --json path emits
+        let document = issue_json_document(&conn, &issue, &opts.comments)?;
+        for field in fields {
+            if let Some(line) = render_document_field_text(field, &document, &notes_mode) {
+                println!("{line}");
+            }
+        }
     } else {
         // Human-readable output
         println!("ID: {}", issue.id);
@@ -1901,7 +1960,9 @@ fn cmd_show(opts: cli::ShowOptions) -> Result<()> {
         }
 
         if let Some(notes) = &issue.notes {
-            println!("Notes: {}", notes);
+            if let Some(section) = service::projection::notes_text_section(notes, &notes_mode) {
+                println!("{section}");
+            }
         }
 
         if let Some(assignee) = &issue.assignee {
@@ -1934,6 +1995,59 @@ fn issue_json_document(
         &comments,
         &attempts,
     ))
+}
+
+/// Text-view headers for the cli_issue members, matching the long-standing
+/// show labels.
+fn cli_issue_field_header(field: &str) -> &'static str {
+    match field {
+        "id" => "ID",
+        "title" => "Title",
+        "description" => "Description",
+        "notes" => "Notes",
+        "priority" => "Priority",
+        "status" => "Status",
+        "manual_blocked" => "Manual blocked",
+        "effective_status" => "Effective status",
+        "assignee" => "Assignee",
+        "dependencies" => "Dependencies",
+        "created_at" => "Created",
+        "updated_at" => "Updated",
+        "labels" => "Labels",
+        "attempts" => "Attempts",
+        "revision" => "Revision",
+        "comments" => "Comments",
+        "claim_epoch" => "Claim epoch",
+        _ => "Field",
+    }
+}
+
+/// Render one projected field of an emitted document as a text line, or None
+/// when the member is absent (conditional members) or null. Notes render
+/// through the bounded text section; composite members render as compact JSON
+/// so a projected text view stays machine-greppable.
+fn render_document_field_text(
+    field: &str,
+    document: &serde_json::Value,
+    notes_mode: &service::projection::NotesMode,
+) -> Option<String> {
+    let value = document.get(field)?;
+    if field == "notes" {
+        let notes = value.as_str()?;
+        return service::projection::notes_text_section(notes, notes_mode);
+    }
+    if value.is_null() {
+        return None;
+    }
+    let rendered = match value {
+        serde_json::Value::String(text) => text.clone(),
+        // Match the long-standing `P0`..`P4` text spelling
+        serde_json::Value::Number(number) if field == "priority" => format!("P{number}"),
+        serde_json::Value::Number(number) => number.to_string(),
+        serde_json::Value::Bool(flag) => flag.to_string(),
+        composite => serde_json::to_string(composite).ok()?,
+    };
+    Some(format!("{}: {}", cli_issue_field_header(field), rendered))
 }
 
 fn cmd_update(opts: cli::UpdateOptions) -> Result<()> {

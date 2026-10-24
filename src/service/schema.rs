@@ -49,7 +49,12 @@ use std::collections::HashSet;
 ///
 /// v12: the R041 agent ergonomics capability advertises the JSON selectors,
 /// claim credential environment, text sources, and supported shortcuts.
-pub const FIELD_GUIDE_VERSION: i64 = 12;
+///
+/// v13: the guide's `cli_issue` member list becomes the single source for
+/// `show`/`list --fields` validation (`CLI_ISSUE_FIELDS`), and the
+/// notes/comments entries record that appended history belongs in comments
+/// (R010), not in notes (beadrs-0f854018).
+pub const FIELD_GUIDE_VERSION: i64 = 13;
 
 /// Artifact identity carried by every `bead schema explain` response, per the
 /// accepted field-guide contract (`research/specs/native-field-guide-v1.md`).
@@ -917,31 +922,67 @@ pub fn schema_document(schema_ref: &str) -> Result<Value> {
     }))
 }
 
+/// The `cli_issue` projection members, in the sorted order the guide
+/// publishes them. Single source for both the `cli_issue` document members in
+/// `guide_documents` and `show`/`list --fields` validation, so the CLI cannot
+/// accept a name the field guide does not publish (beadrs-0f854018).
+pub const CLI_ISSUE_FIELDS: [&str; 17] = [
+    "assignee",
+    "attempts",
+    "claim_epoch",
+    "comments",
+    "created_at",
+    "dependencies",
+    "description",
+    "effective_status",
+    "id",
+    "labels",
+    "manual_blocked",
+    "notes",
+    "priority",
+    "revision",
+    "status",
+    "title",
+    "updated_at",
+];
+
+/// Parse a `--fields` specification into validated `cli_issue` member names.
+/// Unknown names are a CLI usage error (exit 2) whose message lists the valid
+/// fields exactly as the field guide publishes them.
+pub fn parse_field_selection(spec: &str) -> Result<Vec<&'static str>> {
+    let mut selected: Vec<&'static str> = Vec::new();
+    for token in spec.split(',') {
+        let name = token.trim();
+        if name.is_empty() {
+            return Err(Error::cli_usage(
+                "--fields requires a comma-separated list of field names with no empty entries",
+            ));
+        }
+        let field = CLI_ISSUE_FIELDS
+            .iter()
+            .copied()
+            .find(|candidate| *candidate == name)
+            .ok_or_else(|| {
+                Error::cli_usage(format!(
+                    "Unknown field '{}' in --fields. Valid fields are: {} (published by the field guide: `bead schema explain {FIELD_GUIDE_SCHEMA_REF}`)",
+                    name,
+                    CLI_ISSUE_FIELDS.join(", ")
+                ))
+            })?;
+        if !selected.contains(&field) {
+            selected.push(field);
+        }
+    }
+    Ok(selected)
+}
+
 fn guide_documents() -> Vec<Value> {
     let docs: &[(&str, &str, &str, &[&str])] = &[
         (
             "cli_issue",
             "urn:bead-rs:schema:issue:native-v1",
             "issue",
-            &[
-                "assignee",
-                "attempts",
-                "claim_epoch",
-                "comments",
-                "created_at",
-                "dependencies",
-                "description",
-                "effective_status",
-                "id",
-                "labels",
-                "manual_blocked",
-                "notes",
-                "priority",
-                "revision",
-                "status",
-                "title",
-                "updated_at",
-            ],
+            &CLI_ISSUE_FIELDS,
         ),
         (
             "checkpoint_issue",
@@ -1103,8 +1144,9 @@ fn field_semantics(document: &str, name: &str) -> FieldSemantics {
                 "checkpoint content, not a secret store",
                 "absent checkpoint notes materialize as the empty string in this projection",
                 "written only through update --notes, which replaces the whole field",
+                "appended history belongs in comments (R010), not here: notes are re-read in full by JSON consumers, so show text caps them by default",
             ],
-            common_mistake: "Expecting create --notes or assuming notes are private.",
+            common_mistake: "Expecting create --notes, assuming notes are private, or growing notes as an append log instead of using comments (R010).",
         },
         ("cli_issue", "priority") => FieldSemantics {
             ownership: "caller",
@@ -1254,6 +1296,7 @@ fn field_semantics(document: &str, name: &str) -> FieldSemantics {
                 "comment bodies appear only when --comments is unresolved or all",
                 "comment commands create and resolve durable comments; this projection remains read-only",
                 "interactive reads expose only the projection selected by --comments",
+                "the recommended (R010) home for appended history such as re-verification write-ups; growing notes instead bloats every read",
             ],
             common_mistake:
                 "Treating comments as unknown extensions or assuming an interactive omission means no durable comments exist.",
