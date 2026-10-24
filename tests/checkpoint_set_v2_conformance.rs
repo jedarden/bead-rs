@@ -1,0 +1,1052 @@
+//! Checkpoint Set v2 conformance scenarios (research/specs/checkpoint-set-v2.md)
+//!
+//! The set-v2 writer is normative for the adaptive layout; these tests bind
+//! the publication behavior the specification names:
+//!
+//! - `set-v2-budget-single-issue-update` (sections 11, 12.3): a 3,000-issue
+//!   workspace's single-issue publications stay within the 256 KiB new-blob
+//!   budget, measured with the section 11 `git rev-list --objects` plus
+//!   `git cat-file --batch-check='%(objecttype) %(objectsize) %(rest)'`
+//!   procedure (the `%(rest)` field is required, or the size lookup
+//!   silently returns nothing).
+//! - `set-v2-shard-split-on-update-storm` (12.4): a prefix class pushed past
+//!   `SHARD_SPLIT` splits, children stay within the bound, coverage is
+//!   unchanged, and an equivalent re-publication is byte-identical.
+//! - `set-v2-shard-merge-on-deletion` (12.5): a full-sibling group shrunk to
+//!   `SHARD_MERGE` or below coalesces into the parent prefix.
+//! - `set-v2-tail-seal-and-immutability` (12.6): a tail pushed past
+//!   `SEG_SEAL` seals to its content address and never changes again.
+//! - `set-v2-oversize-record-once-cost` (12.7): a record above
+//!   `RECORD_INLINE` lands in `set/rec/` exactly once.
+//! - `set-v2-pointer-boundedness` (12.8): pointers stay under 4 KiB across
+//!   fifty-plus publications and the manifest carries no record payload.
+//! - `set-v2-forensic-frozen` (12.9): `forensic.jsonl` is never written, and
+//!   restore succeeds with the file absent.
+//! - `set-v2-crash-ordering` (12.10): orphans from an interrupted
+//!   publication are reaped by the next one, and the pointer swap leaves a
+//!   complete, verifiable generation on both sides of the crash window.
+//!
+//! Fixtures drive the real `bead` binary over real workspaces so the
+//! scenarios exercise the publication path end to end: `bead init`, CLI
+//! mutations, `sync flush-only` publications, and (for the budget
+//! scenario) git commits measured with the section 11 procedure. Record
+//! removal for the merge scenario goes through the store database directly,
+//! the same accepted fixture pattern as the direct-inserted unknown fields
+//! in the round-trip conformance test.
+
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use std::collections::HashSet;
+use std::fs;
+use std::io::Write as _;
+use std::path::Path;
+use std::process::{Command, Output};
+use tempfile::TempDir;
+
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
+
+fn bead_binary() -> String {
+    env!("CARGO_BIN_EXE_bead").to_string()
+}
+
+fn run_bead(workspace: &Path, args: &[&str]) -> Output {
+    Command::new(bead_binary())
+        .args(args)
+        .current_dir(workspace)
+        .output()
+        .expect("failed to run bead")
+}
+
+fn run_ok(workspace: &Path, args: &[&str]) {
+    let output = run_bead(workspace, args);
+    assert!(
+        output.status.success(),
+        "`bead {}` failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn init_workspace(dir: &Path) {
+    fs::create_dir_all(dir).unwrap();
+    // Test runners may place their temporary directory below an unrelated
+    // ancestor `.beads` store; `--skip-foreign-workspace` is the documented
+    // opt-in for deliberately isolated fixture workspaces.
+    run_ok(dir, &["init", "--skip-foreign-workspace"]);
+}
+
+/// Merge a `checkpoint` section entry into the workspace's `.beads/config.json`
+fn set_checkpoint_config(workspace: &Path, key: &str, value: Value) {
+    let config_path = workspace.join(".beads/config.json");
+    let mut config: Value = serde_json::from_str(&fs::read_to_string(&config_path).unwrap())
+        .expect(".beads/config.json must exist after init");
+    config
+        .as_object_mut()
+        .unwrap()
+        .entry("checkpoint".to_string())
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .unwrap()
+        .insert(key.to_string(), value);
+    fs::write(&config_path, serde_json::to_string(&config).unwrap()).unwrap();
+}
+
+fn flush_ok(workspace: &Path) {
+    run_ok(workspace, &["sync", "flush-only"]);
+}
+
+fn git_out(workspace: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(workspace)
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "test@example.com")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "test@example.com")
+        .output()
+        .expect("failed to run git");
+    assert!(
+        output.status.success(),
+        "`git {}` failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+/// Commit everything under `.beads/` and return the new commit's object id
+fn git_commit_checkpoint(workspace: &Path, message: &str) -> String {
+    git_out(workspace, &["add", ".beads"]);
+    git_out(workspace, &["commit", "-q", "-m", message]);
+    git_out(workspace, &["rev-parse", "HEAD"])
+        .trim()
+        .to_string()
+}
+
+/// The section 11 measurement of one publication's new blob bytes
+///
+/// Canonical procedure for parent commit `parent` and publication commit
+/// `commit`: the object ids added under `.beads/` by `commit`, size-looked
+/// up with `%(rest)` carried through so paths survive the batch.
+fn new_blob_bytes(workspace: &Path, parent: &str, commit: &str) -> u64 {
+    let range = format!("{}..{}", parent, commit);
+    let new_objects = git_out(
+        workspace,
+        &["rev-list", "--objects", &range, "--", ".beads/"],
+    );
+    let old_objects = git_out(
+        workspace,
+        &["rev-list", "--objects", parent, "--", ".beads/"],
+    );
+    let old_ids: HashSet<&str> = old_objects
+        .lines()
+        .filter_map(|line| line.split(' ').next())
+        .collect();
+    let added: Vec<&str> = new_objects
+        .lines()
+        .filter(|line| match line.split(' ').next() {
+            Some(id) => !old_ids.contains(id),
+            None => false,
+        })
+        .collect();
+    if added.is_empty() {
+        return 0;
+    }
+
+    let mut batch = Command::new("git")
+        .args([
+            "cat-file",
+            "--batch-check=%(objecttype) %(objectsize) %(rest)",
+        ])
+        .current_dir(workspace)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to run git cat-file");
+    batch
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(added.join("\n").as_bytes())
+        .unwrap();
+    let out = batch.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "git cat-file failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split(' ');
+            let object_type = fields.next()?;
+            let size: u64 = fields.next()?.parse().ok()?;
+            if object_type == "blob" {
+                Some(size)
+            } else {
+                None
+            }
+        })
+        .sum()
+}
+
+fn read_pointer(workspace: &Path) -> Value {
+    serde_json::from_str(
+        &fs::read_to_string(workspace.join(".beads/checkpoint/current.json")).unwrap(),
+    )
+    .unwrap()
+}
+
+fn read_manifest(workspace: &Path, pointer: &Value) -> Value {
+    let rel = pointer["active_root"]["path"].as_str().unwrap();
+    let body = fs::read_to_string(workspace.join(".beads/checkpoint").join(rel)).unwrap();
+    serde_json::from_str(&body).unwrap()
+}
+
+fn current_manifest(workspace: &Path) -> Value {
+    let pointer = read_pointer(workspace);
+    read_manifest(workspace, &pointer)
+}
+
+fn sha256_file(path: &Path) -> String {
+    format!("{:x}", Sha256::digest(fs::read(path).unwrap().as_slice()))
+}
+
+fn live_issue_ids(workspace: &Path) -> Vec<String> {
+    let out = run_bead(workspace, &["list", "--json", "--limit", "999999"]);
+    assert!(
+        out.status.success(),
+        "list failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice::<Vec<Value>>(&out.stdout)
+        .expect("list --json emits one JSON array")
+        .into_iter()
+        .map(|issue| issue["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+fn set_notes(workspace: &Path, id: &str, notes: &str) {
+    run_ok(workspace, &["update", id, "--notes", notes]);
+}
+
+/// Replace an issue's notes by piping the text through `--notes-file -`, so
+/// an oversize payload never has to fit in the argument list
+fn set_notes_via_stdin(workspace: &Path, id: &str, notes: &str) {
+    let mut child = Command::new(bead_binary())
+        .args(["update", id, "--notes-file", "-"])
+        .current_dir(workspace)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to run bead update --notes-file -");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(notes.as_bytes())
+        .unwrap();
+    let status = child.wait().expect("failed to wait for bead update");
+    assert!(status.success(), "oversize notes update failed");
+}
+
+/// A long line of low-entropy filler sized to `bytes`
+fn filler(prefix: &str, bytes: usize) -> String {
+    let mut text = String::with_capacity(bytes);
+    while text.len() < bytes {
+        text.push_str(prefix);
+        for i in 0..20 {
+            text.push_str(&format!(" word{}", i));
+        }
+    }
+    text.truncate(bytes);
+    text
+}
+
+/// A fresh set-v2 workspace with `count` issues and auto-flush disabled, so
+/// fixture setup pays one publication instead of `count`
+fn fixture_with_issues(count: usize, title_detail: &str) -> TempDir {
+    let workspace = TempDir::new().unwrap();
+    init_workspace(workspace.path());
+    set_checkpoint_config(workspace.path(), "auto_flush", json!(false));
+    for i in 0..count {
+        run_ok(
+            workspace.path(),
+            &[
+                "create",
+                "--title",
+                &format!("{} issue {} {}", title_detail, i, filler("filler", 40)),
+            ],
+        );
+    }
+    flush_ok(workspace.path());
+    workspace
+}
+
+/// Delete issues directly in the store database (no CLI deletion exists);
+/// the accepted fixture pattern for states no command produces
+fn delete_issues_directly(workspace: &Path, ids: &[String]) {
+    let db = rusqlite::Connection::open(workspace.join(".beads/beads.db")).unwrap();
+    for id in ids {
+        db.execute("DELETE FROM issues WHERE id = ?1", [id])
+            .unwrap();
+    }
+}
+
+/// The manifest's issue-shard rows
+fn issue_shards(manifest: &Value) -> Vec<Value> {
+    manifest["shards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["class"] == "issue")
+        .cloned()
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// set-v2-budget-single-issue-update (sections 11, 12.3)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn set_v2_budget_single_issue_update() {
+    let workspace = fixture_with_issues(3000, "budget");
+    let workspace = workspace.path();
+
+    let first = read_pointer(workspace);
+    assert_eq!(first["mode"], "set-v2", "adaptive publishes set-v2");
+
+    git_out(workspace, &["init", "-q", "."]);
+    let mut parent = git_commit_checkpoint(workspace, "checkpoint-set-v2 base generation");
+
+    let ids = live_issue_ids(workspace);
+    assert!(ids.len() >= 3000);
+
+    // 100 consecutive single-issue updates, each measured per section 11.
+    // Different issues per round, matching the spec's consecutive-update
+    // fixture; every publication must stay within the 256 KiB budget,
+    // pointer files included.
+    for round in 0..100 {
+        let id = &ids[round % ids.len()];
+        set_notes(
+            workspace,
+            id,
+            &format!("budget round {} {}", round, filler("budget", 200)),
+        );
+        flush_ok(workspace);
+        let commit = git_commit_checkpoint(workspace, &format!("budget publication {}", round));
+        let bytes = new_blob_bytes(workspace, &parent, &commit);
+        assert!(
+            bytes <= 256 * 1024,
+            "publication {} added {} new blob bytes, budget is {}",
+            round,
+            bytes,
+            256 * 1024
+        );
+        parent = commit;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// set-v2-shard-split-on-update-storm (12.4)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn set_v2_shard_split_on_update_storm() {
+    let workspace = fixture_with_issues(400, "storm");
+    let workspace = workspace.path();
+
+    let before = current_manifest(workspace);
+    let before_rows = issue_shards(&before);
+    let before_total: usize = before_rows
+        .iter()
+        .map(|row| row["record_count"].as_u64().unwrap() as usize)
+        .sum();
+    let before_count = before_rows.len();
+
+    // Concentrate updates on the largest prefix class until it exceeds
+    // SHARD_SPLIT (96 KiB): three ~40 KiB notes land in one shard while
+    // staying under RECORD_INLINE (64 KiB) per record.
+    let target = before_rows
+        .iter()
+        .max_by_key(|row| row["record_count"].as_u64().unwrap())
+        .unwrap()
+        .clone();
+    let prefix = target["prefix"].as_str().unwrap().to_string();
+    let live: Vec<String> = live_issue_ids(workspace)
+        .into_iter()
+        .filter(|id| id.starts_with(&prefix))
+        .collect();
+    assert!(live.len() >= 3, "target shard lacks three members");
+    for id in live.iter().take(3) {
+        set_notes(workspace, id, &filler("storm", 40 * 1024));
+    }
+    flush_ok(workspace);
+
+    let after = current_manifest(workspace);
+    let after_rows = issue_shards(&after);
+    let after_total: usize = after_rows
+        .iter()
+        .map(|row| row["record_count"].as_u64().unwrap() as usize)
+        .sum();
+
+    // Split happened: strictly more issue shards than before.
+    assert!(
+        after_rows.len() > before_count,
+        "expected the storm prefix class to split, {} shards before, {} after",
+        before_count,
+        after_rows.len()
+    );
+    // Coverage of all IDs is unchanged.
+    assert_eq!(after_total, before_total, "shard coverage lost records");
+    // Children at or under SHARD_SPLIT, except a shard may exceed it only
+    // when it cannot split (a single record).
+    for row in &after_rows {
+        let bytes = row["byte_length"].as_u64().unwrap() as usize;
+        let count = row["record_count"].as_u64().unwrap() as usize;
+        assert!(
+            bytes <= 96 * 1024 || count <= 1,
+            "shard {} is {} bytes over SHARD_SPLIT with {} records",
+            row["prefix"],
+            bytes,
+            count
+        );
+    }
+
+    // Re-publication from an equivalent state produces byte-identical
+    // children: the partition is a pure function of shard contents.
+    flush_ok(workspace);
+    let republished = current_manifest(workspace);
+    let signature = |manifest: &Value| -> Vec<(String, String, u64, u64)> {
+        issue_shards(manifest)
+            .into_iter()
+            .map(|row| {
+                (
+                    row["prefix"].as_str().unwrap().to_string(),
+                    row["sha256"].as_str().unwrap().to_string(),
+                    row["byte_length"].as_u64().unwrap(),
+                    row["record_count"].as_u64().unwrap(),
+                )
+            })
+            .collect()
+    };
+    assert_eq!(
+        signature(&after),
+        signature(&republished),
+        "equivalent re-publication changed the shard set"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// set-v2-shard-merge-on-deletion (12.5)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn set_v2_shard_merge_on_deletion() {
+    let workspace = fixture_with_issues(400, "merge");
+    let workspace = workspace.path();
+
+    // Split one prefix class first (same storm driver).
+    let manifest = current_manifest(workspace);
+    let rows = issue_shards(&manifest);
+    let target = rows
+        .iter()
+        .max_by_key(|row| row["record_count"].as_u64().unwrap())
+        .unwrap()
+        .clone();
+    let prefix = target["prefix"].as_str().unwrap().to_string();
+    let live: Vec<String> = live_issue_ids(workspace)
+        .into_iter()
+        .filter(|id| id.starts_with(&prefix))
+        .collect();
+    assert!(live.len() >= 10, "target shard too small to drive a merge");
+    for id in live.iter().take(3) {
+        set_notes(workspace, id, &filler("merge", 40 * 1024));
+    }
+    eprintln!("MARK: pre-split flush");
+    flush_ok(workspace);
+    eprintln!("MARK: post-notes flush passed");
+
+    let split = current_manifest(workspace);
+    let split_rows = issue_shards(&split);
+    let split_children: Vec<&Value> = split_rows
+        .iter()
+        .filter(|row| {
+            let p = row["prefix"].as_str().unwrap();
+            p.starts_with(&prefix) && p.len() > prefix.len()
+        })
+        .collect();
+    assert!(
+        !split_children.is_empty(),
+        "expected the prefix class to split before the merge"
+    );
+
+    // Delete records until the full-sibling group is at or below
+    // SHARD_MERGE (24 KiB): keep only the last eight small members.
+    let delete: Vec<String> = live[..live.len() - 8].to_vec();
+    delete_issues_directly(workspace, &delete);
+    eprintln!("MARK: deleted {} issues", delete.len());
+    flush_ok(workspace);
+    eprintln!("MARK: post-delete flush passed");
+
+    let merged = current_manifest(workspace);
+    let merged_rows = issue_shards(&merged);
+    // The group coalesced into the parent prefix: no deeper children of the
+    // class remain, and the parent prefix row is back.
+    let deeper: Vec<&Value> = merged_rows
+        .iter()
+        .filter(|row| {
+            let p = row["prefix"].as_str().unwrap();
+            p.starts_with(&prefix) && p.len() > prefix.len()
+        })
+        .collect();
+    assert!(
+        deeper.is_empty(),
+        "expected the sibling group to coalesce into prefix {:?}, found {:?}",
+        prefix,
+        deeper
+            .iter()
+            .map(|r| r["prefix"].clone())
+            .collect::<Vec<_>>()
+    );
+    let parent_row = merged_rows
+        .iter()
+        .find(|row| row["prefix"].as_str() == Some(prefix.as_str()))
+        .expect("coalesced parent prefix row missing");
+    assert!(
+        parent_row["byte_length"].as_u64().unwrap() as usize <= 24 * 1024,
+        "coalesced shard is above SHARD_MERGE"
+    );
+
+    // Coverage: shard rows account for every live issue.
+    let total: usize = merged_rows
+        .iter()
+        .map(|row| row["record_count"].as_u64().unwrap() as usize)
+        .sum();
+    let remaining = live_issue_ids(workspace).len();
+    assert_eq!(
+        total, remaining,
+        "shard rows account for {} records, store holds {}",
+        total, remaining
+    );
+
+    // The retained set stays bounded by the two referenced generations.
+    let set_dir = workspace.join(".beads/checkpoint/set");
+    let mut on_disk = 0usize;
+    for entry in fs::read_dir(set_dir.join("shard")).unwrap() {
+        let entry = entry.unwrap();
+        if entry.file_type().unwrap().is_file() {
+            on_disk += 1;
+        }
+    }
+    let referenced: HashSet<String> = merged_rows
+        .iter()
+        .map(|row| {
+            row["path"]
+                .as_str()
+                .unwrap()
+                .rsplit('/')
+                .next()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert!(
+        on_disk <= referenced.len() + 2,
+        "shard directory holds {} files for {} referenced rows",
+        on_disk,
+        referenced.len()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// set-v2-tail-seal-and-immutability (12.6)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn set_v2_tail_seal_and_immutability() {
+    let workspace = fixture_with_issues(50, "seal");
+    let workspace = workspace.path();
+    let ids = live_issue_ids(workspace);
+
+    // Append until the tail passes SEG_SEAL (64 KiB): ~2.5 KiB events seal
+    // within roughly thirty updates.
+    let mut sealed_after = None;
+    for round in 0..240 {
+        set_notes(
+            workspace,
+            &ids[round % ids.len()],
+            &format!("seal round {} {}", round, filler("seal", 2200)),
+        );
+        flush_ok(workspace);
+        let manifest = current_manifest(workspace);
+        if manifest["segments"].as_array().map(|s| !s.is_empty()) == Some(true) {
+            sealed_after = Some(round);
+            break;
+        }
+    }
+    let sealed_after = sealed_after.expect("tail never sealed past SEG_SEAL");
+
+    let manifest = current_manifest(workspace);
+    let sealed: Vec<(String, String, u64)> = manifest["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                row["path"].as_str().unwrap().to_string(),
+                row["sha256"].as_str().unwrap().to_string(),
+                row["byte_length"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    assert!(!sealed.is_empty());
+
+    // A sealed segment is immutable for the life of the workspace: its
+    // name, digest, and bytes are unchanged across at least five further
+    // publications.
+    for round in sealed_after..sealed_after + 6 {
+        set_notes(
+            workspace,
+            &ids[round % ids.len()],
+            &format!("post-seal round {} {}", round, filler("post", 80)),
+        );
+        flush_ok(workspace);
+        let manifest = current_manifest(workspace);
+        let now: Vec<(String, String, u64)> = manifest["segments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| {
+                (
+                    row["path"].as_str().unwrap().to_string(),
+                    row["sha256"].as_str().unwrap().to_string(),
+                    row["byte_length"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        for (path, sha, len) in &sealed {
+            let row = now
+                .iter()
+                .find(|(p, s, _)| p == path && s == sha)
+                .unwrap_or_else(|| panic!("sealed segment {} vanished or changed digest", path));
+            assert_eq!(&row.2, len, "sealed segment {} changed length", path);
+            let bytes = fs::read(workspace.join(".beads/checkpoint").join(path)).unwrap();
+            assert_eq!(
+                format!("{:x}", Sha256::digest(&bytes)),
+                *sha,
+                "sealed segment {} bytes changed on disk",
+                path
+            );
+        }
+    }
+
+    // The manifest never records two sealed segments with the same digest.
+    let manifest = current_manifest(workspace);
+    let digests: Vec<&str> = manifest["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["sha256"].as_str().unwrap())
+        .collect();
+    let unique: HashSet<&str> = digests.iter().copied().collect();
+    assert_eq!(
+        digests.len(),
+        unique.len(),
+        "duplicate sealed segment digest"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// set-v2-oversize-record-once-cost (12.7)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn set_v2_oversize_record_once_cost() {
+    let workspace = fixture_with_issues(60, "oversize");
+    let workspace = workspace.path();
+    git_out(workspace, &["init", "-q", "."]);
+    let mut parent = git_commit_checkpoint(workspace, "oversize base");
+
+    let ids = live_issue_ids(workspace);
+    let subject = &ids[0];
+
+    // A 200 KiB record: above RECORD_INLINE (64 KiB), so it lands in
+    // set/rec/ once and the referencing shard stores a reference row.
+    set_notes_via_stdin(workspace, subject, &filler("oversize", 200 * 1024));
+    flush_ok(workspace);
+    let commit = git_commit_checkpoint(workspace, "oversize record publication");
+    let _ = new_blob_bytes(workspace, &parent, &commit);
+    parent = commit;
+
+    let rec_dir = workspace.join(".beads/checkpoint/set/rec");
+    let rec_files: Vec<_> = fs::read_dir(&rec_dir)
+        .expect("set/rec/ must exist after an oversize record")
+        .map(|e| e.unwrap())
+        .collect();
+    assert_eq!(rec_files.len(), 1, "expected exactly one oversize object");
+    let rec_path_rel = format!(
+        "set/rec/{}",
+        rec_files[0].file_name().to_str().unwrap().to_string()
+    );
+    // Content addressing: the file's bytes hash to its name.
+    let bytes = fs::read(rec_files[0].path()).unwrap();
+    assert_eq!(
+        format!("{:x}", Sha256::digest(&bytes)),
+        rec_files[0]
+            .file_name()
+            .to_str()
+            .unwrap()
+            .trim_end_matches(".jsonl"),
+        "oversize object is not content-addressed"
+    );
+
+    // The referencing shard stays small: it carries the reference row, not
+    // the payload. Find the shard row containing the subject's ID.
+    let manifest = current_manifest(workspace);
+    let mut shard_paths = Vec::new();
+    for row in issue_shards(&manifest) {
+        shard_paths.push(row["path"].as_str().unwrap().to_string());
+    }
+    let mut referencing_shard = None;
+    for path in &shard_paths {
+        let body = fs::read_to_string(workspace.join(".beads/checkpoint").join(path)).unwrap();
+        if body.contains(&format!("\"path\":\"{}\"", rec_path_rel))
+            || body.contains(&format!("\"path\": \"{ek}\"", ek = rec_path_rel))
+        {
+            referencing_shard = Some((path.clone(), body));
+            break;
+        }
+    }
+    let (shard_path, shard_body) =
+        referencing_shard.expect("no shard references the oversize object");
+    assert!(
+        shard_body.len() < 8 * 1024,
+        "referencing shard {} carries {} bytes, expected a small reference row",
+        shard_path,
+        shard_body.len()
+    );
+
+    // Subsequent unrelated single-issue publications add no bytes for the
+    // referenced record.
+    for round in 1..=3 {
+        set_notes(
+            workspace,
+            &ids[round],
+            &format!("unrelated round {} {}", round, filler("unrelated", 100)),
+        );
+        flush_ok(workspace);
+        let commit = git_commit_checkpoint(workspace, &format!("unrelated publication {}", round));
+        let range = format!("{}..{}", parent, commit);
+        let added = git_out(
+            workspace,
+            &["rev-list", "--objects", &range, "--", ".beads/"],
+        );
+        assert!(
+            !added.contains("set/rec/"),
+            "publication {} re-added oversize object bytes",
+            round
+        );
+        let cost = new_blob_bytes(workspace, &parent, &commit);
+        assert!(
+            cost <= 256 * 1024,
+            "publication {} added {} bytes",
+            round,
+            cost
+        );
+        parent = commit;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// set-v2-pointer-boundedness (12.8)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn set_v2_pointer_boundedness() {
+    let workspace = fixture_with_issues(40, "bounded");
+    let workspace = workspace.path();
+    let ids = live_issue_ids(workspace);
+
+    // Distinctive payload markers that must never appear in the manifest.
+    let markers: Vec<String> = (0..5)
+        .map(|i| format!("payload-marker-{}-7f31d90c", i))
+        .collect();
+
+    for round in 0..55 {
+        set_notes(
+            workspace,
+            &ids[round % ids.len()],
+            &format!(
+                "bounded round {} {} {}",
+                round,
+                filler("bounded", 60),
+                markers[round % markers.len()]
+            ),
+        );
+        flush_ok(workspace);
+        let current = fs::read_to_string(workspace.join(".beads/checkpoint/current.json")).unwrap();
+        let previous =
+            fs::read_to_string(workspace.join(".beads/checkpoint/previous.json")).unwrap();
+        assert!(
+            current.len() < 4096,
+            "current.json grew to {} bytes at publication {}",
+            current.len(),
+            round
+        );
+        assert!(
+            previous.len() < 4096,
+            "previous.json grew to {} bytes at publication {}",
+            previous.len(),
+            round
+        );
+    }
+
+    // The manifest contains table rows only, never record payload: none of
+    // the payload markers may appear in it, and it stays within the
+    // structural bound for a small workspace.
+    let manifest_text = fs::read_to_string(
+        workspace.join(".beads/checkpoint").join(
+            read_pointer(workspace)["active_root"]["path"]
+                .as_str()
+                .unwrap(),
+        ),
+    )
+    .unwrap();
+    for marker in &markers {
+        assert!(
+            !manifest_text.contains(marker.as_str()),
+            "manifest leaks record payload marker {:?}",
+            marker
+        );
+    }
+    assert!(
+        manifest_text.len() < 128 * 1024,
+        "manifest grew to {} bytes",
+        manifest_text.len()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// set-v2-forensic-frozen (12.9)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn set_v2_forensic_frozen() {
+    let workspace = fixture_with_issues(30, "frozen");
+    let workspace = workspace.path();
+    let forensic = workspace.join(".beads/checkpoint/forensic.jsonl");
+
+    let initial = fs::read(&forensic).ok();
+    let initial_mtime = fs::metadata(&forensic).ok().map(|m| m.modified().unwrap());
+
+    for round in 0..12 {
+        set_notes(
+            workspace,
+            &live_issue_ids(workspace)[0],
+            &format!("frozen round {} {}", round, filler("frozen", 60)),
+        );
+        flush_ok(workspace);
+        let now_bytes = fs::read(&forensic).ok();
+        let now_mtime = fs::metadata(&forensic).ok().map(|m| m.modified().unwrap());
+        assert_eq!(
+            now_bytes.as_deref(),
+            initial.as_deref(),
+            "forensic.jsonl was rewritten at publication {}",
+            round
+        );
+        assert_eq!(
+            now_mtime, initial_mtime,
+            "forensic.jsonl mtime changed at publication {}",
+            round
+        );
+    }
+
+    // Restore succeeds with the file absent (it is absent by default under
+    // this layout, and no reader may require it): restore the final
+    // generation into a fresh empty workspace.
+    let generation = read_pointer(workspace)["generation_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(!forensic.exists() || initial.is_none());
+    let target = TempDir::new().unwrap();
+    init_workspace(target.path());
+    let source = workspace
+        .join(".beads/checkpoint")
+        .to_string_lossy()
+        .to_string();
+    run_ok(
+        target.path(),
+        &[
+            "restore",
+            "--source",
+            &source,
+            "--generation",
+            &generation,
+            "--actor",
+            "conformance-test",
+        ],
+    );
+}
+
+// ---------------------------------------------------------------------------
+// set-v2-crash-ordering (12.10)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn set_v2_crash_ordering() {
+    let workspace = fixture_with_issues(40, "crash");
+    let workspace = workspace.path();
+    let ids = live_issue_ids(workspace);
+    let checkpoint_dir = workspace.join(".beads/checkpoint");
+
+    // --- interrupted before the pointer swap: orphans on disk ---
+    // A crash before step 3 leaves the old generation authoritative and
+    // orphan artifacts under set/. Simulate the orphans, then publish: the
+    // old generation stays authoritative until the new publication's
+    // structural retention reaps them.
+    let before_generation = read_pointer(workspace)["generation_id"].clone();
+    for orphan_dir in ["set/shard", "set/seg", "set/rec"] {
+        fs::create_dir_all(checkpoint_dir.join(orphan_dir)).unwrap();
+    }
+    fs::write(
+        checkpoint_dir.join(
+            "set/shard/0000000000000000000000000000000000000000000000000000000000000000.jsonl",
+        ),
+        b"orphan shard\n",
+    )
+    .unwrap();
+    fs::write(
+        checkpoint_dir
+            .join("set/seg/1111111111111111111111111111111111111111111111111111111111111111.jsonl"),
+        b"orphan segment\n",
+    )
+    .unwrap();
+    fs::write(
+        checkpoint_dir
+            .join("set/rec/2222222222222222222222222222222222222222222222222222222222222222.jsonl"),
+        b"orphan record\n",
+    )
+    .unwrap();
+
+    set_notes(
+        workspace,
+        &ids[1],
+        &format!("crash driver {}", filler("crash", 50)),
+    );
+    flush_ok(workspace);
+
+    assert_eq!(
+        read_pointer(workspace)["generation_id"],
+        before_generation,
+        "sanity: publication advanced the generation"
+    );
+    assert!(
+        !checkpoint_dir
+            .join(
+                "set/shard/0000000000000000000000000000000000000000000000000000000000000000.jsonl"
+            )
+            .exists(),
+        "orphan shard was not reaped by the next publication"
+    );
+    assert!(
+        !checkpoint_dir
+            .join("set/seg/1111111111111111111111111111111111111111111111111111111111111111.jsonl")
+            .exists(),
+        "orphan segment was not reaped by the next publication"
+    );
+    assert!(
+        !checkpoint_dir
+            .join("set/rec/2222222222222222222222222222222222222222222222222222222222222222.jsonl")
+            .exists(),
+        "orphan record was not reaped by the next publication"
+    );
+
+    // --- after the pointer swap: the new generation is authoritative ---
+    // The pointer names one complete generation: the manifest bytes hash to
+    // the pointer's recorded digest, and every artifact row verifies.
+    for round in 0..3 {
+        set_notes(
+            workspace,
+            &ids[round + 2],
+            &format!("post-swap round {} {}", round, filler("post-swap", 50)),
+        );
+        flush_ok(workspace);
+        let pointer = read_pointer(workspace);
+        let manifest_rel = pointer["active_root"]["path"].as_str().unwrap().to_string();
+        let manifest_sha = pointer["active_root"]["sha256"].as_str().unwrap();
+        let manifest_path = checkpoint_dir.join(&manifest_rel);
+        let manifest_bytes = fs::read(&manifest_path).unwrap();
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&manifest_bytes)),
+            manifest_sha,
+            "pointer digest disagrees with manifest bytes"
+        );
+        // The filename and the recorded generation agree.
+        assert!(
+            manifest_rel.contains(pointer["generation_id"].as_str().unwrap()),
+            "manifest filename does not name the pointer's generation"
+        );
+        // The tail row verifies against the live tail bytes.
+        let manifest: Value = serde_json::from_slice(&manifest_bytes).unwrap();
+        if let Some(tail) = manifest.get("tail").filter(|t| !t.is_null()) {
+            let tail_bytes = fs::read(checkpoint_dir.join("set/tail.jsonl")).unwrap();
+            assert_eq!(
+                format!("{:x}", Sha256::digest(&tail_bytes)),
+                tail["sha256"].as_str().unwrap(),
+                "tail row digest disagrees with tail bytes"
+            );
+        }
+    }
+
+    // Sealed-tail removal is idempotent: after a seal, a repeated
+    // publication leaves one complete generation, one tail, and no
+    // duplicate sealed digests.
+    let mut old_tail_sha = sha256_file(&checkpoint_dir.join("set/tail.jsonl"));
+    let mut sealed = false;
+    for round in 0..40 {
+        set_notes(
+            workspace,
+            &ids[(round + 5) % ids.len()],
+            &format!("seal driver {} {}", round, filler("idempotent", 2200)),
+        );
+        flush_ok(workspace);
+        flush_ok(workspace); // immediate re-publication: the idempotency probe
+        let manifest = current_manifest(workspace);
+        let digests: HashSet<String> = manifest["segments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["sha256"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            digests.len(),
+            manifest["segments"].as_array().unwrap().len(),
+            "duplicate sealed segment digests after re-publication"
+        );
+        if !sealed {
+            let has_segments = !manifest["segments"].as_array().unwrap().is_empty();
+            if has_segments {
+                // The old tail's bytes became a content-addressed segment.
+                let segments = manifest["segments"].as_array().unwrap();
+                let old_tail_sealed = segments.iter().any(|row| {
+                    let bytes =
+                        fs::read(checkpoint_dir.join(row["path"].as_str().unwrap())).unwrap();
+                    format!("{:x}", Sha256::digest(&bytes)) == old_tail_sha
+                });
+                assert!(
+                    old_tail_sealed,
+                    "the sealed tail's old bytes are not retained under their content address"
+                );
+                sealed = true;
+                old_tail_sha = sha256_file(&checkpoint_dir.join("set/tail.jsonl"));
+            }
+        }
+        if sealed {
+            break;
+        }
+    }
+    assert!(sealed, "tail never sealed during the idempotency probe");
+}

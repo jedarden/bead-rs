@@ -343,7 +343,10 @@ fn verify_checkpoint_prefix(conn: &Connection, staging: &ForensicStaging) -> Opt
 /// nonempty store UUID, and a nonnegative snapshot sequence.
 fn verify_pointer_shape(pointer: &serde_json::Value) -> Option<String> {
     match pointer.get("mode").and_then(|v| v.as_str()) {
-        Some("monolithic") | Some("sharded") => {}
+        // set-v2 is the adaptive default (checkpoint-set-v2 section 9); its
+        // pointer carries no path arrays, so the tombstone check above is
+        // vacuously satisfied and staging dispatches on the mode.
+        Some("monolithic") | Some("sharded") | Some("set-v2") => {}
         other => {
             return Some(format!(
                 "verified pointer: unsupported or missing mode: {:?}",
