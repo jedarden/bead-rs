@@ -1159,6 +1159,7 @@ fn scan_pointer(
     match mode {
         "monolithic" => scan_jsonl(&root_path, generation, None, config, reports),
         "sharded" => scan_shard_manifest(&root_path, checkpoint_dir, generation, config, reports),
+        "set-v2" => scan_set_v2_manifest(&root_path, checkpoint_dir, generation, config, reports),
         _ => Err(Error::integrity("checkpoint pointer has unsupported mode")),
     }?;
     Ok(true)
@@ -1194,6 +1195,51 @@ fn scan_shard_manifest(
                 )?;
             }
         }
+    }
+    Ok(())
+}
+
+/// Scan a `checkpoint-set-v2` manifest: every keyed-record shard, every
+/// sealed segment, and the open tail. Same trust model as
+/// `scan_shard_manifest`: paths must stay confined to the checkpoint
+/// directory and every scanned line goes through the ordinary scanner.
+fn scan_set_v2_manifest(
+    manifest_path: &Path,
+    checkpoint_dir: &Path,
+    generation: &str,
+    config: &ScanConfig,
+    reports: &mut Vec<ScanReport>,
+) -> Result<()> {
+    let manifest = read_json(manifest_path, "checkpoint set manifest")?;
+    for key in ["shards", "segments"] {
+        if let Some(rows) = manifest.get(key).and_then(Value::as_array) {
+            for row in rows {
+                let path = row
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| Error::integrity("checkpoint set manifest row has no path"))?;
+                scan_jsonl(
+                    &confined_path(checkpoint_dir, path)?,
+                    generation,
+                    Some(path),
+                    config,
+                    reports,
+                )?;
+            }
+        }
+    }
+    if let Some(path) = manifest
+        .get("tail")
+        .and_then(|tail| tail.get("path"))
+        .and_then(Value::as_str)
+    {
+        scan_jsonl(
+            &confined_path(checkpoint_dir, path)?,
+            generation,
+            Some(path),
+            config,
+            reports,
+        )?;
     }
     Ok(())
 }
