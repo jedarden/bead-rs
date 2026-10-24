@@ -12,7 +12,7 @@
 //! `manifests/` trees of the older layouts, so the two generations of a
 //! migration coexist until structural retention reaps the old one.
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::io::Write as _;
@@ -20,8 +20,8 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{
-    create_publication_temp, format_rfc3339, publication_temp_path, sync_dir, EventRecord,
-    PublicationOutput, SerializedCorpus, ShardedConfig,
+    EventRecord, PublicationOutput, SerializedCorpus, ShardedConfig, create_publication_temp,
+    format_rfc3339, publication_temp_path, sync_dir,
 };
 
 /// Typical shard size; the operating point (spec 5.2)
@@ -131,7 +131,8 @@ fn partition_keyed_class(ids: &[String], line_bytes: &[usize]) -> Result<Vec<Sha
         let unsplittable = members.len() <= 1
             || bytes <= SHARD_SPLIT
             || depth_guard == 0
-            || longest_common_prefix(ids, members) >= members.iter().map(|&m| ids[m].len()).min().unwrap_or(0);
+            || longest_common_prefix(ids, members)
+                >= members.iter().map(|&m| ids[m].len()).min().unwrap_or(0);
         if unsplittable {
             return vec![ShardPartition {
                 prefix: prefix.to_string(),
@@ -197,10 +198,7 @@ fn partition_keyed_class(ids: &[String], line_bytes: &[usize]) -> Result<Vec<Sha
 /// Pack event lines in canonical order into sealed groups plus the open
 /// tail (spec 6.1/6.2). Greedy from the front, so boundaries are stable
 /// under append: sealed segments never re-split when later events arrive.
-fn pack_event_segments(
-    line_bytes: &[usize],
-    events: &[EventRecord],
-) -> Vec<(Vec<usize>, bool)> {
+fn pack_event_segments(line_bytes: &[usize], events: &[EventRecord]) -> Vec<(Vec<usize>, bool)> {
     let mut groups: Vec<(Vec<usize>, bool)> = Vec::new();
     let mut current: Vec<usize> = Vec::new();
     let mut current_bytes = 0usize;
@@ -231,7 +229,14 @@ fn write_set_object(
 ) -> Result<(String, String)> {
     let hash = format!("{:x}", Sha256::digest(body));
     let rel = format!("set/{}/{}.jsonl", subdir, hash);
-    write_set_file(checkpoint_dir, &rel, scratch_tag, body, changed_paths, scratch_dir)?;
+    write_set_file(
+        checkpoint_dir,
+        &rel,
+        scratch_tag,
+        body,
+        changed_paths,
+        scratch_dir,
+    )?;
     Ok((rel, hash))
 }
 
@@ -456,7 +461,11 @@ pub(super) fn publish_set_v2_checkpoint(
 
     let mut segment_rows: Vec<serde_json::Value> = Vec::new();
     let groups = pack_event_segments(
-        &corpus.event_lines.iter().map(|l| l.len()).collect::<Vec<_>>(),
+        &corpus
+            .event_lines
+            .iter()
+            .map(|l| l.len())
+            .collect::<Vec<_>>(),
         events,
     );
     let mut tail_row: Option<serde_json::Value> = None;
@@ -483,7 +492,10 @@ pub(super) fn publish_set_v2_checkpoint(
         }
         let sequence_range = match (members.first(), members.last()) {
             (Some(&first), Some(&last)) => {
-                serde_json::json!([events[first].origin_event_sequence, events[last].origin_event_sequence])
+                serde_json::json!([
+                    events[first].origin_event_sequence,
+                    events[last].origin_event_sequence
+                ])
             }
             _ => serde_json::json!([]),
         };
@@ -723,34 +735,25 @@ pub(super) fn verify_set_v2_restore_closure(
     super::reject_archaeology_view(&manifest, manifest_path)?;
 
     if manifest.get("format").and_then(|v| v.as_str()) != Some("checkpoint-set-v2")
-        || manifest
-            .get("schema_version")
-            .and_then(|v| v.as_u64())
-            != Some(1)
+        || manifest.get("schema_version").and_then(|v| v.as_u64()) != Some(1)
     {
         bail!("Unverified restore source: unsupported or incomplete set-v2 manifest metadata");
     }
     if manifest.get("store_uuid").and_then(|v| v.as_str()) != Some(pointer.store_uuid.as_str())
-        || manifest
-            .get("snapshot_sequence")
-            .and_then(|v| v.as_i64())
+        || manifest.get("snapshot_sequence").and_then(|v| v.as_i64())
             != Some(pointer.snapshot_sequence)
     {
-        bail!("Unverified restore source: manifest identity or snapshot sequence disagrees with pointer");
+        bail!(
+            "Unverified restore source: manifest identity or snapshot sequence disagrees with pointer"
+        );
     }
 
     let counts = [
         ("issue_count", pointer.issue_count),
         ("event_count", pointer.event_count),
         ("receipt_count", pointer.receipt_count),
-        (
-            "attempt_outcome_count",
-            pointer.attempt_outcome_count,
-        ),
-        (
-            "redaction_record_count",
-            pointer.redaction_record_count,
-        ),
+        ("attempt_outcome_count", pointer.attempt_outcome_count),
+        ("redaction_record_count", pointer.redaction_record_count),
     ];
     for (field, pointer_count) in counts {
         let manifest_count = manifest.get(field).and_then(|v| v.as_u64()).unwrap_or(0) as usize;
@@ -765,7 +768,10 @@ pub(super) fn verify_set_v2_restore_closure(
 
     let mut class_totals: BTreeMap<&str, usize> = BTreeMap::new();
     let empty = Vec::new();
-    let shards = manifest.get("shards").and_then(|v| v.as_array()).unwrap_or(&empty);
+    let shards = manifest
+        .get("shards")
+        .and_then(|v| v.as_array())
+        .unwrap_or(&empty);
     if shards.is_empty() && pointer.total_record_count != pointer.event_count {
         bail!("Unverified restore source: set-v2 manifest tabulates no keyed-record shards");
     }
@@ -784,10 +790,16 @@ pub(super) fn verify_set_v2_restore_closure(
             .ok_or_else(|| anyhow!("Unverified restore source: shard row missing sha256"))?;
         let len = row.get("byte_length").and_then(|v| v.as_u64());
         read_verified_set_artifact(base, rel, sha, len).map_err(|error| {
-            anyhow!("Unverified restore source: shard {} unusable: {}", rel, error)
+            anyhow!(
+                "Unverified restore source: shard {} unusable: {}",
+                rel,
+                error
+            )
         })?;
-        *class_totals.entry(class).or_insert(0) +=
-            row.get("record_count").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        *class_totals.entry(class).or_insert(0) += row
+            .get("record_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
     }
     for (class, expected) in [
         ("issue", pointer.issue_count),
@@ -819,10 +831,19 @@ pub(super) fn verify_set_v2_restore_closure(
             .get("sha256")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("Unverified restore source: segment row missing sha256"))?;
-        read_verified_set_artifact(base, rel, sha, row.get("byte_length").and_then(|v| v.as_u64()))
-            .map_err(|error| {
-                anyhow!("Unverified restore source: segment {} unusable: {}", rel, error)
-            })?;
+        read_verified_set_artifact(
+            base,
+            rel,
+            sha,
+            row.get("byte_length").and_then(|v| v.as_u64()),
+        )
+        .map_err(|error| {
+            anyhow!(
+                "Unverified restore source: segment {} unusable: {}",
+                rel,
+                error
+            )
+        })?;
         event_artifacts += 1;
     }
     if let Some(tail) = manifest.get("tail").filter(|v| !v.is_null()) {
@@ -834,14 +855,26 @@ pub(super) fn verify_set_v2_restore_closure(
             .get("sha256")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("Unverified restore source: tail row missing sha256"))?;
-        read_verified_set_artifact(base, rel, sha, tail.get("byte_length").and_then(|v| v.as_u64()))
-            .map_err(|error| {
-                anyhow!("Unverified restore source: tail {} unusable: {}", rel, error)
-            })?;
+        read_verified_set_artifact(
+            base,
+            rel,
+            sha,
+            tail.get("byte_length").and_then(|v| v.as_u64()),
+        )
+        .map_err(|error| {
+            anyhow!(
+                "Unverified restore source: tail {} unusable: {}",
+                rel,
+                error
+            )
+        })?;
         event_artifacts += 1;
     }
     if pointer.event_count > 0 && event_artifacts == 0 {
-        bail!("Unverified restore source: set-v2 manifest tabulates no event artifacts for {} events", pointer.event_count);
+        bail!(
+            "Unverified restore source: set-v2 manifest tabulates no event artifacts for {} events",
+            pointer.event_count
+        );
     }
     Ok(())
 }
@@ -849,9 +882,7 @@ pub(super) fn verify_set_v2_restore_closure(
 /// Stage a set-v2 checkpoint into the shared forensic staging shape: shard
 /// rows first, then sealed segments in manifest order, then the tail.
 pub(super) fn stage_set_v2_checkpoint(pointer_path: &Path) -> Result<super::ForensicStaging> {
-    use super::{
-        process_checkpoint_file, AttemptOutcomeRecord, CheckpointMode, RedactionRecords,
-    };
+    use super::{AttemptOutcomeRecord, CheckpointMode, RedactionRecords, process_checkpoint_file};
 
     let base = pointer_path
         .parent()
