@@ -938,10 +938,10 @@ fn set_v2_crash_ordering() {
     );
     flush_ok(workspace);
 
-    assert_eq!(
+    assert_ne!(
         read_pointer(workspace)["generation_id"],
         before_generation,
-        "sanity: publication advanced the generation"
+        "sanity: publication did not advance the generation"
     );
     assert!(
         !checkpoint_dir
