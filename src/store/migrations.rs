@@ -8,7 +8,7 @@ use rusqlite::{Connection, Result as SqliteResult, Transaction, TransactionBehav
 use sha2::{Digest, Sha256};
 
 /// Current migration version
-pub const CURRENT_VERSION: i64 = 21;
+pub const CURRENT_VERSION: i64 = 22;
 
 /// Whether the store has already reached [`CURRENT_VERSION`].
 ///
@@ -191,6 +191,7 @@ fn get_migration(version: i64) -> Migration {
         19 => migration_19(),
         20 => migration_20(),
         21 => migration_21(),
+        22 => migration_22(),
         v => panic!("Unknown migration version: {}", v),
     }
 }
@@ -229,6 +230,61 @@ fn migration_20() -> Migration {
         blocking_count INTEGER NOT NULL,
         coverage_incomplete INTEGER NOT NULL CHECK (coverage_incomplete IN (0, 1))
     )"
+        .to_string(),
+    }
+}
+
+/// The adaptive default publishes the `checkpoint-set-v2` layout, and the
+/// recorded `current_mode` must round-trip through
+/// `CheckpointMode::from_str`. Migration 2's CHECK constraint predates the
+/// layout, so the first set-v2 publication on every workspace failed the
+/// constraint after the mutation had already committed (observed live:
+/// `bead create` auto-publish died with `CHECK constraint failed:
+/// current_mode IN ('monolithic', 'sharded')`). Rebuild the table with the
+/// widened CHECK, following migration 2's own rebuild pattern; every other
+/// column and its shape is byte-identical.
+fn migration_22() -> Migration {
+    Migration {
+        sql: r#"
+CREATE TABLE checkpoint_state_v3 (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    -- Migration-1 issue-only checkpoint fields
+    last_interchange_hash TEXT NOT NULL DEFAULT '',
+    covered_event_sequence INTEGER NOT NULL DEFAULT 0,
+    export_time TEXT,
+    -- F017 forensic checkpoint fields
+    current_generation_id TEXT,
+    current_mode TEXT CHECK (current_mode IN ('monolithic', 'sharded', 'set-v2')),
+    current_root_path TEXT,
+    current_root_sha256 TEXT,
+    previous_generation_id TEXT,
+    previous_root_path TEXT,
+    pending_tombstones_json TEXT,
+    changed_paths_json TEXT,
+    store_uuid TEXT,
+    max_local_ingestion_sequence INTEGER DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    pointer_extensions_json TEXT
+);
+INSERT INTO checkpoint_state_v3 (
+    id, last_interchange_hash, covered_event_sequence, export_time,
+    current_generation_id, current_mode, current_root_path,
+    current_root_sha256, previous_generation_id, previous_root_path,
+    pending_tombstones_json, changed_paths_json, store_uuid,
+    max_local_ingestion_sequence, updated_at, pointer_extensions_json
+)
+SELECT
+    id, last_interchange_hash, covered_event_sequence, export_time,
+    current_generation_id, current_mode, current_root_path,
+    current_root_sha256, previous_generation_id, previous_root_path,
+    pending_tombstones_json, changed_paths_json, store_uuid,
+    max_local_ingestion_sequence, updated_at, pointer_extensions_json
+FROM checkpoint_state;
+DROP TABLE checkpoint_state;
+ALTER TABLE checkpoint_state_v3 RENAME TO checkpoint_state;
+CREATE INDEX IF NOT EXISTS checkpoint_state_generation
+    ON checkpoint_state (current_generation_id);
+"#
         .to_string(),
     }
 }

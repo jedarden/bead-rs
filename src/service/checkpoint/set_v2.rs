@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use super::{
     create_publication_temp, format_rfc3339, publication_temp_path, sync_dir, EventRecord,
@@ -374,11 +374,11 @@ pub(super) fn publish_set_v2_checkpoint(
 
     let mut shard_rows: Vec<serde_json::Value> = Vec::new();
     let write_class_shards = |class: &'static str,
-                                  partitions: Vec<ShardPartition>,
-                                  lines: &[Vec<u8>],
-                                  shard_rows: &mut Vec<serde_json::Value>,
-                                  referenced_paths: &mut Vec<String>,
-                                  changed_paths: &mut Vec<String>|
+                              partitions: Vec<ShardPartition>,
+                              lines: &[Vec<u8>],
+                              shard_rows: &mut Vec<serde_json::Value>,
+                              referenced_paths: &mut Vec<String>,
+                              changed_paths: &mut Vec<String>|
      -> Result<()> {
         for partition in partitions {
             let mut body = Vec::new();
@@ -713,17 +713,6 @@ pub(super) fn read_verified_set_artifact(
     Ok(data)
 }
 
-/// The epoch-nanosecond input shared with the legacy generation-ID scheme
-/// (landed ahead of its caller; the allow keeps committed main clippy-clean
-/// until that caller lands — beadrs-0f854018)
-#[allow(dead_code)]
-pub(super) fn generation_timestamp_nanos() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0)
-}
-
 /// Verify the complete set-v2 closure a restore pointer selects (spec 13):
 /// the manifest's identity and counts against the pointer, then every
 /// tabulated artifact's existence, digest, and byte length.
@@ -746,9 +735,7 @@ pub(super) fn verify_set_v2_restore_closure(
         || manifest.get("snapshot_sequence").and_then(|v| v.as_i64())
             != Some(pointer.snapshot_sequence)
     {
-        bail!(
-            "Unverified restore source: manifest identity or snapshot sequence disagrees with pointer"
-        );
+        bail!("Unverified restore source: manifest identity or snapshot sequence disagrees with pointer");
     }
 
     let counts = [
@@ -936,20 +923,20 @@ pub(super) fn stage_set_v2_checkpoint(pointer_path: &Path) -> Result<super::Fore
     let mut seen_attempt_ids = std::collections::HashSet::new();
 
     let process_artifact = |rel: &str,
-                                sha: &str,
-                                len: Option<u64>,
-                                hasher: &mut Sha256,
-                                issues: &mut Vec<_>,
-                                dependencies: &mut Vec<_>,
-                                labels: &mut Vec<_>,
-                                events: &mut Vec<_>,
-                                receipts: &mut Vec<_>,
-                                attempt_outcomes: &mut Vec<_>,
-                                redaction: &mut RedactionRecords,
-                                seen_issue_ids: &mut std::collections::HashSet<String>,
-                                seen_event_identities: &mut std::collections::HashSet<String>,
-                                seen_receipt_ids: &mut std::collections::HashSet<String>,
-                                _seen_attempt_ids: &mut std::collections::HashSet<String>|
+                            sha: &str,
+                            len: Option<u64>,
+                            hasher: &mut Sha256,
+                            issues: &mut Vec<_>,
+                            dependencies: &mut Vec<_>,
+                            labels: &mut Vec<_>,
+                            events: &mut Vec<_>,
+                            receipts: &mut Vec<_>,
+                            attempt_outcomes: &mut Vec<_>,
+                            redaction: &mut RedactionRecords,
+                            seen_issue_ids: &mut std::collections::HashSet<String>,
+                            seen_event_identities: &mut std::collections::HashSet<String>,
+                            seen_receipt_ids: &mut std::collections::HashSet<String>,
+                            _seen_attempt_ids: &mut std::collections::HashSet<String>|
      -> Result<()> {
         // Digest before use (spec 13); the parse then reads the same bytes.
         read_verified_set_artifact(base, rel, sha, len)?;
