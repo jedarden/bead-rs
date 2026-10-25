@@ -198,6 +198,10 @@ fn partition_keyed_class(ids: &[String], line_bytes: &[usize]) -> Result<Vec<Sha
 /// Pack event lines in canonical order into sealed groups plus the open
 /// tail (spec 6.1/6.2). Greedy from the front, so boundaries are stable
 /// under append: sealed segments never re-split when later events arrive.
+/// This is the from-scratch packing for a publication with no usable
+/// previous segmentation — a first set-v2 publication (a full rewrite per
+/// spec 10) or one whose recorded boundaries no longer describe the live
+/// stream.
 fn pack_event_segments(line_bytes: &[usize], events: &[EventRecord]) -> Vec<(Vec<usize>, bool)> {
     let mut groups: Vec<(Vec<usize>, bool)> = Vec::new();
     let mut current: Vec<usize> = Vec::new();
@@ -215,6 +219,103 @@ fn pack_event_segments(line_bytes: &[usize], events: &[EventRecord]) -> Vec<(Vec
     groups.push((current, tail_sealed));
     let _ = events;
     groups
+}
+
+/// The previous publication's event-log segmentation, read from the pointer
+/// on disk: publication state derives from the live store and the pointer
+/// only (spec 7.4), so the seal boundary comes from what the previous
+/// generation recorded, not from re-packing the stream. Sealed segments are
+/// immutable for the life of the workspace (spec 6.2), so their rows carry
+/// forward verbatim; the open tail is the next seal unit, which makes every
+/// seal boundary a publication boundary and the sealed bytes exactly the
+/// outgoing tail's bytes — the rename of spec 6.2, whose old file step 4 of
+/// the 7.4 procedure removes.
+///
+/// `None` when there is no set-v2 pointer yet, or when the recorded
+/// boundaries no longer describe the live stream — a deletion inside the
+/// covered range shifts every later position and fails the end-identity
+/// check below. The caller then falls back to from-scratch packing.
+struct PreviousSegmentation {
+    /// Sealed segment rows carried verbatim into the new manifest
+    sealed_rows: Vec<serde_json::Value>,
+    /// First canonical-stream index of the open tail's events
+    tail_start: usize,
+    /// One past the last canonical-stream index the previous generation
+    /// covered (sealed segments plus the open tail)
+    covered_end: usize,
+    /// The open tail's published byte length, authoritative from its row
+    tail_bytes: usize,
+}
+
+fn previous_segmentation(
+    checkpoint_dir: &Path,
+    events: &[EventRecord],
+) -> Option<PreviousSegmentation> {
+    let pointer: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(checkpoint_dir.join("current.json")).ok()?).ok()?;
+    let manifest_rel = pointer.get("active_root")?.get("path")?.as_str()?;
+    if !manifest_rel.starts_with("set/manifest-") {
+        return None;
+    }
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(checkpoint_dir.join(manifest_rel)).ok()?).ok()?;
+    if manifest.get("format")?.as_str()? != "checkpoint-set-v2" {
+        return None;
+    }
+
+    let sealed_rows = manifest.get("segments")?.as_array()?.clone();
+    let mut sealed_count = 0usize;
+    for row in &sealed_rows {
+        let count = row.get("event_count")?.as_u64()? as usize;
+        let path = row.get("path")?.as_str()?;
+        if path.is_empty()
+            || !path.starts_with("set/seg/")
+            || row.get("sha256")?.as_str()?.is_empty()
+            || !checkpoint_dir.join(path).is_file()
+        {
+            return None;
+        }
+        sealed_count += count;
+    }
+
+    let tail_row = manifest.get("tail").filter(|v| !v.is_null())?;
+    let tail_count = tail_row.get("event_count")?.as_u64()? as usize;
+    let tail_bytes = tail_row.get("byte_length")?.as_u64()? as usize;
+    let covered_count = sealed_count + tail_count;
+
+    // The recorded end of the covered prefix must still name the same live
+    // event at the same position. Events only append past the end, so a
+    // match plus count equality means the covered prefix is unchanged; a
+    // deletion inside it shifts later positions and fails one of the two.
+    let covered_end = if tail_count > 0 {
+        tail_row
+            .get("origin_range")?
+            .get("last")?
+            .as_array()?
+            .clone()
+    } else {
+        sealed_rows
+            .last()?
+            .get("origin_range")?
+            .get("last")?
+            .as_array()?
+            .clone()
+    };
+    let end_uuid = covered_end.first()?.as_str()?;
+    let end_sequence = covered_end.get(1)?.as_i64()?;
+    let boundary = events.iter().position(|event| {
+        event.origin_store_uuid == end_uuid && event.origin_event_sequence == end_sequence
+    })?;
+    if boundary + 1 != covered_count {
+        return None;
+    }
+
+    Some(PreviousSegmentation {
+        sealed_rows,
+        tail_start: sealed_count,
+        covered_end: boundary + 1,
+        tail_bytes,
+    })
 }
 
 /// Write one content-addressed artifact under the `set/` tree, reusing the
@@ -460,14 +561,53 @@ pub(super) fn publish_set_v2_checkpoint(
     // ---- Event log: sealed segments plus the open tail (spec 6) ----
 
     let mut segment_rows: Vec<serde_json::Value> = Vec::new();
-    let groups = pack_event_segments(
-        &corpus
-            .event_lines
-            .iter()
-            .map(|l| l.len())
-            .collect::<Vec<_>>(),
-        events,
-    );
+    // The manifest never records two sealed segments with the same digest
+    // (spec 6.2); content addressing makes a repeat byte-identical, so the
+    // row is dropped rather than duplicated.
+    let mut segment_digests: Vec<String> = Vec::new();
+    let event_line_bytes: Vec<usize> = corpus.event_lines.iter().map(|l| l.len()).collect();
+    let previous = previous_segmentation(checkpoint_dir, events);
+    let groups: Vec<(Vec<usize>, bool)> = match &previous {
+        Some(prev) => {
+            // Sealed segments carry forward immutably (spec 6.2); the open
+            // tail is the next seal unit. It seals whole when this
+            // publication's appends would push it past SEG_SEAL — so the
+            // sealed bytes are exactly the outgoing tail's bytes, the
+            // rename of spec 6.2 — or when it already exceeded SEG_SEAL by
+            // itself, so a repeated publication finishes the seal.
+            let new_bytes: usize = (prev.covered_end..event_line_bytes.len())
+                .map(|i| event_line_bytes[i] + 1)
+                .sum();
+            let tail_seals = prev.covered_end > prev.tail_start
+                && (prev.tail_bytes + new_bytes > SEG_SEAL || prev.tail_bytes > SEG_SEAL);
+            let tail: Vec<usize> = (prev.tail_start..prev.covered_end).collect();
+            let appended: Vec<usize> = (prev.covered_end..event_line_bytes.len()).collect();
+            if tail_seals {
+                vec![(tail, true), (appended, false)]
+            } else {
+                let mut members = tail;
+                members.extend(appended);
+                vec![(members, false)]
+            }
+        }
+        None => pack_event_segments(&event_line_bytes, events),
+    };
+    if let Some(prev) = &previous {
+        for row in &prev.sealed_rows {
+            let sha = row
+                .get("sha256")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if segment_digests.iter().any(|s| s == sha) {
+                continue;
+            }
+            segment_digests.push(sha.to_string());
+            segment_rows.push(row.clone());
+            if let Some(rel) = row.get("path").and_then(|v| v.as_str()) {
+                referenced_paths.push(rel.to_string());
+            }
+        }
+    }
     let mut tail_row: Option<serde_json::Value> = None;
     for (group_index, (members, sealed)) in groups.iter().enumerate() {
         let mut body = Vec::new();
@@ -516,6 +656,10 @@ pub(super) fn publish_set_v2_checkpoint(
                 scratch_dir,
             )?;
             referenced_paths.push(rel.clone());
+            if segment_digests.contains(&hash) {
+                continue;
+            }
+            segment_digests.push(hash.clone());
             segment_rows.push(serde_json::json!({
                 "path": rel,
                 "sha256": hash,

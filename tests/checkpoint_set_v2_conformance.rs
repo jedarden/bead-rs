@@ -1150,9 +1150,18 @@ fn set_v2_crash_ordering() {
     // Sealed-tail removal is idempotent: after a seal, a repeated
     // publication leaves one complete generation, one tail, and no
     // duplicate sealed digests.
+    //
+    // An update event is a ~330-byte marker — the changed-notes payload
+    // lives in the issue shard, not the event — so reaching the 64 KiB
+    // seal threshold takes well over a hundred publications, not the
+    // handful the 2.2 KiB fillers suggest (same shape as the tail-seal
+    // scenario's 240-round budget). Each round captures the outgoing
+    // tail's bytes: the publication that finally crosses SEG_SEAL must
+    // seal exactly those bytes under their content address (spec 6.2
+    // renames the tail; 7.4 step 4 removes the sealed tail's old file).
     let mut old_tail_sha = sha256_file(&checkpoint_dir.join("set/tail.jsonl"));
     let mut sealed = false;
-    for round in 0..40 {
+    for round in 0..240 {
         set_notes(
             workspace,
             &ids[(round + 5) % ids.len()],
@@ -1187,12 +1196,15 @@ fn set_v2_crash_ordering() {
                     "the sealed tail's old bytes are not retained under their content address"
                 );
                 sealed = true;
-                old_tail_sha = sha256_file(&checkpoint_dir.join("set/tail.jsonl"));
             }
         }
         if sealed {
             break;
         }
+        // The next round's outgoing tail: what its first flush will seal
+        // if this round's appends left it under SEG_SEAL and the next one
+        // crosses.
+        old_tail_sha = sha256_file(&checkpoint_dir.join("set/tail.jsonl"));
     }
     assert!(sealed, "tail never sealed during the idempotency probe");
 }
