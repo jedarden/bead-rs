@@ -33,12 +33,21 @@
 //! removal for the merge scenario goes through the store database directly,
 //! the same accepted fixture pattern as the direct-inserted unknown fields
 //! in the round-trip conformance test.
+//!
+//! The out-of-band fixtures (beadrs-15cca551) generalize the two red
+//! scenarios' interference — a direct store deletion and orphan `set/`
+//! artifacts — so any baseline-green scenario can be re-run against it
+//! (`set_v2_green_scenarios_under_out_of_band_change`). That grid
+//! characterizes which scenarios survive the change and records the exact
+//! failure text for the rest, feeding the covered-ahead refusal fix in the
+//! later slices of the beadrs-40f0cc4e auto-split.
 
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs;
 use std::io::Write as _;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::process::{Command, Output};
 use tempfile::TempDir;
@@ -294,6 +303,92 @@ fn delete_issues_directly(workspace: &Path, ids: &[String]) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// out-of-band-change fixtures (beadrs-15cca551)
+// ---------------------------------------------------------------------------
+
+/// A store or checkpoint change no `bead` command produced — the shape the
+/// two red scenarios (shard-merge-on-deletion, crash-ordering) introduce
+/// between publications. Generalized here so any baseline-green scenario can
+/// be re-run against the same interference.
+#[derive(Clone)]
+enum OutOfBandChange {
+    /// Direct `DELETE FROM issues` on the first `count` live issues: the
+    /// store loses records with no accompanying event. This is the merge
+    /// scenario's delete-storm mechanism (which targets a chosen id list).
+    StoreDeletion { count: usize },
+    /// Orphan artifacts written straight under `set/`, as an interrupted
+    /// publication (a crash before the section 7.4 pointer swap) leaves
+    /// them: one unreferenced file in each artifact directory.
+    OrphanSetFiles,
+}
+
+impl OutOfBandChange {
+    fn label(&self) -> &'static str {
+        match self {
+            OutOfBandChange::StoreDeletion { .. } => "store-deletion",
+            OutOfBandChange::OrphanSetFiles => "orphan-set-files",
+        }
+    }
+
+    /// Apply the change to `workspace`, returning how many live issues were
+    /// removed from the store (zero for changes that leave the store alone)
+    fn apply(&self, workspace: &Path) -> usize {
+        match self {
+            OutOfBandChange::StoreDeletion { count } => {
+                let ids: Vec<String> = live_issue_ids(workspace).into_iter().take(*count).collect();
+                assert!(
+                    !ids.is_empty(),
+                    "store-deletion fixture found no live issues to remove"
+                );
+                delete_issues_directly(workspace, &ids);
+                ids.len()
+            }
+            OutOfBandChange::OrphanSetFiles => {
+                inject_orphan_set_files(&workspace.join(".beads/checkpoint"));
+                0
+            }
+        }
+    }
+}
+
+/// Write the crash-ordering fixture's orphan artifacts: one unreferenced
+/// file per `set/` artifact directory, each named like a content address so
+/// only a manifest reference distinguishes it from a live artifact
+fn inject_orphan_set_files(checkpoint_dir: &Path) {
+    for orphan_dir in ["set/shard", "set/seg", "set/rec"] {
+        fs::create_dir_all(checkpoint_dir.join(orphan_dir)).unwrap();
+    }
+    fs::write(
+        checkpoint_dir.join(
+            "set/shard/0000000000000000000000000000000000000000000000000000000000000000.jsonl",
+        ),
+        b"orphan shard\n",
+    )
+    .unwrap();
+    fs::write(
+        checkpoint_dir
+            .join("set/seg/1111111111111111111111111111111111111111111111111111111111111111.jsonl"),
+        b"orphan segment\n",
+    )
+    .unwrap();
+    fs::write(
+        checkpoint_dir
+            .join("set/rec/2222222222222222222222222222222222222222222222222222222222222222.jsonl"),
+        b"orphan record\n",
+    )
+    .unwrap();
+}
+
+/// Apply `out_of_band` (if any) between a fixture's base publication and
+/// its scenario driver: the driver's first flush is then the first
+/// publication after the change, which is where the red pair's covered-ahead
+/// integrity refusal fires. Returns the number of live issues the change
+/// removed from the store.
+fn apply_out_of_band(workspace: &Path, out_of_band: Option<&OutOfBandChange>) -> usize {
+    out_of_band.map_or(0, |change| change.apply(workspace))
+}
+
 /// The manifest's issue-shard rows
 fn issue_shards(manifest: &Value) -> Vec<Value> {
     manifest["shards"]
@@ -311,8 +406,13 @@ fn issue_shards(manifest: &Value) -> Vec<Value> {
 
 #[test]
 fn set_v2_budget_single_issue_update() {
+    run_scenario("set-v2-budget-single-issue-update", None);
+}
+
+fn budget_single_issue_update(out_of_band: Option<&OutOfBandChange>) {
     let workspace = fixture_with_issues(3000, "budget");
     let workspace = workspace.path();
+    let removed = apply_out_of_band(workspace, out_of_band);
 
     let first = read_pointer(workspace);
     assert_eq!(first["mode"], "set-v2", "adaptive publishes set-v2");
@@ -321,7 +421,7 @@ fn set_v2_budget_single_issue_update() {
     let mut parent = git_commit_checkpoint(workspace, "checkpoint-set-v2 base generation");
 
     let ids = live_issue_ids(workspace);
-    assert!(ids.len() >= 3000);
+    assert!(ids.len() + removed >= 3000);
 
     // 100 consecutive single-issue updates, each measured per section 11.
     // Different issues per round, matching the spec's consecutive-update
@@ -354,8 +454,13 @@ fn set_v2_budget_single_issue_update() {
 
 #[test]
 fn set_v2_shard_split_on_update_storm() {
+    run_scenario("set-v2-shard-split-on-update-storm", None);
+}
+
+fn shard_split_on_update_storm(out_of_band: Option<&OutOfBandChange>) {
     let workspace = fixture_with_issues(400, "storm");
     let workspace = workspace.path();
+    let _removed = apply_out_of_band(workspace, out_of_band);
 
     let before = current_manifest(workspace);
     let before_rows = issue_shards(&before);
@@ -464,9 +569,7 @@ fn set_v2_shard_merge_on_deletion() {
     for id in live.iter().take(3) {
         set_notes(workspace, id, &filler("merge", 40 * 1024));
     }
-    eprintln!("MARK: pre-split flush");
     flush_ok(workspace);
-    eprintln!("MARK: post-notes flush passed");
 
     let split = current_manifest(workspace);
     let split_rows = issue_shards(&split);
@@ -483,12 +586,12 @@ fn set_v2_shard_merge_on_deletion() {
     );
 
     // Delete records until the full-sibling group is at or below
-    // SHARD_MERGE (24 KiB): keep only the last eight small members.
+    // SHARD_MERGE (24 KiB): keep only the last eight small members. The
+    // delete storm is the `StoreDeletion` fixture's mechanism (direct
+    // DELETE FROM issues) applied to a targeted id list.
     let delete: Vec<String> = live[..live.len() - 8].to_vec();
     delete_issues_directly(workspace, &delete);
-    eprintln!("MARK: deleted {} issues", delete.len());
     flush_ok(workspace);
-    eprintln!("MARK: post-delete flush passed");
 
     let merged = current_manifest(workspace);
     let merged_rows = issue_shards(&merged);
@@ -566,8 +669,13 @@ fn set_v2_shard_merge_on_deletion() {
 
 #[test]
 fn set_v2_tail_seal_and_immutability() {
+    run_scenario("set-v2-tail-seal-and-immutability", None);
+}
+
+fn tail_seal_and_immutability(out_of_band: Option<&OutOfBandChange>) {
     let workspace = fixture_with_issues(50, "seal");
     let workspace = workspace.path();
+    let _removed = apply_out_of_band(workspace, out_of_band);
     let ids = live_issue_ids(workspace);
 
     // Append until the tail passes SEG_SEAL (64 KiB): ~2.5 KiB events seal
@@ -664,8 +772,13 @@ fn set_v2_tail_seal_and_immutability() {
 
 #[test]
 fn set_v2_oversize_record_once_cost() {
+    run_scenario("set-v2-oversize-record-once-cost", None);
+}
+
+fn oversize_record_once_cost(out_of_band: Option<&OutOfBandChange>) {
     let workspace = fixture_with_issues(60, "oversize");
     let workspace = workspace.path();
+    let _removed = apply_out_of_band(workspace, out_of_band);
     git_out(workspace, &["init", "-q", "."]);
     let mut parent = git_commit_checkpoint(workspace, "oversize base");
 
@@ -765,8 +878,13 @@ fn set_v2_oversize_record_once_cost() {
 
 #[test]
 fn set_v2_pointer_boundedness() {
+    run_scenario("set-v2-pointer-boundedness", None);
+}
+
+fn pointer_boundedness(out_of_band: Option<&OutOfBandChange>) {
     let workspace = fixture_with_issues(40, "bounded");
     let workspace = workspace.path();
+    let _removed = apply_out_of_band(workspace, out_of_band);
     let ids = live_issue_ids(workspace);
 
     // Distinctive payload markers that must never appear in the manifest.
@@ -834,8 +952,13 @@ fn set_v2_pointer_boundedness() {
 
 #[test]
 fn set_v2_forensic_frozen() {
+    run_scenario("set-v2-forensic-frozen", None);
+}
+
+fn forensic_frozen(out_of_band: Option<&OutOfBandChange>) {
     let workspace = fixture_with_issues(30, "frozen");
     let workspace = workspace.path();
+    let _removed = apply_out_of_band(workspace, out_of_band);
     let forensic = workspace.join(".beads/checkpoint/forensic.jsonl");
 
     let initial = fs::read(&forensic).ok();
@@ -904,32 +1027,12 @@ fn set_v2_crash_ordering() {
 
     // --- interrupted before the pointer swap: orphans on disk ---
     // A crash before step 3 leaves the old generation authoritative and
-    // orphan artifacts under set/. Simulate the orphans, then publish: the
-    // old generation stays authoritative until the new publication's
-    // structural retention reaps them.
+    // orphan artifacts under set/. Simulate the orphans (the
+    // `OrphanSetFiles` fixture), then publish: the old generation stays
+    // authoritative until the new publication's structural retention reaps
+    // them.
     let before_generation = read_pointer(workspace)["generation_id"].clone();
-    for orphan_dir in ["set/shard", "set/seg", "set/rec"] {
-        fs::create_dir_all(checkpoint_dir.join(orphan_dir)).unwrap();
-    }
-    fs::write(
-        checkpoint_dir.join(
-            "set/shard/0000000000000000000000000000000000000000000000000000000000000000.jsonl",
-        ),
-        b"orphan shard\n",
-    )
-    .unwrap();
-    fs::write(
-        checkpoint_dir
-            .join("set/seg/1111111111111111111111111111111111111111111111111111111111111111.jsonl"),
-        b"orphan segment\n",
-    )
-    .unwrap();
-    fs::write(
-        checkpoint_dir
-            .join("set/rec/2222222222222222222222222222222222222222222222222222222222222222.jsonl"),
-        b"orphan record\n",
-    )
-    .unwrap();
+    let _ = OutOfBandChange::OrphanSetFiles.apply(workspace);
 
     set_notes(
         workspace,
@@ -1049,4 +1152,151 @@ fn set_v2_crash_ordering() {
         }
     }
     assert!(sealed, "tail never sealed during the idempotency probe");
+}
+
+// ---------------------------------------------------------------------------
+// out-of-band re-verification grid (beadrs-15cca551)
+// ---------------------------------------------------------------------------
+
+/// Run one named baseline-green scenario, optionally under an out-of-band
+/// change. The two red scenarios are not dispatchable: their setups ARE the
+/// fixtures above.
+fn run_scenario(name: &str, out_of_band: Option<&OutOfBandChange>) {
+    match name {
+        "set-v2-budget-single-issue-update" => budget_single_issue_update(out_of_band),
+        "set-v2-shard-split-on-update-storm" => shard_split_on_update_storm(out_of_band),
+        "set-v2-tail-seal-and-immutability" => tail_seal_and_immutability(out_of_band),
+        "set-v2-oversize-record-once-cost" => oversize_record_once_cost(out_of_band),
+        "set-v2-pointer-boundedness" => pointer_boundedness(out_of_band),
+        "set-v2-forensic-frozen" => forensic_frozen(out_of_band),
+        other => panic!(
+            "unknown or non-dispatchable conformance scenario {other:?}; \
+             shard-merge-on-deletion and crash-ordering are the out-of-band \
+             scenarios themselves, not probe targets"
+        ),
+    }
+}
+
+/// The baseline-green scenarios whose behavior under out-of-band change this
+/// grid characterizes: the red pair dies at the first flush after such a
+/// change with a covered-ahead integrity refusal, and which of the six
+/// survivors tolerate the same interference is the open question.
+const GREEN_SCENARIOS: [&str; 6] = [
+    "set-v2-budget-single-issue-update",
+    "set-v2-shard-split-on-update-storm",
+    "set-v2-tail-seal-and-immutability",
+    "set-v2-oversize-record-once-cost",
+    "set-v2-pointer-boundedness",
+    "set-v2-forensic-frozen",
+];
+
+/// Run one scenario under one fixture, converting a scenario panic into its
+/// exact failure text so the grid can record reds without aborting
+fn probe_one(name: &str, fixture: &OutOfBandChange) -> Result<(), String> {
+    catch_unwind(AssertUnwindSafe(|| run_scenario(name, Some(fixture)))).map_err(|payload| {
+        if let Some(text) = payload.downcast_ref::<String>() {
+            text.clone()
+        } else if let Some(text) = payload.downcast_ref::<&str>() {
+            (*text).to_string()
+        } else {
+            "<non-string panic payload>".to_string()
+        }
+    })
+}
+
+/// Re-run every baseline-green scenario under each out-of-band fixture and
+/// record the outcome. This is a characterization grid, not a regression
+/// gate: a combination going red is a recorded finding — the covered-ahead
+/// refusal and its blast radius are later slices of the beadrs-40f0cc4e
+/// auto-split to fix — so reds do not fail this test. What DOES fail it is
+/// a grid that cannot classify: a combination that never ran, or a red
+/// without its exact failure text.
+///
+/// Narrow the grid for a focused re-run with comma-separated env filters:
+/// `SET_V2_OOB_PROBE_SCENARIOS` (scenario names) and
+/// `SET_V2_OOB_PROBE_FIXTURES` (fixture labels, e.g. `store-deletion`).
+/// Unset, both run the full grid. The report goes to captured stderr — read
+/// it with `-- --show-output` (or `--nocapture`).
+#[test]
+fn set_v2_green_scenarios_under_out_of_band_change() {
+    let scenarios: Vec<String> = match std::env::var("SET_V2_OOB_PROBE_SCENARIOS") {
+        Ok(list) => list
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .collect(),
+        Err(_) => GREEN_SCENARIOS
+            .iter()
+            .map(|name| name.to_string())
+            .collect(),
+    };
+    for name in &scenarios {
+        assert!(
+            GREEN_SCENARIOS.contains(&name.as_str()),
+            "SET_V2_OOB_PROBE_SCENARIOS names {name:?}, which is not a baseline-green scenario"
+        );
+    }
+    let all_fixtures = [
+        OutOfBandChange::StoreDeletion { count: 8 },
+        OutOfBandChange::OrphanSetFiles,
+    ];
+    let fixtures: Vec<OutOfBandChange> = match std::env::var("SET_V2_OOB_PROBE_FIXTURES") {
+        Ok(list) => all_fixtures
+            .iter()
+            .filter(|fixture| {
+                list.split(',')
+                    .map(str::trim)
+                    .any(|label| label == fixture.label())
+            })
+            .cloned()
+            .collect(),
+        Err(_) => all_fixtures.to_vec(),
+    };
+    assert!(
+        !scenarios.is_empty() && !fixtures.is_empty(),
+        "probe grid is empty: scenarios {scenarios:?}, fixtures {:?}",
+        fixtures.iter().map(|f| f.label()).collect::<Vec<_>>()
+    );
+
+    let mut report: Vec<(String, &'static str, Result<(), String>)> = Vec::new();
+    for name in &scenarios {
+        for fixture in &fixtures {
+            eprintln!("OOB-PROBE start: {name} under {}", fixture.label());
+            let outcome = probe_one(name, fixture);
+            report.push((name.clone(), fixture.label(), outcome));
+        }
+    }
+
+    let mut green = 0usize;
+    for (name, label, outcome) in &report {
+        match outcome {
+            Ok(()) => {
+                green += 1;
+                eprintln!("OOB-PROBE GREEN: {name} under {label}");
+            }
+            Err(text) => {
+                eprintln!("OOB-PROBE RED: {name} under {label}");
+                eprintln!("OOB-PROBE RED failure text: {text}");
+            }
+        }
+    }
+    eprintln!(
+        "OOB-PROBE summary: {green}/{} combinations stayed green",
+        report.len()
+    );
+
+    assert_eq!(
+        report.len(),
+        scenarios.len() * fixtures.len(),
+        "every scenario x fixture combination must run and be classified"
+    );
+    for (name, label, outcome) in &report {
+        if let Err(text) = outcome {
+            assert!(
+                !text.trim().is_empty(),
+                "combination {name} under {label} went red without failure text"
+            );
+        }
+    }
 }
