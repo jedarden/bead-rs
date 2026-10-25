@@ -11798,4 +11798,274 @@ mod tests {
             "the compatibility view must carry the repaired bytes"
         );
     }
+
+    /// Spec 9 (`checkpoint-set-v2.md`): adaptive resolves to set-v2 for
+    /// every workspace, forcing sharded-v1 output is not offered (the
+    /// request resolves to set-v2), and a forced monolith keeps its
+    /// existing safety limits -- honored within them, refused beyond any
+    /// single one, never bypassed.
+    #[test]
+    fn select_checkpoint_mode_follows_spec_9() {
+        fn stats(issue_records: u64, total_bytes: u64, max_line_bytes: u64) -> MonolithStats {
+            MonolithStats {
+                issue_records,
+                total_bytes,
+                max_line_bytes,
+            }
+        }
+        let limits = CheckpointThresholds {
+            max_monolith_issue_records: 100,
+            max_monolith_total_bytes: 10_000,
+            max_record_line_bytes: 1_000,
+            ..CheckpointThresholds::default()
+        };
+        let within = stats(100, 10_000, 1_000);
+        let over_records = stats(101, 10_000, 1_000);
+        let over_bytes = stats(100, 10_001, 1_000);
+        let over_line = stats(100, 10_000, 1_001);
+
+        // Adaptive and every forced-but-unavailable selection resolve to
+        // set-v2 regardless of the corpus size against the threshold table.
+        for corpus in [within, over_records, over_bytes, over_line] {
+            assert_eq!(
+                select_checkpoint_mode(&corpus, &limits, ModePolicy::Adaptive).unwrap(),
+                CheckpointMode::SetV2,
+                "adaptive must resolve to set-v2"
+            );
+            assert_eq!(
+                select_checkpoint_mode(
+                    &corpus,
+                    &limits,
+                    ModePolicy::Forced(CheckpointMode::Sharded)
+                )
+                .unwrap(),
+                CheckpointMode::SetV2,
+                "forced sharded-v1 output is not offered; it resolves to set-v2"
+            );
+            assert_eq!(
+                select_checkpoint_mode(&corpus, &limits, ModePolicy::Forced(CheckpointMode::SetV2))
+                    .unwrap(),
+                CheckpointMode::SetV2,
+                "forced set-v2 must resolve to set-v2"
+            );
+        }
+
+        // A forced monolith within every limit still publishes a monolith.
+        assert_eq!(
+            select_checkpoint_mode(
+                &within,
+                &limits,
+                ModePolicy::Forced(CheckpointMode::Monolithic)
+            )
+            .unwrap(),
+            CheckpointMode::Monolithic,
+            "a forced monolith within the limits is honored"
+        );
+        // Beyond any single limit the selection is refused: forcing never
+        // bypasses the safety limits.
+        for (tag, corpus) in [
+            ("issue-record limit", over_records),
+            ("total-byte limit", over_bytes),
+            ("record-line limit", over_line),
+        ] {
+            let error = select_checkpoint_mode(
+                &corpus,
+                &limits,
+                ModePolicy::Forced(CheckpointMode::Monolithic),
+            )
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("exceed recorded safety limits"),
+                "crossing the {} must refuse the forced monolith: {error}",
+                tag
+            );
+        }
+    }
+
+    /// Spec 3 + 10: a set-v2 generation deserializes into the same
+    /// in-memory issue/event model the monolithic reader produces. One
+    /// populated store is published twice -- forced monolithic, then forced
+    /// set-v2 -- and both generations are staged back through the pointer
+    /// dispatch for a structural comparison of every record field.
+    #[test]
+    fn set_v2_staging_matches_monolithic_staging_on_a_fixture_store() {
+        fn copy_tree(from: &Path, to: &Path) {
+            fs::create_dir_all(to).unwrap();
+            for entry in fs::read_dir(from).unwrap() {
+                let entry = entry.unwrap();
+                let target = to.join(entry.file_name());
+                if entry.file_type().unwrap().is_dir() {
+                    copy_tree(&entry.path(), &target);
+                } else {
+                    fs::copy(entry.path(), target).unwrap();
+                }
+            }
+        }
+
+        let temp_dir = TempDir::new().unwrap();
+        let beads = temp_dir.path().join(".beads");
+        let checkpoint_dir = beads.join("checkpoint");
+        fs::create_dir_all(&checkpoint_dir).unwrap();
+
+        let mut store = SqliteStore::with_path(&beads.join("beads.db")).unwrap();
+        store.apply_migrations().unwrap();
+        {
+            let conn = store.conn();
+            conn.execute(
+                "INSERT INTO workspace (id, uuid, prefix, layout_version, created_at)
+                 VALUES (1, '0123abcd-fixture-52-0123456789abcdef', 'fx', 1, '2026-10-25T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+            let tx = conn.unchecked_transaction().unwrap();
+            let now = format_rfc3339(SystemTime::now());
+            for i in 1..=3 {
+                tx.execute(
+                    "INSERT INTO issues (id, title, description, priority, issue_type, base_status,
+                                      manual_blocked, created_at, updated_at, profile, schema_ref)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    params![
+                        &format!("fx-{:016x}", i),
+                        &format!("Fixture issue {}", i),
+                        "staging-equivalence fixture",
+                        2,
+                        "task",
+                        "open",
+                        0,
+                        now,
+                        now,
+                        "native-v1",
+                        "urn:bead-rs:schema:issue:native-v1"
+                    ],
+                )
+                .unwrap();
+            }
+            tx.execute(
+                "INSERT INTO labels (issue_id, label) VALUES (?1, 'fixture')",
+                params!["fx-0000000000000001"],
+            )
+            .unwrap();
+            tx.execute(
+                "INSERT INTO dependencies (blocked_issue_id, blocker_issue_id, kind)
+                 VALUES (?1, ?2, 'blocks')",
+                params!["fx-0000000000000002", "fx-0000000000000001"],
+            )
+            .unwrap();
+            tx.execute(
+                "INSERT INTO events (issue_id, kind, actor, time, detail)
+                 VALUES (?1, 'created', 'tester', ?2, '{}')",
+                params!["fx-0000000000000001", now],
+            )
+            .unwrap();
+            tx.execute(
+                "INSERT INTO events (issue_id, kind, actor, time, detail)
+                 VALUES (?1, 'updated', 'tester', ?2, '{\"notes\":\"one change\"}')",
+                params!["fx-0000000000000001", now],
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+
+        let fixture_config = |mode: CheckpointMode| CheckpointConfig {
+            mode: Some(mode),
+            ..CheckpointConfig::default()
+        };
+
+        // First publication: a forced monolith. The generation is copied
+        // aside because the set-v2 republish reaps unreferenced files.
+        publish_forensic_checkpoint(
+            &mut store,
+            &fixture_config(CheckpointMode::Monolithic),
+            &beads,
+        )
+        .unwrap();
+        let monolith_copy = temp_dir.path().join("monolith-copy");
+        copy_tree(&checkpoint_dir, &monolith_copy);
+
+        // Second publication of the same live store: set-v2 (the adaptive
+        // resolution, forced here to keep the test independent of config
+        // file plumbing).
+        publish_forensic_checkpoint(&mut store, &fixture_config(CheckpointMode::SetV2), &beads)
+            .unwrap();
+
+        let monolithic = stage_checkpoint_set(&monolith_copy).unwrap();
+        let setv2 = stage_checkpoint_set(&checkpoint_dir).unwrap();
+        assert_eq!(monolithic.mode, CheckpointMode::Monolithic);
+        assert_eq!(setv2.mode, CheckpointMode::SetV2);
+
+        // Identity: both readers agree on whose store and which point in
+        // its history they read.
+        assert_eq!(monolithic.store_uuid, setv2.store_uuid);
+        assert_eq!(monolithic.snapshot_sequence, setv2.snapshot_sequence);
+
+        // The record corpus: structurally identical through both readers.
+        // Serialization equality is the comparison, because the model types
+        // carry no PartialEq; counts are compared as themselves.
+        fn json_of<T: serde::Serialize>(value: &T) -> serde_json::Value {
+            serde_json::to_value(value).unwrap()
+        }
+        assert_eq!(
+            json_of(&monolithic.issues),
+            json_of(&setv2.issues),
+            "issue records must deserialize identically"
+        );
+        assert_eq!(
+            format!("{:?}", monolithic.dependencies),
+            format!("{:?}", setv2.dependencies),
+            "dependency records must deserialize identically"
+        );
+        assert_eq!(
+            json_of(&monolithic.labels),
+            json_of(&setv2.labels),
+            "label records must deserialize identically"
+        );
+        assert_eq!(
+            json_of(&monolithic.events),
+            json_of(&setv2.events),
+            "event records must deserialize identically (canonical order included)"
+        );
+        assert_eq!(
+            json_of(&monolithic.receipts),
+            json_of(&setv2.receipts),
+            "receipt records must deserialize identically"
+        );
+        assert_eq!(
+            json_of(&monolithic.attempt_outcomes),
+            json_of(&setv2.attempt_outcomes),
+            "attempt-outcome records must deserialize identically"
+        );
+        assert_eq!(
+            monolithic.redaction, setv2.redaction,
+            "redaction records must deserialize identically"
+        );
+        assert_eq!(monolithic.issue_count, setv2.issue_count);
+        assert_eq!(monolithic.event_count, setv2.event_count);
+        assert_eq!(monolithic.receipt_count, setv2.receipt_count);
+        assert_eq!(
+            monolithic.attempt_outcome_count,
+            setv2.attempt_outcome_count,
+        );
+        assert_eq!(
+            monolithic.redaction_record_count,
+            setv2.redaction_record_count,
+        );
+        // Each pointer's unknown fields ride into its own staging (the
+        // restore that consumes it re-projects them on the next
+        // publication), so they differ across layouts by construction: a
+        // monolithic pointer has none, and the set-v2 pointer's extra
+        // `format` identity field is carried opaquely.
+        assert!(
+            monolithic.pointer_extensions.is_empty(),
+            "a monolithic pointer carries no extensions: {:?}",
+            monolithic.pointer_extensions
+        );
+        assert_eq!(
+            setv2
+                .pointer_extensions
+                .get("format")
+                .and_then(|v| v.as_str()),
+            Some("checkpoint-set-v2"),
+            "the set-v2 pointer's format identity must ride into the staging"
+        );
+    }
 }
