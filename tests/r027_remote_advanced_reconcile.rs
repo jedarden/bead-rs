@@ -644,6 +644,70 @@ fn flush_only_refuses_integrity_failure_with_exit_5() {
     );
 }
 
+/// An out-of-band `DELETE FROM issues` cascades its events away (the
+/// events table declares `ON DELETE CASCADE`, and SQLite enforces it for
+/// foreign-key connections), so deleting the newest issue drops the live
+/// sequence below the one the store's own recorded publication covered.
+/// That pointer is still the local publisher's generation — never a pull,
+/// which leaves `checkpoint_state` naming a different generation — so the
+/// workspace reports behind, stays writable, and an explicit flush
+/// republishes the shrunken store rather than refusing it as
+/// covered-ahead (the set-v2-shard-merge-on-deletion refusal).
+#[test]
+fn recorded_generation_republishes_after_out_of_band_event_loss() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().to_path_buf();
+    run(&workspace, &["init", "--prefix", "r027"]);
+    create_issue(&workspace, "kept history");
+    create_issue(&workspace, "also kept");
+    let doomed = create_issue(&workspace, "doomed newest");
+    assert_eq!(relationship(&workspace), "aligned");
+    let published = pointer(&workspace);
+
+    let conn = live_db(&workspace);
+    conn.execute("DELETE FROM issues WHERE id = ?1", [&doomed])
+        .unwrap();
+    drop(conn);
+
+    let report = status(&workspace);
+    assert_eq!(
+        report["relationship"], "behind",
+        "a recorded generation above a shrunken live store is local \
+         housekeeping, not remote-advanced: {report}"
+    );
+    assert_eq!(
+        report["dirty"], true,
+        "the published generation no longer reflects the store: {report}"
+    );
+    assert!(
+        report["live_sequence"].as_i64().unwrap()
+            < published["snapshot_sequence"].as_i64().unwrap(),
+        "the cascade must have removed the newest event for this shape"
+    );
+
+    let flush = run(&workspace, &["sync", "flush-only"]);
+    assert!(
+        flush.status.success(),
+        "flush must republish the shrunken store: {}",
+        String::from_utf8_lossy(&flush.stderr)
+    );
+    let republished = pointer(&workspace);
+    assert_ne!(
+        republished["generation_id"], published["generation_id"],
+        "the flush must publish a new generation, not short-circuit"
+    );
+    assert_eq!(republished["event_count"], 2, "the lost event stays lost");
+
+    // The guard no longer wedges mutations against the workspace's own
+    // last publication.
+    bead(&workspace)
+        .args(["create", "--title", "still writable"])
+        .assert()
+        .success();
+    let after = status(&workspace);
+    assert_eq!(after["relationship"], "aligned", "{after}");
+}
+
 #[test]
 fn doctor_distinguishes_remote_advanced_from_integrity_failure() {
     // Remote-advanced: an actionable diagnostic carrying the stable state

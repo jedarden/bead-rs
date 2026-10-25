@@ -332,7 +332,7 @@ fn refuse_gates(report: &checkpoint::CheckpointStatusReport) -> Result<()> {
     }
     if report.dirty {
         return Err(Error::cli_usage(format!(
-            "sync commit refused: the checkpoint is dirty (covered {} < live {}) and \
+            "sync commit refused: the checkpoint is dirty (covered {} != live {}) and \
              committing now would record a stale checkpoint - run `bead sync flush-only` first",
             report.covered_sequence.unwrap_or_default(),
             report.live_sequence

@@ -8624,9 +8624,15 @@ fn forensic_checkpoint_status_inner(
         }
     }
 
-    // Freshness against the live event sequence
+    // Freshness against the live event sequence. Divergence in either
+    // direction leaves the published generation not reflecting the store:
+    // `covered < live` is ordinary unflushed work, while `covered > live`
+    // against the store's own recorded generation means the live store lost
+    // rows that publication covered (out-of-band deletion), so the
+    // idempotent short-circuit must not swallow the republish that repairs
+    // it.
     let covered = report.covered_sequence.unwrap_or(0);
-    report.dirty = covered < live_sequence;
+    report.dirty = covered != live_sequence;
     if report.dirty {
         report.not_ready_reasons.push(format!(
             "checkpoint dirty: covered={}, live={}",

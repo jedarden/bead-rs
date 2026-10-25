@@ -634,32 +634,78 @@ fn set_v2_shard_merge_on_deletion() {
         total, remaining
     );
 
-    // The retained set stays bounded by the two referenced generations.
+    // The retained set stays bounded by the two referenced generations
+    // (spec 7.3): after the merge publication, nothing survives under
+    // set/shard that neither current.json (the merged generation) nor
+    // previous.json (the split generation) references. The split children
+    // are exactly one generation old here, so they legitimately remain —
+    // a split-then-merge is precisely the shape where consecutive
+    // generations share almost no shard files, and a bound against the
+    // current rows alone is unsatisfiable.
     let set_dir = workspace.join(".beads/checkpoint/set");
-    let mut on_disk = 0usize;
-    for entry in fs::read_dir(set_dir.join("shard")).unwrap() {
-        let entry = entry.unwrap();
-        if entry.file_type().unwrap().is_file() {
-            on_disk += 1;
-        }
-    }
-    let referenced: HashSet<String> = merged_rows
-        .iter()
-        .map(|row| {
-            row["path"]
-                .as_str()
-                .unwrap()
-                .rsplit('/')
-                .next()
-                .unwrap()
-                .to_string()
-        })
+    let on_disk_shards = || -> HashSet<String> {
+        fs::read_dir(set_dir.join("shard"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
+            .collect()
+    };
+    let referenced_by = |manifest: &Value| -> HashSet<String> {
+        issue_shards(manifest)
+            .into_iter()
+            .map(|row| {
+                row["path"]
+                    .as_str()
+                    .unwrap()
+                    .rsplit('/')
+                    .next()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect()
+    };
+    let merged_referenced = referenced_by(&merged);
+    let split_referenced = referenced_by(&split);
+    let retained: HashSet<String> = merged_referenced
+        .union(&split_referenced)
+        .cloned()
+        .collect();
+    let orphans: Vec<String> = on_disk_shards().difference(&retained).cloned().collect();
+    assert!(
+        orphans.is_empty(),
+        "shard directory holds files referenced by neither the merged nor \
+         the split generation: {:?}",
+        orphans
+    );
+
+    // The next real publication slides the two-generation window past the
+    // split children and reaps them (spec 7.3). The idempotent
+    // short-circuit publishes nothing on an unchanged store, so the window
+    // needs one genuine mutation to advance.
+    set_notes(
+        workspace,
+        live.last().unwrap(),
+        "merge retention-window driver",
+    );
+    flush_ok(workspace);
+    let after = current_manifest(workspace);
+    let after_referenced = referenced_by(&after);
+    let on_disk = on_disk_shards();
+    assert!(
+        on_disk.len() <= after_referenced.len() + 2,
+        "shard directory holds {} files for {} referenced rows after the \
+         split generation left the retention window",
+        on_disk.len(),
+        after_referenced.len()
+    );
+    let reaped: Vec<String> = split_referenced
+        .difference(&after_referenced)
+        .filter(|name| on_disk.contains(*name))
+        .cloned()
         .collect();
     assert!(
-        on_disk <= referenced.len() + 2,
-        "shard directory holds {} files for {} referenced rows",
-        on_disk,
-        referenced.len()
+        reaped.is_empty(),
+        "split children survived the publication that left them unreferenced: {:?}",
+        reaped
     );
 }
 
@@ -799,10 +845,7 @@ fn oversize_record_once_cost(out_of_band: Option<&OutOfBandChange>) {
         .map(|e| e.unwrap())
         .collect();
     assert_eq!(rec_files.len(), 1, "expected exactly one oversize object");
-    let rec_path_rel = format!(
-        "set/rec/{}",
-        rec_files[0].file_name().to_str().unwrap().to_string()
-    );
+    let rec_path_rel = format!("set/rec/{}", rec_files[0].file_name().to_str().unwrap());
     // Content addressing: the file's bytes hash to its name.
     let bytes = fs::read(rec_files[0].path()).unwrap();
     assert_eq!(
@@ -843,10 +886,10 @@ fn oversize_record_once_cost(out_of_band: Option<&OutOfBandChange>) {
 
     // Subsequent unrelated single-issue publications add no bytes for the
     // referenced record.
-    for round in 1..=3 {
+    for (round, id) in ids.iter().enumerate().take(4).skip(1) {
         set_notes(
             workspace,
-            &ids[round],
+            id,
             &format!("unrelated round {} {}", round, filler("unrelated", 100)),
         );
         flush_ok(workspace);

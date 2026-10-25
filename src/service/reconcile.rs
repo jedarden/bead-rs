@@ -40,7 +40,10 @@ pub const REMOTE_ADVANCED_REMEDY: &str =
 pub enum SyncRelationship {
     /// No pointer exists.
     Absent,
-    /// `C < L`: the live store has unflushed work.
+    /// `C < L`: the live store has unflushed work. Also the verdict for a
+    /// recorded local generation whose live store has fallen below the
+    /// covered sequence (out-of-band event loss): the remedy is the same
+    /// explicit flush, republishing from the store.
     Behind,
     /// `C == L`. Claims nothing about pointer or recorded-state health,
     /// which status reports separately.
@@ -134,8 +137,26 @@ pub fn classify(conn: &Connection, checkpoint_base: &Path) -> Result<Relationshi
         std::cmp::Ordering::Equal => SyncRelationship::Aligned,
         std::cmp::Ordering::Greater => SyncRelationship::RemoteAdvanced,
     };
-    if covered <= live && is_recorded_generation(conn, &pointer) {
-        return Ok(RelationshipVerdict::of(relationship));
+    // A recorded local generation authenticates the existing prefix for any
+    // covered/live relation, not only `covered <= live` (spec: a locally
+    // recorded generation, sequence, and root hash authenticate the
+    // previously published prefix; only a newly delivered generation
+    // requires staging and comparison). `covered > live` against a recorded
+    // generation means the live store lost rows its own publication covered
+    // — an out-of-band deletion cascading events with their issues, never
+    // a pull, which by construction leaves `checkpoint_state` naming the
+    // local generation rather than the delivered one. Such a checkpoint is
+    // local housekeeping repairable by an explicit flush, so it reports
+    // Behind — the republish remedy — never remote-advanced, whose guard
+    // would wedge every mutation against the workspace's own last
+    // publication.
+    if is_recorded_generation(conn, &pointer) {
+        let authenticated = if covered > live {
+            SyncRelationship::Behind
+        } else {
+            relationship
+        };
+        return Ok(RelationshipVerdict::of(authenticated));
     }
 
     Ok(classify_checkpoint_history(
