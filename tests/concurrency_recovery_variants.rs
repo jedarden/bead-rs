@@ -901,7 +901,10 @@ fn publication_failure_splits_without_rollback_then_recovers() {
         // A monolith-only generation history: a set-v2 gen-0 (the pre-pin
         // default) in the retained set fails the secret scan's coverage
         // check before the injected publication fault is ever reached.
-        variant.run_ok(&["init", "--no-auto-flush", "--prefix", "pubfail"], ws.path());
+        variant.run_ok(
+            &["init", "--no-auto-flush", "--prefix", "pubfail"],
+            ws.path(),
+        );
         force_monolithic_mode(ws.path());
         variant.run_ok(&["sync", "flush-only"], ws.path());
 
