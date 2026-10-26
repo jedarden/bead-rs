@@ -1413,7 +1413,12 @@ fn build_fixture() -> Fixture {
         .args(["sync", "flush-only"])
         .assert()
         .success();
-    let foreign_checkpoint = foreign_ws.join(".beads/checkpoint/forensic.jsonl");
+    // The merge source must be layout-agnostic: the default resolves to
+    // set-v2 (checkpoint-set-v2 spec 9), which never writes a monolithic
+    // forensic.jsonl. The checkpoint directory stages through current.json,
+    // which dispatches on the pointer's own mode, so the sweep keeps
+    // exercising the default layout the registry runs against.
+    let foreign_checkpoint = foreign_ws.join(".beads/checkpoint");
 
     Fixture {
         _dirs: vec![dir, foreign, restore_source],
