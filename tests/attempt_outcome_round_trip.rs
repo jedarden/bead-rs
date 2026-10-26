@@ -70,6 +70,25 @@ fn force_sharded_mode(workspace: &std::path::Path) {
     fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 }
 
+/// Force monolithic mode for testing
+fn force_monolithic_mode(workspace: &std::path::Path) {
+    let path = workspace.join(".beads/config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    config
+        .as_object_mut()
+        .unwrap()
+        .entry("checkpoint")
+        .or_insert(serde_json::Value::Object(Default::default()))
+        .as_object_mut()
+        .unwrap()
+        .insert(
+            "mode".into(),
+            serde_json::Value::String("monolithic".to_string()),
+        );
+    fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+}
+
 /// Get the first (and usually only) issue ID from the database
 fn get_first_issue_id(db_path: &Path) -> String {
     let conn = rusqlite::Connection::open(db_path).unwrap();
@@ -123,6 +142,9 @@ fn read_all_attempt_outcomes(db_path: &Path) -> Vec<serde_json::Value> {
 fn test_attempt_outcome_round_trip_monolithic() {
     let workspace1 = create_workspace();
     suppress_auto_flush(workspace1.path());
+    // The default resolves to set-v2 (checkpoint-set-v2 spec 9), which
+    // never writes forensic.jsonl; pin the monolith this leg imports from.
+    force_monolithic_mode(workspace1.path());
 
     // Create a test issue
     Command::cargo_bin("bead")
@@ -365,6 +387,8 @@ fn test_attempt_outcome_round_trip_sharded() {
 fn test_attempt_outcome_duplicate_detection() {
     let workspace1 = create_workspace();
     suppress_auto_flush(workspace1.path());
+    // Same set-v2 default: the forensic import below needs a monolith.
+    force_monolithic_mode(workspace1.path());
 
     // Create issue and insert attempt outcome
     Command::cargo_bin("bead")
