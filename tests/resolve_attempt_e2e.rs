@@ -27,6 +27,7 @@ fn setup_workspace() -> TempDir {
         .current_dir(temp_dir.path())
         .assert()
         .success();
+    force_monolithic_mode(temp_dir.path());
     temp_dir
 }
 
@@ -803,4 +804,25 @@ fn a_leased_claim_is_resolved_only_with_its_own_credential() {
         Some("worker-one"),
         "resolving must not disturb the lease it was admitted by"
     );
+}
+
+/// The adaptive default resolves to set-v2 since 5d4c08a6 (checkpoint-set-v2
+/// spec 9); these legs assert the monolith layout, so pin the mode they were
+/// written against.
+fn force_monolithic_mode(workspace: &std::path::Path) {
+    let path = workspace.join(".beads/config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    config
+        .as_object_mut()
+        .unwrap()
+        .entry("checkpoint")
+        .or_insert(serde_json::Value::Object(Default::default()))
+        .as_object_mut()
+        .unwrap()
+        .insert(
+            "mode".into(),
+            serde_json::Value::String("monolithic".to_string()),
+        );
+    std::fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 }

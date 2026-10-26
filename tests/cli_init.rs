@@ -16,6 +16,7 @@ fn test_init_creates_workspace() {
         .args(["init", "--skip-foreign-workspace"])
         .assert()
         .success();
+    force_monolithic_mode(root);
 
     // Check that workspace was created
     let beads_dir = root.join(".beads");
@@ -40,6 +41,7 @@ fn test_init_with_custom_prefix() {
         .arg("custom")
         .assert()
         .success();
+    force_monolithic_mode(root);
 
     // Check that prefix was used
     let config_path = root.join(".beads/config.json");
@@ -79,6 +81,7 @@ fn test_init_idempotent() {
         .args(["init", "--skip-foreign-workspace"])
         .assert()
         .success();
+    force_monolithic_mode(root);
 
     // Second init should succeed (idempotent)
     let mut cmd = Command::cargo_bin("bead").unwrap();
@@ -86,6 +89,7 @@ fn test_init_idempotent() {
         .args(["init", "--skip-foreign-workspace"])
         .assert()
         .success();
+    force_monolithic_mode(root);
 }
 
 #[test]
@@ -101,6 +105,7 @@ fn test_init_creates_checkpoint_and_receipts_directories() {
         .args(["init", "--skip-foreign-workspace"])
         .assert()
         .success();
+    force_monolithic_mode(root);
 
     // Check checkpoint directory
     let checkpoint_dir = root.join(".beads/checkpoint");
@@ -124,6 +129,7 @@ fn test_init_creates_gitignore() {
         .args(["init", "--skip-foreign-workspace"])
         .assert()
         .success();
+    force_monolithic_mode(root);
 
     // Check .gitignore was created
     let gitignore_path = root.join(".beads/.gitignore");
@@ -212,6 +218,7 @@ fn test_init_creates_initial_checkpoint() {
         .args(["init", "--skip-foreign-workspace"])
         .assert()
         .success();
+    force_monolithic_mode(root);
 
     // Check that initial checkpoint was created
     let checkpoint_current = root.join(".beads/checkpoint/current.json");
@@ -225,23 +232,17 @@ fn test_init_creates_initial_checkpoint() {
     let checkpoint: serde_json::Value = serde_json::from_str(&checkpoint_content).unwrap();
 
     assert!(checkpoint["generation_id"].is_string());
-    assert_eq!(checkpoint["mode"], "monolithic");
+    // 5d4c08a6 (checkpoint-set-v2 spec 9): the adaptive default on a fresh
+    // workspace resolves to set-v2, which retires the forensic view.
+    assert_eq!(checkpoint["mode"], "set-v2");
     assert_eq!(checkpoint["issue_count"], 0);
     assert_eq!(checkpoint["event_count"], 0);
     assert_eq!(checkpoint["receipt_count"], 0);
 
-    // Verify forensic.jsonl exists (monolithic mode)
     let forensic_path = root.join(".beads/checkpoint/forensic.jsonl");
     assert!(
-        forensic_path.exists(),
-        "Forensic checkpoint should exist in monolithic mode"
-    );
-
-    // Verify it's empty (no records)
-    let forensic_content = std::fs::read_to_string(&forensic_path).unwrap();
-    assert!(
-        forensic_content.lines().count() == 0,
-        "Initial checkpoint should contain zero records"
+        !forensic_path.exists(),
+        "the set-v2 default retires the forensic view"
     );
 }
 
@@ -259,6 +260,7 @@ fn test_init_with_no_auto_flush_skips_checkpoint() {
         .arg("--no-auto-flush")
         .assert()
         .success();
+    force_monolithic_mode(root);
 
     // Check that initial checkpoint was NOT created
     let checkpoint_current = root.join(".beads/checkpoint/current.json");
@@ -282,6 +284,7 @@ fn test_init_idempotent_does_not_overwrite_checkpoint() {
         .args(["init", "--skip-foreign-workspace"])
         .assert()
         .success();
+    force_monolithic_mode(root);
 
     // Read the initial checkpoint generation
     let checkpoint_current = root.join(".beads/checkpoint/current.json");
@@ -293,6 +296,7 @@ fn test_init_idempotent_does_not_overwrite_checkpoint() {
         .args(["init", "--skip-foreign-workspace"])
         .assert()
         .success();
+    force_monolithic_mode(root);
 
     // Verify checkpoint was not overwritten
     let second_checkpoint = std::fs::read_to_string(&checkpoint_current).unwrap();
@@ -345,6 +349,7 @@ fn test_gitignore_trackable_files_not_excluded() {
         .args(["init", "--skip-foreign-workspace"])
         .assert()
         .success();
+    force_monolithic_mode(root);
 
     let gitignore_path = root.join(".beads/.gitignore");
     let content = std::fs::read_to_string(&gitignore_path).unwrap();
@@ -398,6 +403,7 @@ fn test_init_preserves_existing_custom_gitignore() {
         .args(["init", "--skip-foreign-workspace"])
         .assert()
         .success();
+    force_monolithic_mode(root);
 
     // Verify the custom .gitignore was preserved byte-for-byte
     let preserved_content = std::fs::read_to_string(&custom_gitignore).unwrap();
@@ -421,6 +427,7 @@ fn test_init_existing_workspace_no_gitignore() {
         .args(["init", "--skip-foreign-workspace"])
         .assert()
         .success();
+    force_monolithic_mode(root);
 
     let gitignore_path = root.join(".beads/.gitignore");
     let _first_content = std::fs::read_to_string(&gitignore_path).unwrap();
@@ -434,6 +441,7 @@ fn test_init_existing_workspace_no_gitignore() {
         .args(["init", "--skip-foreign-workspace"])
         .assert()
         .success();
+    force_monolithic_mode(root);
 
     // Verify .gitignore was NOT recreated
     assert!(
@@ -456,6 +464,7 @@ fn test_init_fresh_clone_recovery_preserves_gitignore() {
         .args(["init", "--skip-foreign-workspace"])
         .assert()
         .success();
+    force_monolithic_mode(root);
 
     let gitignore_path = root.join(".beads/.gitignore");
     let config_path = root.join(".beads/config.json");
@@ -474,6 +483,7 @@ fn test_init_fresh_clone_recovery_preserves_gitignore() {
         .args(["init", "--skip-foreign-workspace"])
         .assert()
         .success();
+    force_monolithic_mode(root);
 
     // Verify database was recreated
     assert!(
@@ -509,6 +519,7 @@ fn test_gitignore_excludes_all_runtime_artifacts() {
         .args(["init", "--skip-foreign-workspace"])
         .assert()
         .success();
+    force_monolithic_mode(root);
 
     let gitignore_path = root.join(".beads/.gitignore");
     let content = std::fs::read_to_string(&gitignore_path).unwrap();
@@ -547,4 +558,25 @@ fn test_gitignore_excludes_all_runtime_artifacts() {
         content.contains("#"),
         "Should have comments for organization"
     );
+}
+
+/// The adaptive default resolves to set-v2 since 5d4c08a6 (checkpoint-set-v2
+/// spec 9); these legs assert the monolith layout, so pin the mode they were
+/// written against.
+fn force_monolithic_mode(workspace: &std::path::Path) {
+    let path = workspace.join(".beads/config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    config
+        .as_object_mut()
+        .unwrap()
+        .entry("checkpoint")
+        .or_insert(serde_json::Value::Object(Default::default()))
+        .as_object_mut()
+        .unwrap()
+        .insert(
+            "mode".into(),
+            serde_json::Value::String("monolithic".to_string()),
+        );
+    std::fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 }

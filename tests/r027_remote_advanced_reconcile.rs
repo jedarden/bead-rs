@@ -26,7 +26,11 @@ fn bead(dir: &Path) -> Command {
 }
 
 fn run(dir: &Path, args: &[&str]) -> std::process::Output {
-    bead(dir).args(args).assert().success().get_output().clone()
+    let output = bead(dir).args(args).assert().success().get_output().clone();
+    if args.first() == Some(&"init") {
+        force_monolithic_mode(dir);
+    }
+    output
 }
 
 /// A hermetic `git` invocation: no global or system config leaks in, and
@@ -864,4 +868,25 @@ fn shared_history_survives_reconcile_as_prefix() {
     // The shared issue is untouched by the merge.
     let shown = String::from_utf8(run(&pair.origin, &["show", &pair.shared_issue]).stdout).unwrap();
     assert!(shown.contains(&pair.shared_issue), "{shown}");
+}
+
+/// The adaptive default resolves to set-v2 since 5d4c08a6 (checkpoint-set-v2
+/// spec 9); these legs assert the monolith layout, so pin the mode they were
+/// written against.
+fn force_monolithic_mode(workspace: &std::path::Path) {
+    let path = workspace.join(".beads/config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    config
+        .as_object_mut()
+        .unwrap()
+        .entry("checkpoint")
+        .or_insert(serde_json::Value::Object(Default::default()))
+        .as_object_mut()
+        .unwrap()
+        .insert(
+            "mode".into(),
+            serde_json::Value::String("monolithic".to_string()),
+        );
+    std::fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 }

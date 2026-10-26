@@ -48,6 +48,7 @@ fn init_bead(workspace: &Path, prefix: &str) {
         "bead init failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    force_monolithic_mode(workspace);
 }
 
 /// Text `sync status`, asserting the invocation itself succeeded.
@@ -268,4 +269,25 @@ fn repo_less_workspace_names_unavailability_in_the_readiness_gate() {
     // would carry `git_reachability: null` and the gate would pass
     // through unconsulted.
     assert!(root.join(".beads/checkpoint/current.json").is_file());
+}
+
+/// The adaptive default resolves to set-v2 since 5d4c08a6 (checkpoint-set-v2
+/// spec 9); these legs assert the monolith layout, so pin the mode they were
+/// written against.
+fn force_monolithic_mode(workspace: &std::path::Path) {
+    let path = workspace.join(".beads/config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    config
+        .as_object_mut()
+        .unwrap()
+        .entry("checkpoint")
+        .or_insert(serde_json::Value::Object(Default::default()))
+        .as_object_mut()
+        .unwrap()
+        .insert(
+            "mode".into(),
+            serde_json::Value::String("monolithic".to_string()),
+        );
+    std::fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 }

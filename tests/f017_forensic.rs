@@ -58,10 +58,11 @@ fn test_f017_monolithic_checkpoint_basic() {
 
     // Initialize workspace
     Command::new(&bead)
-        .args(["init", "--skip-foreign-workspace"])
+        .args(["init", "--no-auto-flush", "--skip-foreign-workspace"])
         .current_dir(workspace)
         .output()
         .expect("Failed to init workspace");
+    force_monolithic_mode(workspace);
 
     // Create some issues
     for i in 1..=3 {
@@ -142,10 +143,11 @@ fn test_f017_content_addressed_paths() {
 
     // Initialize workspace
     Command::new(&bead)
-        .args(["init", "--skip-foreign-workspace"])
+        .args(["init", "--no-auto-flush", "--skip-foreign-workspace"])
         .current_dir(workspace)
         .output()
         .expect("Failed to init workspace");
+    force_monolithic_mode(workspace);
 
     // Create issues
     Command::new(&bead)
@@ -220,10 +222,11 @@ fn test_f017_identical_flushes_reuse_one_object() {
 
     // Initialize workspace
     Command::new(&bead)
-        .args(["init", "--skip-foreign-workspace"])
+        .args(["init", "--no-auto-flush", "--skip-foreign-workspace"])
         .current_dir(workspace)
         .output()
         .expect("Failed to init workspace");
+    force_monolithic_mode(workspace);
 
     // Create an issue
     Command::new(&bead)
@@ -311,10 +314,11 @@ fn test_f017_legacy_generation_named_object_importable() {
 
     // Build a real checkpoint in the source workspace.
     Command::new(&bead)
-        .args(["init", "--skip-foreign-workspace"])
+        .args(["init", "--no-auto-flush", "--skip-foreign-workspace"])
         .current_dir(&source_workspace)
         .output()
         .expect("Failed to init source workspace");
+    force_monolithic_mode(&source_workspace);
 
     let create_output = Command::new(&bead)
         .args(["create", "--title", "Legacy object test issue"])
@@ -363,10 +367,11 @@ fn test_f017_legacy_generation_named_object_importable() {
     // pointer's active_root.path is authoritative, so the generation-named
     // object must still be readable.
     Command::new(&bead)
-        .args(["init", "--skip-foreign-workspace"])
+        .args(["init", "--no-auto-flush", "--skip-foreign-workspace"])
         .current_dir(&target_workspace)
         .output()
         .expect("Failed to init target workspace");
+    force_monolithic_mode(&target_workspace);
 
     let import_output = Command::new(&bead)
         .args([
@@ -421,10 +426,11 @@ fn test_f017_pointer_metadata_tracking() {
 
     // Initialize workspace
     Command::new(&bead)
-        .args(["init", "--skip-foreign-workspace"])
+        .args(["init", "--no-auto-flush", "--skip-foreign-workspace"])
         .current_dir(workspace)
         .output()
         .expect("Failed to init workspace");
+    force_monolithic_mode(workspace);
 
     // Create first issue
     Command::new(&bead)
@@ -501,10 +507,11 @@ fn test_f017_doctor_validation() {
 
     // Initialize workspace
     Command::new(&bead)
-        .args(["init", "--skip-foreign-workspace"])
+        .args(["init", "--no-auto-flush", "--skip-foreign-workspace"])
         .current_dir(workspace)
         .output()
         .expect("Failed to init workspace");
+    force_monolithic_mode(workspace);
 
     // Create issues
     Command::new(&bead)
@@ -554,10 +561,11 @@ fn test_f017_crash_safety_and_atomicity() {
 
     // Initialize workspace
     Command::new(&bead)
-        .args(["init", "--skip-foreign-workspace"])
+        .args(["init", "--no-auto-flush", "--skip-foreign-workspace"])
         .current_dir(workspace)
         .output()
         .expect("Failed to init workspace");
+    force_monolithic_mode(workspace);
 
     // Create multiple issues
     for i in 1..=5 {
@@ -619,10 +627,11 @@ fn test_f017_forensic_jsonl_record_types() {
 
     // Initialize workspace
     Command::new(&bead)
-        .args(["init", "--skip-foreign-workspace"])
+        .args(["init", "--no-auto-flush", "--skip-foreign-workspace"])
         .current_dir(workspace)
         .output()
         .expect("Failed to init workspace");
+    force_monolithic_mode(workspace);
 
     // Create an issue
     Command::new(&bead)
@@ -659,4 +668,25 @@ fn test_f017_forensic_jsonl_record_types() {
 
     // Cleanup
     let _ = fs::remove_dir_all(&test_dir);
+}
+
+/// The adaptive default resolves to set-v2 since 5d4c08a6 (checkpoint-set-v2
+/// spec 9); these legs assert the monolith layout, so pin the mode they were
+/// written against.
+fn force_monolithic_mode(workspace: &std::path::Path) {
+    let path = workspace.join(".beads/config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    config
+        .as_object_mut()
+        .unwrap()
+        .entry("checkpoint")
+        .or_insert(serde_json::Value::Object(Default::default()))
+        .as_object_mut()
+        .unwrap()
+        .insert(
+            "mode".into(),
+            serde_json::Value::String("monolithic".to_string()),
+        );
+    std::fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 }

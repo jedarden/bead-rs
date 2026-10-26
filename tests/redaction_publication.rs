@@ -29,6 +29,7 @@ fn temp_workspace(name: &str) -> tempfile::TempDir {
         ])
         .assert()
         .success();
+    force_monolithic_mode(workspace.path());
     workspace
 }
 
@@ -1101,4 +1102,25 @@ fn publication_failure_after_redaction_commits_exits_six_and_resumes() {
     let receipt: Value = serde_json::from_slice(&resumed.stdout).unwrap();
     assert_eq!(receipt["receipt_id"], receipt_id);
     assert_eq!(receipt["publication_state"], "published");
+}
+
+/// The adaptive default resolves to set-v2 since 5d4c08a6 (checkpoint-set-v2
+/// spec 9); these legs assert the monolith layout, so pin the mode they were
+/// written against.
+fn force_monolithic_mode(workspace: &std::path::Path) {
+    let path = workspace.join(".beads/config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    config
+        .as_object_mut()
+        .unwrap()
+        .entry("checkpoint")
+        .or_insert(serde_json::Value::Object(Default::default()))
+        .as_object_mut()
+        .unwrap()
+        .insert(
+            "mode".into(),
+            serde_json::Value::String("monolithic".to_string()),
+        );
+    std::fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 }

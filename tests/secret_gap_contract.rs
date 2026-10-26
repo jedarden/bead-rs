@@ -29,6 +29,7 @@ fn workspace() -> (tempfile::TempDir, SqliteStore) {
         ])
         .assert()
         .success();
+    force_monolithic_mode(root.path());
     let store = SqliteStore::from_conn(
         open_configured_connection(&root.path().join(".beads/beads.db")).unwrap(),
     );
@@ -217,6 +218,7 @@ fn retained_secret_reconcile_pair() -> (tempfile::TempDir, tempfile::TempDir, St
         .args(["init", "--prefix", "gap"])
         .assert()
         .success();
+    force_monolithic_mode(source_root.path());
     bead(source_root.path())
         .args(["create", "--title", "clean clone base"])
         .assert()
@@ -245,6 +247,7 @@ fn retained_secret_reconcile_pair() -> (tempfile::TempDir, tempfile::TempDir, St
         &target_root.path().join(".beads/checkpoint"),
     );
     bead(target_root.path()).args(["init"]).assert().success();
+    force_monolithic_mode(target_root.path());
     bead(target_root.path())
         .args([
             "restore",
@@ -320,6 +323,7 @@ fn published_secret_generation(prefix: &str) -> (tempfile::TempDir, String) {
         .args(["init", "--prefix", "gap"])
         .assert()
         .success();
+    force_monolithic_mode(source_root.path());
     bead(source_root.path())
         .args(["create", "--title", "clean recovery base"])
         .assert()
@@ -1926,6 +1930,7 @@ fn verified_restore_rolls_back_recovery_and_quarantine_together_on_quarantine_fa
         .args(["init", "--prefix", "gap", "--no-auto-flush"])
         .assert()
         .success();
+    force_monolithic_mode(target_root.path());
     publish_source_checkpoint(target_root.path());
     let pointer_before =
         fs::read(target_root.path().join(".beads/checkpoint/current.json")).unwrap();
@@ -2052,6 +2057,7 @@ fn reconcile_secret_recovery_succeeds_locally_without_republishing() {
         .args(["init", "--prefix", "gap"])
         .assert()
         .success();
+    force_monolithic_mode(source_root.path());
     bead(source_root.path())
         .args(["create", "--title", "clean clone base"])
         .assert()
@@ -2083,6 +2089,7 @@ fn reconcile_secret_recovery_succeeds_locally_without_republishing() {
         &target_root.path().join(".beads/checkpoint"),
     );
     bead(target_root.path()).args(["init"]).assert().success();
+    force_monolithic_mode(target_root.path());
     bead(target_root.path())
         .args([
             "restore",
@@ -2399,4 +2406,25 @@ fn managed_policy_refuses_workspace_downgrades_and_acknowledgments() {
         secret_check.details.as_ref().unwrap()["exact_fingerprint_acknowledgment"],
         false
     );
+}
+
+/// The adaptive default resolves to set-v2 since 5d4c08a6 (checkpoint-set-v2
+/// spec 9); these legs assert the monolith layout, so pin the mode they were
+/// written against.
+fn force_monolithic_mode(workspace: &std::path::Path) {
+    let path = workspace.join(".beads/config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    config
+        .as_object_mut()
+        .unwrap()
+        .entry("checkpoint")
+        .or_insert(serde_json::Value::Object(Default::default()))
+        .as_object_mut()
+        .unwrap()
+        .insert(
+            "mode".into(),
+            serde_json::Value::String("monolithic".to_string()),
+        );
+    std::fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 }

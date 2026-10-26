@@ -51,6 +51,7 @@ fn sharded_generations_retire_the_view_and_monolithic_ones_restore_it() {
     let root = dir.path();
     git(root, &["init", "-q"]);
     ok(root, &["init", "--skip-foreign-workspace"]);
+    force_monolithic_mode(root);
     for index in 0..5 {
         ok(root, &["create", "--title", &format!("issue {index}")]);
     }
@@ -101,4 +102,25 @@ fn sharded_generations_retire_the_view_and_monolithic_ones_restore_it() {
         std::fs::read(root.join(".beads/checkpoint").join(root_path)).expect("root"),
         "the view is byte-identical to the pointer-selected monolith"
     );
+}
+
+/// The adaptive default resolves to set-v2 since 5d4c08a6 (checkpoint-set-v2
+/// spec 9); these legs assert the monolith layout, so pin the mode they were
+/// written against.
+fn force_monolithic_mode(workspace: &std::path::Path) {
+    let path = workspace.join(".beads/config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    config
+        .as_object_mut()
+        .unwrap()
+        .entry("checkpoint")
+        .or_insert(serde_json::Value::Object(Default::default()))
+        .as_object_mut()
+        .unwrap()
+        .insert(
+            "mode".into(),
+            serde_json::Value::String("monolithic".to_string()),
+        );
+    std::fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 }

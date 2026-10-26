@@ -17,6 +17,7 @@ fn workspace() -> tempfile::TempDir {
         .args(["init", "--skip-foreign-workspace", "--no-auto-flush"])
         .assert()
         .success();
+    force_monolithic_mode(workspace.path());
     workspace
 }
 
@@ -410,6 +411,7 @@ fn doctor_reports_live_and_both_retained_generations_without_matched_bytes() {
         .args(["init", "--skip-foreign-workspace"])
         .assert()
         .success();
+    force_monolithic_mode(workspace.path());
     let value = provider_shaped_value();
     let rejected = Command::cargo_bin("bead")
         .unwrap()
@@ -519,4 +521,25 @@ fn recovery_reports_legacy_findings_without_refusing_import() {
     assert!(!stdout.contains(&value));
     assert!(!stderr.contains(&value));
     assert_eq!(counts(target.path()).0, 0);
+}
+
+/// The adaptive default resolves to set-v2 since 5d4c08a6 (checkpoint-set-v2
+/// spec 9); these legs assert the monolith layout, so pin the mode they were
+/// written against.
+fn force_monolithic_mode(workspace: &std::path::Path) {
+    let path = workspace.join(".beads/config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    config
+        .as_object_mut()
+        .unwrap()
+        .entry("checkpoint")
+        .or_insert(serde_json::Value::Object(Default::default()))
+        .as_object_mut()
+        .unwrap()
+        .insert(
+            "mode".into(),
+            serde_json::Value::String("monolithic".to_string()),
+        );
+    std::fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 }
