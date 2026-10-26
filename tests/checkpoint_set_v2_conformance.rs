@@ -37,6 +37,13 @@
 //!   a monolithic source and from a `set-v2` source of the same store,
 //!   with the restored stores passing v1 restore-equivalence against the
 //!   source.
+//! - `set-v2-concurrent-publication` (12.11): two publishers race on one
+//!   workspace; the queued one exits 0 after re-deriving under the
+//!   publication lock, and at quiesce the pointer names one complete
+//!   generation covering every committed mutation.
+//! - `set-v2-forced-monolith-limits` (12.12): forcing monolithic output on
+//!   a workspace beyond its recorded safety limits is refused with exit 1
+//!   and no pointer change; forcing within the limits succeeds.
 //!
 //! Fixtures drive the real `bead` binary over real workspaces so the
 //! scenarios exercise the publication path end to end: `bead init`, CLI
@@ -1815,4 +1822,176 @@ fn set_v2_dual_layout_reader_equivalence() {
             "{label}: reconcile"
         );
     }
+}
+
+// set-v2-concurrent-publication (12.11)
+//
+// Two publishers race for one workspace's publication lock. The lock
+// serializes them -- the queued publisher waits, then re-derives its
+// snapshot under the lock -- so both exit 0, and at quiesce the pointer
+// names one complete generation covering every committed mutation.
+#[test]
+fn set_v2_concurrent_publication() {
+    let fixture = fixture_with_issues(1, "concurrent-publication");
+    let ws = fixture.path();
+    for title in [
+        "concurrent-publication alpha",
+        "concurrent-publication beta",
+        "concurrent-publication gamma",
+    ] {
+        run_ok(ws, &["create", "--title", title]);
+    }
+
+    // Hold the publication lock so both racers deterministically queue
+    // behind it, then release and let them re-derive in turn.
+    let lock_path = ws.join(".beads/checkpoint/publish.lock");
+    fs::create_dir_all(ws.join(".beads/checkpoint")).unwrap();
+    use fs2::FileExt;
+    let held = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .unwrap();
+    held.try_lock_exclusive().unwrap();
+
+    let first = std::thread::scope(|scope| {
+        let racers: Vec<_> = (0..2)
+            .map(|_| scope.spawn(|| run_bead(ws, &["sync", "flush-only"])))
+            .collect();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        drop(held);
+        let outputs: Vec<_> = racers
+            .into_iter()
+            .map(|racer| racer.join().unwrap())
+            .collect();
+        for (racer, output) in outputs.iter().enumerate() {
+            assert!(
+                output.status.success(),
+                "racer {racer} must exit 0 after re-deriving: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let first = read_pointer(ws);
+        let superseded: Value = serde_json::from_str(
+            &fs::read_to_string(ws.join(".beads/checkpoint/previous.json")).unwrap(),
+        )
+        .unwrap();
+        assert_ne!(
+            first["generation_id"], superseded["generation_id"],
+            "the two racing publications must land distinct generations"
+        );
+        first
+    });
+    assert_eq!(first["mode"], "set-v2");
+
+    // At quiesce the pointer names one complete generation covering every
+    // committed mutation: restoring it into an empty store reproduces the
+    // live issue set exactly.
+    let generation = first["generation_id"].as_str().unwrap().to_string();
+    let restored = restore_generation_fresh(ws, "current.json", &generation);
+    let mut expected = live_issue_ids(ws);
+    expected.sort();
+    let mut restored_ids = live_issue_ids(restored.path());
+    restored_ids.sort();
+    assert_eq!(
+        restored_ids, expected,
+        "the published generation must cover every committed mutation"
+    );
+}
+
+// set-v2-forced-monolith-limits (12.12)
+//
+// Forcing monolithic output never bypasses the recorded safety limits: a
+// workspace beyond them is refused with exit 1 and no pointer change
+// (spec section 9: the workspace stays on its current layout), and
+// forcing within the limits succeeds.
+#[test]
+fn set_v2_forced_monolith_limits() {
+    let fixture = fixture_with_issues(2, "forced-monolith-limits");
+    let ws = fixture.path();
+    let pointer_bytes = || fs::read(ws.join(".beads/checkpoint/current.json")).unwrap();
+    let pointer = read_pointer(ws);
+    assert_eq!(
+        pointer["mode"], "set-v2",
+        "fixture baseline is the adaptive layout"
+    );
+    let baseline_bytes = pointer_bytes();
+
+    // Beyond the issue-record limit: refused, exit 1, pointer untouched.
+    set_checkpoint_config(ws, "mode", json!("monolithic"));
+    set_checkpoint_config(
+        ws,
+        "thresholds",
+        json!({
+            "version": 1,
+            "max_monolith_issue_records": 1,
+            "max_monolith_total_bytes": 1_048_576,
+            "max_record_line_bytes": 65_536
+        }),
+    );
+    run_ok(
+        ws,
+        &["create", "--title", "forced-monolith-limits overflow"],
+    );
+    let refused = run_bead(ws, &["sync", "flush-only"]);
+    assert_eq!(
+        refused.status.code(),
+        Some(1),
+        "over-limit forced monolith must be refused: {}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(stderr.contains("safety limits"), "{stderr}");
+    assert_eq!(
+        pointer_bytes(),
+        baseline_bytes,
+        "a refused forced-monolith publication must not touch the pointer"
+    );
+
+    // Within the record and byte limits but over the per-record line
+    // limit: still refused -- forcing never bypasses any limit.
+    set_checkpoint_config(
+        ws,
+        "thresholds",
+        json!({
+            "version": 1,
+            "max_monolith_issue_records": 1_000,
+            "max_monolith_total_bytes": 1_048_576,
+            "max_record_line_bytes": 64
+        }),
+    );
+    let inflated = live_issue_ids(ws)[0].clone();
+    run_ok(ws, &["update", &inflated, "--notes", &"x".repeat(200)]);
+    let refused_line = run_bead(ws, &["sync", "flush-only"]);
+    assert_eq!(
+        refused_line.status.code(),
+        Some(1),
+        "over-limit single record must be refused: {}",
+        String::from_utf8_lossy(&refused_line.stderr)
+    );
+    assert_eq!(
+        pointer_bytes(),
+        baseline_bytes,
+        "a line-limit refusal must not touch the pointer either"
+    );
+
+    // Forcing within the limits succeeds.
+    set_checkpoint_config(
+        ws,
+        "thresholds",
+        json!({
+            "version": 1,
+            "max_monolith_issue_records": 1_000,
+            "max_monolith_total_bytes": 1_048_576,
+            "max_record_line_bytes": 65_536
+        }),
+    );
+    flush_ok(ws);
+    let published = read_pointer(ws);
+    assert_eq!(published["mode"], "monolithic");
+    assert_ne!(
+        published["generation_id"], pointer["generation_id"],
+        "the within-limits forced publication must land"
+    );
 }

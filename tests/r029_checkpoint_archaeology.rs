@@ -448,3 +448,224 @@ fn archaeology_output_is_rejected_by_import_only() {
         .failure()
         .stderr(predicate::str::contains("R029 checkpoint archaeology view"));
 }
+
+/// Diff and bisect over a generation sequence that crosses the
+/// monolithic-to-set-v2 migration boundary (checkpoint-set-v2.md section
+/// 10). The dual-layout reader backs both commands, so the first
+/// adaptive publication's full rewrite is just another retained
+/// generation: a record that predates the boundary must compare equal to
+/// its post-migration form -- absent from the semantic delta -- and a
+/// bisect query must match it on both sides.
+#[test]
+fn checkpoint_diff_and_bisect_cross_the_set_v2_migration_boundary() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().to_path_buf();
+    run(&workspace, &["init", "--prefix", "boundary"]);
+    suppress_auto_flush(&workspace);
+
+    // Force the pre-boundary layout and publish generation one.
+    let config_path = workspace.join(".beads/config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["checkpoint"]["mode"] = Value::String("monolithic".to_string());
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    let survivor_id = create_issue(&workspace, "boundary survivor record");
+    let revised_id = create_issue(&workspace, "revised across the boundary");
+    run(&workspace, &["sync", "flush-only"]);
+
+    // Freeze the monolithic generation the way a git commit retains it,
+    // then lift the mode back to adaptive: the next publication is the
+    // migration full rewrite into set-v2.
+    let frozen_pre = tempfile::tempdir().unwrap();
+    let frozen_pre_checkpoint = frozen_pre.path().join("checkpoint");
+    copy_checkpoint_tree(&workspace.join(".beads/checkpoint"), &frozen_pre_checkpoint);
+    config["checkpoint"]["mode"] = Value::String("adaptive".to_string());
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    run(
+        &workspace,
+        &["update", &revised_id, "--notes", "revised after migration"],
+    );
+    let added_id = create_issue(&workspace, "added after migration");
+    run(&workspace, &["sync", "flush-only"]);
+
+    let checkpoint = workspace.join(".beads/checkpoint");
+    let pre_pointer: Value =
+        serde_json::from_slice(&fs::read(frozen_pre_checkpoint.join("current.json")).unwrap())
+            .unwrap();
+    let post_pointer: Value =
+        serde_json::from_slice(&fs::read(checkpoint.join("current.json")).unwrap()).unwrap();
+    assert_eq!(pre_pointer["mode"], "monolithic");
+    assert_eq!(
+        post_pointer["mode"], "set-v2",
+        "the second publication must be the set-v2 migration rewrite"
+    );
+
+    let pre_source = frozen_pre_checkpoint.join("current.json");
+    let post_source = checkpoint.join("current.json");
+
+    // Forward diff across the boundary. The survivor is absent from the
+    // deltas -- its pre-boundary record compares equal to its
+    // post-migration form -- while the revision and the post-boundary
+    // addition appear with their semantic changes.
+    let forward: Value = serde_json::from_slice(
+        &run(
+            &workspace,
+            &[
+                "sync",
+                "diff",
+                pre_source.to_str().unwrap(),
+                post_source.to_str().unwrap(),
+            ],
+        )
+        .stdout,
+    )
+    .unwrap();
+    assert_eq!(forward["from"]["mode"], "monolithic");
+    assert_eq!(forward["to"]["mode"], "set-v2");
+    let deltas = forward["issue_deltas"].as_array().unwrap();
+    assert!(
+        deltas
+            .iter()
+            .any(|delta| delta["identity"] == added_id.as_str() && delta["change"] == "added"),
+        "post-boundary addition must appear: {deltas:?}"
+    );
+    assert!(
+        deltas
+            .iter()
+            .any(|delta| delta["identity"] == revised_id.as_str() && delta["change"] == "changed"),
+        "post-boundary revision must appear: {deltas:?}"
+    );
+    assert!(
+        !deltas
+            .iter()
+            .any(|delta| delta["identity"] == survivor_id.as_str()),
+        "a record untouched across the boundary must compare equal to its \
+         post-migration form, not surface as a delta: {deltas:?}"
+    );
+    assert!(!forward["event_deltas"].as_array().unwrap().is_empty());
+
+    // The reverse diff mirrors it: the survivor still compares equal,
+    // and the post-boundary addition reads as removed going backwards.
+    let reverse: Value = serde_json::from_slice(
+        &run(
+            &workspace,
+            &[
+                "sync",
+                "diff",
+                post_source.to_str().unwrap(),
+                pre_source.to_str().unwrap(),
+            ],
+        )
+        .stdout,
+    )
+    .unwrap();
+    let reverse_deltas = reverse["issue_deltas"].as_array().unwrap();
+    assert!(
+        reverse_deltas
+            .iter()
+            .any(|delta| delta["identity"] == added_id.as_str() && delta["change"] == "removed"),
+        "{reverse_deltas:?}"
+    );
+    assert!(
+        !reverse_deltas
+            .iter()
+            .any(|delta| delta["identity"] == survivor_id.as_str()),
+        "{reverse_deltas:?}"
+    );
+
+    // The survivor's record itself is byte-for-byte the same semantic
+    // document read from either side of the boundary.
+    let from_pre: Value = serde_json::from_slice(
+        &run(
+            &workspace,
+            &[
+                "query",
+                "--checkpoint",
+                pre_source.to_str().unwrap(),
+                "--json",
+                &title_query("boundary survivor"),
+            ],
+        )
+        .stdout,
+    )
+    .unwrap();
+    let from_post: Value = serde_json::from_slice(
+        &run(
+            &workspace,
+            &[
+                "query",
+                "--checkpoint",
+                post_source.to_str().unwrap(),
+                "--json",
+                &title_query("boundary survivor"),
+            ],
+        )
+        .stdout,
+    )
+    .unwrap();
+    assert_eq!(from_pre["results"][0], from_post["results"][0]);
+
+    // Bisect across the same sequence: the survivor matches on both
+    // sides, the post-boundary addition only on the set-v2 side.
+    let survivor_bisect: Value = serde_json::from_slice(
+        &run(
+            &workspace,
+            &[
+                "sync",
+                "bisect",
+                "--checkpoint",
+                pre_source.to_str().unwrap(),
+                "--checkpoint",
+                post_source.to_str().unwrap(),
+                "--query",
+                &title_query("boundary survivor"),
+            ],
+        )
+        .stdout,
+    )
+    .unwrap();
+    let matches = survivor_bisect["matches"].as_array().unwrap();
+    assert_eq!(matches.len(), 2, "{survivor_bisect}");
+    assert_eq!(
+        matches[0]["generation"]["generation_id"],
+        pre_pointer["generation_id"]
+    );
+    assert_eq!(matches[0]["generation"]["mode"], "monolithic");
+    assert_eq!(
+        matches[1]["generation"]["generation_id"],
+        post_pointer["generation_id"]
+    );
+    assert_eq!(matches[1]["generation"]["mode"], "set-v2");
+    assert_eq!(
+        matches[0]["matching_issue_ids"],
+        serde_json::json!([survivor_id])
+    );
+    assert_eq!(
+        matches[1]["matching_issue_ids"],
+        serde_json::json!([survivor_id])
+    );
+
+    let added_bisect: Value = serde_json::from_slice(
+        &run(
+            &workspace,
+            &[
+                "sync",
+                "bisect",
+                "--checkpoint",
+                pre_source.to_str().unwrap(),
+                "--checkpoint",
+                post_source.to_str().unwrap(),
+                "--query",
+                &title_query("added after migration"),
+            ],
+        )
+        .stdout,
+    )
+    .unwrap();
+    let added_matches = added_bisect["matches"].as_array().unwrap();
+    assert_eq!(added_matches.len(), 1, "{added_bisect}");
+    assert_eq!(
+        added_matches[0]["generation"]["generation_id"],
+        post_pointer["generation_id"]
+    );
+    assert_eq!(added_matches[0]["generation"]["mode"], "set-v2");
+}
