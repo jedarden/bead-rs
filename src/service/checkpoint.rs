@@ -1532,6 +1532,40 @@ pub struct VerifiedRestoreSource {
     staging: ForensicStaging,
 }
 
+impl VerifiedRestoreSource {
+    /// Read-only access for sibling verified-view consumers (R029
+    /// checkpoint archaeology). The fields stay private so no caller
+    /// outside this module can construct a verified source without
+    /// running the verifier.
+    pub fn generation_id(&self) -> &str {
+        &self.generation_id
+    }
+
+    pub fn mode(&self) -> CheckpointMode {
+        self.mode
+    }
+
+    pub fn store_uuid(&self) -> &str {
+        &self.source_store_uuid
+    }
+
+    pub fn snapshot_sequence(&self) -> i64 {
+        self.snapshot_sequence
+    }
+
+    pub fn root_path(&self) -> &str {
+        &self.root_path
+    }
+
+    pub fn root_sha256(&self) -> &str {
+        &self.root_sha256
+    }
+
+    pub fn staging(&self) -> &ForensicStaging {
+        &self.staging
+    }
+}
+
 /// Exact displacement counts when an operator explicitly restores over a
 /// non-empty target. These counts are reported but are not part of the source
 /// provenance receipt, whose counts describe only the restored generation.

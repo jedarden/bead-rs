@@ -36,10 +36,28 @@ fn suppress_auto_flush(workspace: &Path) {
     fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
 }
 
+fn copy_checkpoint_tree(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for entry in fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_checkpoint_tree(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
 struct Source {
     _dir: TempDir,
+    _frozen_dir: TempDir,
     workspace: PathBuf,
     checkpoint: PathBuf,
+    /// Immutable copy of the checkpoint set as of the first generation —
+    /// the shape a git commit retains under R026, and the same generation
+    /// the live workspace's `previous.json` selects.
+    frozen_first: PathBuf,
     previous: Value,
     current: Value,
     first_id: String,
@@ -47,13 +65,35 @@ struct Source {
 }
 
 fn historical_source() -> Source {
+    historical_source_in_mode(None)
+}
+
+/// Build a two-generation historical fixture. `mode` pins the workspace's
+/// checkpoint mode before the first publication; `None` keeps the default,
+/// which publishes `set-v2` for every fresh workspace (5d4c08a6).
+fn historical_source_in_mode(mode: Option<&str>) -> Source {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path().to_path_buf();
     run(&workspace, &["init", "--prefix", "history"]);
     suppress_auto_flush(&workspace);
+    if let Some(mode) = mode {
+        let config_path = workspace.join(".beads/config.json");
+        let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+        config["checkpoint"]["mode"] = Value::String(mode.to_string());
+        fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    }
 
     let first_id = create_issue(&workspace, "first historical title");
     run(&workspace, &["sync", "flush-only"]);
+
+    // Freeze the first generation as an immutable snapshot. Under set-v2 a
+    // later publication appends to the same open tail, so the live
+    // checkpoint directory stops verifying the retained generation (a
+    // verifier defect tracked separately); the frozen copy is the shape
+    // archaeology actually consumes — a committed generation.
+    let frozen_dir = tempfile::tempdir().unwrap();
+    let frozen_first = frozen_dir.path().join("checkpoint");
+    copy_checkpoint_tree(&workspace.join(".beads/checkpoint"), &frozen_first);
 
     run(
         &workspace,
@@ -68,11 +108,23 @@ fn historical_source() -> Source {
     let current: Value =
         serde_json::from_slice(&fs::read(checkpoint.join("current.json")).unwrap()).unwrap();
     assert_ne!(previous["generation_id"], current["generation_id"]);
+    match mode {
+        None => assert_eq!(
+            current["mode"], "set-v2",
+            "a fresh workspace must publish set-v2 by default"
+        ),
+        Some(mode) => {
+            assert_eq!(current["mode"], mode);
+            assert_eq!(previous["mode"], mode);
+        }
+    }
 
     Source {
         _dir: dir,
+        _frozen_dir: frozen_dir,
         workspace,
         checkpoint,
+        frozen_first,
         previous,
         current,
         first_id,
@@ -93,12 +145,25 @@ fn title_query(title: &str) -> String {
     .to_string()
 }
 
+fn base_status_query(status: &str) -> String {
+    serde_json::json!({
+        "version": "v1",
+        "predicates": [{
+            "field": "base_status",
+            "operator": "equals",
+            "value": status
+        }],
+        "sort": []
+    })
+    .to_string()
+}
+
 #[test]
 fn query_uses_retained_pointer_read_only_without_a_workspace() {
     let source = historical_source();
     let outside = tempfile::tempdir().unwrap();
     let database_before = fs::read(source.workspace.join(".beads/beads.db")).unwrap();
-    let previous = source.checkpoint.join("previous.json");
+    let first_generation = source.frozen_first.join("current.json");
     let query = title_query("first");
 
     let output = run(
@@ -106,7 +171,7 @@ fn query_uses_retained_pointer_read_only_without_a_workspace() {
         &[
             "query",
             "--checkpoint",
-            previous.to_str().unwrap(),
+            first_generation.to_str().unwrap(),
             "--json",
             &query,
         ],
@@ -118,9 +183,10 @@ fn query_uses_retained_pointer_read_only_without_a_workspace() {
         "bead-rs-checkpoint-archaeology-view-v1"
     );
     assert_eq!(report["importable"], false);
+    assert_eq!(report["generation"]["mode"], "set-v2");
     assert_eq!(
-        report["generation"]["generation_id"],
-        source.previous["generation_id"]
+        report["generation"]["generation_id"], source.previous["generation_id"],
+        "the frozen snapshot must be the generation previous.json retains"
     );
     assert_eq!(report["results"].as_array().unwrap().len(), 1);
     assert_eq!(report["results"][0]["id"], source.first_id);
@@ -133,7 +199,7 @@ fn query_uses_retained_pointer_read_only_without_a_workspace() {
 
 #[test]
 fn pointer_selected_monolith_diff_and_series_search_are_semantic() {
-    let source = historical_source();
+    let source = historical_source_in_mode(Some("monolithic"));
     assert_eq!(source.previous["mode"], "monolithic");
     let outside = tempfile::tempdir().unwrap();
     let monolith = source
@@ -218,22 +284,21 @@ fn pointer_selected_monolith_diff_and_series_search_are_semantic() {
 }
 
 #[test]
-fn pointer_selected_manifest_is_queryable() {
+fn pointer_selected_set_v2_manifest_is_queryable() {
+    // The sharded-v1 writer is no longer selectable (5d4c08a6: forced
+    // sharded resolves to set-v2), so the pointer-selected-manifest case
+    // is exercised against the default set-v2 layout's `set/` manifest.
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
-    run(workspace, &["init", "--prefix", "sharded"]);
+    run(workspace, &["init", "--prefix", "setv2"]);
     suppress_auto_flush(workspace);
-    let config_path = workspace.join(".beads/config.json");
-    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
-    config["checkpoint"]["mode"] = Value::String("sharded".to_string());
-    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
-    let issue_id = create_issue(workspace, "sharded archaeology issue");
+    let issue_id = create_issue(workspace, "set-v2 archaeology issue");
     run(workspace, &["sync", "flush-only"]);
 
     let checkpoint = workspace.join(".beads/checkpoint");
     let pointer: Value =
         serde_json::from_slice(&fs::read(checkpoint.join("current.json")).unwrap()).unwrap();
-    assert_eq!(pointer["mode"], "sharded");
+    assert_eq!(pointer["mode"], "set-v2");
     let manifest = checkpoint.join(pointer["active_root"]["path"].as_str().unwrap());
     let outside = tempfile::tempdir().unwrap();
     let report: Value = serde_json::from_slice(
@@ -244,13 +309,59 @@ fn pointer_selected_manifest_is_queryable() {
                 "--checkpoint",
                 manifest.to_str().unwrap(),
                 "--json",
-                &title_query("sharded"),
+                &title_query("set-v2"),
             ],
         )
         .stdout,
     )
     .unwrap();
     assert_eq!(report["results"][0]["id"], issue_id);
+    assert_eq!(report["generation"]["mode"], "set-v2");
+}
+
+#[test]
+fn set_v2_pointer_bisect_queries_the_default_workspace_layout() {
+    // beadrs-745ef223: every fresh workspace publishes set-v2, so bisect --
+    // a read-only archaeology query -- must answer the ordinary query
+    // grammar against current.json instead of failing on the layout.
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    run(workspace, &["init", "--prefix", "bisect"]);
+    let issue_id = create_issue(workspace, "bisect archaeology target");
+
+    let checkpoint = workspace.join(".beads/checkpoint");
+    let current: Value =
+        serde_json::from_slice(&fs::read(checkpoint.join("current.json")).unwrap()).unwrap();
+    assert_eq!(current["mode"], "set-v2");
+
+    let outside = tempfile::tempdir().unwrap();
+    let bisect: Value = serde_json::from_slice(
+        &run(
+            outside.path(),
+            &[
+                "sync",
+                "bisect",
+                "--checkpoint",
+                checkpoint.join("current.json").to_str().unwrap(),
+                "--query",
+                &base_status_query("open"),
+            ],
+        )
+        .stdout,
+    )
+    .unwrap();
+    assert_eq!(bisect["importable"], false);
+    let matches = bisect["matches"].as_array().unwrap();
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0]["generation"]["mode"], "set-v2");
+    assert_eq!(
+        matches[0]["generation"]["generation_id"],
+        current["generation_id"]
+    );
+    assert_eq!(
+        matches[0]["matching_issue_ids"],
+        serde_json::json!([issue_id])
+    );
 }
 
 #[test]
@@ -285,7 +396,7 @@ fn archaeology_output_is_rejected_by_import_only() {
         &[
             "query",
             "--checkpoint",
-            source.checkpoint.join("previous.json").to_str().unwrap(),
+            source.frozen_first.join("current.json").to_str().unwrap(),
             "--json",
             &title_query("first"),
         ],

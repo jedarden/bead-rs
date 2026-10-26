@@ -319,8 +319,9 @@ bead sync bisect --checkpoint old/current.json --checkpoint new/current.json --f
 ```
 
 Each command verifies the retained pointer and its complete object closure
-before serving an ephemeral view. A manifest or monolithic root is accepted
-only when `current.json` or `previous.json` selects it. Archaeology JSON is
+before serving an ephemeral view. A monolithic root, sharded manifest, or
+`set-v2` manifest is accepted only when `current.json` or `previous.json`
+selects it. Archaeology JSON is
 explicitly non-importable; it is useful evidence, never a recovery source.
 
 `bead doctor` runs read-only integrity checks across store, backup, schema,

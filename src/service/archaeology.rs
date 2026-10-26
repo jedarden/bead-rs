@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 /// Marker attached to every archaeology response. The import service rejects
 /// a document carrying this marker, even if a caller writes stdout to a file.
@@ -90,16 +90,12 @@ struct HistoricalView {
 #[derive(Debug, Deserialize)]
 struct PointerDocument {
     generation_id: String,
-    mode: String,
-    store_uuid: String,
-    snapshot_sequence: i64,
     active_root: PointerRoot,
 }
 
 #[derive(Debug, Deserialize)]
 struct PointerRoot {
     path: String,
-    sha256: String,
 }
 
 #[derive(Debug)]
@@ -322,28 +318,25 @@ fn load_verified_view(source: &Path) -> Result<HistoricalView> {
     let resolved = resolve_artifact(source)?;
 
     // `verify_restore_source` performs the full R036 content-addressed
-    // closure, count, ordering, schema, graph, and event-continuity checks.
-    // Archaeology intentionally shares it instead of growing a permissive
-    // second reader.
-    checkpoint::verify_restore_source(&resolved.pointer_path, &resolved.generation_id)?;
+    // closure, count, ordering, schema, graph, and event-continuity checks,
+    // and stages the generation's records through the same dual-layout
+    // reader restore, reconcile, and fork use (checkpoint-set-v2.md section
+    // 10). Archaeology intentionally shares it instead of growing a
+    // permissive second reader, so every layout that restores also queries:
+    // monolithic, sharded, and set-v2.
+    let verified =
+        checkpoint::verify_restore_source(&resolved.pointer_path, &resolved.generation_id)?;
 
-    let pointer = read_pointer(&resolved.pointer_path)?;
-    let base = resolved
-        .pointer_path
-        .parent()
-        .ok_or_else(|| anyhow!("Checkpoint pointer has no parent directory"))?;
-    let (issues, events) = match pointer.mode.as_str() {
-        "monolithic" => {
-            let root = checked_relative_path(base, &pointer.active_root.path, "objects", "jsonl")?;
-            read_records(&root)?
-        }
-        "sharded" => {
-            let manifest =
-                checked_relative_path(base, &pointer.active_root.path, "manifests", "json")?;
-            read_sharded_records(base, &manifest)?
-        }
-        other => bail!("Verified checkpoint has unsupported mode '{other}'"),
+    let generation = ArchaeologyGeneration {
+        generation_id: verified.generation_id().to_string(),
+        mode: verified.mode().as_str().to_string(),
+        store_uuid: verified.store_uuid().to_string(),
+        snapshot_sequence: verified.snapshot_sequence(),
+        root_path: verified.root_path().to_string(),
+        root_sha256: verified.root_sha256().to_string(),
     };
+    let issues = verified.staging().issues.clone();
+    let events = verified.staging().events.clone();
 
     // A source may have changed while the in-memory projection was being
     // materialized. Re-running the shared verifier means no such view is
@@ -351,14 +344,7 @@ fn load_verified_view(source: &Path) -> Result<HistoricalView> {
     checkpoint::verify_restore_source(&resolved.pointer_path, &resolved.generation_id)?;
 
     Ok(HistoricalView {
-        generation: ArchaeologyGeneration {
-            generation_id: pointer.generation_id,
-            mode: pointer.mode,
-            store_uuid: pointer.store_uuid,
-            snapshot_sequence: pointer.snapshot_sequence,
-            root_path: pointer.active_root.path,
-            root_sha256: pointer.active_root.sha256,
-        },
+        generation,
         issues,
         events,
     })
@@ -410,8 +396,9 @@ fn resolve_artifact(source: &Path) -> Result<ResolvedArtifact> {
     let expected_collection = match (collection, expected_extension) {
         (Some("manifests"), Some("json")) => "manifests",
         (Some("objects"), Some("jsonl")) => "objects",
+        (Some("set"), Some("json")) => "set",
         _ => bail!(
-            "Checkpoint archaeology artifact {} is not a generation pointer, manifests/*.json, or objects/*.jsonl artifact",
+            "Checkpoint archaeology artifact {} is not a generation pointer, manifests/*.json, objects/*.jsonl, or set/*.json artifact",
             source.display()
         ),
     };
@@ -481,129 +468,6 @@ fn reject_archaeology_document(bytes: &[u8], path: &Path) -> Result<()> {
         );
     }
     Ok(())
-}
-
-fn checked_relative_path(
-    base: &Path,
-    relative: &str,
-    directory: &str,
-    extension: &str,
-) -> Result<PathBuf> {
-    let path = Path::new(relative);
-    if path.is_absolute()
-        || path.components().count() != 2
-        || path
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-        || path
-            .components()
-            .next()
-            .and_then(|component| component.as_os_str().to_str())
-            != Some(directory)
-        || path.extension().and_then(|value| value.to_str()) != Some(extension)
-    {
-        bail!("Invalid checkpoint-relative {directory} path '{relative}'");
-    }
-    Ok(base.join(path))
-}
-
-fn read_sharded_records(
-    base: &Path,
-    manifest_path: &Path,
-) -> Result<(Vec<Issue>, Vec<SerializedEvent>)> {
-    let bytes = fs::read(manifest_path).with_context(|| {
-        format!(
-            "Failed to read verified manifest {}",
-            manifest_path.display()
-        )
-    })?;
-    let manifest: Value = serde_json::from_slice(&bytes).with_context(|| {
-        format!(
-            "Verified manifest {} is no longer valid JSON",
-            manifest_path.display()
-        )
-    })?;
-    let mut issues = Vec::new();
-    let mut events = Vec::new();
-    for field in ["issue_shards", "event_shards", "receipt_shards"] {
-        let shards = manifest
-            .get(field)
-            .and_then(Value::as_array)
-            .ok_or_else(|| anyhow!("Verified manifest is missing {field}"))?;
-        for shard in shards {
-            let relative = shard
-                .get("path")
-                .and_then(Value::as_str)
-                .ok_or_else(|| anyhow!("Verified manifest has a {field} entry without path"))?;
-            let path = checked_relative_path(base, relative, "objects", "jsonl")?;
-            let (mut shard_issues, mut shard_events) = read_records(&path)?;
-            issues.append(&mut shard_issues);
-            events.append(&mut shard_events);
-        }
-    }
-    Ok((issues, events))
-}
-
-fn read_records(path: &Path) -> Result<(Vec<Issue>, Vec<SerializedEvent>)> {
-    let data = fs::read_to_string(path).with_context(|| {
-        format!(
-            "Failed to read verified checkpoint record file {}",
-            path.display()
-        )
-    })?;
-    let mut issues = Vec::new();
-    let mut events = Vec::new();
-    for (index, line) in data.lines().enumerate() {
-        let record: Value = serde_json::from_str(line).with_context(|| {
-            format!(
-                "Verified checkpoint record file {} became malformed at line {}",
-                path.display(),
-                index + 1
-            )
-        })?;
-        match record.get("record_type").and_then(Value::as_str) {
-            Some("issue") => {
-                let issue = record.get("issue").ok_or_else(|| {
-                    anyhow!(
-                        "Issue record at {}:{} has no issue",
-                        path.display(),
-                        index + 1
-                    )
-                })?;
-                issues.push(serde_json::from_value(issue.clone()).with_context(|| {
-                    format!(
-                        "Issue record at {}:{} is no longer valid",
-                        path.display(),
-                        index + 1
-                    )
-                })?);
-            }
-            Some("event") => {
-                let event = record.get("event").ok_or_else(|| {
-                    anyhow!(
-                        "Event record at {}:{} has no event",
-                        path.display(),
-                        index + 1
-                    )
-                })?;
-                events.push(serde_json::from_value(event.clone()).with_context(|| {
-                    format!(
-                        "Event record at {}:{} is no longer valid",
-                        path.display(),
-                        index + 1
-                    )
-                })?);
-            }
-            Some("provenance_receipt") => {}
-            other => bail!(
-                "Verified checkpoint record file {} has unsupported record type {:?} at line {}",
-                path.display(),
-                other,
-                index + 1
-            ),
-        }
-    }
-    Ok((issues, events))
 }
 
 #[cfg(test)]
