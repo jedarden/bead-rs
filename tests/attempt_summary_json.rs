@@ -26,6 +26,26 @@ fn workspace() -> TempDir {
     workspace
 }
 
+/// Force monolithic mode for testing: for legs that exercise the monolith
+/// forensic path — the default resolves to set-v2, which never writes
+/// forensic.jsonl.
+fn force_monolithic_mode(workspace: &Path) {
+    let path = workspace.join(".beads/config.json");
+    let mut config: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    config
+        .as_object_mut()
+        .unwrap()
+        .entry("checkpoint")
+        .or_insert(serde_json::Value::Object(Default::default()))
+        .as_object_mut()
+        .unwrap()
+        .insert(
+            "mode".into(),
+            serde_json::Value::String("monolithic".to_string()),
+        );
+    fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+}
+
 fn create_issue(workspace: &Path, title: &str) -> String {
     let output = bead()
         .current_dir(workspace)
@@ -212,6 +232,9 @@ fn attempt_summary_retains_only_the_latest_five_outcomes() {
 #[test]
 fn attempt_summary_does_not_change_checkpoint_issue_records() {
     let workspace = workspace();
+    // The adaptive default resolves to set-v2 (checkpoint-set-v2 spec 9),
+    // which never writes forensic.jsonl; pin the monolith this leg reads.
+    force_monolithic_mode(workspace.path());
     let issue_id = create_issue(workspace.path(), "checkpoint shape");
     resolve(
         workspace.path(),

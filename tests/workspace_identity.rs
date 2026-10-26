@@ -33,11 +33,36 @@ fn event_identities(workspace: &TempDir) -> Vec<(String, i64)> {
         .collect()
 }
 
+/// Force monolithic mode for testing: the adaptive default resolves to
+/// set-v2, which never writes the forensic.jsonl this leg reads event
+/// identities from.
+fn force_monolithic_mode(workspace: &TempDir) {
+    let path = workspace.path().join(".beads/config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    config
+        .as_object_mut()
+        .unwrap()
+        .entry("checkpoint")
+        .or_insert(serde_json::Value::Object(Default::default()))
+        .as_object_mut()
+        .unwrap()
+        .insert(
+            "mode".into(),
+            serde_json::Value::String("monolithic".to_string()),
+        );
+    fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+}
+
 #[test]
 #[serial]
 fn doctor_repairs_empty_uuid_without_changing_published_event_identity() {
     let workspace = tempfile::tempdir().unwrap();
     run(&workspace, &["init", "--skip-foreign-workspace"]);
+    // Pin the monolith checkpoint before the first mutation: the event
+    // identities below are read from forensic.jsonl, which the set-v2
+    // default never writes.
+    force_monolithic_mode(&workspace);
 
     // Reproduce the affected path before the first mutation: the checkpoint
     // will intentionally carry the empty origin UUID.
