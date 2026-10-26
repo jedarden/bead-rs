@@ -48,7 +48,7 @@ the latest release; the quick start below is verified against both.
 > **⚠️ Warning:** `cargo install bead` installs a different, unrelated crate
 > (an OCI container runtime). Use `--bin bead` or the one-liner above.
 
-## Build from source
+### Build from source
 
 Building from source needs Rust 1.85+ (edition 2024): `cargo build --release
 --bin bead` puts the binary at `target/release/bead` (`/build/bead-rs/release/bead`
