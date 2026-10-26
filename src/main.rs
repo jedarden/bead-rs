@@ -1325,65 +1325,98 @@ fn cmd_init(opts: cli::InitOptions) -> Result<bool> {
     // what init must repair, so fall through rather than bailing out.
     match store::WorkspaceConfig::probe()? {
         store::WorkspaceState::Ready(existing_config) => {
-            eprintln!(
-                "Workspace already exists at: {}",
-                existing_config.root.display()
-            );
-            eprintln!("Prefix: {}", existing_config.prefix);
-            eprintln!("UUID: {}", existing_config.uuid);
+            // The discovered workspace is this init's target only when the
+            // current directory IS its root. Discovery walks up, so running
+            // init from a subdirectory finds the ancestor and would
+            // otherwise "succeed" by silently adopting it: migrations run
+            // against the ancestor's database and every later command in
+            // this directory routes to the ancestor's store -- the same
+            // silent-misrouting class R030 refuses for foreign `.beads`.
+            let cwd = std::env::current_dir().map_err(|e| Error::Io {
+                path: ".".into(),
+                msg: e,
+            })?;
+            if existing_config.root == cwd {
+                eprintln!(
+                    "Workspace already exists at: {}",
+                    existing_config.root.display()
+                );
+                eprintln!("Prefix: {}", existing_config.prefix);
+                eprintln!("UUID: {}", existing_config.uuid);
 
-            // A store created by an older binary sits at an older schema
-            // version. Nothing else applies pending migrations to an existing
-            // workspace, so upgrading the binary would otherwise leave every
-            // store permanently short of tables the new code queries -- the
-            // failure is deferred to the first command that touches one, and
-            // presents as `no such table`, not as anything naming a version.
-            //
-            // Migrations are versioned and idempotent, which is what lets this
-            // run unconditionally and makes repeated init "safe and
-            // deterministic" as the help text already promises.
-            let db_path = existing_config.root.join(".beads/beads.db");
-            if db_path.exists() {
-                // `SqliteStore::with_path` applies pending migrations while
-                // opening, so capture the prior version through a read-only
-                // connection before constructing the store. Otherwise the
-                // diagnostic always compares the post-migration version to
-                // itself and falsely reports "up to date" after an upgrade.
-                let before_conn = rusqlite::Connection::open_with_flags(
-                    &db_path,
-                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-                )?;
-                let before = before_conn
-                    .query_row(
-                        "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
-                        [],
-                        |row| row.get(0),
-                    )
-                    .unwrap_or(0);
-                drop(before_conn);
+                // A store created by an older binary sits at an older schema
+                // version. Nothing else applies pending migrations to an
+                // existing workspace, so upgrading the binary would otherwise
+                // leave every store permanently short of tables the new code
+                // queries -- the failure is deferred to the first command
+                // that touches one, and presents as `no such table`, not as
+                // anything naming a version.
+                //
+                // Migrations are versioned and idempotent, which is what lets
+                // this run unconditionally and makes repeated init "safe and
+                // deterministic" as the help text already promises.
+                let db_path = existing_config.root.join(".beads/beads.db");
+                if db_path.exists() {
+                    // `SqliteStore::with_path` applies pending migrations
+                    // while opening, so capture the prior version through a
+                    // read-only connection before constructing the store.
+                    // Otherwise the diagnostic always compares the
+                    // post-migration version to itself and falsely reports
+                    // "up to date" after an upgrade.
+                    let before_conn = rusqlite::Connection::open_with_flags(
+                        &db_path,
+                        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                    )?;
+                    let before = before_conn
+                        .query_row(
+                            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+                            [],
+                            |row| row.get(0),
+                        )
+                        .unwrap_or(0);
+                    drop(before_conn);
 
-                let mut store = store::SqliteStore::with_path(&db_path)?;
-                store.apply_migrations()?;
-                let after = store.schema_version()?;
-                if after > before {
-                    eprintln!("Applied pending migrations: schema {before} -> {after}");
-                } else {
-                    eprintln!("Schema up to date (version {after})");
-                }
+                    let mut store = store::SqliteStore::with_path(&db_path)?;
+                    store.apply_migrations()?;
+                    let after = store.schema_version()?;
+                    if after > before {
+                        eprintln!("Applied pending migrations: schema {before} -> {after}");
+                    } else {
+                        eprintln!("Schema up to date (version {after})");
+                    }
 
-                // Older migration-era stores could have an empty database
-                // UUID even though config.json already carried the committed
-                // identity. Do not leave that state in place merely because
-                // init was rerun: use the same audited, identity-preserving
-                // repair as doctor. Non-empty divergence remains a hard error.
-                let repairs = service::run_repairs(&mut store)?;
-                for repair in repairs {
-                    if repair.name == "workspace_uuid_repair" {
-                        eprintln!("FIXED {}: {}", repair.name, repair.message);
+                    // Older migration-era stores could have an empty database
+                    // UUID even though config.json already carried the
+                    // committed identity. Do not leave that state in place
+                    // merely because init was rerun: use the same audited,
+                    // identity-preserving repair as doctor. Non-empty
+                    // divergence remains a hard error.
+                    let repairs = service::run_repairs(&mut store)?;
+                    for repair in repairs {
+                        if repair.name == "workspace_uuid_repair" {
+                            eprintln!("FIXED {}: {}", repair.name, repair.message);
+                        }
                     }
                 }
+                return Ok(false);
             }
-            return Ok(false);
+
+            // Ready workspace discovered ABOVE the current directory. Fail
+            // closed (conflict, exit 4) without touching the ancestor: no
+            // migrations, no repairs, no writes. `--nested` opts in to a
+            // separate workspace here via the same NotFound path below.
+            if !opts.nested {
+                return Err(Error::conflict(format!(
+                    "workspace already exists at an enclosing directory: {}\n  \
+                     to reuse it, run `bead init` at that root\n  \
+                     to create a separate workspace here instead, run `bead init --nested`",
+                    existing_config.root.display()
+                )));
+            }
+            eprintln!(
+                "Initializing a separate workspace below the enclosing workspace at: {}",
+                existing_config.root.display()
+            );
         }
         store::WorkspaceState::Uninitialized { root, .. } => {
             eprintln!(
@@ -1394,8 +1427,9 @@ fn cmd_init(opts: cli::InitOptions) -> Result<bool> {
         // R030: the first `.beads` on the walk is not a bead-rs workspace.
         // init is the command that would write into it, so fail closed here;
         // the override never helps — it only sends discovery (and therefore
-        // this command) to a workspace farther up, which reports "already
-        // exists" through the Ready arm above. init_workspace repeats the
+        // this command) to a workspace farther up, which fails closed through
+        // the Ready arm above (exit 4, `--nested` to opt into a separate
+        // workspace here). init_workspace repeats the
         // refusal at the write boundary so no caller path can bypass it.
         store::WorkspaceState::NotBeadRs { beads_path } => {
             return Err(Error::workspace(store::foreign_workspace_message(
@@ -3639,7 +3673,25 @@ fn cmd_sync_status(opts: cli::SyncStatusOptions) -> Result<()> {
     let mut store = store::SqliteStore::from_conn(conn);
 
     let checkpoint_base = config.root.join(".beads");
-    let report = service::forensic_checkpoint_status(&mut store, &checkpoint_base)?;
+    let mut report = service::forensic_checkpoint_status(&mut store, &checkpoint_base)?;
+
+    // A git-conflicted checkpoint set is the one recovery state with its
+    // own command: name it here so the remedy is visible in text and JSON
+    // without opening `bead doctor`.
+    let conflict_scan = service::checkpoint::sync_resolve::scan_conflicts(
+        &config.root,
+        &checkpoint_base.join("checkpoint"),
+    );
+    if !conflict_scan.is_empty() {
+        let mut paths = conflict_scan.unmerged.clone();
+        paths.extend(conflict_scan.markers.clone());
+        report.not_ready_reasons.push(format!(
+            "checkpoint_git_conflict: unmerged or marker-conflicted checkpoint paths ({}); {}",
+            paths.join(", "),
+            service::checkpoint::sync_resolve::SYNC_RESOLVE_REMEDY
+        ));
+        report.ready_to_commit = false;
+    }
 
     match opts.format.as_str() {
         "json" => {

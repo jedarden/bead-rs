@@ -23,7 +23,9 @@
 //!   unrecognized directory untouched;
 //! - the override only widens the search. `init` never writes into a `.beads`
 //!   it does not recognize, with or without the flag; with the flag and a
-//!   workspace above, `init` reports that workspace instead;
+//!   workspace above, `init` fails closed naming that workspace (exit 4)
+//!   rather than silently adopting it -- `--nested` opts into a separate
+//!   workspace here;
 //! - `doctor` reports the state fail-closed rather than diagnosing a parent
 //!   workspace;
 //! - a plain subdirectory of a real workspace still discovers it (the walk
@@ -261,20 +263,32 @@ fn init_refuses_to_write_into_foreign_beads_even_with_override() {
 fn init_with_override_reports_workspace_above_instead() {
     let (_temp, parent, child, deep) = nested_layout();
 
+    // Since beadrs-e4acee24, init below a discovered workspace fails closed
+    // (conflict, exit 4) instead of exiting 0 with an "already exists"
+    // report: that exit-0 path silently adopted the ancestor, routing every
+    // later command in this directory into the parent's store.
     let output = bead(&deep)
         .args(["--skip-foreign-workspace", "init"])
         .assert()
-        .success()
+        .failure()
+        .code(4)
         .get_output()
         .clone();
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
-        stderr.contains("Workspace already exists"),
-        "init under the override should report the parent workspace: {stderr}"
+        stderr.contains(&parent.display().to_string()),
+        "init under the override should name the parent workspace: {stderr}"
     );
-    assert!(stderr.contains(&parent.display().to_string()));
+    assert!(
+        stderr.contains("--nested"),
+        "the refusal should name the --nested opt-in: {stderr}"
+    );
 
     assert_foreign_untouched(&child.join(".beads"));
+    assert!(
+        !deep.join(".beads").exists(),
+        "refused init must not create a workspace at the invocation directory"
+    );
 }
 
 #[test]

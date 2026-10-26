@@ -517,6 +517,7 @@ EXAMPLES:
   bead init                          # Use default prefix 'bead'
   bead init --prefix myteam          # Use custom prefix 'myteam'
   bead init --prefix taskforce       # Use custom prefix 'taskforce'
+  bead init --nested --prefix sub    # Separate workspace below an enclosing one
 
 The workspace must be initialized before creating or managing issues.
 Once initialized, all bead commands will operate on this workspace."
@@ -525,6 +526,13 @@ pub struct InitOptions {
     /// Custom prefix for bead IDs (default: bead)
     #[arg(long, default_value = "bead")]
     pub prefix: String,
+
+    /// Create a separate workspace in the current directory even when
+    /// discovery finds an enclosing bead workspace above it. Without this
+    /// flag, init below an existing workspace fails closed instead of
+    /// silently adopting the ancestor.
+    #[arg(long)]
+    pub nested: bool,
 }
 
 /// Options for explicit verified restore (R036)
