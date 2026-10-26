@@ -1267,6 +1267,24 @@ struct PointerQuarantineReset {
 
 /// Checkpoint status for `bead sync status` (plan 6.2)
 ///
+/// Spec 10 (`checkpoint-set-v2.md`): the first publication of an existing
+/// workspace under a new layout is a documented full rewrite. `sync
+/// --status` reports this while the published layout differs from the
+/// layout the workspace's publication policy selects, so the one-time
+/// cost -- proportional to store size -- is visible before it is paid.
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingLayoutUpgrade {
+    /// The published generation's layout. Legacy monolithic pointers
+    /// carry no `mode` key; they report as `"monolithic"`.
+    pub current_mode: String,
+    /// The layout the next publication writes under the workspace's
+    /// configured policy (spec 9's mode resolution).
+    pub target_mode: String,
+    /// Operator-facing statement that the next publication rewrites the
+    /// full store and what the old-generation window is.
+    pub notice: String,
+}
+
 /// `ready_to_commit` is the pre-commit gate: it holds only when the
 /// checkpoint is internally consistent -- the authoritative pointer
 /// verifies against its root object, the checkpoint covers the live event
@@ -1317,6 +1335,11 @@ pub struct CheckpointStatusReport {
     /// folds this verdict into `ready_to_commit`, while the probe itself
     /// stays strictly read-only.
     pub git_reachability: Option<GitReachability>,
+    /// Spec 10: the pending layout upgrade, present exactly when a
+    /// checkpoint is published and the next publication writes a
+    /// different layout than the published one (the documented full
+    /// rewrite). Absent when the layouts agree or nothing is published.
+    pub pending_upgrade: Option<PendingLayoutUpgrade>,
 }
 
 /// Import result with F017 support
@@ -8511,6 +8534,9 @@ fn forensic_checkpoint_status_inner(
                             .as_str()
                             .to_string(),
                     git_reachability,
+                    // An unparseable pointer names no layout, so no
+                    // upgrade can be reported against it.
+                    pending_upgrade: None,
                 });
             }
         }
@@ -8518,7 +8544,44 @@ fn forensic_checkpoint_status_inner(
         None
     };
 
+    // Spec 9/10: derive the layout the next publication writes from the
+    // workspace's configured policy alone -- the same resolution
+    // `select_checkpoint_mode` applies, minus the corpus walk (only the
+    // forced-monolith limit refusal needs it, and a limit refusal is a
+    // publication-time outcome this status never predicts).
+    let pending_upgrade = pointer.as_ref().and_then(|pointer| {
+        let policy = match load_checkpoint_config(checkpoint_base) {
+            Ok(config) => match config.mode {
+                Some(mode) => ModePolicy::Forced(mode),
+                None => ModePolicy::Adaptive,
+            },
+            Err(_) => ModePolicy::Adaptive,
+        };
+        let target = match policy {
+            ModePolicy::Forced(CheckpointMode::Monolithic) => CheckpointMode::Monolithic,
+            _ => CheckpointMode::SetV2,
+        };
+        let current = pointer
+            .get("mode")
+            .and_then(|v| v.as_str())
+            .unwrap_or("monolithic");
+        if current == target.as_str() {
+            return None;
+        }
+        Some(PendingLayoutUpgrade {
+            current_mode: current.to_string(),
+            target_mode: target.as_str().to_string(),
+            notice: format!(
+                "the next publication rewrites the full store in the {} layout; \
+                 one-time cost proportional to store size, and the old generation stays \
+                 restorable via previous.json until the next publication reaps it",
+                target.as_str()
+            ),
+        })
+    });
+
     let mut report = CheckpointStatusReport {
+        pending_upgrade,
         checkpoint_present: pointer.is_some(),
         mode: pointer
             .as_ref()

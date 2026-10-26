@@ -255,6 +255,15 @@ current checkpoint it publishes nothing and exits 0 — and `--no-auto-flush` or
 `checkpoint.auto_flush: false` in `.beads/config.json` suppresses automatic
 publication, leaving the checkpoint to be advanced by that explicit command.
 
+**Checkpoint layout (checkpoint-set-v2).** Adaptive mode — the default —
+publishes the incremental `set-v2` layout. The first `set-v2` publication of
+an existing monolithic or sharded-v1 workspace is a **one-time full rewrite**
+of the checkpoint set, with cost proportional to store size; `bead sync
+status` reports the pending upgrade (current mode → target mode) before it
+happens. The rewrite is crash-safe: the `set/` tree is written and verified
+before the pointer swap, and the old generation stays restorable via
+`previous.json` until the next publication reaps it.
+
 Recovering a fresh clone, which arrives with a checkpoint but no database:
 
 ```bash

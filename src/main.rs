@@ -3651,6 +3651,14 @@ fn cmd_sync_status(opts: cli::SyncStatusOptions) -> Result<()> {
             if let Some(mode) = &report.mode {
                 println!("  Mode: {}", mode);
             }
+            // Spec 10: surface the documented full-rewrite upgrade before
+            // it happens, in the same words the help and man page use.
+            if let Some(upgrade) = &report.pending_upgrade {
+                println!(
+                    "  Pending upgrade: {} -> {} ({})",
+                    upgrade.current_mode, upgrade.target_mode, upgrade.notice
+                );
+            }
             if let Some(generation) = &report.generation_id {
                 println!("  Generation: {}", generation);
             }

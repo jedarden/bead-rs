@@ -25,7 +25,11 @@ to atomically assign work.
 SQLite (.beads/beads.db) is the authoritative live state and is not committed.
 The checkpoint under .beads/checkpoint/ is the portable, durable copy and is
 what Git tracks; every successful mutation publishes it automatically after its
-transaction commits, so it is never silently behind the database. Each
+transaction commits, so it is never silently behind the database. Adaptive
+mode publishes the checkpoint-set-v2 layout; the first publication of an
+existing monolithic or sharded-v1 workspace is a one-time full rewrite of
+the checkpoint set, with cost proportional to store size ('bead sync status'
+reports the pending upgrade before it happens). Each
 publication also stages the fileset it verified into the Git index (ADR-018),
 so the next commit carries a complete checkpoint however it is invoked;
 `checkpoint.auto_stage` in .beads/config.json suppresses that staging. `bead
@@ -360,7 +364,18 @@ a remembered command.
 
 For disaster recovery use `bead restore --source <CHECKPOINT-SET> --generation
 <GENERATION> --actor <WHO>`. `sync import-only` remains the lower-level
-interchange and reconciliation primitive."
+interchange and reconciliation primitive.
+
+LAYOUT (checkpoint-set-v2):
+  Adaptive mode (the default) publishes the set-v2 layout for every
+  workspace. The first set-v2 publication of an existing monolithic or
+  sharded-v1 workspace is a one-time full rewrite: every live record
+  becomes shard content, every event becomes segment or tail content, and
+  the cost is proportional to store size. `bead sync status` reports the
+  pending upgrade before it happens. The rewrite is crash-safe -- the set/
+  tree is written and verified before the pointer swap -- and the old
+  generation remains restorable via previous.json until the next
+  publication reaps it."
     )]
     Sync(SyncCommand),
 
@@ -2067,7 +2082,15 @@ OUTPUT:
   generation_id, live_sequence, covered_sequence, relationship, dirty,
   root_path, root_hash, root_verified, view_agrees, unresolved_tombstones,
   changed_paths, checkpoint_consistent, ready_to_commit,
-  not_ready_reasons, and git_reachability.
+  not_ready_reasons, git_reachability, and pending_upgrade.
+
+PENDING UPGRADE (checkpoint-set-v2):
+  When the published layout differs from the layout the workspace's policy
+  selects, pending_upgrade carries current_mode, target_mode, and a notice
+  stating that the next publication rewrites the full store (one-time cost
+  proportional to store size). This is informational: publication stays
+  allowed, and the old generation remains restorable via previous.json
+  until the next publication reaps it.
 
 RELATIONSHIP (R027):
   The sync relationship between the live store and the durable checkpoint:

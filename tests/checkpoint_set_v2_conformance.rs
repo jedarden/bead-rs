@@ -25,6 +25,18 @@
 //! - `set-v2-crash-ordering` (12.10): orphans from an interrupted
 //!   publication are reaped by the next one, and the pointer swap leaves a
 //!   complete, verifiable generation on both sides of the crash window.
+//! - `set-v2-migration-full-rewrite` (12.1): a monolithic workspace at the
+//!   safety limits' operating point and a sharded-v1 workspace (from the
+//!   committed fixture, since the writer no longer produces sharded-v1)
+//!   each publish once under adaptive mode; `sync --status` reported the
+//!   pending full rewrite beforehand, the publication writes the complete
+//!   `set/` tree, and the old generation remains restorable via
+//!   `previous.json`.
+//! - `set-v2-dual-layout-reader-equivalence` (12.2): restore into an empty
+//!   store, fork import, reconcile, and verified restore each succeed from
+//!   a monolithic source and from a `set-v2` source of the same store,
+//!   with the restored stores passing v1 restore-equivalence against the
+//!   source.
 //!
 //! Fixtures drive the real `bead` binary over real workspaces so the
 //! scenarios exercise the publication path end to end: `bead init`, CLI
@@ -1353,5 +1365,454 @@ fn set_v2_green_scenarios_under_out_of_band_change() {
                 "combination {name} under {label} went red without failure text"
             );
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// spec 12.1 + 12.2: migration and the reader family across the boundary
+// ---------------------------------------------------------------------------
+
+/// The id of the one live issue titled exactly `title`
+fn extract_created_id(workspace: &Path, title: &str) -> String {
+    live_issue_summaries(workspace)
+        .into_iter()
+        .find(|(_, t)| t == title)
+        .map(|(id, _)| id)
+        .unwrap_or_else(|| panic!("no live issue titled {title:?}"))
+}
+
+/// The parsed `sync status --json` report
+fn status_report(workspace: &Path) -> Value {
+    let out = run_bead(workspace, &["sync", "status", "--json"]);
+    assert!(
+        out.status.success(),
+        "sync status --json failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).expect("status --json emits one JSON object")
+}
+
+/// Sorted (id, title) pairs of the live store: the semantic content the
+/// v1 restore-equivalence comparison needs
+fn live_issue_summaries(workspace: &Path) -> Vec<(String, String)> {
+    let out = run_bead(workspace, &["list", "--json", "--limit", "999999"]);
+    assert!(
+        out.status.success(),
+        "list failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let issues: Vec<Value> = serde_json::from_slice(&out.stdout).unwrap();
+    let mut rows: Vec<(String, String)> = issues
+        .into_iter()
+        .map(|issue| {
+            (
+                issue["id"].as_str().unwrap().to_string(),
+                issue["title"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    rows.sort();
+    rows
+}
+
+/// Restore one named generation of `workspace`'s checkpoint set (through
+/// the named pointer, current.json or previous.json) into a fresh
+/// workspace. The restore verifier checks the set-v2 closure, hashes,
+/// counts, and event continuity, so success is the completeness proof for
+/// the published `set/` tree.
+fn restore_generation_fresh(workspace: &Path, pointer: &str, generation: &str) -> TempDir {
+    let source = workspace.join(".beads/checkpoint").join(pointer);
+    let target = TempDir::new().unwrap();
+    init_workspace(target.path());
+    run_ok(
+        target.path(),
+        &[
+            "restore",
+            "--source",
+            source.to_str().unwrap(),
+            "--generation",
+            generation,
+            "--actor",
+            "set-v2-conformance",
+        ],
+    );
+    target
+}
+
+/// Replace `to`'s checkpoint set with the checkpoint set at `from_dir` --
+/// a directory that directly holds current.json (a workspace's
+/// `.beads/checkpoint`, or a committed fixture root). The git-transport
+/// pull of the r027 remote-advanced fixture pattern.
+fn pull_checkpoint(from_dir: &Path, to: &Path) {
+    let target = to.join(".beads/checkpoint");
+    if target.exists() {
+        fs::remove_dir_all(&target).unwrap();
+    }
+    fn walk(from: &Path, to: &Path) {
+        fs::create_dir_all(to).unwrap();
+        for entry in fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                walk(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+    walk(from_dir, &target);
+}
+
+/// Spec 12.1: the first publication of an existing monolithic or
+/// sharded-v1 workspace under adaptive mode is the documented full
+/// rewrite. `sync --status` reports the pending upgrade before it
+/// happens; the publication writes the complete set/ tree; and the old
+/// generation remains restorable via previous.json until retention reaps
+/// it -- restoring both generations reproduces the live store each
+/// covers, exactly. Publications are triggered by mutations (dirty
+/// checkpoints publish; an aligned one short-circuits), which is also
+/// the real upgrade path: the first mutation after the binary upgrade
+/// pays the one-time rewrite.
+#[test]
+fn set_v2_migration_full_rewrite() {
+    // Leg 1: a monolithic workspace at the safety limits' operating
+    // point. The recorded threshold table is scaled down so the fixture
+    // sits just inside the forced-monolith refusal -- the operating point
+    // the scenario names -- without a 64 MiB fixture.
+    let fixture = fixture_with_issues(6, "migration-monolith");
+    let ws = fixture.path();
+    set_checkpoint_config(ws, "mode", json!("monolithic"));
+    set_checkpoint_config(
+        ws,
+        "thresholds",
+        json!({
+            "version": 1,
+            "max_monolith_issue_records": 50,
+            "max_monolith_total_bytes": 1_048_576,
+            "max_record_line_bytes": 65_536
+        }),
+    );
+    // A mutation dirties the aligned fixture checkpoint, so this flush
+    // really publishes -- under the forced monolith.
+    run_ok(
+        ws,
+        &["create", "--title", "migration-monolith pre-upgrade tail"],
+    );
+    flush_ok(ws);
+    assert_eq!(read_pointer(ws)["mode"], "monolithic");
+    let monolith_generation = read_pointer(ws)["generation_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let expected_old = live_issue_summaries(ws);
+
+    // The policy keeping the workspace on its published layout reports no
+    // upgrade: the pending upgrade exists only when the layouts differ.
+    let report = status_report(ws);
+    assert!(
+        report["pending_upgrade"].is_null(),
+        "forced monolith on a monolith workspace must not report an upgrade: {report}"
+    );
+
+    // Spec 10: once the workspace's policy selects set-v2 -- here the
+    // recorded forced mode is lifted back to adaptive -- status reports
+    // the pending upgrade BEFORE the migration, in text and JSON.
+    set_checkpoint_config(ws, "mode", json!("adaptive"));
+    let report = status_report(ws);
+    assert_eq!(report["pending_upgrade"]["current_mode"], "monolithic");
+    assert_eq!(report["pending_upgrade"]["target_mode"], "set-v2");
+    let notice = report["pending_upgrade"]["notice"].as_str().unwrap();
+    assert!(notice.contains("rewrites the full store"), "{notice}");
+    assert!(notice.contains("proportional to store size"), "{notice}");
+    let text = String::from_utf8(run_bead(ws, &["sync", "status"]).stdout).unwrap();
+    assert!(
+        text.contains("Pending upgrade: monolithic -> set-v2"),
+        "{text}"
+    );
+
+    // The first adaptive publication -- the real upgrade path, a mutation
+    // after the policy change -- is the full rewrite, and the old
+    // generation survives as previous.json.
+    run_ok(
+        ws,
+        &["create", "--title", "migration-monolith post-upgrade"],
+    );
+    flush_ok(ws);
+    let pointer = read_pointer(ws);
+    assert_eq!(pointer["mode"], "set-v2");
+    let setv2_generation = pointer["generation_id"].as_str().unwrap().to_string();
+    assert_ne!(setv2_generation, monolith_generation);
+    let previous: Value = serde_json::from_str(
+        &fs::read_to_string(ws.join(".beads/checkpoint/previous.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        previous["generation_id"].as_str().unwrap(),
+        monolith_generation
+    );
+
+    // The upgrade is no longer pending once the layouts agree.
+    let report = status_report(ws);
+    assert!(report["pending_upgrade"].is_null(), "{report}");
+
+    // Round trip across the boundary: BOTH generations restore into a
+    // fresh workspace and reproduce the live store each covers exactly.
+    assert_eq!(
+        live_issue_summaries(
+            restore_generation_fresh(fixture.path(), "previous.json", &monolith_generation).path()
+        ),
+        expected_old,
+        "the pre-migration monolith generation must stay restorable"
+    );
+    let expected_new = live_issue_summaries(ws);
+    assert_ne!(
+        expected_new, expected_old,
+        "the upgrade mutation is covered"
+    );
+    assert_eq!(
+        live_issue_summaries(
+            restore_generation_fresh(fixture.path(), "current.json", &setv2_generation).path()
+        ),
+        expected_new,
+        "the migrated set-v2 generation must restore equivalently"
+    );
+
+    // Leg 2: a sharded-v1 workspace migrates by the same path. The writer
+    // no longer produces sharded-v1 (forced sharded resolves to set-v2),
+    // so the fixture starts from the committed sharded fixture: importing
+    // it into an empty workspace adopts its UUID and live state, and its
+    // pointer stands in for the pre-migration sharded generation.
+    let sharded_fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/attempts/new/sharded");
+    let sharded_dir = TempDir::new().unwrap();
+    let ws2 = sharded_dir.path();
+    init_workspace(ws2);
+    set_checkpoint_config(ws2, "auto_flush", json!(false));
+    run_ok(
+        ws2,
+        &[
+            "sync",
+            "import-only",
+            "--input",
+            sharded_fixture.to_str().unwrap(),
+            "--restore-into-empty",
+            "--actor",
+            "migration-scenario",
+        ],
+    );
+    pull_checkpoint(&sharded_fixture, ws2);
+
+    // The pending upgrade names the sharded layout before the migration;
+    // the default policy is already adaptive, so no config edit is needed.
+    let report = status_report(ws2);
+    assert_eq!(report["mode"], "sharded");
+    assert_eq!(report["pending_upgrade"]["current_mode"], "sharded");
+    assert_eq!(report["pending_upgrade"]["target_mode"], "set-v2");
+    let sharded_generation = report["generation_id"].as_str().unwrap().to_string();
+
+    // The same-path migration: a mutation publishes the full set-v2
+    // rewrite, and the sharded generation survives as previous.json.
+    run_ok(
+        ws2,
+        &["create", "--title", "migration-sharded post-upgrade"],
+    );
+    flush_ok(ws2);
+    assert_eq!(read_pointer(ws2)["mode"], "set-v2");
+    let previous2: Value = serde_json::from_str(
+        &fs::read_to_string(ws2.join(".beads/checkpoint/previous.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        previous2["generation_id"].as_str().unwrap(),
+        sharded_generation
+    );
+    let expected2 = live_issue_summaries(ws2);
+    assert!(
+        !expected2.is_empty(),
+        "the sharded fixture must import live records for the round trip"
+    );
+    // The sharded generation's own live snapshot: import-only state plus
+    // nothing else -- the upgrade mutation is covered by the set-v2 side,
+    // so restore the sharded generation and compare against its content.
+    let sharded_restore = restore_generation_fresh(ws2, "previous.json", &sharded_generation);
+    let sharded_view = live_issue_summaries(sharded_restore.path());
+    assert_eq!(
+        sharded_view,
+        expected2
+            .iter()
+            .filter(|(_, title)| !title.contains("migration-sharded post-upgrade"))
+            .cloned()
+            .collect::<Vec<_>>(),
+        "the pre-migration sharded-v1 generation must stay restorable"
+    );
+    assert!(
+        !sharded_view.is_empty(),
+        "the sharded fixture must carry records into the round trip"
+    );
+}
+
+/// Spec 12.2: restore into an empty store, fork import, reconcile, and
+/// verified restore each succeed from a monolithic source and from a
+/// set-v2 source of the same store, and the restored stores pass v1
+/// restore-equivalence against the source. Each leg establishes its
+/// layout's base generation and runs every family before retention reaps
+/// the base (the retained set is bounded by the two referenced
+/// generations).
+#[test]
+fn set_v2_dual_layout_reader_equivalence() {
+    let fixture = fixture_with_issues(5, "dual-layout");
+    let ws = fixture.path();
+    let mut advancements = 0usize;
+
+    for (label, mode) in [("monolithic", "monolithic"), ("set-v2", "adaptive")] {
+        // Base generation for this leg, published in the leg's layout.
+        // A mutation dirties the prior leg's aligned checkpoint, so the
+        // flush really publishes under the configured mode.
+        set_checkpoint_config(ws, "mode", json!(mode));
+        run_ok(
+            ws,
+            &["create", "--title", &format!("dual-layout base {label}")],
+        );
+        flush_ok(ws);
+        let pointer = read_pointer(ws);
+        assert_eq!(pointer["mode"], label, "{label}: base generation layout");
+        let base_generation = pointer["generation_id"].as_str().unwrap().to_string();
+        let base = live_issue_summaries(ws);
+        let source = ws
+            .join(".beads/checkpoint/current.json")
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        // 1. Restore into an empty store.
+        let restored = restore_generation_fresh(ws, "current.json", &base_generation);
+        assert_eq!(
+            live_issue_summaries(restored.path()),
+            base,
+            "{label}: restore into an empty store"
+        );
+
+        // 2. Fork import: import-only --restore-into-empty adopts the
+        //    source identity into an empty initialized workspace.
+        let fork = TempDir::new().unwrap();
+        init_workspace(fork.path());
+        run_ok(
+            fork.path(),
+            &[
+                "sync",
+                "import-only",
+                "--input",
+                &source,
+                "--restore-into-empty",
+                "--actor",
+                "dual-layout",
+            ],
+        );
+        assert_eq!(
+            live_issue_summaries(fork.path()),
+            base,
+            "{label}: fork import"
+        );
+
+        // 4. Verified restore over a non-empty live store.
+        let occupied = TempDir::new().unwrap();
+        init_workspace(occupied.path());
+        run_ok(
+            occupied.path(),
+            &["create", "--title", "pre-existing local work"],
+        );
+        run_ok(
+            occupied.path(),
+            &[
+                "restore",
+                "--source",
+                &source,
+                "--generation",
+                &base_generation,
+                "--actor",
+                "dual-layout",
+                "--allow-non-empty",
+            ],
+        );
+        assert_eq!(
+            live_issue_summaries(occupied.path()),
+            base,
+            "{label}: verified restore"
+        );
+
+        // 3. Reconcile, on the r027 lagging-pair shape: a clone of this
+        //    workspace at the base generation advances by one issue and
+        //    publishes in the leg's layout, and the pull of that
+        //    checkpoint back into this workspace -- whose live store has
+        //    never restored or imported, so every live event appears in
+        //    the pulled checkpoint -- reads remote-advanced and merges.
+        let clone_dir = TempDir::new().unwrap();
+        let clone = clone_dir.path();
+        fs::create_dir_all(clone.join(".beads")).unwrap();
+        fs::copy(
+            ws.join(".beads/config.json"),
+            clone.join(".beads/config.json"),
+        )
+        .unwrap();
+        let clone_checkpoint = clone.join(".beads/checkpoint");
+        fs::create_dir_all(&clone_checkpoint).unwrap();
+        fn walk_copy(from: &Path, to: &Path) {
+            fs::create_dir_all(to).unwrap();
+            for entry in fs::read_dir(from).unwrap() {
+                let entry = entry.unwrap();
+                let target = to.join(entry.file_name());
+                if entry.file_type().unwrap().is_dir() {
+                    walk_copy(&entry.path(), &target);
+                } else {
+                    fs::copy(entry.path(), target).unwrap();
+                }
+            }
+        }
+        walk_copy(&ws.join(".beads/checkpoint"), &clone_checkpoint);
+        init_workspace(clone);
+        run_ok(
+            clone,
+            &[
+                "restore",
+                "--source",
+                ".beads/checkpoint",
+                "--generation",
+                &base_generation,
+                "--actor",
+                "dual-layout-clone",
+            ],
+        );
+        run_ok(
+            clone,
+            &[
+                "create",
+                "--title",
+                &format!("dual-layout advancement {advancements}"),
+            ],
+        );
+        advancements += 1;
+        flush_ok(clone);
+
+        pull_checkpoint(&clone_checkpoint, ws);
+        let relationship = status_report(ws)["relationship"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            relationship, "remote-advanced",
+            "{label}: the pulled advancement must read remote-advanced"
+        );
+        run_ok(ws, &["sync", "reconcile", "--actor", "dual-layout"]);
+        let mut reconciled_expected = base.clone();
+        reconciled_expected.push((
+            extract_created_id(ws, &format!("dual-layout advancement {}", advancements - 1)),
+            format!("dual-layout advancement {}", advancements - 1),
+        ));
+        reconciled_expected.sort();
+        assert_eq!(
+            live_issue_summaries(ws),
+            reconciled_expected,
+            "{label}: reconcile"
+        );
     }
 }
