@@ -40,6 +40,27 @@ fn bead(dir: &Path) -> Command {
     command
 }
 
+/// The default resolves to set-v2 (checkpoint-set-v2 spec 9), whose
+/// generation objects are sharded; these legs read the monolithic JSONL of
+/// `active_root` directly, so pin the monolith they import from.
+fn force_monolithic_mode(workspace: &std::path::Path) {
+    let path = workspace.join(".beads/config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    config
+        .as_object_mut()
+        .unwrap()
+        .entry("checkpoint")
+        .or_insert(serde_json::Value::Object(Default::default()))
+        .as_object_mut()
+        .unwrap()
+        .insert(
+            "mode".into(),
+            serde_json::Value::String("monolithic".to_string()),
+        );
+    fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+}
+
 /// A bare interchange file: issue records only. No events, no receipts, no
 /// store identity anywhere — the shape `.beads/issues.jsonl` hands another
 /// workspace.
@@ -68,6 +89,7 @@ fn workspace_with_bare_merge() -> (tempfile::TempDir, PathBuf) {
         .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
+    force_monolithic_mode(&workspace);
 
     let import_path = workspace.join("issues.jsonl");
     fs::write(&import_path, BARE_ISSUES_JSONL).unwrap();
@@ -314,6 +336,7 @@ fn bare_interchange_merge_import_flush_restore_round_trip() {
         .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
+    force_monolithic_mode(&recovery);
 
     let report_stdout = bead(&recovery)
         .args([
@@ -502,6 +525,7 @@ fn bare_restore_into_empty_adopts_the_derived_source_identity() {
         .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
+    force_monolithic_mode(&workspace);
 
     let import_path = workspace.join("issues.jsonl");
     fs::write(&import_path, BARE_ISSUES_JSONL).unwrap();
@@ -574,6 +598,7 @@ fn bare_restore_into_empty_adopts_the_derived_source_identity() {
         .args(["init", "--skip-foreign-workspace", "--prefix", "test"])
         .assert()
         .success();
+    force_monolithic_mode(&recovery);
 
     bead(&recovery)
         .args([

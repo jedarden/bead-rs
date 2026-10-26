@@ -85,6 +85,7 @@ fn create_workspace() -> TempDir {
         .current_dir(temp_dir.path())
         .assert()
         .success();
+    force_monolithic_mode(temp_dir.path());
 
     temp_dir
 }
@@ -112,6 +113,31 @@ fn suppress_auto_flush(workspace: &std::path::Path) {
         .as_object_mut()
         .unwrap()
         .insert("auto_flush".into(), serde_json::Value::Bool(false));
+    fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+}
+
+/// Pin a workspace to the monolithic checkpoint layout
+/// (`checkpoint.mode: monolithic`).
+///
+/// The default resolves to set-v2 (checkpoint-set-v2 spec 9), whose
+/// generation objects are sharded. This suite reads the monolithic JSONL of
+/// `active_root` directly (record rewriting, 0.1.1 modeling), so every
+/// workspace it drives is pinned to the layout it asserts about.
+fn force_monolithic_mode(workspace: &std::path::Path) {
+    let path = workspace.join(".beads/config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    config
+        .as_object_mut()
+        .unwrap()
+        .entry("checkpoint")
+        .or_insert(serde_json::Value::Object(Default::default()))
+        .as_object_mut()
+        .unwrap()
+        .insert(
+            "mode".into(),
+            serde_json::Value::String("monolithic".to_string()),
+        );
     fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 }
 

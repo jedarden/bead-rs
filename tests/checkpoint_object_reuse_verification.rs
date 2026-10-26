@@ -55,13 +55,39 @@ fn set_auto_flush(workspace: &Path, value: bool) {
     fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 }
 
+/// The default resolves to set-v2 (checkpoint-set-v2 spec 9), whose roots
+/// are sharded and republished at fresh addresses: a tampered object stays
+/// behind at its old address by design. These legs assert the monolith
+/// contract -- an unchanged live store recomputes the identical content
+/// address and flush-only rewrites the object in place -- so pin the
+/// monolith they assert about.
+fn force_monolithic_mode(workspace: &Path) {
+    let path = workspace.join(".beads/config.json");
+    let mut config: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    config
+        .as_object_mut()
+        .unwrap()
+        .entry("checkpoint")
+        .or_insert(Value::Object(Default::default()))
+        .as_object_mut()
+        .unwrap()
+        .insert("mode".into(), Value::String("monolithic".to_string()));
+    fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+}
+
 /// A fresh workspace with publication controlled entirely by the test.
 fn workspace(prefix: &str) -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().expect("workspace tempdir");
     let path = dir.path().to_path_buf();
     let output = run(
         &path,
-        &["init", "--skip-foreign-workspace", "--prefix", prefix],
+        &[
+            "init",
+            "--skip-foreign-workspace",
+            "--no-auto-flush",
+            "--prefix",
+            prefix,
+        ],
     );
     assert!(
         output.status.success(),
@@ -69,6 +95,7 @@ fn workspace(prefix: &str) -> (tempfile::TempDir, PathBuf) {
         String::from_utf8_lossy(&output.stderr)
     );
     set_auto_flush(&path, false);
+    force_monolithic_mode(&path);
     (dir, path)
 }
 
