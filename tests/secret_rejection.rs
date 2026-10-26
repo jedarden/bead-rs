@@ -6,10 +6,45 @@ use rusqlite::Connection;
 use serde_json::Value;
 use std::path::Path;
 
+/// First existing tempdir base whose ancestor chain carries no `.beads`.
+///
+/// Workspace discovery stops at the first `.beads` found walking upward, so
+/// a fresh workspace created under a stray ancestor store refuses its `bead
+/// init` or silently binds every later invocation to that foreign store.
+/// Hosts carry such debris (a shared smoke-test workspace lives at
+/// `/var/tmp/.beads` on some machines), so the historical `/var/tmp` base —
+/// originally chosen to dodge a stray `/tmp/.beads` — is only the first
+/// choice, falling back to TMPDIR and then /dev/shm. Same selection as
+/// cli_init.rs's `temp_workspace_dir`.
+fn clean_beads_free_base() -> std::path::PathBuf {
+    let mut bases = vec![
+        std::path::PathBuf::from("/var/tmp"),
+        std::env::temp_dir(),
+        std::path::PathBuf::from("/dev/shm"),
+    ];
+    bases.retain(|base| base.exists() && !has_beads_ancestor(base));
+    bases.first().cloned().expect(
+        "no tempdir base with a .beads-free ancestor chain: clean up the stray \
+             .beads above /var/tmp, TMPDIR, or /dev/shm",
+    )
+}
+
+/// True when the directory or any ancestor carries a `.beads` directory.
+fn has_beads_ancestor(start: &std::path::Path) -> bool {
+    let mut current = Some(start);
+    while let Some(dir) = current {
+        if dir.join(".beads").exists() {
+            return true;
+        }
+        current = dir.parent();
+    }
+    false
+}
+
 fn workspace() -> tempfile::TempDir {
     let workspace = tempfile::Builder::new()
         .prefix("bead-secret-rejection-")
-        .tempdir_in("/var/tmp")
+        .tempdir_in(clean_beads_free_base())
         .unwrap();
     Command::cargo_bin("bead")
         .unwrap()
@@ -403,7 +438,7 @@ fn manifest_is_scanned_as_one_request_before_its_transaction() {
 fn doctor_reports_live_and_both_retained_generations_without_matched_bytes() {
     let workspace = tempfile::Builder::new()
         .prefix("bead-secret-doctor-")
-        .tempdir_in("/var/tmp")
+        .tempdir_in(clean_beads_free_base())
         .unwrap();
     Command::cargo_bin("bead")
         .unwrap()

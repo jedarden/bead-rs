@@ -33,6 +33,41 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// First existing tempdir base whose ancestor chain carries no `.beads`.
+///
+/// Workspace discovery stops at the first `.beads` found walking upward, so
+/// a fresh workspace created under a stray ancestor store refuses its `bead
+/// init` or silently binds every later invocation to that foreign store.
+/// Hosts carry such debris (a shared smoke-test workspace lives at
+/// `/var/tmp/.beads` on some machines), so the historical `/var/tmp` base —
+/// originally chosen to dodge a stray `/tmp/.beads` — is only the first
+/// choice, falling back to TMPDIR and then /dev/shm. Same selection as
+/// cli_init.rs's `temp_workspace_dir`.
+fn clean_beads_free_base() -> std::path::PathBuf {
+    let mut bases = vec![
+        std::path::PathBuf::from("/var/tmp"),
+        std::env::temp_dir(),
+        std::path::PathBuf::from("/dev/shm"),
+    ];
+    bases.retain(|base| base.exists() && !has_beads_ancestor(base));
+    bases.first().cloned().expect(
+        "no tempdir base with a .beads-free ancestor chain: clean up the stray \
+             .beads above /var/tmp, TMPDIR, or /dev/shm",
+    )
+}
+
+/// True when the directory or any ancestor carries a `.beads` directory.
+fn has_beads_ancestor(start: &std::path::Path) -> bool {
+    let mut current = Some(start);
+    while let Some(dir) = current {
+        if dir.join(".beads").exists() {
+            return true;
+        }
+        current = dir.parent();
+    }
+    false
+}
+
 fn bead(dir: &Path) -> Command {
     let mut command = Command::cargo_bin("bead").unwrap();
     command.current_dir(dir);
@@ -73,15 +108,14 @@ const BARE_ISSUES_JSONL: &str = concat!(
 
 /// A fresh workspace with the bare interchange merged in and one generation
 /// published. The tempdir must outlive every use of the returned workspace
-/// path. Workspaces live under /var/tmp, not the TMPDIR default: workspace
-/// discovery stops at the first featureless `.beads` above the working
-/// directory (R030), and a shared /tmp can carry unrelated `.beads` debris
-/// that would hijack the fresh workspace's init — the same reason
-/// cli_init.rs pins its workspaces to /var/tmp.
+/// path. The base comes from `clean_beads_free_base`: workspace discovery
+/// stops at the first featureless `.beads` above the working directory
+/// (R030), and a stray ancestor `.beads` would hijack the fresh workspace's
+/// init — the same selection cli_init.rs's `temp_workspace_dir` makes.
 fn workspace_with_bare_merge() -> (tempfile::TempDir, PathBuf) {
     let temp_dir = tempfile::Builder::new()
         .prefix("bead-test-")
-        .tempdir_in("/var/tmp")
+        .tempdir_in(clean_beads_free_base())
         .unwrap();
     let workspace = temp_dir.path().to_path_buf();
 
@@ -329,7 +363,7 @@ fn bare_interchange_merge_import_flush_restore_round_trip() {
     // clean — the poison must not cross a recovery boundary.
     let recovery_dir = tempfile::Builder::new()
         .prefix("bead-recovery-")
-        .tempdir_in("/var/tmp")
+        .tempdir_in(clean_beads_free_base())
         .unwrap();
     let recovery = recovery_dir.path().to_path_buf();
     bead(&recovery)
@@ -517,7 +551,7 @@ fn bare_restore_into_empty_adopts_the_derived_source_identity() {
     // fix the workspace adopts the derived identity instead.
     let temp_dir = tempfile::Builder::new()
         .prefix("bead-test-")
-        .tempdir_in("/var/tmp")
+        .tempdir_in(clean_beads_free_base())
         .unwrap();
     let workspace = temp_dir.path().to_path_buf();
 
@@ -591,7 +625,7 @@ fn bare_restore_into_empty_adopts_the_derived_source_identity() {
     // convergent across recovery boundaries.
     let recovery_dir = tempfile::Builder::new()
         .prefix("bead-recovery-")
-        .tempdir_in("/var/tmp")
+        .tempdir_in(clean_beads_free_base())
         .unwrap();
     let recovery = recovery_dir.path().to_path_buf();
     bead(&recovery)

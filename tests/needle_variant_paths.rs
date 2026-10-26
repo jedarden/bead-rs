@@ -36,6 +36,41 @@ use std::process::Command as StdCommand;
 use std::sync::{Arc, Barrier};
 use tempfile::TempDir;
 
+/// First existing tempdir base whose ancestor chain carries no `.beads`.
+///
+/// Workspace discovery stops at the first `.beads` found walking upward, so
+/// a fresh workspace created under a stray ancestor store refuses its `bead
+/// init` or silently binds every later invocation to that foreign store.
+/// Hosts carry such debris (a shared smoke-test workspace lives at
+/// `/var/tmp/.beads` on some machines), so the historical `/var/tmp` base —
+/// originally chosen to dodge a stray `/tmp/.beads` — is only the first
+/// choice, falling back to TMPDIR and then /dev/shm. Same selection as
+/// cli_init.rs's `temp_workspace_dir`.
+fn clean_beads_free_base() -> std::path::PathBuf {
+    let mut bases = vec![
+        std::path::PathBuf::from("/var/tmp"),
+        std::env::temp_dir(),
+        std::path::PathBuf::from("/dev/shm"),
+    ];
+    bases.retain(|base| base.exists() && !has_beads_ancestor(base));
+    bases.first().cloned().expect(
+        "no tempdir base with a .beads-free ancestor chain: clean up the stray \\
+             .beads above /var/tmp, TMPDIR, or /dev/shm",
+    )
+}
+
+/// True when the directory or any ancestor carries a `.beads` directory.
+fn has_beads_ancestor(start: &std::path::Path) -> bool {
+    let mut current = Some(start);
+    while let Some(dir) = current {
+        if dir.join(".beads").exists() {
+            return true;
+        }
+        current = dir.parent();
+    }
+    false
+}
+
 /// Parsed first record from a `show --json` / `list --json` response,
 /// accepting either a JSON array or one JSON object per line (the contract
 /// allows both record-stream shapes)
@@ -376,7 +411,7 @@ fn stale_revision_guard_rejects_identically_on_both_variants() {
 fn error_exit_codes_are_stable_across_variants() {
     let pair = capability_variant_pair().unwrap();
     // A directory with no .beads ancestor, for the no-workspace case
-    let bare = TempDir::with_prefix_in("needle-bare-", "/var/tmp").unwrap();
+    let bare = TempDir::with_prefix_in("needle-bare-", clean_beads_free_base()).unwrap();
 
     for variant in [&pair.capability_absent, &pair.capability_present] {
         let role = variant.role;

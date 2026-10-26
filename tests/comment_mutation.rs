@@ -13,6 +13,41 @@ use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::path::Path;
 
+/// First existing tempdir base whose ancestor chain carries no `.beads`.
+///
+/// Workspace discovery stops at the first `.beads` found walking upward, so
+/// a fresh workspace created under a stray ancestor store refuses its `bead
+/// init` or silently binds every later invocation to that foreign store.
+/// Hosts carry such debris (a shared smoke-test workspace lives at
+/// `/var/tmp/.beads` on some machines), so the historical `/var/tmp` base —
+/// originally chosen to dodge a stray `/tmp/.beads` — is only the first
+/// choice, falling back to TMPDIR and then /dev/shm. Same selection as
+/// cli_init.rs's `temp_workspace_dir`.
+fn clean_beads_free_base() -> std::path::PathBuf {
+    let mut bases = vec![
+        std::path::PathBuf::from("/var/tmp"),
+        std::env::temp_dir(),
+        std::path::PathBuf::from("/dev/shm"),
+    ];
+    bases.retain(|base| base.exists() && !has_beads_ancestor(base));
+    bases.first().cloned().expect(
+        "no tempdir base with a .beads-free ancestor chain: clean up the stray \
+             .beads above /var/tmp, TMPDIR, or /dev/shm",
+    )
+}
+
+/// True when the directory or any ancestor carries a `.beads` directory.
+fn has_beads_ancestor(start: &std::path::Path) -> bool {
+    let mut current = Some(start);
+    while let Some(dir) = current {
+        if dir.join(".beads").exists() {
+            return true;
+        }
+        current = dir.parent();
+    }
+    false
+}
+
 fn command(root: &Path) -> Command {
     let mut command = Command::cargo_bin("bead").unwrap();
     command
@@ -25,7 +60,7 @@ fn command(root: &Path) -> Command {
 fn workspace() -> (tempfile::TempDir, String) {
     let dir = tempfile::Builder::new()
         .prefix("bead-comment-mutation-")
-        .tempdir_in("/var/tmp")
+        .tempdir_in(clean_beads_free_base())
         .unwrap();
     command(dir.path()).arg("init").assert().success();
     let issue = create_issue(dir.path(), "comment mutation probe");
@@ -618,7 +653,7 @@ fn checkpoint_round_trip_preserves_comments() {
 
     let target = tempfile::Builder::new()
         .prefix("bead-comment-restore-")
-        .tempdir_in("/var/tmp")
+        .tempdir_in(clean_beads_free_base())
         .unwrap();
     command(target.path())
         .args([

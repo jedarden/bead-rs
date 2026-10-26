@@ -48,6 +48,41 @@ use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
 
+/// First existing tempdir base whose ancestor chain carries no `.beads`.
+///
+/// Workspace discovery stops at the first `.beads` found walking upward, so
+/// a fresh workspace created under a stray ancestor store refuses its `bead
+/// init` or silently binds every later invocation to that foreign store.
+/// Hosts carry such debris (a shared smoke-test workspace lives at
+/// `/var/tmp/.beads` on some machines), so the historical `/var/tmp` base —
+/// originally chosen to dodge a stray `/tmp/.beads` — is only the first
+/// choice, falling back to TMPDIR and then /dev/shm. Same selection as
+/// cli_init.rs's `temp_workspace_dir`.
+fn clean_beads_free_base() -> std::path::PathBuf {
+    let mut bases = vec![
+        std::path::PathBuf::from("/var/tmp"),
+        std::env::temp_dir(),
+        std::path::PathBuf::from("/dev/shm"),
+    ];
+    bases.retain(|base| base.exists() && !has_beads_ancestor(base));
+    bases.first().cloned().expect(
+        "no tempdir base with a .beads-free ancestor chain: clean up the stray \
+             .beads above /var/tmp, TMPDIR, or /dev/shm",
+    )
+}
+
+/// True when the directory or any ancestor carries a `.beads` directory.
+fn has_beads_ancestor(start: &std::path::Path) -> bool {
+    let mut current = Some(start);
+    while let Some(dir) = current {
+        if dir.join(".beads").exists() {
+            return true;
+        }
+        current = dir.parent();
+    }
+    false
+}
+
 /// Every key an issue object may carry that is NOT an unknown extension:
 /// the serialized fields of `Issue` plus the projected collections the
 /// checkpoint layer embeds and routes to their own tables.
@@ -693,7 +728,7 @@ fn build_generations() -> Generations {
     // -- source workspace ----------------------------------------------------
     let source = tempfile::Builder::new()
         .prefix("ufk-source-")
-        .tempdir_in("/var/tmp")
+        .tempdir_in(clean_beads_free_base())
         .unwrap();
     init_workspace(source.path());
 
@@ -751,7 +786,7 @@ fn build_generations() -> Generations {
     // -- restored workspace ---------------------------------------------------
     let restored = tempfile::Builder::new()
         .prefix("ufk-restored-")
-        .tempdir_in("/var/tmp")
+        .tempdir_in(clean_beads_free_base())
         .unwrap();
     init_workspace(restored.path());
     restore_into_empty(&source_checkpoint, restored.path(), "ufk-restore", 4);
@@ -851,7 +886,7 @@ fn build_generations() -> Generations {
     let widened = tempfile::Builder::new()
         .prefix("ufk-widened-")
         .suffix(".jsonl")
-        .tempfile_in("/var/tmp")
+        .tempfile_in(clean_beads_free_base())
         .unwrap();
     edited_forensic_log(&replay_log, widened.path(), |event| {
         let object = event.as_object_mut().unwrap();
@@ -885,7 +920,7 @@ fn build_generations() -> Generations {
     let stripped = tempfile::Builder::new()
         .prefix("ufk-stripped-")
         .suffix(".jsonl")
-        .tempfile_in("/var/tmp")
+        .tempfile_in(clean_beads_free_base())
         .unwrap();
     edited_forensic_log(&replay_log, stripped.path(), |event| {
         let unknown: Vec<String> = event
@@ -920,7 +955,7 @@ fn build_generations() -> Generations {
     // -- round-tripped workspace ----------------------------------------------
     let round_tripped = tempfile::Builder::new()
         .prefix("ufk-round-trip-")
-        .tempdir_in("/var/tmp")
+        .tempdir_in(clean_beads_free_base())
         .unwrap();
     init_workspace(round_tripped.path());
     restore_into_empty(
@@ -1242,7 +1277,7 @@ fn redaction_rewrite_preserves_unknown_fields_on_the_rewritten_event() {
     let redacted_checkpoint = round_tripped.join(".beads/checkpoint");
     let final_round_trip = tempfile::Builder::new()
         .prefix("ufk-redacted-round-trip-")
-        .tempdir_in("/var/tmp")
+        .tempdir_in(clean_beads_free_base())
         .unwrap();
     init_workspace(final_round_trip.path());
     restore_into_empty(
