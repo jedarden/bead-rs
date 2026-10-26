@@ -46,11 +46,32 @@ pub(crate) fn bounds_json() -> serde_json::Value {
     })
 }
 
+/// The identity key a record kind owns, when the kind names one.
+///
+/// Records embed other kinds' IDs: a tombstone carries the epoch it
+/// resurrects in, a receipt its epoch. A fixed probe order therefore keyed
+/// the tombstone by the shared `epoch_id`, and the redaction class
+/// partition refused the epoch and tombstone of one committed redaction as
+/// duplicates — every set-v2 publication after a redaction failed
+/// (`authorization_value_contract`, 2026-10-26). The record's own identity
+/// outranks any embedded foreign one.
+fn own_identity_key(record_type: &str) -> Option<&'static str> {
+    match record_type {
+        "issue" => Some("id"),
+        "provenance_receipt" | "attempt_outcome" | "redaction_receipt" => Some("receipt_id"),
+        "redaction_epoch" => Some("epoch_id"),
+        "redaction_tombstone" => Some("tombstone_id"),
+        "redaction_finding" | "redaction_acknowledgment" => Some("fingerprint"),
+        _ => None,
+    }
+}
+
 /// The stable record ID a keyed record line partitions on (spec 5.1)
 ///
 /// The payload object's field name equals the record's `record_type` tag
 /// (`CheckpointRecord`'s serde shape), so the payload is the single
-/// non-`record_type` field; the ID key depends on the class.
+/// non-`record_type` field; the ID key is the kind's own identity when it
+/// has one, else the first generic ID key present.
 fn keyed_record_id(line: &[u8]) -> Result<String> {
     let record: serde_json::Value = serde_json::from_slice(line)
         .map_err(|e| anyhow!("set-v2 record line is not valid JSON: {}", e))?;
@@ -67,6 +88,11 @@ fn keyed_record_id(line: &[u8]) -> Result<String> {
     let payload = record
         .get(record_type)
         .ok_or_else(|| anyhow!("set-v2 {} record missing its payload", record_type))?;
+    if let Some(own) = own_identity_key(record_type) {
+        if let Some(id) = payload.get(own).and_then(|v| v.as_str()) {
+            return Ok(id.to_string());
+        }
+    }
     for key in [
         "id",
         "receipt_id",
@@ -1229,4 +1255,33 @@ pub(super) fn stage_set_v2_checkpoint(pointer_path: &Path) -> Result<super::Fore
         mode: CheckpointMode::SetV2,
         pointer_extensions: super::RecordExtensions::new(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line(record_type: &str, payload: serde_json::Value) -> Vec<u8> {
+        let mut record = serde_json::Map::new();
+        record.insert("record_type".into(), serde_json::json!(record_type));
+        record.insert(record_type.into(), payload);
+        serde_json::to_vec(&serde_json::Value::Object(record)).expect("test record serializes")
+    }
+
+    #[test]
+    fn tombstone_partitions_on_its_own_id_not_the_embedded_epoch() {
+        // One committed redaction emits an epoch and a tombstone sharing the
+        // epoch_id; each must partition on its own identity or the redaction
+        // class partition refuses the pair as duplicate record IDs.
+        let epoch = line(
+            "redaction_epoch",
+            serde_json::json!({"epoch_id": "5ed7", "receipt_ids": []}),
+        );
+        let tombstone = line(
+            "redaction_tombstone",
+            serde_json::json!({"tombstone_id": "73f2", "epoch_id": "5ed7"}),
+        );
+        assert_eq!(keyed_record_id(&epoch).unwrap(), "5ed7");
+        assert_eq!(keyed_record_id(&tombstone).unwrap(), "73f2");
+    }
 }
