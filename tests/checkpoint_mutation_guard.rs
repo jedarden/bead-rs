@@ -44,6 +44,35 @@ fn sequence(path: &Path) -> i64 {
         .unwrap()
 }
 
+/// Every event record published under the checkpoint's `set/` tree. The
+/// default layout since 5d4c08a6 is set-v2: the event log lives in `set/seg/`
+/// segments and the open `set/tail.jsonl`, and no `forensic.jsonl` monolith
+/// is written.
+fn published_events(checkpoint: &Path) -> Vec<Value> {
+    fn walk(dir: &Path, out: &mut Vec<Value>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if entry.file_type().unwrap().is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "jsonl") {
+                for line in fs::read_to_string(&path).unwrap().lines() {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    let record: Value = serde_json::from_str(line).unwrap();
+                    if record.get("event").is_some() {
+                        out.push(record);
+                    }
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(&checkpoint.join("set"), &mut out);
+    out
+}
+
 /// A hermetic `git` invocation: no global or system config leaks in, and
 /// the identity never depends on the host.
 fn git(dir: &Path, args: &[&str]) {
@@ -171,18 +200,12 @@ fn fork_preserves_the_published_prefix_and_allows_later_mutations() {
     let dir = tempfile::tempdir().unwrap();
     run(dir.path(), &["init"]);
     run(dir.path(), &["create", "--title", "parent task"]);
-    let path = dir.path().join(".beads/checkpoint/forensic.jsonl");
-    let events = |text: String| -> Vec<Value> {
-        text.lines()
-            .map(|line| serde_json::from_str::<Value>(line).unwrap())
-            .filter(|record| record.get("event").is_some())
-            .collect()
-    };
-    let before = events(fs::read_to_string(&path).unwrap());
+    let checkpoint = dir.path().join(".beads/checkpoint");
+    let before = published_events(&checkpoint);
     assert!(!before.is_empty());
     run(dir.path(), &["sync", "fork", "--actor", "operator"]);
     run(dir.path(), &["create", "--title", "fork task"]);
-    let after = events(fs::read_to_string(&path).unwrap());
+    let after = published_events(&checkpoint);
     for event in before {
         assert!(after.contains(&event), "fork rewrote a published event");
     }

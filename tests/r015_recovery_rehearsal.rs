@@ -13,8 +13,65 @@
 use assert_cmd::Command;
 use serial_test::serial;
 use std::fs;
+use std::path::Path;
 
-/// Build a workspace with content and a real flushed forensic checkpoint.
+/// Snapshot a directory as a depth-first, per-directory-sorted list of
+/// `(relative path, contents)` pairs. The default checkpoint layout is
+/// set-v2 (since 5d4c08a6): a `set/` tree plus a pointer, and no single
+/// `forensic.jsonl` file -- so "the rehearsal did not mutate the live
+/// checkpoint" has to hold over every published file.
+fn snapshot_tree(root: &Path) -> Vec<(String, Vec<u8>)> {
+    fn walk(dir: &Path, prefix: &str, out: &mut Vec<(String, Vec<u8>)>) {
+        let mut entries: Vec<_> = fs::read_dir(dir)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            let name = entry.file_name().to_str().unwrap().to_string();
+            let relative = if prefix.is_empty() {
+                name
+            } else {
+                format!("{prefix}/{name}")
+            };
+            if entry.file_type().unwrap().is_dir() {
+                walk(&path, &relative, out);
+            } else {
+                out.push((relative, fs::read(&path).unwrap()));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, "", &mut out);
+    out
+}
+
+/// Every record line published under the checkpoint's `set/` tree -- the
+/// set-v2 default's record corpus (`set/shard/`, `set/seg/`, `set/rec/`,
+/// and the open `set/tail.jsonl`).
+fn set_tree_lines(checkpoint: &Path) -> Vec<String> {
+    fn walk(dir: &Path, out: &mut Vec<String>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if entry.file_type().unwrap().is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "jsonl") {
+                for line in fs::read_to_string(&path).unwrap().lines() {
+                    if !line.trim().is_empty() {
+                        out.push(line.to_string());
+                    }
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(&checkpoint.join("set"), &mut out);
+    out
+}
+
+/// Build a workspace with content and a real flushed checkpoint.
 fn populated_workspace() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path();
@@ -189,8 +246,11 @@ fn rehearse_fails_with_a_clear_message_when_no_checkpoint_exists() {
 fn rehearse_does_not_mutate_the_live_workspace() {
     let workspace = populated_workspace();
 
-    let checkpoint_path = workspace.path().join(".beads/checkpoint/forensic.jsonl");
-    let before = fs::read_to_string(&checkpoint_path).unwrap();
+    // The default layout publishes a `set/` tree plus pointer files (and a
+    // `publish.lock`), so the immutability claim is checked over the whole
+    // checkpoint directory, not one monolith file.
+    let checkpoint_dir = workspace.path().join(".beads/checkpoint");
+    let before = snapshot_tree(&checkpoint_dir);
 
     Command::cargo_bin("bead")
         .unwrap()
@@ -200,10 +260,10 @@ fn rehearse_does_not_mutate_the_live_workspace() {
         .assert()
         .success();
 
-    let after = fs::read_to_string(&checkpoint_path).unwrap();
+    let after = snapshot_tree(&checkpoint_dir);
     assert_eq!(
         before, after,
-        "rehearsal must not touch the live checkpoint file"
+        "rehearsal must not touch the live checkpoint tree"
     );
 
     let assert = Command::cargo_bin("bead")
@@ -232,7 +292,10 @@ fn rehearse_survives_a_checkpoint_containing_a_provenance_receipt() {
     // import_forensic_checkpoint path sync import-only uses) without
     // erroring.
     let source = populated_workspace();
-    let source_checkpoint = source.path().join(".beads/checkpoint/forensic.jsonl");
+    // The default layout is set-v2: no `forensic.jsonl` exists. `import-only`
+    // reads the `current.json` pointer, the same checkpoint entry point the
+    // rehearsal's own import uses.
+    let source_checkpoint = source.path().join(".beads/checkpoint/current.json");
 
     let workspace = tempfile::tempdir().unwrap();
     Command::cargo_bin("bead")
@@ -258,7 +321,9 @@ fn rehearse_survives_a_checkpoint_containing_a_provenance_receipt() {
         .assert()
         .success();
     // Flushing now produces a checkpoint that itself contains the receipt
-    // the restore above just created.
+    // the restore above just created. Under the set-v2 default the receipt
+    // record lands in a `set/shard/` file, so assert on it there -- without
+    // this the rehearsal below could pass without ever facing a receipt.
     Command::cargo_bin("bead")
         .unwrap()
         .args(["sync", "flush-only"])
@@ -266,6 +331,13 @@ fn rehearse_survives_a_checkpoint_containing_a_provenance_receipt() {
         .env("HOME", workspace.path().to_str().unwrap())
         .assert()
         .success();
+    let records = set_tree_lines(&workspace.path().join(".beads/checkpoint"));
+    assert!(
+        records
+            .iter()
+            .any(|line| line.contains("\"record_type\":\"provenance_receipt\"")),
+        "fixture must actually publish a receipt record to exercise the scenario: {records:?}"
+    );
 
     Command::cargo_bin("bead")
         .unwrap()

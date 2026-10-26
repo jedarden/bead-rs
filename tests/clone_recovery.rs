@@ -22,8 +22,30 @@ use assert_cmd::Command;
 use serial_test::serial;
 use std::path::Path;
 
+/// Pin the checkpoint layout in `.beads/config.json` before the first
+/// publication. The default resolves to set-v2 (checkpoint-set-v2 spec 9),
+/// which never writes `forensic.jsonl`; a leg that parses or imports that
+/// monolith file must force the layout it was written against.
+fn force_checkpoint_mode(workspace: &Path, mode: &str) {
+    let path = workspace.join(".beads/config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    config
+        .as_object_mut()
+        .unwrap()
+        .entry("checkpoint")
+        .or_insert(serde_json::Value::Object(Default::default()))
+        .as_object_mut()
+        .unwrap()
+        .insert("mode".into(), serde_json::Value::String(mode.to_string()));
+    std::fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+}
+
 /// Build a workspace with content, flush it, and return (tempdir, uuid).
-fn populated_workspace() -> tempfile::TempDir {
+///
+/// `mode` pins the checkpoint layout before the first publication; `None`
+/// leaves the workspace on the default.
+fn populated_workspace_with_mode(mode: Option<&str>) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path();
 
@@ -34,6 +56,10 @@ fn populated_workspace() -> tempfile::TempDir {
         .env("HOME", path.to_str().unwrap())
         .assert()
         .success();
+
+    if let Some(mode) = mode {
+        force_checkpoint_mode(path, mode);
+    }
 
     for title in ["First bead", "Second bead", "Third bead"] {
         Command::cargo_bin("bead")
@@ -85,6 +111,11 @@ fn populated_workspace() -> tempfile::TempDir {
     }
 
     dir
+}
+
+/// Build a workspace with content on the default checkpoint layout.
+fn populated_workspace() -> tempfile::TempDir {
+    populated_workspace_with_mode(None)
 }
 
 /// Find the id of the issue currently in progress, if any.
@@ -255,7 +286,11 @@ fn doctor_runs_and_diagnoses_uninitialized_workspace() {
 #[test]
 #[serial]
 fn flushed_checkpoint_round_trips_through_import() {
-    let source = populated_workspace();
+    // This leg parses the monolith `forensic.jsonl` line by line and
+    // re-imports that file; the set-v2 default never writes it. Pin the
+    // monolith layout this leg exercises (same pin as d9fdaa5d's
+    // attempt-outcome legs).
+    let source = populated_workspace_with_mode(Some("monolithic"));
     let path = source.path();
 
     Command::cargo_bin("bead")
@@ -357,7 +392,10 @@ fn flushed_checkpoint_round_trips_through_import() {
 #[test]
 #[serial]
 fn restore_into_empty_survives_a_checkpoint_containing_a_provenance_receipt() {
-    let source = populated_workspace();
+    // This leg asserts on the receipt record inside the monolith
+    // `forensic.jsonl` and re-imports that file; the set-v2 default never
+    // writes it. Pin the monolith layout this leg exercises.
+    let source = populated_workspace_with_mode(Some("monolithic"));
 
     Command::cargo_bin("bead")
         .unwrap()
@@ -381,6 +419,10 @@ fn restore_into_empty_survives_a_checkpoint_containing_a_provenance_receipt() {
         .env("HOME", middle.path().to_str().unwrap())
         .assert()
         .success();
+    // `middle` re-exports the receipt into the same monolith layout, so the
+    // checkpoint its flush below produces is the forensic file this leg
+    // asserts on and hands to the second restore.
+    force_checkpoint_mode(middle.path(), "monolithic");
     Command::cargo_bin("bead")
         .unwrap()
         .args([
