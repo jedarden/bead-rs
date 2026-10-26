@@ -37,13 +37,24 @@ fn run(workspace: &Path, args: &[&str]) -> std::process::Output {
 }
 
 fn init_workspace(workspace: &Path) {
-    let output = run(workspace, &["init", "--skip-foreign-workspace"]);
+    // The adaptive default is set-v2. Suppress init's first publication so
+    // the fixture can pin monolithic mode before creating its empty baseline.
+    let output = run(
+        workspace,
+        &["--no-auto-flush", "init", "--skip-foreign-workspace"],
+    );
     assert!(
         output.status.success(),
         "init failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     force_monolithic_mode(workspace);
+    let output = run_flush(workspace);
+    assert!(
+        output.status.success(),
+        "initial flush failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn run_flush(workspace: &Path) -> std::process::Output {
