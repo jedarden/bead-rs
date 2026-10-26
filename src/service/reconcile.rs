@@ -471,6 +471,21 @@ pub fn reconcile_checkpoint(
 ) -> Result<crate::service::checkpoint::FullImportResult> {
     let _publication =
         checkpoint::acquire_checkpoint_publication_lock(&checkpoint_base.join("checkpoint"))?;
+    reconcile_checkpoint_holding(&_publication, store, checkpoint_base, actor, dry_run)
+}
+
+/// The lock-holding half of [`reconcile_checkpoint`], for a recovery caller
+/// that already serializes against publication across its whole run. `bead
+/// sync resolve` holds the same lock while it merges the restored incoming
+/// side; a nested acquisition through the public entry would open a second
+/// file description and self-deadlock against the caller's own lock.
+pub fn reconcile_checkpoint_holding(
+    publication: &checkpoint::CheckpointPublicationLock,
+    store: &mut crate::store::SqliteStore,
+    checkpoint_base: &Path,
+    actor: &str,
+    dry_run: bool,
+) -> Result<crate::service::checkpoint::FullImportResult> {
     let verdict = {
         let conn = store.conn();
         classify(conn, checkpoint_base)?
@@ -502,7 +517,7 @@ pub fn reconcile_checkpoint(
     }
 
     checkpoint::import_forensic_checkpoint_holding(
-        &_publication,
+        publication,
         store,
         &checkpoint_base.join("checkpoint"),
         "native-v1",

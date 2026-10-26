@@ -519,6 +519,60 @@ fn registry() -> Vec<RegisteredCommand> {
                 ]
             },
         },
+        RegisteredCommand {
+            path: "bead sync resolve",
+            class: Mutating,
+            reason: "restoring the incoming side of a conflicted pull merges the pulled \
+                     events into the live store and appends a merge summary event",
+            invoke: |f| {
+                // Resolve verifies only the pre-set-v2 pointer layouts, so
+                // pin this sweep's workspace to the monolith first; the
+                // configure publishes the local side's generation without
+                // appending an event.
+                bead(&f.workspace)
+                    .args(["sync", "configure", "--mode", "monolithic"])
+                    .assert()
+                    .success();
+                // The incoming side arrives the way the reconcile entry
+                // delivers it: a wholesale clone shares this store's UUID
+                // (R028) and one advancement auto-publishes the covering
+                // generation.
+                let clone_home = tempfile::tempdir().expect("clone tempdir");
+                let clone = clone_home.path().join("clone");
+                copy_tree(&f.workspace, &clone);
+                create_issue(&clone, "resolve probe advancement");
+                // Register the stopped pull in the Git index: stage 2 the
+                // local flush, stage 3 the incoming one -- the state
+                // `git ls-files -u` reports after a rebase or merge stops
+                // on the checkpoint set.
+                fixture_git(&f.workspace, &["init", "--quiet"]);
+                let mut info = String::new();
+                for (stage, side) in [(2, &f.workspace), (3, &clone)] {
+                    for (rel, path) in checkpoint_fileset(&side.join(".beads/checkpoint")) {
+                        let sha = fixture_git(
+                            &f.workspace,
+                            &["hash-object", "-w", "--", &path.display().to_string()],
+                        );
+                        info.push_str(&format!("100644 {sha} {stage}\t.beads/checkpoint/{rel}\n"));
+                    }
+                }
+                fixture_git_stdin(&f.workspace, &["update-index", "--index-info"], &info);
+                // The worktree pointer carries the marker text a stopped
+                // merge leaves behind; resolve reads both sides from the
+                // index blobs.
+                std::fs::write(
+                    f.workspace.join(".beads/checkpoint/current.json"),
+                    "<<<<<<< ours\nresolve probe conflict\n=======\n>>>>>>> incoming\n",
+                )
+                .expect("write conflicted pointer");
+                vec![
+                    "sync".into(),
+                    "resolve".into(),
+                    "--actor".into(),
+                    "contract-probe".into(),
+                ]
+            },
+        },
         // ---- local resource declarations (R031) ----
         RegisteredCommand {
             path: "bead resource add",
@@ -1097,6 +1151,77 @@ fn copy_tree(from: &Path, to: &Path) {
             std::fs::copy(source, target).unwrap();
         }
     }
+}
+
+/// A hermetic `git` invocation from `workspace`, stdout trimmed: no global
+/// or system config, no host hooks -- the same isolation the `bead sync
+/// commit` entry below sets up inline.
+fn fixture_git(workspace: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .current_dir(workspace)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .args(args)
+        .output()
+        .expect("git should be runnable in tests");
+    assert!(
+        output.status.success(),
+        "fixture git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+/// [`fixture_git`] with stdin, for `git update-index --index-info`.
+fn fixture_git_stdin(workspace: &Path, args: &[&str], stdin: &str) -> String {
+    use std::io::Write as _;
+    let mut child = std::process::Command::new("git")
+        .current_dir(workspace)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("git should be runnable in tests");
+    child
+        .stdin
+        .as_mut()
+        .expect("fixture git stdin")
+        .write_all(stdin.as_bytes())
+        .expect("write fixture git stdin");
+    let output = child.wait_with_output().expect("wait fixture git");
+    assert!(
+        output.status.success(),
+        "fixture git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+/// Every published file under a checkpoint directory as (checkpoint-
+/// relative path, absolute path). Runtime files (`publish.lock`) stay out:
+/// staging a lock file into the conflicted index would be damage, not
+/// state.
+fn checkpoint_fileset(dir: &Path) -> Vec<(String, PathBuf)> {
+    fn walk(dir: &Path, prefix: String, out: &mut Vec<(String, PathBuf)>) {
+        for entry in std::fs::read_dir(dir).expect("read checkpoint dir") {
+            let entry = entry.expect("checkpoint dir entry");
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if entry.file_type().expect("checkpoint entry type").is_dir() {
+                walk(&entry.path(), format!("{prefix}{name}/"), out);
+            } else if name != "publish.lock" {
+                out.push((format!("{prefix}{name}"), entry.path()));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, String::new(), &mut out);
+    out
 }
 
 fn build_fixture() -> Fixture {

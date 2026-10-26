@@ -332,11 +332,23 @@ fn recorded_generation(conn: &rusqlite::Connection) -> Option<(String, String)> 
 
 /// Reconstruct the stage-2 and stage-3 candidates from the unmerged index
 /// entries and keep the ones whose fileset verifies.
+///
+/// `git ls-files` reports paths relative to the repository root, so an
+/// entry under `CHECKPOINT_PATHSPEC` carries the `.beads/checkpoint/`
+/// prefix; the candidate fileset is checkpoint-relative (pointer lookups,
+/// `apply_candidate` writes, and staging deletions all key on bare names
+/// like `current.json`), so the prefix is stripped here.
 fn verified_candidates(
     workspace_root: &Path,
     checkpoint_dir: &Path,
     entries: &[(String, String, i64)],
 ) -> Vec<Candidate> {
+    let checkpoint_relative = |path: &str| {
+        path.strip_prefix(crate::service::git::CHECKPOINT_PATHSPEC)
+            .unwrap_or(path)
+            .trim_start_matches('/')
+            .to_string()
+    };
     let mut candidates = Vec::new();
     for (side, stage) in [(RestoredSide::Ours, 2i64), (RestoredSide::Theirs, 3)] {
         let mut files = Vec::new();
@@ -344,7 +356,7 @@ fn verified_candidates(
         for (path, sha, entry_stage) in entries {
             if *entry_stage == stage {
                 match blob_bytes(workspace_root, sha) {
-                    Ok(bytes) => files.push((path.clone(), bytes)),
+                    Ok(bytes) => files.push((checkpoint_relative(path), bytes)),
                     Err(_) => continue,
                 }
             }
@@ -353,8 +365,9 @@ fn verified_candidates(
             continue;
         }
         for (path, _, _) in entries {
-            if !files.iter().any(|(p, _)| p == path) && !deleted.contains(path) {
-                deleted.push(path.clone());
+            let rel = checkpoint_relative(path);
+            if !files.iter().any(|(p, _)| *p == rel) && !deleted.contains(&rel) {
+                deleted.push(rel);
             }
         }
         let candidate = Candidate {
@@ -523,7 +536,11 @@ pub fn resolve_conflicts(
     };
     match verdict.relationship {
         crate::service::reconcile::SyncRelationship::RemoteAdvanced => {
-            let result = crate::service::reconcile::reconcile_checkpoint(
+            // Holding variant: this run already owns the publication lock,
+            // and the public entry's own acquisition would deadlock
+            // against it on a second file description.
+            let result = crate::service::reconcile::reconcile_checkpoint_holding(
+                &publication,
                 store,
                 checkpoint_base,
                 actor,
@@ -545,7 +562,7 @@ pub fn resolve_conflicts(
                     qualifier
                 )));
             }
-            let imported = import_conflict_branch(store, &checkpoint_dir, actor)?;
+            let imported = import_conflict_branch(&publication, store, &checkpoint_dir, actor)?;
             report.branch_imported = Some(serde_json::json!({
                 "events_imported": imported.events_imported,
                 "issues_inserted": imported.issues_inserted,
@@ -642,13 +659,17 @@ fn fileset_deleted(checkpoint_dir: &Path) -> Result<Vec<String>> {
 /// issues and update or label those, and a repeated merge of the same
 /// immutable source is a no-op. Doctor recognizes the imported branch
 /// through the same receipt contract as a restored branch.
+///
+/// The publication lock arrives as a parameter because the only caller,
+/// [`resolve_conflicts`], already holds it across the whole recovery; a
+/// nested acquisition on a second file description would self-deadlock.
 pub fn import_conflict_branch(
+    _publication: &CheckpointPublicationLock,
     store: &mut SqliteStore,
     source: &Path,
     actor: &str,
 ) -> Result<RestoredBranchReport> {
     validate_restore_actor(actor)?;
-    let _publication_lock = acquire_store_checkpoint_publication_lock(store)?;
     let mut staging = stage_checkpoint_set(source)?;
     validate_forensic_contents(&staging)?;
     let tx = Transaction::new_unchecked(store.conn(), TransactionBehavior::Immediate)?;
