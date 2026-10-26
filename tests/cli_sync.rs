@@ -22,9 +22,24 @@ fn create_workspace() -> TempDir {
     temp_dir
 }
 
+// The fresh-workspace default resolves to set-v2 (checkpoint-set-v2 spec 9),
+// which never writes forensic.jsonl; the legs below assert the monolith
+// forensic surface, so pin the mode the way d9fdaa5d pinned the
+// attempt-outcome legs. `sync configure` publishes the current generation
+// under the pinned mode, so the checkpoint stays current across the pin.
+fn force_monolithic_mode(workspace: &std::path::Path) {
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["sync", "configure", "--mode", "monolithic"])
+        .current_dir(workspace)
+        .assert()
+        .success();
+}
+
 #[test]
 fn test_sync_flush_only_basic() {
     let temp_dir = create_workspace();
+    force_monolithic_mode(temp_dir.path());
 
     // Create a test issue with publication suppressed so the explicit
     // flush below is the operation under test, not a no-op against a
@@ -89,6 +104,7 @@ fn test_sync_flush_only_basic() {
 #[test]
 fn test_sync_flush_only_empty_workspace() {
     let temp_dir = create_workspace();
+    force_monolithic_mode(temp_dir.path());
 
     // `bead init` already published the empty generation, so a flush-only on
     // an untouched workspace has nothing new to publish and says so.
@@ -198,6 +214,7 @@ fn test_sync_flush_only_rejects_checkpoint_path() {
 #[test]
 fn test_sync_flush_only_deterministic_ordering() {
     let temp_dir = create_workspace();
+    force_monolithic_mode(temp_dir.path());
 
     // Create multiple issues (IDs will be generated in order)
     for i in 1..=3 {

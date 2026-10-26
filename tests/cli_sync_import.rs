@@ -7,6 +7,20 @@ use serial_test::serial;
 use std::fs;
 use tempfile::TempDir;
 
+// The fresh-workspace default resolves to set-v2 (checkpoint-set-v2 spec 9),
+// which never writes forensic.jsonl; the monolith round-trip leg below reads
+// that view back, so pin the mode the way d9fdaa5d pinned the attempt-outcome
+// legs. `sync configure` publishes the current generation under the pinned
+// mode, so the checkpoint stays current across the pin.
+fn force_monolithic_mode(workspace: &std::path::Path) {
+    Command::cargo_bin("bead")
+        .unwrap()
+        .args(["sync", "configure", "--mode", "monolithic"])
+        .current_dir(workspace)
+        .assert()
+        .success();
+}
+
 #[test]
 #[serial]
 fn test_sync_import_only_basic() {
@@ -788,6 +802,7 @@ fn test_round_trip_dependencies_and_labels() {
         .current_dir(origin.path())
         .assert()
         .success();
+    force_monolithic_mode(origin.path());
 
     // Create three issues with dependencies
     Command::cargo_bin("bead")
