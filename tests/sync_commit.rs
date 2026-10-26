@@ -4,9 +4,9 @@
 //! command assembles the commit that carries it. These tests pin the
 //! contract at the CLI boundary:
 //!
-//! - the commit records **exactly** the verified fileset -- both pointers,
-//!   the root object the pointer selects (the 2026-09-02 omitted-object
-//!   shape), the compatibility view -- and **nothing else**: another
+//! - the commit records **exactly** the verified fileset -- both pointers
+//!   and the whole corpus the active generation references (the
+//!   2026-09-02 omitted-object shape) -- and **nothing else**: another
 //!   worker's unrelated staged file survives the command still staged;
 //! - the gates refuse before anything is touched: a dirty checkpoint (live
 //!   store ahead), a remote-advanced checkpoint (pull ahead of the store),
@@ -126,16 +126,69 @@ fn set_auto_flush(workspace: &Path, value: bool) {
     fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 }
 
+/// Record `checkpoint.mode = MODE` in the workspace's `.beads/config.json`,
+/// preserving every other key: for legs that exercise a layout the adaptive
+/// default no longer selects (checkpoint-set-v2 spec 9 -- adaptive always
+/// publishes set-v2).
+fn force_checkpoint_mode(workspace: &Path, mode: &str) {
+    let path = workspace.join(".beads/config.json");
+    let mut config: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    config
+        .as_object_mut()
+        .unwrap()
+        .entry("checkpoint")
+        .or_insert(Value::Object(Default::default()))
+        .as_object_mut()
+        .unwrap()
+        .insert("mode".into(), Value::String(mode.into()));
+    fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+}
+
 /// A git repository with an initialized, current bead workspace inside it:
 /// one issue created, so auto-flush published a generation and auto-stage
 /// staged its fileset.
 fn repo_with_current_checkpoint(prefix: &str) -> tempfile::TempDir {
+    repo_with_current_checkpoint_in_mode(prefix, None)
+}
+
+/// The same fixture, with `checkpoint.mode` pinned before the first
+/// publication, for legs written against the monolith layout the adaptive
+/// default no longer selects.
+fn repo_with_current_checkpoint_in_mode(prefix: &str, mode: Option<&str>) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     git_ok(workspace, &["init", "-q"]);
     run(workspace, &["init", "--prefix", prefix]);
+    if let Some(mode) = mode {
+        force_checkpoint_mode(workspace, mode);
+    }
     create_issue(workspace, "the mutation that publishes");
     dir
+}
+
+/// Every file under `.beads/checkpoint/`, checkpoint-relative -- the corpus
+/// the verified fileset is built from. `publish.lock` is excluded: it is
+/// the publication mutex, runtime state rather than corpus, and no commit
+/// carries it.
+fn published_checkpoint_files(workspace: &Path) -> Vec<String> {
+    fn walk(dir: &Path, prefix: &str, out: &mut Vec<String>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name().to_str().unwrap().to_string();
+            if prefix.is_empty() && name == "publish.lock" {
+                continue;
+            }
+            if entry.path().is_dir() {
+                walk(&entry.path(), &format!("{prefix}{name}/"), out);
+            } else {
+                out.push(format!("{prefix}{name}"));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(&workspace.join(".beads/checkpoint"), "", &mut out);
+    out.sort();
+    out
 }
 
 #[test]
@@ -157,29 +210,49 @@ fn commit_carries_exactly_the_verified_fileset_and_nothing_else() {
         String::from_utf8_lossy(&out.stdout)
     );
 
-    // The commit carries the pointer, the previous pointer, the
-    // compatibility view, and every object the pointer references --
-    // including the freshly written untracked root object whose omission
-    // produced the 2026-09-02 rejection.
+    // The commit carries the pointer, the previous pointer, and the whole
+    // corpus the active generation references -- including freshly written
+    // untracked files whose omission produced the 2026-09-02 rejection.
+    // The adaptive default publishes set-v2 (checkpoint-set-v2 spec 9),
+    // whose corpus is the set/ tree and which has no forensic.jsonl
+    // compatibility view, so the verified fileset is the entire on-disk
+    // checkpoint tree -- and the commit must match it exactly, in both
+    // directions.
     let committed = changed_files(workspace, &["show", "--name-only", "--format=", "HEAD"]);
     let pointer: Value = serde_json::from_str(
         &fs::read_to_string(workspace.join(".beads/checkpoint/current.json")).unwrap(),
     )
     .unwrap();
     let root = pointer["active_root"]["path"].as_str().unwrap();
-    for expected in [
-        ".beads/checkpoint/current.json",
-        ".beads/checkpoint/previous.json",
-        ".beads/checkpoint/forensic.jsonl",
-        format!(".beads/checkpoint/{}", root).as_str(),
-    ] {
+    let published = published_checkpoint_files(workspace);
+    assert!(
+        published.iter().any(|path| path == root),
+        "the pointer's root {} is not on disk: {:?}",
+        root,
+        published
+    );
+    for expected in &published {
+        let repo_path = format!(".beads/checkpoint/{expected}");
         assert!(
-            committed.iter().any(|path| path == expected),
+            committed.contains(&repo_path),
             "{} not in the commit: {:?}",
-            expected,
+            repo_path,
             committed
         );
     }
+    let extra: Vec<&String> = committed
+        .iter()
+        .filter(|path| {
+            path.starts_with(".beads/checkpoint/")
+                && !published
+                    .iter()
+                    .any(|entry| entry.as_str() == path.trim_start_matches(".beads/checkpoint/"))
+        })
+        .collect();
+    assert!(
+        extra.is_empty(),
+        "the commit carried files outside the verified fileset: {extra:?}"
+    );
 
     // And nothing else: the rival's staged file is neither committed nor
     // unstaged -- a pathspec commit leaves the rest of the index alone.
@@ -374,7 +447,12 @@ fn commit_refuses_a_remote_advanced_checkpoint() {
 
 #[test]
 fn commit_quarantines_incomplete_checkpoint_coverage_before_staging() {
-    let dir = repo_with_current_checkpoint("sdmg");
+    // The leg damages a retained generation object to reach the quarantine
+    // refusal, which is a monolith-layout mechanism: the adaptive default
+    // publishes set-v2 (checkpoint-set-v2 spec 9), whose structural
+    // retention has no objects/ tree. Pin the layout the leg was written
+    // against, before its first publication (precedent: d9fdaa5d).
+    let dir = repo_with_current_checkpoint_in_mode("sdmg", Some("monolithic"));
     let workspace = dir.path();
 
     // Remove a non-root object the pointer references. Commit's discovery

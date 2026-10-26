@@ -54,6 +54,23 @@ fn set_auto_flush(workspace: &Path, value: bool) {
     fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 }
 
+/// Force monolithic mode for testing: for legs that exercise the monolith
+/// layout the adaptive default no longer selects (checkpoint-set-v2 spec 9
+/// -- adaptive always publishes set-v2).
+fn force_monolithic_mode(workspace: &Path) {
+    let path = workspace.join(".beads/config.json");
+    let mut config: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    config
+        .as_object_mut()
+        .unwrap()
+        .entry("checkpoint")
+        .or_insert(Value::Object(Default::default()))
+        .as_object_mut()
+        .unwrap()
+        .insert("mode".into(), Value::String("monolithic".to_string()));
+    fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+}
+
 fn bead(workspace: &Path) -> Command {
     let mut cmd = Command::cargo_bin("bead").unwrap();
     cmd.current_dir(workspace);
@@ -317,10 +334,15 @@ fn build_fixture() -> Fixture {
     );
 
     // A second workspace supplies the checkpoint that `sync import-only`
-    // merges in: one foreign issue, explicitly flushed.
+    // merges in: one foreign issue, explicitly flushed. The documented
+    // input is the monolith forensic view, which exists only while the
+    // active generation is a monolith (beadrs-43d4bcb6), so pin the import
+    // source to that layout; the importing workspace below keeps tracking
+    // the adaptive default.
     let foreign = tempfile::tempdir().expect("foreign tempdir");
     let foreign_ws = foreign.path().to_path_buf();
     run(&foreign_ws, &["init", "--prefix", "choke"]);
+    force_monolithic_mode(&foreign_ws);
     create_issue(&foreign_ws, "foreign issue");
     run(&foreign_ws, &["sync", "flush-only"]);
     let foreign_checkpoint = foreign_ws.join(".beads/checkpoint/forensic.jsonl");
@@ -1124,16 +1146,23 @@ fn real_mutation_publishes_exactly_one_generation() {
          an intermediate generation was published"
     );
 
-    // Exactly one object: the only file publication added is the new
-    // generation's content-addressed root, and it is the root the pointer
-    // selects.
+    // Exactly one generation's corpus: publication under the adaptive
+    // default mints the set-v2 generation -- the manifest the pointer
+    // selects plus its content-addressed shards -- and nothing outside the
+    // set tree. (The pre-set-v2 shape asserted exactly one object, the
+    // monolith root; a set-v2 publication's file count is bounded by the
+    // 12.x conformance suite's retention scenarios, not this leg.)
     let after = snapshot_checkpoint(workspace);
     let added: Vec<&String> = after.keys().filter(|k| !before.contains_key(*k)).collect();
     let root_path = after_status["root_path"].as_str().unwrap().to_string();
-    assert_eq!(
-        added,
-        vec![&root_path],
-        "one real mutation must mint exactly one object (the new root), \
+    assert!(
+        !added.is_empty() && added.iter().all(|path| path.starts_with("set/")),
+        "one real mutation must add only set-v2 corpus files, instead the \
+         checkpoint set changed by {added:?}"
+    );
+    assert!(
+        added.contains(&&root_path),
+        "the manifest the pointer selects must be among the additions, \
          instead the checkpoint set changed by {added:?}"
     );
     assert_eq!(
@@ -1213,6 +1242,13 @@ fn flush_only_republishes_a_not_ready_checkpoint() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     run(workspace, &["init", "--prefix", "tomb"]);
+    // The not-ready state this leg exercises is the v1 tombstone leftover
+    // (a declared-deleted path still on disk). set-v2 replaced tombstones
+    // with structural retention (checkpoint-set-v2 spec 7.1: its pointers
+    // never carry the path arrays), so pin the monolith layout this leg
+    // was written against; set-v2's retention bounds are the 12.x
+    // conformance suite's scope.
+    force_monolithic_mode(workspace);
     set_auto_flush(workspace, true);
 
     // Three mutations leave the first generation's root unreferenced by
