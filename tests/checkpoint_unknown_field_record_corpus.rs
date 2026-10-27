@@ -284,10 +284,14 @@ fn suppress_auto_flush(workspace: &Path) {
     let config_path = workspace.join(".beads/config.json");
     let mut config: Value =
         serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
-    config.as_object_mut().unwrap().insert(
-        "checkpoint".to_string(),
-        serde_json::json!({ "auto_flush": false }),
-    );
+    config
+        .as_object_mut()
+        .unwrap()
+        .entry("checkpoint".to_string())
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .unwrap()
+        .insert("auto_flush".to_string(), serde_json::json!(false));
     fs::write(&config_path, serde_json::to_string(&config).unwrap()).unwrap();
 }
 
