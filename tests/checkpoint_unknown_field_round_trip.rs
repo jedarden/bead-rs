@@ -100,11 +100,18 @@ fn bead(dir: &Path, args: &[&str]) -> Command {
 fn init_workspace(workspace: &Path) {
     bead(
         workspace,
-        &["init", "--prefix", "bead", "--skip-foreign-workspace"],
+        &[
+            "--no-auto-flush",
+            "init",
+            "--prefix",
+            "bead",
+            "--skip-foreign-workspace",
+        ],
     )
     .assert()
     .success();
     force_monolithic_mode(workspace);
+    bead(workspace, &["sync", "flush-only"]).assert().success();
 }
 
 /// Replace the `checkpoint` section of the workspace config. Publication is
@@ -379,13 +386,21 @@ fn active_generation_issues(workspace: &Path) -> HashMap<String, Value> {
     let pointer = read_pointer(checkpoint_dir.join("current.json"));
     let root = checkpoint_dir.join(pointer["active_root"]["path"].as_str().unwrap());
 
-    let records = if pointer["mode"] == "sharded" {
+    let records = if pointer["mode"] == "sharded" || pointer["mode"] == "set-v2" {
         let manifest = read_pointer(&root);
         let mut records = Vec::new();
-        for shard in manifest["issue_shards"].as_array().unwrap() {
-            records.extend(read_jsonl(
-                &checkpoint_dir.join(shard["path"].as_str().unwrap()),
-            ));
+        if pointer["mode"] == "set-v2" {
+            for shard in manifest["shards"].as_array().unwrap() {
+                records.extend(read_jsonl(
+                    &checkpoint_dir.join(shard["path"].as_str().unwrap()),
+                ));
+            }
+        } else {
+            for shard in manifest["issue_shards"].as_array().unwrap() {
+                records.extend(read_jsonl(
+                    &checkpoint_dir.join(shard["path"].as_str().unwrap()),
+                ));
+            }
         }
         records
     } else {
@@ -644,7 +659,10 @@ fn make_dirty(workspace: &Path, marker: &str) {
 #[test]
 fn monolithic_flush_reprojects_unknown_fields() {
     let workspace = restore(&fixture_dir().join("checkpoint.jsonl"));
-    set_checkpoint_config(workspace.path(), json!({ "auto_flush": false }));
+    set_checkpoint_config(
+        workspace.path(),
+        json!({ "auto_flush": false, "mode": "monolithic" }),
+    );
     make_dirty(workspace.path(), "monolithic");
 
     bead(workspace.path(), &["sync", "flush-only"])
@@ -661,7 +679,7 @@ fn sharded_flush_reprojects_unknown_fields() {
     let workspace = restore(&fixture_dir().join("checkpoint.jsonl"));
     set_checkpoint_config(
         workspace.path(),
-        json!({ "auto_flush": false, "mode": "sharded" }),
+        json!({ "auto_flush": false, "mode": "set-v2" }),
     );
     make_dirty(workspace.path(), "sharded");
 
@@ -671,7 +689,7 @@ fn sharded_flush_reprojects_unknown_fields() {
         .stderr(predicate::str::contains("Flushed forensic checkpoint:"));
 
     let expected = expected_extensions(&fixture_issue_records());
-    assert_flush_reprojects(workspace.path(), &expected, "sharded");
+    assert_flush_reprojects(workspace.path(), &expected, "set-v2");
 }
 
 // ---- deterministic re-export -----------------------------------------------
@@ -686,7 +704,10 @@ fn sharded_flush_reprojects_unknown_fields() {
 #[test]
 fn republishing_a_restored_store_reproduces_byte_identical_roots() {
     let workspace = restore(&fixture_dir().join("checkpoint.jsonl"));
-    set_checkpoint_config(workspace.path(), json!({ "auto_flush": false }));
+    set_checkpoint_config(
+        workspace.path(),
+        json!({ "auto_flush": false, "mode": "monolithic" }),
+    );
     let checkpoint_dir = workspace.path().join(".beads/checkpoint");
     let expected = expected_extensions(&fixture_issue_records());
 
@@ -737,7 +758,10 @@ fn unknown_fields_survive_alternating_export_and_import_generations() {
 
     // Generation 1: restore the fixture, republish monolithically.
     let first = restore(&fixture_dir().join("checkpoint.jsonl"));
-    set_checkpoint_config(first.path(), json!({ "auto_flush": false }));
+    set_checkpoint_config(
+        first.path(),
+        json!({ "auto_flush": false, "mode": "monolithic" }),
+    );
     bead(first.path(), &["sync", "flush-only"])
         .assert()
         .success();
@@ -751,7 +775,7 @@ fn unknown_fields_survive_alternating_export_and_import_generations() {
     let second = restore(&generation_two_source);
     set_checkpoint_config(
         second.path(),
-        json!({ "auto_flush": false, "mode": "sharded" }),
+        json!({ "auto_flush": false, "mode": "set-v2" }),
     );
     bead(second.path(), &["sync", "flush-only"])
         .assert()
@@ -1011,7 +1035,10 @@ fn differently_ordered_input_imports_identically() {
 /// and return the published generation's raw JSONL lines.
 fn flushed_generation_lines(source: &Path) -> Vec<String> {
     let workspace = restore(source);
-    set_checkpoint_config(workspace.path(), json!({ "auto_flush": false }));
+    set_checkpoint_config(
+        workspace.path(),
+        json!({ "auto_flush": false, "mode": "monolithic" }),
+    );
     let checkpoint_dir = workspace.path().join(".beads/checkpoint");
     // A freshly restored store is already current, so flush-only alone
     // would be a no-op; lose the pointer the way an interrupted publication
