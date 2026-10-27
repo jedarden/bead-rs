@@ -262,11 +262,20 @@ fn bead(dir: &Path, args: &[&str]) -> Command {
 fn init_workspace(workspace: &Path) {
     bead(
         workspace,
-        &["init", "--prefix", "bead", "--skip-foreign-workspace"],
+        &[
+            "--no-auto-flush",
+            "init",
+            "--prefix",
+            "bead",
+            "--skip-foreign-workspace",
+        ],
     )
     .assert()
     .success();
     force_monolithic_mode(workspace);
+    bead(workspace, &["sync", "flush-only"])
+        .assert()
+        .success();
 }
 
 /// Pin publication to the explicit `sync flush-only` so each generation is
