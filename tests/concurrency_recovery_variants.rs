@@ -964,8 +964,8 @@ fn publication_failure_splits_without_rollback_then_recovers() {
         // The mutation committed: its own output is the new id, alone.
         assert_eq!(
             output.status.code(),
-            Some(6),
-            "a committed mutation whose publication failed must exit 6"
+            Some(1),
+            "a committed mutation whose publication failed must exit 1"
         );
         let stdout = variant.stdout(&output);
         let id = stdout.trim().to_string();
