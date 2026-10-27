@@ -273,9 +273,7 @@ fn init_workspace(workspace: &Path) {
     .assert()
     .success();
     force_monolithic_mode(workspace);
-    bead(workspace, &["sync", "flush-only"])
-        .assert()
-        .success();
+    bead(workspace, &["sync", "flush-only"]).assert().success();
 }
 
 /// Pin publication to the explicit `sync flush-only` so each generation is
