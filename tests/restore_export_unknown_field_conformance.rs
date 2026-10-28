@@ -89,7 +89,27 @@ fn active_records(workspace: &Path) -> Vec<Value> {
     let checkpoint = workspace.join(".beads/checkpoint");
     let current = pointer(workspace);
     let root = checkpoint.join(current["active_root"]["path"].as_str().unwrap());
-    read_jsonl(&root)
+    // The adaptive default publishes checkpoint-set-v2: the pointer names a
+    // pretty-printed manifest, and the records live behind the manifest's
+    // shard, segment, and tail rows -- not in the named file itself. Only a
+    // monolithic generation is a single jsonl (same layout switch as
+    // checkpoint_unknown_field_round_trip.rs's active_generation_issues).
+    if current["mode"] == "set-v2" {
+        let manifest = read_json(&root);
+        let mut records = Vec::new();
+        for row in manifest["shards"].as_array().unwrap() {
+            records.extend(read_jsonl(&checkpoint.join(row["path"].as_str().unwrap())));
+        }
+        for row in manifest["segments"].as_array().unwrap() {
+            records.extend(read_jsonl(&checkpoint.join(row["path"].as_str().unwrap())));
+        }
+        if let Some(tail) = manifest["tail"].as_object() {
+            records.extend(read_jsonl(&checkpoint.join(tail["path"].as_str().unwrap())));
+        }
+        records
+    } else {
+        read_jsonl(&root)
+    }
 }
 
 fn record_key(record: &Value) -> String {
