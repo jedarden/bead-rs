@@ -3733,6 +3733,72 @@ its show parsers already accept an object (each show parse site in
 and its list-row contract already permits an array, so no NEEDLE code change
 is expected.
 
+### R042 — Close record, targeted claim, typed state, fleet view, one stale-claim path, audited priority
+
+Six outcomes come from a 2026-10-28 sweep and are recorded under bead
+`beadrs-691c4fec`. The sweep covered 98 bead-rs workspaces on codinghome
+(50,819 beads, with copied stores deduplicated) and agent transcripts from
+2026-08-03 to 2026-10-28 (292,734 bead-related shell commands). The counts are
+regex-based baselines, not release claims.
+
+1. **Close record on read surfaces.** `show` (text and JSON) and `why` omit the
+   close reason, close time and closer, although `query` and `changes` carry
+   them. Agents looked for `close_reason` 1,662 times in 1,054 sessions, and
+   `show --json` has no such field. `show`, `list --json` and `why` expose
+   `closed_at`, `closed_by` and `close_reason` from the latest close. Reopen
+   clears them, as it clears the stored close state today.
+2. **Targeted claim and positional IDs.** Agents ran `bead claim <id>` 196
+   times in 171 sessions and `bead why <id>` 53 times; both are rejected.
+   - `claim ID` atomically claims that issue when it is in the ready frontier,
+     with the same epoch, lease and output as a frontier claim. Otherwise it
+     refuses with a stable reason code and mutates nothing.
+   - Every command that takes a single issue through `--id` also accepts it
+     positionally.
+3. **Typed state that consumers can see.** 7,755 beads (15%) carry `key:value`
+   labels used as state: `failure-count` 3,081, `quarantine-until` 1,265,
+   `retry-cooldown-until` 497, `deferred:<time>` 421. On 840 open beads, one of
+   those time labels has already passed. R012 structured data exists, but
+   `show`, `list` and `query` neither return nor filter it.
+   - `show --json` includes data documents, and `list --fields data` projects
+     them.
+   - `query` gains predicates on data values, including comparison of RFC 3339
+     values against the current time.
+   - Moving NEEDLE's worker state into a data namespace is NEEDLE work, tracked
+     by a NEEDLE bead.
+4. **Read-only fleet view.** Operator decision, 2026-10-28: this reverses ideas
+   ledger run 4, item 27 ("composes from per-workspace status JSON in a shell
+   loop"). The evidence:
+   - Transcripts contain 943 hand-written multi-workspace loops in 797
+     sessions.
+   - About ten per-repository timers re-implement workspace discovery.
+   - Naive discovery is wrong. 473 copied stores sit in disposable
+     verification directories, so a two-level scan reports 444 workspaces
+     instead of 98, and the weekly doctor job has run `--repair` on six of
+     them.
+
+   `bead fleet` reports status, ready counts, stale claims and doctor verdicts
+   for every workspace under a root. It deduplicates by workspace UUID and
+   lists copies separately. It never mutates and has no repair mode.
+   Multi-store transactions remain out of scope (ideas ledger run 1, item 32).
+5. **One stale-claim recovery path.** 154 issues have been `in_progress` with no
+   update for at least seven days; the oldest dates from 2026-08-21. R034
+   reports such claims, but two other paths release them unsafely.
+   - `watchdog` decides liveness from the process table.
+   - `doctor --starvation-recovery` releases claims without comparing the
+     observed claim epoch, the failure `beadrs-3be4bf40` exists to prevent.
+
+   Both paths move onto that compare-and-reap service, using R034's threshold.
+6. **Audited priority change.** Operator decision, 2026-10-28: priority, and
+   only priority, becomes editable through `update --priority N --reason TEXT`.
+   - It is a revision-guarded mutation that records the old and new priority,
+     the actor and the reason in a distinct event.
+   - Changing a claimed issue requires the claim credential.
+   - `--priority` without `--reason` still names the remedy.
+
+   304 `priority:` labels across 61 workspaces are the workaround the immutable
+   field produced. This supersedes R037 and ADR-007 for priority only; title,
+   description and issue type stay immutable.
+
 ### Open questions
 
 R041 does not make title, description, or priority editable. The umbrella
@@ -3740,7 +3806,8 @@ recorded 44 `update --title|--description|--priority` attempts and one direct
 SQLite title write as evidence of friction, but R037 and
 [ADR-007](../adr/007-cli-errors-name-the-remedy.md) currently define those
 fields as immutable after `create` and require the error to name the remedy.
-Whether to add a separately audited edit operation remains an open product
+On 2026-10-28 the operator decided priority (R042 item 6). Whether to add an
+audited edit operation for title and description remains an open product
 decision; it is not implementation authority for R041.
 
 Native parent/child hierarchy now has demonstrated need. A 2026-10-23 sweep of

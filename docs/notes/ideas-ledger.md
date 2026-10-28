@@ -1078,3 +1078,20 @@ Product decision on 2026-08-15:
   dependency refresh), plan revision 7, beads `beadrs-e3ff78f3`,
   `beadrs-dd914e5b`, `beadrs-c0e4fb66` under genesis `beadrs-c69cd4c2`.
 - No F001-F017 pass state changed.
+
+## 2026-10-28 — Operator reversal: fleet aggregation
+
+Run 4, item 27 ("Read-only fleet aggregation across an explicit workspace
+list") was killed because the view "composes from per-workspace status JSON in
+a shell loop". The operator reversed that verdict on 2026-10-28 on this
+evidence:
+
+- Agents have written that loop 943 times in 797 sessions.
+- About ten per-repository timers re-implement workspace discovery.
+- Hand-rolled discovery picks up the 473 copied stores in disposable
+  verification directories, and the weekly doctor job has run `--repair` on
+  six of them.
+
+The idea is adopted as plan R042 item 4: read-only, deduplicated by workspace
+UUID, with no repair mode. Run 1, item 32 (cross-workspace federation and
+multi-store transactions) stays killed. Decision record: `beadrs-691c4fec`.
