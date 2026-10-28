@@ -186,9 +186,11 @@ fn retained_generation_named_native_root_is_hash_verified_and_restored() {
 }
 
 #[test]
-fn sharded_generation_verifies_its_complete_closure_and_restores() {
+fn set_v2_generation_verifies_its_complete_closure_and_restores() {
     let source = source_checkpoint_with_mode(true);
-    assert_eq!(source.pointer["mode"], "sharded");
+    // Forcing sharded output publishes set-v2 (checkpoint-set-v2 spec 9);
+    // the verified closure and restore contract is the set-v2 layout's.
+    assert_eq!(source.pointer["mode"], "set-v2");
     let target = tempfile::tempdir().unwrap();
     let args = restore_args(&source);
     let report: Value = serde_json::from_slice(
@@ -199,7 +201,7 @@ fn sharded_generation_verifies_its_complete_closure_and_restores() {
         .stdout,
     )
     .unwrap();
-    assert_eq!(report["mode"], "sharded");
+    assert_eq!(report["mode"], "set-v2");
     assert_eq!(report["issues_restored"], 1);
 }
 
@@ -749,12 +751,35 @@ fn successful_restore_publishes_a_generation_covering_the_summary_event() {
     );
 
     // That published generation is itself a valid recovery artifact carrying
-    // the audit event and receipt this restore wrote.
-    let root =
-        fs::read_to_string(checkpoint.join(pointer["active_root"]["path"].as_str().unwrap()))
-            .unwrap();
-    assert!(root.contains("checkpoint_restored"));
-    assert!(root.contains(report["restore_receipt_id"].as_str().unwrap()));
+    // the audit event and receipt this restore wrote. Under the set-v2
+    // default the active root is a generation manifest; its records live in
+    // the content-addressed objects the manifest's rows select.
+    let root_path = pointer["active_root"]["path"].as_str().unwrap();
+    let published = if pointer["mode"] == "set-v2" {
+        let manifest: Value =
+            serde_json::from_str(&fs::read_to_string(checkpoint.join(root_path)).unwrap())
+                .unwrap();
+        let mut records = String::new();
+        for key in ["shards", "segments"] {
+            for row in manifest[key].as_array().unwrap() {
+                records
+                    .push_str(&fs::read_to_string(checkpoint.join(row["path"].as_str().unwrap()))
+                        .unwrap());
+            }
+        }
+        if let Some(tail) = manifest
+            .get("tail")
+            .and_then(|tail| tail.get("path"))
+            .and_then(|path| path.as_str())
+        {
+            records.push_str(&fs::read_to_string(checkpoint.join(tail)).unwrap());
+        }
+        records
+    } else {
+        fs::read_to_string(checkpoint.join(root_path)).unwrap()
+    };
+    assert!(published.contains("checkpoint_restored"));
+    assert!(published.contains(report["restore_receipt_id"].as_str().unwrap()));
 }
 
 #[test]
