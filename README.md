@@ -56,6 +56,35 @@ on fleet hosts that pin a per-repo cargo target directory). The full procedure �
 pinned-commit builds, byte-reproducibility, build artifacts, feature flags,
 and verifying a pinned build — is in [BUILD_PROCEDURE.md](BUILD_PROCEDURE.md).
 
+### Build artifacts
+
+The fleet build hosts run a cargo wrapper (`~/.local/bin/cargo`) that enforces
+one cargo target directory per repository — `CARGO_TARGET_DIR=/build/<repo>`,
+where `<repo>` is the origin URL's basename (needle-d6b685b4). A
+`--target-dir` outside that directory is refused, and a foreign
+`CARGO_TARGET_DIR` is overridden. On such a host the binaries land at:
+
+- `bead` binary: `/build/bead-rs/release/bead`
+- Man page generator: `/build/bead-rs/release/generate-man-pages`
+
+On a host without `/build` the wrapper leaves cargo's default in place, and
+the same binaries sit at `target/release/bead` and
+`target/release/generate-man-pages` relative to the repository root.
+
+### Verifying the build
+
+After building, verify the installation:
+
+```bash
+# Hosts with /build (enforced per-repo target directory):
+/build/bead-rs/release/bead --version
+/build/bead-rs/release/bead capabilities
+
+# Hosts without /build (cargo's default target directory):
+target/release/bead --version
+target/release/bead capabilities
+```
+
 ## Quick start
 
 ```bash
