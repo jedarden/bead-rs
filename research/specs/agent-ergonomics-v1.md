@@ -165,6 +165,46 @@ The object is additive and consumers must feature-detect its `version` before
 using these extensions. A profile that does not support R041 must not claim
 this object.
 
+### 2.6 Close record
+
+The close record is the latest close an issue has undergone, projected onto
+the existing read surfaces. It is a read projection only: no storage changes
+and no change to close semantics.
+
+`show --json`, every `list --json` row, and `create --json` carry three
+additive members of the issue document, always present:
+
+| Member | Shape | Meaning |
+| --- | --- | --- |
+| `closed_at` | RFC 3339 string or JSON null | Close timestamp of the latest close |
+| `closed_by` | string or JSON null | Actor recorded by the latest close event |
+| `close_reason` | string or JSON null | Reason of the latest close |
+
+All three members are JSON null when the issue has never been closed and
+when the issue was reopened after its latest close; a projection never
+surfaces a superseded close. `list --fields` accepts all three names, and
+the field guide publishes them as `cli_issue` members with emission
+`optional` (always emitted, null when not applicable).
+
+Text `bead show ID` prints, when the issue is closed, one line
+
+```text
+Closed: <closed_at> by <closed_by>
+```
+
+followed by a `Reason:` block carrying the close reason verbatim. A close
+actor that the close event did not name renders as `unknown`. `bead why`
+prints the closer on a `Closed By:` line and the reason on a `Reason:` line
+in its Timing section when the issue is closed.
+
+A close reason rewritten by the historical-redaction path renders as the
+fixed marker `[REDACTED:bead-rs]`; no projection ever restores prior bytes.
+
+`bead capabilities` advertises `"close_record": true` (additive, both
+profiles). `closed_by` reports whatever actor the close event recorded,
+which is `system` for closes that did not name an actor; capturing the
+invoking actor is a separate decision and out of scope here.
+
 ## 3. Claim credential resolution
 
 ### 3.1 Scope and precedence
@@ -483,6 +523,17 @@ where relevant.
 24. **AE-NEEDLE-CONSUMER-SHAPE** — the NEEDLE consumer accepts the object show
     document and the array list document without a NEEDLE source change; the
     existing list-row and show fallback behavior is recorded as evidence.
+25. **AE-CLOSE-RECORD-PROJECTION** — after `close --reason`, `show --json`,
+    `list --json`, text `show`, and `why` expose the reason, close time, and
+    closer.
+26. **AE-CLOSE-RECORD-REOPEN-NULLS** — `reopen` projects all three members
+    as JSON null on every surface.
+27. **AE-CLOSE-RECORD-SECOND-CLOSE** — a second close projects only the
+    second record.
+28. **AE-CLOSE-RECORD-REDACTED** — a redacted close reason renders the fixed
+    marker on every projection.
+29. **AE-CLOSE-RECORD-NEVER-CLOSED** — a never-closed issue projects three
+    JSON nulls and prints no text `Closed:`/`Reason:` lines.
 
 ## 9. Out of scope and future decision
 
