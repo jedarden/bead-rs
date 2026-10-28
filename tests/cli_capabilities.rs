@@ -18,6 +18,11 @@ use std::path::Path;
 /// originally chosen to dodge a stray `/tmp/.beads` — is only the first
 /// choice, falling back to TMPDIR and then /dev/shm. Same selection as
 /// cli_init.rs's `temp_workspace_dir`.
+///
+/// Gated with its only caller below: the managed-secret-policy build
+/// compiles that test out, and an ungated helper is then dead code under
+/// `cargo clippy -D warnings` (beadrs-456dcf82).
+#[cfg(not(feature = "managed-secret-policy"))]
 fn clean_beads_free_base() -> std::path::PathBuf {
     let mut bases = vec![
         std::path::PathBuf::from("/var/tmp"),
@@ -32,6 +37,7 @@ fn clean_beads_free_base() -> std::path::PathBuf {
 }
 
 /// True when the directory or any ancestor carries a `.beads` directory.
+#[cfg(not(feature = "managed-secret-policy"))]
 fn has_beads_ancestor(start: &std::path::Path) -> bool {
     let mut current = Some(start);
     while let Some(dir) = current {
