@@ -757,14 +757,13 @@ fn successful_restore_publishes_a_generation_covering_the_summary_event() {
     let root_path = pointer["active_root"]["path"].as_str().unwrap();
     let published = if pointer["mode"] == "set-v2" {
         let manifest: Value =
-            serde_json::from_str(&fs::read_to_string(checkpoint.join(root_path)).unwrap())
-                .unwrap();
+            serde_json::from_str(&fs::read_to_string(checkpoint.join(root_path)).unwrap()).unwrap();
         let mut records = String::new();
         for key in ["shards", "segments"] {
             for row in manifest[key].as_array().unwrap() {
-                records
-                    .push_str(&fs::read_to_string(checkpoint.join(row["path"].as_str().unwrap()))
-                        .unwrap());
+                records.push_str(
+                    &fs::read_to_string(checkpoint.join(row["path"].as_str().unwrap())).unwrap(),
+                );
             }
         }
         if let Some(tail) = manifest
