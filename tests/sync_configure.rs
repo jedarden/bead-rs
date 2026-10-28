@@ -74,20 +74,33 @@ fn configure_json(workspace: &Path, args: &[&str]) -> Value {
     serde_json::from_slice(&output.stdout).expect("configure --json prints JSON")
 }
 
-/// Largest generation object the active pointer can reach, in bytes
+/// Largest generation object the active pointer can reach, in bytes —
+/// the monolith/sharded object roots plus the set-v2 `set/` tree
 fn largest_object_bytes(workspace: &Path) -> u64 {
     let checkpoint = workspace.join(".beads/checkpoint");
-    ["objects", "manifests"]
+    ["objects", "manifests", "set"]
         .iter()
         .filter_map(|dir| fs::read_dir(checkpoint.join(dir)).ok())
         .flatten()
-        .map(|entry| entry.unwrap().metadata().unwrap().len())
+        .map(|entry| {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                std::fs::read_dir(&path)
+                    .unwrap()
+                    .flatten()
+                    .map(|inner| inner.metadata().unwrap().len())
+                    .max()
+                    .unwrap_or(0)
+            } else {
+                path.metadata().unwrap().len()
+            }
+        })
         .max()
         .unwrap_or(0)
 }
 
 #[test]
-fn sharded_switch_bounds_objects_and_preserves_unrelated_keys() {
+fn forced_sharded_switch_publishes_set_v2_and_preserves_unrelated_keys() {
     let temp = tempfile::tempdir().unwrap();
     let ws = temp.path().join("ws");
     init_workspace(&ws);
@@ -106,11 +119,19 @@ fn sharded_switch_bounds_objects_and_preserves_unrelated_keys() {
         ],
     );
     assert_eq!(result["changed"], true);
-    assert_eq!(result["published"]["mode"], "sharded");
-    assert_eq!(pointer(&ws)["mode"], "sharded");
+    // Forcing sharded-v1 output is not offered (checkpoint-set-v2 spec 9):
+    // the request publishes set-v2 while the config records the request.
+    assert_eq!(result["published"]["mode"], "set-v2");
+    assert_eq!(pointer(&ws)["mode"], "set-v2");
 
     let config = read_json(&ws.join(".beads/config.json"));
+    // configure's job is the checkpoint entry: it records the request
+    // (mode) and the requested thresholds, both pinned below. Every other
+    // top-level config key must survive untouched.
     for key in identity_before.as_object().unwrap().keys() {
+        if key == "checkpoint" {
+            continue;
+        }
         assert_eq!(
             config[key], identity_before[key],
             "configure must keep unrelated key {key}"
@@ -121,6 +142,9 @@ fn sharded_switch_bounds_objects_and_preserves_unrelated_keys() {
     assert_eq!(thresholds["max_shard_bytes"], json!(limit));
     assert_eq!(thresholds["max_event_object_bytes"], json!(limit));
     assert!(thresholds["max_record_line_bytes"].as_u64().unwrap() <= limit);
+    // The v1 thresholds drive monolith/sharded sizing; set-v2 bounds its
+    // objects with its own split rules (checkpoint_set_v2_conformance). The
+    // bound is still a sanity ceiling on every published object.
     assert!(largest_object_bytes(&ws) <= limit);
 
     // The checkpoint is consistent under the new configuration.
@@ -128,9 +152,9 @@ fn sharded_switch_bounds_objects_and_preserves_unrelated_keys() {
     let status: Value = serde_json::from_slice(&status.stdout).unwrap();
     assert_eq!(status["dirty"], false, "status after configure: {status}");
 
-    // An ordinary mutation keeps publishing sharded.
+    // An ordinary mutation keeps publishing set-v2 under the recorded mode.
     create_issues(&ws, 1);
-    assert_eq!(pointer(&ws)["mode"], "sharded");
+    assert_eq!(pointer(&ws)["mode"], "set-v2");
 }
 
 #[test]
@@ -191,7 +215,7 @@ fn dry_run_and_invalid_input_write_nothing() {
 }
 
 #[test]
-fn unchanged_request_publishes_nothing_and_adaptive_returns_to_monolith() {
+fn unchanged_request_publishes_nothing_and_adaptive_resolves_to_set_v2() {
     let temp = tempfile::tempdir().unwrap();
     let ws = temp.path().join("ws");
     init_workspace(&ws);
@@ -205,10 +229,11 @@ fn unchanged_request_publishes_nothing_and_adaptive_returns_to_monolith() {
     assert!(again["published"].is_null());
     assert_eq!(pointer(&ws)["generation_id"], generation);
 
-    // A small workspace selects the monolith again once the mode is adaptive.
+    // Adaptive selection resolves to set-v2 on this workspace
+    // (checkpoint-set-v2 spec 9); the pre-set-v2 monolith return is retired.
     let adaptive = configure_json(&ws, &["--mode", "adaptive"]);
-    assert_eq!(adaptive["published"]["mode"], "monolithic");
-    assert_eq!(pointer(&ws)["mode"], "monolithic");
+    assert_eq!(adaptive["published"]["mode"], "set-v2");
+    assert_eq!(pointer(&ws)["mode"], "set-v2");
 }
 
 #[test]

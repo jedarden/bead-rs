@@ -124,7 +124,10 @@ fn set_checkpoint_config(workspace: &Path, checkpoint: Value) {
 }
 
 fn monolithic_config() -> Value {
-    json!({ "auto_flush": false })
+    // Absence of a mode no longer means monolith: under checkpoint-set-v2
+    // spec 9 the default is adaptive, which resolves to set-v2. Pin the
+    // forced monolith explicitly (within the recorded limits, per spec 12).
+    json!({ "auto_flush": false, "mode": "monolithic" })
 }
 
 fn sharded_config() -> Value {
@@ -453,7 +456,9 @@ fn verified_object(checkpoint_dir: &Path, relative: &str, sha256: &str) -> Vec<u
 /// comparison while the published generation silently shipped without the
 /// field. In the monolithic mode the active root is the full record
 /// stream; in the sharded mode it is a checkpoint-set manifest whose
-/// `issue_shards` name the objects the issues were partitioned into.
+/// `issue_shards` name the objects the issues were partitioned into; in
+/// set-v2 the manifest partitions the same stream into `shards` and
+/// `segments` with an optional `tail`.
 fn published_issue_payload(
     workspace: &Path,
     pointer: &Value,
@@ -525,6 +530,45 @@ fn published_issue_payload(
             }
             issues
         }
+        Some("set-v2") => {
+            // checkpoint-set-v2: the active root is a generation manifest
+            // whose shards and segments partition the record stream and
+            // whose tail carries the post-partition records; the issues
+            // are the issue-typed rows across all of them.
+            let manifest: Value =
+                serde_json::from_slice(&verified_object(&checkpoint_dir, root_path, root_sha256))
+                    .expect("the set-v2 active root must be a JSON generation manifest");
+            let read_row = |row: &Value| -> String {
+                let path = row["path"]
+                    .as_str()
+                    .expect("each manifest row names its path");
+                match row["sha256"].as_str() {
+                    Some(sha) => String::from_utf8(verified_object(&checkpoint_dir, path, sha))
+                        .expect("the row object is UTF-8"),
+                    None => fs::read_to_string(checkpoint_dir.join(path))
+                        .expect("the row object is readable"),
+                }
+            };
+            let mut records = String::new();
+            for key in ["shards", "segments"] {
+                for row in manifest[key].as_array().cloned().unwrap_or_default() {
+                    records.push_str(&read_row(&row));
+                }
+            }
+            if let Some(tail) = manifest
+                .get("tail")
+                .and_then(|tail| tail.get("path"))
+                .and_then(|path| path.as_str())
+            {
+                records
+                    .push_str(&fs::read_to_string(checkpoint_dir.join(tail)).expect("tail UTF-8"));
+            }
+            parse_jsonl(&records)
+                .into_iter()
+                .filter(|record| record["record_type"] == "issue")
+                .map(|record| record["issue"].clone())
+                .collect()
+        }
         other => panic!("unknown checkpoint mode {other:?}"),
     };
 
@@ -559,15 +603,19 @@ fn published_generations_recover_losslessly_in_both_modes() {
     ] {
         let workspace = seeded_workspace();
         let pointer = publish(workspace.path(), config, mode);
+        // Forcing sharded-v1 output is not offered (checkpoint-set-v2 spec
+        // 9): a sharded request publishes set-v2; the monolithic request
+        // keeps the monolith.
+        let published_mode = if mode == "sharded" { "set-v2" } else { mode };
         assert_eq!(
-            pointer["mode"], mode,
-            "the flush must publish in the configured mode"
+            pointer["mode"], published_mode,
+            "the flush must publish the mode the configured request resolves to"
         );
         assert_payload_exact(
             &published_issue_payload(workspace.path(), &pointer),
-            &format!("{mode} publication"),
+            &format!("{published_mode} publication ({mode} request)"),
         );
-        assert_both_recoveries(workspace.path(), &format!("{mode} publication"));
+        assert_both_recoveries(workspace.path(), &format!("{mode} request"));
     }
 }
 
@@ -600,12 +648,13 @@ fn alternating_chain_crosses_every_command_and_both_modes() {
         "hop 1 (monolithic flush -> bead restore): payload not preserved"
     );
 
-    // Generation 2: the restored store republishes shardedly.
+    // Generation 2: the restored store republishes with a sharded request,
+    // which resolves to set-v2 (checkpoint-set-v2 spec 9).
     let pointer = publish(second.path(), sharded_config(), "chain gen 2");
-    assert_eq!(pointer["mode"], "sharded");
+    assert_eq!(pointer["mode"], "set-v2");
     assert_payload_exact(
         &published_issue_payload(second.path(), &pointer),
-        "chain gen 2 (restored store's sharded publication)",
+        "chain gen 2 (restored store's set-v2 publication)",
     );
     let third = import_restore(
         second.path().join(".beads/checkpoint").as_path(),
@@ -745,7 +794,8 @@ fn issues_jsonl_interchange_carries_unknown_fields_both_ways() {
         sharded_config(),
         "interchange return leg",
     );
-    assert_eq!(pointer["mode"], "sharded");
+    // The sharded request resolves to set-v2 (checkpoint-set-v2 spec 9).
+    assert_eq!(pointer["mode"], "set-v2");
     assert_payload_exact(
         &published_issue_payload(interchange_store.path(), &pointer),
         "interchange return leg publication",
