@@ -45,7 +45,7 @@ use tempfile::TempDir;
 /// collections the checkpoint layer embeds and routes to their own tables.
 /// Anything outside this set in an exported issue record is an unknown
 /// field that must survive the round trip unchanged.
-const KNOWN_ISSUE_KEYS: [&str; 24] = [
+const KNOWN_ISSUE_KEYS: [&str; 25] = [
     "id",
     "title",
     "revision",
@@ -60,6 +60,7 @@ const KNOWN_ISSUE_KEYS: [&str; 24] = [
     "created_at",
     "updated_at",
     "closed_at",
+    "closed_by",
     "close_reason",
     "source_repo",
     "profile",
