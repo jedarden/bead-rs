@@ -5,6 +5,7 @@ mod cli_checkpoint_guard;
 mod cli_history;
 mod cli_secret_scan;
 mod error;
+mod fleet;
 mod model;
 #[allow(dead_code)]
 mod profile;
@@ -814,6 +815,7 @@ fn dispatch_command(cli: Cli) -> Result<bool> {
         Command::Recurrence(opts) => cmd_recurrence(opts).map(|_| false),
         Command::Policy(opts) => cmd_policy(opts).map(|_| false),
         Command::Watchdog(opts) => cmd_watchdog(opts).map(|_| false),
+        Command::Fleet { command } => crate::fleet::run(command).map(|_| false),
     }
 }
 
@@ -2006,6 +2008,16 @@ fn cmd_show(opts: cli::ShowOptions) -> Result<()> {
         if let Some(issue_type) = &issue.issue_type {
             println!("Type: {}", issue_type);
         }
+
+        if issue.base_status == model::BaseStatus::Closed {
+            let closed_at = issue.closed_at.as_deref().unwrap_or("unknown");
+            let closed_by = service::latest_close_actor(&conn, &issue.id)?
+                .unwrap_or_else(|| "unknown".to_string());
+            println!("Closed: {closed_at} by {closed_by}");
+            if let Some(reason) = &issue.close_reason {
+                println!("Reason: {reason}");
+            }
+        }
     }
 
     Ok(())
@@ -2022,12 +2034,18 @@ fn issue_json_document(
     let labels = load_labels(conn, &issue.id)?;
     let comments = load_comments(conn, &issue.id, comments_projection)?;
     let attempts = service::get_attempt_summary(conn, &issue.id)?;
+    let closed_by = if issue.base_status == model::BaseStatus::Closed {
+        service::latest_close_actor(conn, &issue.id)?
+    } else {
+        None
+    };
     Ok(to_needle_json(
         issue,
         &dependencies,
         &labels,
         &comments,
         &attempts,
+        closed_by.as_deref(),
     ))
 }
 
@@ -2047,6 +2065,9 @@ fn cli_issue_field_header(field: &str) -> &'static str {
         "dependencies" => "Dependencies",
         "created_at" => "Created",
         "updated_at" => "Updated",
+        "closed_at" => "Closed",
+        "closed_by" => "Closed By",
+        "close_reason" => "Reason",
         "labels" => "Labels",
         "attempts" => "Attempts",
         "revision" => "Revision",
@@ -4526,6 +4547,7 @@ fn to_needle_json(
     labels: &[String],
     comments: &[serde_json::Value],
     attempts: &service::AttemptSummary,
+    closed_by: Option<&str>,
 ) -> serde_json::Value {
     let status_str = match issue.base_status {
         model::BaseStatus::Open => "open",
@@ -4557,6 +4579,9 @@ fn to_needle_json(
         "dependencies": dependencies,
         "created_at": issue.created_at,
         "updated_at": issue.updated_at,
+        "closed_at": issue.closed_at,
+        "closed_by": closed_by,
+        "close_reason": issue.close_reason,
         "labels": labels,
         "attempts": attempts,
         "revision": issue.revision.unwrap_or(1)
@@ -5478,6 +5503,14 @@ fn print_human_readable_why(why: &service::WhyExplanation) {
     println!("Updated: {}", why.updated_at);
     if let Some(closed_at) = &why.closed_at {
         println!("Closed: {}", closed_at);
+        println!(
+            "Closed By: {}",
+            why.closed_by.as_deref().unwrap_or("unknown")
+        );
+        println!(
+            "Reason: {}",
+            why.close_reason.as_deref().unwrap_or("unknown")
+        );
     }
 
     // Blockers section

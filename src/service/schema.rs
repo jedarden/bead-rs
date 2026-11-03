@@ -54,7 +54,10 @@ use std::collections::HashSet;
 /// `show`/`list --fields` validation (`CLI_ISSUE_FIELDS`), and the
 /// notes/comments entries record that appended history belongs in comments
 /// (R010), not in notes (beadrs-0f854018).
-pub const FIELD_GUIDE_VERSION: i64 = 13;
+///
+/// v14: the interactive issue projection publishes the close record and the
+/// capabilities document advertises its support (R042.1).
+pub const FIELD_GUIDE_VERSION: i64 = 14;
 
 /// Artifact identity carried by every `bead schema explain` response, per the
 /// accepted field-guide contract (`research/specs/native-field-guide-v1.md`).
@@ -348,6 +351,7 @@ fn names(kind: &str) -> &'static [&'static str] {
             // .attempt_outcome.supported (src/cli.rs resolve --help)
             "attempt_outcome",
             "attempt_summary",
+            "close_record",
             "secret_scan",
             "historical_redaction",
         ],
@@ -656,7 +660,8 @@ fn property_schema(kind: &str, name: &str) -> Value {
         | ("capabilities", "logical_revision")
         | ("capabilities", "auto_flush")
         | ("capabilities", "auto_stage")
-        | ("capabilities", "attempt_summary") => {
+        | ("capabilities", "attempt_summary")
+        | ("capabilities", "close_record") => {
             json!({"type":"boolean"})
         }
         // The native dependency write set, the same posture as the
@@ -926,10 +931,13 @@ pub fn schema_document(schema_ref: &str) -> Result<Value> {
 /// publishes them. Single source for both the `cli_issue` document members in
 /// `guide_documents` and `show`/`list --fields` validation, so the CLI cannot
 /// accept a name the field guide does not publish (beadrs-0f854018).
-pub const CLI_ISSUE_FIELDS: [&str; 17] = [
+pub const CLI_ISSUE_FIELDS: [&str; 20] = [
     "assignee",
     "attempts",
     "claim_epoch",
+    "closed_at",
+    "closed_by",
+    "close_reason",
     "comments",
     "created_at",
     "dependencies",
@@ -1030,6 +1038,12 @@ fn projection_property_schema(document: &str, name: &str) -> Value {
         ("cli_issue", "claim_epoch") => json!({"type":["integer","null"], "minimum":1}),
         ("cli_issue", "created_at") | ("cli_issue", "updated_at") => {
             json!({"type":"string", "format":"date-time"})
+        }
+        ("cli_issue", "closed_at") => {
+            json!({"type":["string","null"], "format":"date-time"})
+        }
+        ("cli_issue", "closed_by") | ("cli_issue", "close_reason") => {
+            json!({"type":["string","null"]})
         }
         ("cli_issue", "manual_blocked") => json!({"type":"boolean"}),
         ("cli_issue", "priority") => json!({"type":"integer", "minimum":0, "maximum":4}),
@@ -1246,6 +1260,45 @@ fn field_semantics(document: &str, name: &str) -> FieldSemantics {
             ],
             common_mistake:
                 "Synthesizing a source tracker's time as a native creation instant during rehydration.",
+        },
+        ("cli_issue", "closed_at") => FieldSemantics {
+            ownership: "derived",
+            operations: &["close", "reopen"],
+            has_default: true,
+            default: Value::Null,
+            example: json!("2026-10-28T12:00:00.000000000Z"),
+            invariants: &[
+                "RFC 3339 UTC close time from the latest close",
+                "always emitted and null when never closed or reopened",
+                "a later close replaces the prior projection",
+            ],
+            common_mistake: "Treating the issue's updated_at as the close time.",
+        },
+        ("cli_issue", "closed_by") => FieldSemantics {
+            ownership: "derived",
+            operations: &["close", "reopen"],
+            has_default: true,
+            default: Value::Null,
+            example: json!("system"),
+            invariants: &[
+                "actor recorded by the latest close event",
+                "always emitted and null when never closed or reopened",
+                "unknown is a text-rendering fallback when no close event names an actor",
+            ],
+            common_mistake: "Inferring the invoking actor; this projection reports the event actor.",
+        },
+        ("cli_issue", "close_reason") => FieldSemantics {
+            ownership: "derived",
+            operations: &["close", "reopen"],
+            has_default: true,
+            default: Value::Null,
+            example: json!("Completed and verified"),
+            invariants: &[
+                "reason from the latest close",
+                "always emitted and null when never closed or reopened",
+                "historical redaction exposes only [REDACTED:bead-rs]",
+            ],
+            common_mistake: "Reading a superseded close reason after reopen or a later close.",
         },
         ("cli_issue", "updated_at") => FieldSemantics {
             ownership: "system",
@@ -3200,6 +3253,18 @@ fn field_semantics(document: &str, name: &str) -> FieldSemantics {
             example: json!(true),
             invariants: &["always true: show and list JSON derive an attempt summary from durable outcome records"],
             common_mistake: "Writing attempt summaries by hand; they are read-time projections.",
+        },
+        ("capabilities", "close_record") => FieldSemantics {
+            ownership: "system",
+            operations: &["capabilities"],
+            has_default: false,
+            default: Value::Null,
+            example: json!(true),
+            invariants: &[
+                "true when show and list issue projections expose closed_at, closed_by, and close_reason",
+                "additive to both native-v1 and needle-v1 capability profiles",
+            ],
+            common_mistake: "Assuming close records require a new storage table; they are a read projection of the issue row and close event.",
         },
         ("capabilities", "agent_ergonomics") => FieldSemantics {
             ownership: "system",

@@ -66,9 +66,10 @@ pub use changes::{
     get_changes_since, get_gap_info, get_snapshot_identity, validate_cursor, Cursor,
 };
 pub use checkpoint::{
-    acquire_checkpoint_publication_lock, flush_checkpoint, forensic_checkpoint_status,
-    fork_workspace_identity, import_checkpoint_with_diagnostics, import_forensic_checkpoint,
-    load_checkpoint_config, publish_forensic_checkpoint, publish_forensic_checkpoint_holding,
+    acquire_checkpoint_publication_lock, acquire_checkpoint_publication_lock_for_validation,
+    flush_checkpoint, forensic_checkpoint_status, fork_workspace_identity,
+    import_checkpoint_with_diagnostics, import_forensic_checkpoint, load_checkpoint_config,
+    publish_forensic_checkpoint, publish_forensic_checkpoint_holding,
     publish_redaction_checkpoint_holding, publish_sanitized_recovery_checkpoint_holding,
     read_covered_event_sequence, read_live_event_sequence, restore_verified_generation,
     verify_restore_source, CheckpointConfig,
@@ -108,7 +109,7 @@ pub use external_refs::{
     add_external_reference, find_issues_by_reference, list_external_references,
     remove_external_reference,
 };
-pub use issues::get_issue_by_id;
+pub use issues::{get_issue_by_id, latest_close_actor};
 pub use issues::{add_comment, analyze_exclusion, ExclusionAnalysis};
 #[allow(unused_imports)]
 pub use issues::{count_issues, list_issues, list_issues_with_sort};

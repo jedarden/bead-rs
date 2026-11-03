@@ -1427,6 +1427,31 @@ pub fn get_issue_by_id(conn: &Connection, id: &str) -> Result<Option<Issue>> {
         .transpose()
 }
 
+/// Actor recorded by the latest close event, for the close-record projection
+/// (agent-ergonomics-v1 §2.6). `None` when no close event exists — the member
+/// then stays JSON null and text views render the closer as `unknown`. A close
+/// event that exists but names no actor reports `system`, the same
+/// normalization the history feed applies to a NULL event actor.
+pub fn latest_close_actor(conn: &Connection, issue_id: &str) -> Result<Option<String>> {
+    let actor: Option<Option<String>> = conn
+        .query_row(
+            "SELECT actor FROM events WHERE issue_id = ?1 AND kind = 'closed'
+             ORDER BY sequence DESC LIMIT 1",
+            [issue_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| {
+            Error::Internal(anyhow::anyhow!("Failed to query close event actor: {}", e))
+        })?;
+    Ok(match actor {
+        Some(Some(actor)) if actor.trim().is_empty() => Some("system".to_string()),
+        Some(Some(actor)) => Some(actor),
+        Some(None) => Some("system".to_string()),
+        None => None,
+    })
+}
+
 /// Generate a unique issue ID
 fn generate_unique_id(conn: &Connection, prefix: &str) -> Result<String> {
     let max_attempts = 5;

@@ -501,6 +501,33 @@ or ineffective settings and never changes whether a bead is claimable.
   bead policy check [--format text|json]"
     )]
     Policy(PolicyCommand),
+
+    /// Read-only view over every workspace below a root (R042.4)
+    #[command(
+        name = "fleet",
+        about = "Read-only view over every bead-rs workspace below a root",
+        long_about = "Read-only fleet view over every bead-rs workspace below --root (R042.4).
+
+Discovers candidate stores by walking the tree (default $HOME, depth 3),
+groups them by workspace UUID, and reports status counts, ready frontiers,
+search matches, or read-only doctor verdicts per workspace. Copied stores
+sharing a workspace UUID (verification directories, mktemp-named checkouts)
+are grouped under their canonical member and reported separately; they are
+excluded from the report unless --include-copies is given.
+
+The fleet view never mutates: no repair flag exists, stores open read-only,
+no write lock is taken, and no checkpoint publishes. A workspace that cannot
+be observed is an error record inside the report, never a failed run.
+
+  bead fleet status [--root PATH] [--max-depth N] [--include-copies] [--json]
+  bead fleet ready  [--root PATH] [--max-depth N] [--include-copies] [--json]
+  bead fleet search TEXT [--root PATH] [--max-depth N] [--include-copies] [--json]
+  bead fleet doctor [--root PATH] [--max-depth N] [--include-copies] [--json]"
+    )]
+    Fleet {
+        #[command(subcommand)]
+        command: crate::fleet::FleetCommand,
+    },
 }
 
 /// Options for workspace initialization
@@ -757,7 +784,9 @@ OUTPUT:
   With --jsonl: one compact JSON object per line; empty results write no bytes
   --json and --jsonl cannot be combined
   JSON output includes: id, title, priority, status, manual_blocked, effective_status,
-  assignee, dependencies, created_at, updated_at, and labels based on comment projection.
+  assignee, dependencies, created_at, updated_at, closed_at, closed_by,
+  close_reason, and labels based on comment projection. Close-record members
+  are always present and null until the issue has a current close.
   --count overrides every other output mode: plain text prints an integer,
   --json/--jsonl print one object: {\"count\": N}."
 )]
@@ -878,6 +907,7 @@ ISSUE DETAILS INCLUDE:
   - Manual block: manual_blocked flag (true when explicitly blocked)
   - Effective status: effective_status (shows 'blocked' when manual_blocked is true)
   - Timestamps: created_at, updated_at, closed_at (if closed)
+  - Close record: closed_by and close_reason (when closed)
   - Dependencies: blocked_by (blocking issues), blocking (issues this blocks)
   - Labels: all assigned labels
   - Comments: based on --comments projection
@@ -3160,6 +3190,7 @@ EXPLANATION COVERAGE:
   - Active blocker analysis with blocker details
   - Claim ranking factors (priority, age, rotation, attempt tier, graph impact)
   - Legal operations list with validity checks and command examples
+  - Close record: close time, closer, and latest close reason in the Timing section
   - Reuse of R001 reason codes and R019 scheduling metrics
 
 OUTPUT FORMAT:

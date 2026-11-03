@@ -53,6 +53,12 @@ pub struct WhyExplanation {
     /// Closed timestamp (if applicable)
     pub closed_at: Option<String>,
 
+    /// Actor recorded by the latest close event (if applicable)
+    pub closed_by: Option<String>,
+
+    /// Reason recorded by the latest close (if applicable)
+    pub close_reason: Option<String>,
+
     /// Active blocker analysis
     pub blockers: BlockerAnalysis,
 
@@ -271,6 +277,8 @@ pub fn explain_why(conn: &Connection, issue_id: &str) -> Result<WhyExplanation> 
         created_at: issue.created_at,
         updated_at: issue.updated_at,
         closed_at: issue.closed_at,
+        closed_by: issue.closed_by,
+        close_reason: issue.close_reason,
         blockers,
         ranking_factors,
         attempt_info,
@@ -292,6 +300,8 @@ struct IssueState {
     pub created_at: String,
     pub updated_at: String,
     pub closed_at: Option<String>,
+    pub close_reason: Option<String>,
+    pub closed_by: Option<String>,
     pub ready_since: Option<String>,
     pub last_claim_sequence: Option<i64>,
     pub attempt_tier: i64,
@@ -303,7 +313,13 @@ struct IssueState {
 fn get_issue_state(conn: &Connection, issue_id: &str) -> Result<IssueState> {
     let issue = conn
         .query_row(
-        "SELECT id, title, base_status, assignee, manual_blocked, priority, issue_type, created_at, updated_at, closed_at
+        "SELECT id, title, base_status, assignee, manual_blocked, priority, issue_type, created_at, updated_at, closed_at, close_reason,
+                CASE WHEN base_status = 'closed' THEN
+                    (SELECT COALESCE(NULLIF(TRIM(actor), ''), 'system')
+                     FROM events
+                     WHERE events.issue_id = issues.id AND events.kind = 'closed'
+                     ORDER BY events.sequence DESC LIMIT 1)
+                END
          FROM issues WHERE id = ?1",
         [issue_id],
         |row| {
@@ -318,6 +334,8 @@ fn get_issue_state(conn: &Connection, issue_id: &str) -> Result<IssueState> {
                 created_at: row.get(7)?,
                 updated_at: row.get(8)?,
                 closed_at: row.get(9)?,
+                close_reason: row.get(10)?,
+                closed_by: row.get(11)?,
                 // Default values for R019 fields if not present in schema
                 ready_since: None,
                 last_claim_sequence: None,

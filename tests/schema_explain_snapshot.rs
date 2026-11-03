@@ -44,23 +44,23 @@ const CONCISE_SCHEMA_REF: &str = "urn:bead-rs:schema:checkpoint-pointer:native-v
 /// Guide version the snapshots below were taken at. Bumping
 /// `FIELD_GUIDE_VERSION` in `src/service/schema.rs` without refreshing the
 /// digests is exactly the drift this constant exists to catch.
-const SNAPSHOT_GUIDE_VERSION: i64 = 13;
+const SNAPSHOT_GUIDE_VERSION: i64 = 14;
 
-/// `bead schema explain <native-guide identity> --format json`, guide v13.
+/// `bead schema explain <native-guide identity> --format json`, guide v14.
 const NATIVE_GUIDE_JSON_SHA256: &str =
-    "1acac800833ea970ef1232b5ee65462eb692f5bd43861ee15aa3f99e35dfeb8b";
+    "fe4bf4511ea791c1ba11f09624bd238e9032aed2b64e60b36a5db49f96c00608";
 
-/// `bead schema explain <native-guide identity> --format markdown`, guide v13.
+/// `bead schema explain <native-guide identity> --format markdown`, guide v14.
 const NATIVE_GUIDE_MARKDOWN_SHA256: &str =
-    "942529b7467fff841333324980c35a09848c8c5eed0ca72698963d4125a422e4";
+    "cc16b0d75e68e510e29996071cf96f5ec1663e44b5c1dc5cbd50adcd9764c0f7";
 
-/// `bead schema explain <concise identity> --format json`, guide v13.
+/// `bead schema explain <concise identity> --format json`, guide v14.
 const CONCISE_JSON_SHA256: &str =
-    "971325493de7acee174161ad03d4fa63d2d80ecc273d9457dfcb0ac3258087aa";
+    "d4e002e37c8ea347f9c117e0b5d091f219e3429f18416b3b3e09912e96e5e5f8";
 
-/// `bead schema explain <concise identity> --format markdown`, guide v13.
+/// `bead schema explain <concise identity> --format markdown`, guide v14.
 const CONCISE_MARKDOWN_SHA256: &str =
-    "860cfca0a591e3dd90c1b04f7413c6ea50dd6a85dfe14fd0707c1fbf5bbbca60";
+    "9e35a646d31ec5c42418a5d937861a45aabe7f8db3d67581af10d9371822f787";
 
 const GUIDE_FIELD_MEMBERS: [&str; 10] = [
     "json_type",

@@ -72,6 +72,8 @@ pub struct Capabilities {
     pub attempt_outcome: Option<AttemptOutcome>,
     /// Whether show/list JSON includes a summary derived from attempt outcomes.
     pub attempt_summary: bool,
+    /// Whether issue read projections expose the latest close record.
+    pub close_record: bool,
     /// Secret rejection and diagnostic capabilities (ADR-014).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secret_scan: Option<SecretScanCapabilities>,
@@ -373,6 +375,7 @@ pub fn generate_capabilities_with_secret_mode(
             resolve_request_schema: "urn:bead-rs:schema:resolve-request:native-v1".to_string(),
         }),
         attempt_summary: true,
+        close_record: true,
         secret_scan: Some(SecretScanCapabilities {
             contract_identity: CONTRACT_IDENTITY.to_string(),
             ruleset_version: RULESET_VERSION,
