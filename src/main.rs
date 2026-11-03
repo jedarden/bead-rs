@@ -5,7 +5,6 @@ mod cli_checkpoint_guard;
 mod cli_history;
 mod cli_secret_scan;
 mod error;
-mod fleet;
 mod model;
 #[allow(dead_code)]
 mod profile;
@@ -815,7 +814,6 @@ fn dispatch_command(cli: Cli) -> Result<bool> {
         Command::Recurrence(opts) => cmd_recurrence(opts).map(|_| false),
         Command::Policy(opts) => cmd_policy(opts).map(|_| false),
         Command::Watchdog(opts) => cmd_watchdog(opts).map(|_| false),
-        Command::Fleet { command } => crate::fleet::run(command).map(|_| false),
     }
 }
 

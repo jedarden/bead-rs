@@ -501,33 +501,6 @@ or ineffective settings and never changes whether a bead is claimable.
   bead policy check [--format text|json]"
     )]
     Policy(PolicyCommand),
-
-    /// Read-only view over every workspace below a root (R042.4)
-    #[command(
-        name = "fleet",
-        about = "Read-only view over every bead-rs workspace below a root",
-        long_about = "Read-only fleet view over every bead-rs workspace below --root (R042.4).
-
-Discovers candidate stores by walking the tree (default $HOME, depth 3),
-groups them by workspace UUID, and reports status counts, ready frontiers,
-search matches, or read-only doctor verdicts per workspace. Copied stores
-sharing a workspace UUID (verification directories, mktemp-named checkouts)
-are grouped under their canonical member and reported separately; they are
-excluded from the report unless --include-copies is given.
-
-The fleet view never mutates: no repair flag exists, stores open read-only,
-no write lock is taken, and no checkpoint publishes. A workspace that cannot
-be observed is an error record inside the report, never a failed run.
-
-  bead fleet status [--root PATH] [--max-depth N] [--include-copies] [--json]
-  bead fleet ready  [--root PATH] [--max-depth N] [--include-copies] [--json]
-  bead fleet search TEXT [--root PATH] [--max-depth N] [--include-copies] [--json]
-  bead fleet doctor [--root PATH] [--max-depth N] [--include-copies] [--json]"
-    )]
-    Fleet {
-        #[command(subcommand)]
-        command: crate::fleet::FleetCommand,
-    },
 }
 
 /// Options for workspace initialization
