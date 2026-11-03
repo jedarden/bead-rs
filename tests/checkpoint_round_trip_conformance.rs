@@ -1183,10 +1183,11 @@ fn test_checkpoint_round_trip_fidelity_comprehensive() {
         restored_bead1["title"], "Test Issue 1 - All Fields",
         "restored `list --jsonl` rendered wrong known fields for {bead1_id}"
     );
-    // `list` derives a few render-time keys (the computed status pair and
-    // the attempts summary) that ride the record like extensions; nothing
-    // else outside the known set may appear, mangled payload included.
-    const LIST_DERIVED_KEYS: [&str; 3] = ["attempts", "effective_status", "status"];
+    // `list` derives a few render-time keys (the computed status pair, the
+    // attempts summary, and the close-record actor) that ride the record
+    // like extensions; nothing else outside the known set may appear,
+    // mangled payload included.
+    const LIST_DERIVED_KEYS: [&str; 4] = ["attempts", "closed_by", "effective_status", "status"];
     for key in restored_bead1.as_object().unwrap().keys() {
         assert!(
             KNOWN_ISSUE_KEYS.contains(&key.as_str()) || LIST_DERIVED_KEYS.contains(&key.as_str()),
