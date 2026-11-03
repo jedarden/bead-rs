@@ -99,10 +99,7 @@ fn close_record_is_projected_on_show_list_and_why_and_reopen_clears_it() {
     assert!(text.contains(" by system"));
     assert!(text.contains("Reason: first close"));
 
-    bead(root.path())
-        .args(["reopen", &id])
-        .assert()
-        .success();
+    bead(root.path()).args(["reopen", &id]).assert().success();
     for args in [
         vec!["show", &id, "--json"],
         vec!["why", "--id", &id, "--json"],
@@ -139,12 +136,18 @@ fn redacted_close_reason_is_rendered_as_the_fixed_marker() {
         .unwrap();
 
     let expected = "[REDACTED:bead-rs]";
-    assert_eq!(json(root.path(), &["show", &id, "--json"])["close_reason"], expected);
+    assert_eq!(
+        json(root.path(), &["show", &id, "--json"])["close_reason"],
+        expected
+    );
     assert_eq!(
         json(root.path(), &["list", "--json"])[0]["close_reason"],
         expected
     );
-    assert_eq!(json(root.path(), &["why", "--id", &id, "--json"])["close_reason"], expected);
+    assert_eq!(
+        json(root.path(), &["why", "--id", &id, "--json"])["close_reason"],
+        expected
+    );
 
     let text = bead(root.path())
         .args(["show", &id])

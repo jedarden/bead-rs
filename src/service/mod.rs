@@ -109,12 +109,12 @@ pub use external_refs::{
     add_external_reference, find_issues_by_reference, list_external_references,
     remove_external_reference,
 };
-pub use issues::{get_issue_by_id, latest_close_actor};
 pub use issues::{add_comment, analyze_exclusion, ExclusionAnalysis};
 #[allow(unused_imports)]
 pub use issues::{count_issues, list_issues, list_issues_with_sort};
 #[allow(unused_imports)]
 pub use issues::{create_issue, create_issue_with_unique_ref, CreateOutcome};
+pub use issues::{get_issue_by_id, latest_close_actor};
 #[allow(unused_imports)]
 pub use leases::{
     current_claim_epoch, validate_claim_epoch_for_mutation, validate_lease_for_mutation,
