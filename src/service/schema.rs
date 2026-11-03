@@ -1263,7 +1263,7 @@ fn field_semantics(document: &str, name: &str) -> FieldSemantics {
         },
         ("cli_issue", "closed_at") => FieldSemantics {
             ownership: "derived",
-            operations: &["close", "reopen"],
+            operations: &["list", "show"],
             has_default: true,
             default: Value::Null,
             example: json!("2026-10-28T12:00:00.000000000Z"),
@@ -1276,7 +1276,7 @@ fn field_semantics(document: &str, name: &str) -> FieldSemantics {
         },
         ("cli_issue", "closed_by") => FieldSemantics {
             ownership: "derived",
-            operations: &["close", "reopen"],
+            operations: &["list", "show"],
             has_default: true,
             default: Value::Null,
             example: json!("system"),
@@ -1289,7 +1289,7 @@ fn field_semantics(document: &str, name: &str) -> FieldSemantics {
         },
         ("cli_issue", "close_reason") => FieldSemantics {
             ownership: "derived",
-            operations: &["close", "reopen"],
+            operations: &["list", "show"],
             has_default: true,
             default: Value::Null,
             example: json!("Completed and verified"),
