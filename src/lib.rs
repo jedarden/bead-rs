@@ -3,6 +3,7 @@
 pub mod cli;
 pub mod docs;
 pub mod error;
+pub mod fleet;
 pub mod model;
 pub mod profile;
 pub mod reconciliation;

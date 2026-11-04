@@ -1002,7 +1002,11 @@ fn check_database_integrity(store: &impl Store) -> Result<String> {
 /// guessed semantics after a future configuration change.
 fn load_stale_in_progress_config(store: &impl Store) -> Result<StaleInProgressConfig> {
     let workspace = store.get_workspace_config()?;
-    let config_path = workspace.root.join(".beads/config.json");
+    load_stale_in_progress_config_from_root(&workspace.root)
+}
+
+fn load_stale_in_progress_config_from_root(root: &Path) -> Result<StaleInProgressConfig> {
+    let config_path = root.join(".beads/config.json");
     let raw = std::fs::read_to_string(&config_path).map_err(|e| Error::Io {
         path: config_path.clone(),
         msg: e,
@@ -1157,7 +1161,25 @@ fn check_stale_in_progress(store: &impl Store) -> Result<StaleInProgressReport> 
     let db_path = workspace.root.join(".beads/beads.db");
     let conn = open_configured_connection(&db_path)
         .map_err(|e| Error::Integrity(format!("Failed to open database: {}", e)))?;
+    check_stale_in_progress_with_connection(&conn, config)
+}
 
+/// Count stale ordinary claims using a connection the caller opened read-only.
+/// Fleet uses this projection so it cannot trigger a migration or WAL change.
+pub fn stale_in_progress_count_read_only(
+    conn: &rusqlite::Connection,
+    root: &Path,
+) -> Result<usize> {
+    let config = load_stale_in_progress_config_from_root(root)?;
+    Ok(check_stale_in_progress_with_connection(conn, config)?
+        .stale_issues
+        .len())
+}
+
+fn check_stale_in_progress_with_connection(
+    conn: &rusqlite::Connection,
+    config: StaleInProgressConfig,
+) -> Result<StaleInProgressReport> {
     let mut stmt = conn
         .prepare(
             "SELECT i.id,

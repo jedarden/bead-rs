@@ -5,6 +5,7 @@ mod cli_checkpoint_guard;
 mod cli_history;
 mod cli_secret_scan;
 mod error;
+mod fleet;
 mod model;
 #[allow(dead_code)]
 mod profile;
@@ -681,6 +682,11 @@ fn resolve_text_inputs(cli: &mut Cli) -> Result<()> {
 }
 
 fn execute_command(mut cli: Cli) -> Result<()> {
+    // Fleet must not enter the single-workspace publication probe: that path
+    // opens a migrating connection in the current workspace.
+    if matches!(cli.command, Command::Fleet(_)) {
+        return dispatch_command(cli).map(|_| ());
+    }
     resolve_text_inputs(&mut cli)?;
     // Read once, before the mutation lock and secret preflight: the scanner
     // and service must consume the same bytes, including stdin and large files.
@@ -802,6 +808,7 @@ fn dispatch_command(cli: Cli) -> Result<bool> {
         Command::Manifest(opts) => cmd_manifest(opts).map(|_| false),
         Command::Sync(opts) => cmd_sync(opts).map(|_| false),
         Command::Doctor(opts) => cmd_doctor(opts).map(|_| false),
+        Command::Fleet(opts) => cmd_fleet(opts).map(|_| false),
         Command::Capabilities(opts) => cmd_capabilities(opts).map(|_| false),
         Command::Schema(opts) => cmd_schema(opts).map(|_| false),
         Command::Query(opts) => cmd_query(opts).map(|_| false),
@@ -814,6 +821,96 @@ fn dispatch_command(cli: Cli) -> Result<bool> {
         Command::Recurrence(opts) => cmd_recurrence(opts).map(|_| false),
         Command::Policy(opts) => cmd_policy(opts).map(|_| false),
         Command::Watchdog(opts) => cmd_watchdog(opts).map(|_| false),
+    }
+}
+
+fn cmd_fleet(command: cli::FleetCommand) -> Result<()> {
+    let (action, options) = match command {
+        cli::FleetCommand::Status(options) => (fleet::FleetAction::Status, options),
+        cli::FleetCommand::Ready(options) => (fleet::FleetAction::Ready, options),
+        cli::FleetCommand::Search(options) => {
+            if options.text.trim().is_empty() {
+                return Err(Error::cli_usage("fleet search requires non-empty text"));
+            }
+            (fleet::FleetAction::Search(options.text), options.view)
+        }
+        cli::FleetCommand::Doctor(options) => (fleet::FleetAction::Doctor, options),
+    };
+    let root = match options.root {
+        Some(root) => root,
+        None => std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .ok_or_else(|| Error::cli_usage("HOME is unset; pass --root PATH"))?,
+    };
+    let document = fleet::run(
+        action,
+        fleet::FleetOptions {
+            root,
+            max_depth: options.max_depth,
+            include_copies: options.include_copies,
+        },
+    )?;
+    if options.json {
+        println!("{}", serde_json::to_string_pretty(&document)?);
+    } else {
+        render_fleet_text(&document);
+    }
+    Ok(())
+}
+
+fn render_fleet_text(document: &serde_json::Value) {
+    let root = document["root"].as_str().unwrap_or("<unknown root>");
+    println!("Fleet under {root}");
+    if let Some(records) = document["workspaces"].as_array() {
+        for record in records {
+            let path = record["path"].as_str().unwrap_or("<unknown path>");
+            let uuid = record["uuid"].as_str().unwrap_or("<unknown UUID>");
+            let counts = &record["counts"];
+            let ready = record["ready_count"].as_u64().unwrap_or(0);
+            let stale = record["stale_in_progress_count"].as_u64().unwrap_or(0);
+            println!(
+                "{path} ({uuid}): open={} in_progress={} deferred={} closed={} ready={ready} stale={stale}",
+                counts["open"].as_u64().unwrap_or(0),
+                counts["in_progress"].as_u64().unwrap_or(0),
+                counts["deferred"].as_u64().unwrap_or(0),
+                counts["closed"].as_u64().unwrap_or(0),
+            );
+            if let Some(verdict) = record["doctor"].as_object() {
+                let summary = if verdict.get("healthy").and_then(|v| v.as_bool()) == Some(true) {
+                    "ok"
+                } else {
+                    "error"
+                };
+                println!("  doctor: {summary}");
+            }
+        }
+    }
+    if let Some(records) = document["copies"].as_array() {
+        for record in records {
+            let path = record["path"].as_str().unwrap_or("<unknown path>");
+            let canonical = record["canonical_path"].as_str().unwrap_or("<unknown>");
+            let sequence = record["sequence"].as_u64().unwrap_or(0);
+            println!("copy: {path} -> {canonical} (sequence {sequence})");
+        }
+    }
+    for (key, label) in [("skipped", "skipped"), ("errors", "error")] {
+        if let Some(records) = document[key].as_array() {
+            for record in records {
+                let path = record["path"].as_str().unwrap_or("<unknown path>");
+                let detail = record["reason"]
+                    .as_str()
+                    .or_else(|| record["error"].as_str())
+                    .unwrap_or("");
+                println!("{label}: {path} {detail}");
+            }
+        }
+    }
+    for key in ["ready", "matches"] {
+        if let Some(records) = document[key].as_array() {
+            for record in records {
+                println!("{}: {}", key, record);
+            }
+        }
     }
 }
 

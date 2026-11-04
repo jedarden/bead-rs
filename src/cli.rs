@@ -2,7 +2,7 @@
 //!
 //! This module uses clap derive to define all command-line interface commands.
 
-use clap::{ArgGroup, Parser, Subcommand};
+use clap::{ArgGroup, Args, Parser, Subcommand};
 
 /// Main CLI structure for bead-rs
 #[derive(Parser, Debug)]
@@ -381,6 +381,14 @@ LAYOUT (checkpoint-set-v2):
 
     Doctor(DoctorOptions),
 
+    /// Inspect native workspaces below a filesystem root without changing them
+    #[command(
+        subcommand,
+        about = "Inspect native workspaces below a root",
+        long_about = "Discover every native workspace below a filesystem root and compose read-only views. Copies are grouped by workspace UUID and excluded from totals unless --include-copies is passed. No store, checkpoint, or lock is changed."
+    )]
+    Fleet(FleetCommand),
+
     Capabilities(CapabilitiesOptions),
 
     #[command(
@@ -501,6 +509,65 @@ or ineffective settings and never changes whether a bead is claimable.
   bead policy check [--format text|json]"
     )]
     Policy(PolicyCommand),
+}
+
+/// Read-only views composed from all bead-rs workspaces under a root.
+#[derive(Subcommand, Debug)]
+pub enum FleetCommand {
+    /// Counts, ready frontier size, and stale in-progress issues
+    #[command(
+        about = "Show fleet status counts",
+        long_about = "Show per-workspace status counts, ready frontier sizes, stale in-progress counts, and aggregate totals. Discovery reports copied and skipped stores separately."
+    )]
+    Status(FleetViewOptions),
+    /// List issues in each workspace's ready frontier
+    #[command(
+        about = "List ready issues across workspaces",
+        long_about = "List ready issues with their workspace path and UUID. Copied workspaces are excluded unless --include-copies is passed."
+    )]
+    Ready(FleetViewOptions),
+    /// Search issue text across workspaces
+    #[command(
+        about = "Search issue text across workspaces",
+        long_about = "Search titles, descriptions, and notes with case-insensitive literal matching, returning each match with its workspace path and UUID."
+    )]
+    Search(FleetSearchOptions),
+    /// Run read-only store diagnostics across workspaces
+    #[command(
+        about = "Check stores without repair",
+        long_about = "Check native schema shape, format identity, and SQLite quick_check in each workspace. This command never repairs or writes to a store."
+    )]
+    Doctor(FleetViewOptions),
+}
+
+/// Options shared by every fleet view.
+#[derive(Args, Debug)]
+pub struct FleetViewOptions {
+    /// Directory to scan (defaults to HOME)
+    #[arg(long, value_name = "PATH")]
+    pub root: Option<std::path::PathBuf>,
+
+    /// Maximum number of directory edges below the root to inspect
+    #[arg(long, default_value_t = 3, value_name = "N")]
+    pub max_depth: usize,
+
+    /// Include copied workspaces in totals and results
+    #[arg(long)]
+    pub include_copies: bool,
+
+    /// Render one path-ordered JSON document
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for fleet-wide text search.
+#[derive(Args, Debug)]
+pub struct FleetSearchOptions {
+    /// Non-empty text to search in titles, descriptions, and notes
+    pub text: String,
+
+    #[command(flatten)]
+    pub view: FleetViewOptions,
 }
 
 /// Options for workspace initialization

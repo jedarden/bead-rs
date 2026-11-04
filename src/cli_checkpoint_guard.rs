@@ -78,6 +78,7 @@ fn policy(command: &Command) -> Option<bool> {
         | Command::Show(_)
         | Command::Ready(_)
         | Command::Search(_)
+        | Command::Fleet(_)
         | Command::Capabilities(_)
         | Command::Schema(_)
         | Command::Query(_)

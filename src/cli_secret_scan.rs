@@ -421,6 +421,7 @@ fn canonical_request(command: &Command) -> Option<CanonicalRequest<'_>> {
         | Command::Ready(_)
         | Command::Search(_)
         | Command::Doctor(_)
+        | Command::Fleet(_)
         | Command::Redact(_)
         | Command::Capabilities(_)
         | Command::Schema(_)
