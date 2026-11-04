@@ -1095,3 +1095,235 @@ evidence:
 The idea is adopted as plan R042 item 4: read-only, deduplicated by workspace
 UUID, with no repair mode. Run 1, item 32 (cross-workspace federation and
 multi-store transactions) stays killed. Decision record: `beadrs-691c4fec`.
+
+## 2026-11-04 — plan-idea-gen run 5: one repo on several machines
+
+Target: `docs/plan/plan.md` (revision 28). Owning bead `beadrs-600a745f`.
+Pool: 100 across eight lenses. Clusters: 11. Triage survivors: 27.
+Crossover merges: 3. Pairwise advancers: 15. Kill-pass survivors: 9.
+Completeness entrants: 2, one survived. Finalists: 10, ranked by a hybrid of
+ease of implementation and impact. Report-only run: no plan edit, no proposal
+beads; adoption waits on the user's selection.
+
+Context that shaped this run: since 2026-11-03 `~/.local/bin/bead` on
+codinghome, lab and gmktec is the bead-route router (NEEDLE
+`needle-fdc34782`): each routed repo has one authoritative live store and
+other hosts proxy over ssh or are refused. Ten repos are routed to codinghome;
+tradegraph, options-analysis and LOOM await routing (`needle-de3300b4`);
+pdftract is a real fork awaiting a decision. Yesterday's binary upgrade on lab
+and gmktec (`needle-55d18c82`) was needed because an authority must run a bead
+at least as new as its clients. Routing can be silently disabled by a bead
+upgrade that overwrites the router. Client clones still hold live `beads.db`
+files (lab's bead-rs clone: 09-29 checkpoint, 89 staged checkpoint deletions).
+NEEDLE has no handling for the router's exit 75 (authority unreachable). This
+workspace's own checkpoint is still `monolithic` (2.9 MB per publication).
+
+Hard constraints (kill criteria): clean-room; no daemon, socket or network
+transport inside bead-rs (network lives in bead-route); bead-rs never
+conditions behaviour on git remote or network state (ADR-009), may probe local
+git read-only (ADR-013), stage (ADR-018) and commit explicitly (ADR-019); no
+automatic commit or push (ADR-003/019); never force-push; no per-worker
+worktrees; no k8s Job/CronJob; deterministic and noninteractive; no title
+heuristics; new formats need a normative spec and independent review; secrets
+never reach the checkpoint; JSONL is the sole backup boundary; multi-store
+transactions stay killed (run 1, item 32); no duplication of R027 reconcile,
+R028 fork, `sync resolve`, `sync commit`, `bead fleet`, the router,
+`queue.owner_host`, set-v2, leases, resource locks or R032.
+
+| # | Idea and mechanism | Cluster | Verdict |
+| ---: | --- | --- | --- |
+| 1 | Store-less clients — a routed clone keeps no `beads.db`; `init` refuses and points at the authority | Authority | MERGED into finalist 1 and 2 |
+| 2 | Read from checkpoint on a client; only writes travel | Degraded | KILL: stale reads mislead agents; routed workers should pause instead |
+| 3 | Fork-by-default clones with host-suffixed UUIDs | Alternative | KILL: claims stop being atomic, which is the goal |
+| 4 | Store-and-forward outbox for one-way hosts (gmktec) | Degraded | KILL: claims cannot be asynchronous; gmktec workers are pinned to gmktec-authority repos |
+| 5 | Checkpoint on a side ref via git plumbing | Git cost | MERGED into 29; killed there |
+| 6 | Auto-reconcile on verified remote-advanced | Reliability | KILL: under routing only the authority publishes, so the state rarely arises |
+| 7 | Store-level authority pin in `config.json`, enforced by the binary | Authority | **FINALIST 1** |
+| 8 | Binary-free clients | Authority | KILL: a consequence of finalist 2, not a mechanism |
+| 9 | Degrade to read-only from the committed checkpoint on exit 75 | Degraded | KILL: see 2 |
+| 10 | Authority transfer protocol | Lifecycle | MERGED into gap entrant (finalist 9) |
+| 11 | Two-cadence checkpoint (frontier manifest + sealed history) | Git cost | KILL: set-v2 already bounds bytes; new format for little gain |
+| 12 | `bead sync divergence` two-store comparison | Lifecycle | MERGED into finalist 7, reframed on existing `sync diff` |
+| 13 | Actor host provenance on every event | Observability | KILL: a router one-liner once BR-T12 (`beadrs-e167fde8`) lands |
+| 14 | Read replicas shipped to clients | Degraded | KILL: run 1 item 33 stands; the checkpoint is the replica |
+| 15 | Route-in-repo — routing record travels in `config.json` | Authority | **FINALIST 1** (crossover with 7) |
+| 16 | Warm serve process on the authority | Transport | MERGED into 27; killed there |
+| 17 | Lease-based automatic authority failover | Lifecycle | KILL: consensus is out of scope; a wrong election forks |
+| 18 | Dead-letter queue for refused mutations | Degraded | KILL: routed mutations are synchronous; refusals return to the caller |
+| 19 | `min_bead_version` store lock | Version skew | **FINALIST 6** (plausible; verify old-binary behaviour first) |
+| 20 | Conflict copies instead of integrity failure | Reliability | KILL: masks divergence; R028 fork is the explicit path |
+| 21 | `bead whoami` — role, authority, versions, lag | Observability | **FINALIST 4** |
+| 22 | Clone-less addressing `ssh://host/path` | Transport | KILL: no demonstrated consumer |
+| 23 | Sparse checkout excluding `.beads/checkpoint` on routed clients | Git cost | **FINALIST 8** |
+| 24 | Queue view of in-flight routed calls | Observability | KILL: the call log covers it |
+| 25 | Git refs on the forge as a lock primitive | Lifecycle | KILL: no compare-and-swap without force-with-lease |
+| 26 | sshfs read mount of the authority store | Degraded | KILL: SQLite over sshfs is unsafe even read-only |
+| 27 | `bead serve --stdio` session as the router's backend | Transport | KILL: no measured latency need; a persistent process changes the lock model |
+| 28 | Dedicated checkpoint repository | Git cost | KILL: a clone no longer reproduces state |
+| 29 | Authority-only automatic side-ref commit | Git cost | KILL: re-litigates ADR-003/013/019 and every downstream path assumes worktree files; recorded as a plan question |
+| 30 | Operator admin over the router | Ergonomics | KILL: the admin boundary is the control |
+| 31 | Route by store UUID instead of origin URL | Authority | MERGED into finalist 1 |
+| 32 | Authority path discovery by UUID scan | Lifecycle | KILL: routes name the path; a scan per call is slow |
+| 33 | Reverse ssh tunnel for gmktec | Degraded | KILL: routes around a deliberate tailnet policy |
+| 34 | Publication debounce | Git cost | KILL: the publisher cadence already debounces commits |
+| 35 | Fencing-token cache in the router | Ergonomics | KILL: a per-host cache defeats per-worker fencing |
+| 36 | Native Rust router inside `bead` | Transport | KILL: network inside the core |
+| 37 | Always-on authority Deployment | Lifecycle | KILL: tailnet exposure rule, heavy, no demand |
+| 38 | Partial clone (`--filter=blob:none`) for clients | Git cost | MERGED into finalist 8 |
+| 39 | NEEDLE runtime files out of `.beads` | Hygiene | MERGED into finalist 10, reframed |
+| 40 | Default authority = init host | Authority | MERGED into finalist 1 |
+| 41 | `bead route status` table | Observability | MERGED into finalist 4 |
+| 42 | Second-store refusal at `init` | Authority | MERGED into finalist 1 |
+| 43 | Plain `.beads/AUTHORITY` file | Authority | MERGED into finalist 1 |
+| 44 | Pre-push hook refusing checkpoint pushes off-authority | Reliability | KILL: redundant under finalist 1 |
+| 45 | Doctor finding "not the authority" | Authority | MERGED into finalist 1 |
+| 46 | NEEDLE pull path runs `sync resolve` | Reliability | KILL: with finalist 8 clients hold no conflicted checkpoint |
+| 47 | Batched envelope | Transport | KILL: small win; see 27 |
+| 48 | Router call log | Observability | MERGED into finalist 4 as its data source |
+| 49 | Fleet-wide `bead-real` upgrade by timer | Version skew | KILL: automatic binary upgrade under live authority stores reverses the rehearse-first care of `needle-55d18c82` |
+| 50 | `sync status` names the authority | Observability | MERGED into finalist 4 |
+| 51 | Shadow-store retirement on routed clients | Authority | **FINALIST 2** |
+| 52 | `BEAD_ROUTE_EXPLAIN=1` | Observability | MERGED into finalist 4 |
+| 53 | `bead fleet status --routed` | Observability | KILL: fleet view is local-root by spec; large; defer |
+| 54 | Reserve-then-work-offline | Degraded | KILL: no offline workers exist; complex lease semantics |
+| 55 | Host-affinity claims | Scheduling | **FINALIST 5** (reduced to convention + NEEDLE default) |
+| 56 | Per-host claim quota | Scheduling | KILL: no observed starvation |
+| 57 | `why` names the claiming host | Observability | MERGED into 13; killed there |
+| 58 | `bead-route onboard` | Lifecycle | **FINALIST 7** |
+| 59 | Shadow-mode route | Lifecycle | KILL: double mutation is unsafe; onboard covers read comparison |
+| 60 | `sync commit --push` | Git cost | KILL: push stays the caller's one-liner |
+| 61 | Default actor `user@host` | Observability | MERGED into 13; killed there |
+| 62 | Per-client command allowlist | Scheduling | KILL: one allowlist suffices; no per-host need shown |
+| 63 | Statusline role and lag | Observability | KILL: cosmetic |
+| 64 | `bead fleet doctor --routed` | Observability | KILL: see 53 |
+| 65 | Authority-side fairness | Scheduling | KILL: no observed contention |
+| 66 | NEEDLE treats exit 75 as a paused workspace | Reliability | **FINALIST 3** |
+| 67 | Checkpoint lineage enforcement with `publisher_host` | Reliability | KILL: `parent_generation_id` already exists in the pointer; enforcement overlaps R027 qualifiers |
+| 68 | Router canary timer with paging | Reliability | MERGED into finalist 3 |
+| 69 | ssh control-master hygiene | Transport | KILL: a router fix, not an idea |
+| 70 | Structured remote errors | Transport | KILL: exit codes already pass through |
+| 71 | Request-id idempotency for routed mutations | Transport | KILL (re-entered in gap round, killed again): R032 and attempt resolution cover the main paths |
+| 72 | Authority-loss rehearsal | Lifecycle | MERGED into finalist 9 |
+| 73 | Pushed-within-SLO alert | Git cost | MERGED into finalist 9 |
+| 74 | Retired-db guard in the binary | Authority | MERGED into finalist 2 |
+| 75 | Clock-skew report | Observability | KILL: the authority stamps every event already |
+| 76 | Authority reboot drill | Reliability | KILL: covered by finalist 3 |
+| 77 | Envelope checksum | Transport | KILL: ssh is a reliable transport; a size limit exists |
+| 78 | Side-ref commits remove gate_0 HEAD churn | Git cost | MERGED into 29; killed there |
+| 79 | `init` on a routed clone explains | Authority | MERGED into finalist 1 |
+| 80 | Router refusals name the remedy | Ergonomics | KILL: largely present; polish |
+| 81 | README "several machines" section | Ergonomics | KILL: documentation task |
+| 82 | `bead join ssh://…` | Ergonomics | KILL: consequence of finalist 1 |
+| 83 | Human `sync status` names the authority | Observability | MERGED into finalist 4 |
+| 84 | NEEDLE logs distinguish 75 and 78 | Reliability | MERGED into finalist 3 |
+| 85 | Copy-directory refusal in the binary | Hygiene | KILL: fleet view already deduplicates copies; a weekly-job fix is operational |
+| 86 | TTY passthrough | Transport | KILL: polish |
+| 87 | Onboarding hint in `bead fleet status` | Lifecycle | MERGED into finalist 7 |
+| 88 | `bead-route(1)` man page | Ergonomics | KILL: documentation task |
+| 89 | First-run line on a client | Ergonomics | MERGED into finalist 4 |
+| 90 | Exit codes 75 and 78 in the README table | Ergonomics | KILL: documentation task |
+| 91 | Hosted bead service | Alternative | KILL: platform, runs 1–4 |
+| 92 | Web dashboard | Alternative | KILL: platform, runs 1–4 |
+| 93 | Embedded-replica sync | Alternative | KILL: see 14 |
+| 94 | MCP server over the router | Alternative | KILL: deferred ledger item; consumer still absent |
+| 95 | Push-triggered pull via webhook | Alternative | KILL: routed clients do not need the checkpoint |
+| 96 | CRDT merge of issue state | Alternative | KILL: claims are not CRDTs |
+| 97 | Per-host permissions UI | Alternative | KILL: see 62 and 92 |
+| 98 | Latency SLO dashboard | Alternative | KILL: the call log suffices |
+| 99 | One-click promote in herdr | Alternative | MERGED into finalist 9 as a later surface |
+| 100 | Host-prefixed issue IDs | Alternative | KILL: see 3 |
+
+### Completeness-gap entrants
+
+| Idea | Cluster | Verdict |
+| --- | --- | --- |
+| Promote-and-rehearse — `bead-route promote <host>` restores the pushed checkpoint and flips the route under an `authority_epoch`; a weekly timer measures RPO and rehearses the restore on a client | Lifecycle | **FINALIST 9** |
+| Request-id idempotency (71 re-entered) | Transport | KILL: see 71 |
+
+### Finalist dossiers (ranked by ease × impact)
+
+1. **Authority declared in the workspace (7+15+31+40+42+43+45+74+79).**
+   `.beads/config.json` gains `authority: {host, path, epoch}`. The binary
+   refuses mutations when the hostname differs (exit 4, remedy names the
+   router or `bead authority set`); the router reads the record from the
+   workspace so `routes.json` becomes an override and the route travels with
+   every clone. Beat: pre-push hook, `queue.owner_host`. Grade M (bead-rs:
+   config key, one guard at the mutation chokepoint, doctor finding, spec;
+   NEEDLE: router reads it). First step: spec `authority-declaration-v1.md`
+   with the hostname rule and the epoch tie-break. Strongest objection:
+   hostname is weak identity; a host rename locks the authority out until an
+   operator edits the record.
+2. **Shadow-store retirement (51+74).** For a routed client, verify no unique
+   work (`sync diff` against the authority's committed generation), rename
+   `beads.db` to `beads.db.retired-<date>`, drop a `RETIRED` marker the
+   binary refuses to open past. Beat: store-less clients (1), binary-free
+   clients (8). Grade S. First step: add the retire step to the router
+   installer for every routed client on lab. Strongest objection: renaming a
+   database a stale process still has open can corrupt the retired copy;
+   check `operation.lock` and open handles first.
+3. **NEEDLE pauses on exit 75, with a canary (66+68+84).** `sync_guard`
+   treats router exit 75 like `queue.owner_host` mismatch: workspace paused
+   with capped jittered backoff; an hourly canary (`bead capabilities` from
+   each client to each authority, a `--user` timer with `OnCalendar`) pages
+   through telegram-relay on 75/78. Beat: reboot drill (76). Grade S. First
+   step: one match arm in NEEDLE's backend error mapping. Strongest objection:
+   a network blip and a dead authority look identical for the first minutes.
+4. **`bead whoami` (21+41+48+50+52+83+89).** Human and JSON: role, authority
+   host and path, local and authority binary versions, generations and age
+   behind, last routed call and its latency from a one-line-per-call log. Beat:
+   statusline (63), queue view (24). Grade S (router side). First step: extend
+   `__bead-route-role__` and add the call log. Strongest objection: thin over
+   an existing verb; its value is that agents keep asking which store they are
+   talking to.
+5. **Host-affinity claims (55).** Convention `host:<name>` label (later an
+   R042.3 data namespace); NEEDLE's fleet policy excludes `host:*` labels not
+   equal to the worker's host by default, so a lab worker roaming into a
+   gmktec-authority repo never claims IBKR-local work. Beat: per-host quota
+   (56), per-client allowlist (62). Grade S. First step: default exclusion in
+   `fleet-policy.env` plus a lint in `bead policy check`. Strongest objection:
+   label conventions are what R042.3 is replacing; move to typed data when it
+   lands.
+6. **`min_bead_version` store lock (19).** The store records the minimum
+   binary version allowed to open it for writing; an older binary refuses with
+   the remedy. Beat: fleet-wide automatic upgrade (49). Grade S/M. First step:
+   run bead 0.2.6 against a copy of a 0.3.0 store and record what breaks; if
+   nothing does, drop the idea. Strongest objection: unverified that old
+   binaries misbehave.
+7. **`bead-route onboard <origin>` (12+58+87).** Codifies the manual
+   procedure: fetch the other host's committed generation, `bead sync diff`
+   both ways, list unique open issues, recreate them on the authority with
+   provenance notes, write the route, retire the shadow store (finalist 2),
+   run the canary. Beat: shadow-mode route (59), authority transfer (10).
+   Grade M. First step: script the measurement half against pdftract, whose
+   fork is the pending decision. Strongest objection: the hard part (deciding
+   which side wins) is judgment; the tool only makes the evidence cheap.
+8. **Sparse checkout for routed clients (23+38).** `git sparse-checkout` in
+   cone mode excluding `.beads/checkpoint`, applied by the onboard step, so a
+   client never materialises, conflicts on, or pays for checkpoint objects it
+   does not read. Beat: dedicated checkpoint repo (28), side-ref commits (29).
+   Grade S. First step: convert lab's bead-rs clone (89 staged checkpoint
+   deletions today) and measure pull time. Strongest objection: packaging-
+   shaped; converting an existing dirty clone needs cleanup first.
+9. **Promote-and-rehearse (gap entrant; 10+72+73+99).** `bead-route promote
+   <host>` restores the pushed checkpoint on the new host, writes
+   `authority.epoch+1`, flips the route; the old authority, on pulling, sees
+   a higher epoch and refuses (finalist 1). A weekly timer measures RPO (age of
+   the authority's last pushed generation) per routed repo and rehearses the
+   restore on a client. Grade M. First step: the RPO measurement alone.
+   Strongest objection: the old authority is split-brained until it pulls the
+   new record.
+10. **Cross-host attempt visibility (39, reframed).** NEEDLE's failure-count
+    and quarantine logic reads bead-rs attempt records (already central: this
+    store holds 425) instead of host-local `.beads/traces`, so a lab worker
+    and a codinghome worker see the same attempt history for one bead; the
+    remaining host-local runtime files move to `~/.local/state/needle/<uuid>/`.
+    Grade M/L (NEEDLE). First step: diff what `attempts.jsonl` carries against
+    the attempt contract. Strongest objection: a core NEEDLE loop migration
+    for a gap that only bites once roaming crosses hosts.
+
+### Observation recorded for the plan owner
+
+This workspace's checkpoint mode is still `monolithic` (`bead sync status`,
+2026-11-04) at about 2.9 MB per publication, although section 13 makes
+adaptive set-v2 the default; the set-v2 migration of the authority
+workspaces is operational work, not an idea, and is not filed here.
