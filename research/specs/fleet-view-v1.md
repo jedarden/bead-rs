@@ -60,7 +60,12 @@ Read each selected store with a bounded per-workspace timeout (15 seconds;
 each workspace is observed on its own thread and one that exceeds the budget
 becomes that workspace's error record). Store connections are opened with
 SQLite read-only flags; no pragma that writes to the file or its sidecars is
-issued. `status` reports the path, UUID, counts for each issue status, ready
+issued. SQLite can update a WAL `-shm` sidecar even through a read-only
+connection. To leave the source workspace byte-for-byte unchanged, read the
+database and any existing WAL into a disposable snapshot outside its `.beads`
+directory and open that snapshot read-only. Remove the snapshot after use;
+an inconsistent snapshot during a concurrent write is a per-workspace error.
+`status` reports the path, UUID, counts for each issue status, ready
 count, and stale `in_progress` count using that workspace's R034 threshold.
 `ready` lists ready issues with their workspace identity. `search TEXT`
 searches issues in each workspace using the existing native search semantics
