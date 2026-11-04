@@ -85,9 +85,12 @@ fn groups_copies_and_reports_skips_and_errors() {
     let primary = root.join("project");
     let copy = root.join("project-verify");
     let dot_copy = root.join(".scratch");
+    // `mktemp -d` default naming, the shape verify extracts leave behind.
+    let mktemp_copy = root.join("tmp.Q7xKp2Lm9z");
     let _primary_conn = make_store(&primary, "same-uuid", false);
     let _copy_conn = make_store(&copy, "same-uuid", false);
     let _dot_conn = make_store(&dot_copy, "same-uuid", false);
+    let _mktemp_conn = make_store(&mktemp_copy, "same-uuid", false);
 
     let bf = root.join("bf/.beads");
     fs::create_dir_all(&bf).unwrap();
@@ -117,10 +120,15 @@ fn groups_copies_and_reports_skips_and_errors() {
     );
     assert_eq!(
         paths(&status["copies"]),
-        vec![dot_copy.to_string_lossy(), copy.to_string_lossy()]
+        vec![
+            dot_copy.to_string_lossy(),
+            copy.to_string_lossy(),
+            mktemp_copy.to_string_lossy()
+        ]
     );
     assert_eq!(status["copies"][0]["sequence"], 1);
     assert_eq!(status["copies"][1]["sequence"], 2);
+    assert_eq!(status["copies"][2]["sequence"], 3);
     assert_eq!(status["copies"][0]["selected"], false);
     assert_eq!(status["totals"]["ready_count"], 1);
     assert_eq!(status["totals"]["counts"]["open"], 2);
@@ -139,7 +147,7 @@ fn groups_copies_and_reports_skips_and_errors() {
     );
 
     let with_copies = run(FleetAction::Status, options(root, true)).unwrap();
-    assert_eq!(with_copies["totals"]["ready_count"], 3);
+    assert_eq!(with_copies["totals"]["ready_count"], 4);
     assert_eq!(with_copies["copies"][0]["selected"], true);
     assert_eq!(all_bead_files(root), before);
 }
