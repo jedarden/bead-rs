@@ -92,6 +92,21 @@ const SECTION_5_READ_ONLY: &[&str] = &[
     "bead schema explain",
 ];
 
+fn fleet_probe(fixture: &Fixture, action: &str, text: Option<&str>) -> Vec<String> {
+    let mut args = vec!["fleet".into(), action.into()];
+    if let Some(text) = text {
+        args.push(text.into());
+    }
+    args.extend([
+        "--root".into(),
+        fixture.workspace.to_string_lossy().into_owned(),
+        "--max-depth".into(),
+        "0".into(),
+        "--json".into(),
+    ]);
+    args
+}
+
 fn registry() -> Vec<RegisteredCommand> {
     use CommandClass::{Mutating, NonMutating};
 
@@ -669,6 +684,30 @@ fn registry() -> Vec<RegisteredCommand> {
             class: NonMutating,
             reason: "read-only shortcut for 'bead list --all --search TEXT'",
             invoke: |_| vec!["search".into(), "fixture".into(), "--json".into()],
+        },
+        RegisteredCommand {
+            path: "bead fleet status",
+            class: NonMutating,
+            reason: "read-only status projection over workspace snapshots",
+            invoke: |f| fleet_probe(f, "status", None),
+        },
+        RegisteredCommand {
+            path: "bead fleet ready",
+            class: NonMutating,
+            reason: "read-only ready frontier projection over workspace snapshots",
+            invoke: |f| fleet_probe(f, "ready", None),
+        },
+        RegisteredCommand {
+            path: "bead fleet search",
+            class: NonMutating,
+            reason: "read-only issue text search over workspace snapshots",
+            invoke: |f| fleet_probe(f, "search", Some("fixture")),
+        },
+        RegisteredCommand {
+            path: "bead fleet doctor",
+            class: NonMutating,
+            reason: "read-only native schema and integrity checks over workspace snapshots",
+            invoke: |f| fleet_probe(f, "doctor", None),
         },
         RegisteredCommand {
             path: "bead dep list",
